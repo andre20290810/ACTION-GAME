@@ -1,0 +1,111 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #131416;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+#game {
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: #131416;
+  touch-action: none;
+}
+
+#controls {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  touch-action: none;
+}
+
+#stick-zone {
+  position: absolute;
+  left: max(16px, env(safe-area-inset-left));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  width: 38vw;
+  height: 38vw;
+  max-width: 220px;
+  max-height: 220px;
+  min-width: 140px;
+  min-height: 140px;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+#stick-base {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  touch-action: none;
+}
+
+#stick-knob {
+  position: absolute;
+  width: 42%;
+  height: 42%;
+  left: 29%;
+  top: 29%;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  touch-action: none;
+  will-change: transform;
+}
+
+#fire-zone {
+  position: absolute;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  width: 30vw;
+  height: 30vw;
+  max-width: 150px;
+  max-height: 150px;
+  min-width: 100px;
+  min-height: 100px;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+#fire-button {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(200, 40, 30, 0.35);
+  border: 2px solid rgba(255, 120, 100, 0.6);
+  color: #ffe6e0;
+  font-family: sans-serif;
+  font-weight: bold;
+  font-size: clamp(14px, 4vw, 20px);
+  letter-spacing: 0.05em;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+  padding: 0;
+}
+
+#fire-button:active,
+#fire-button.active {
+  background: rgba(255, 60, 40, 0.6);
+}
