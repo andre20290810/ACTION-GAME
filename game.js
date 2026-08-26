@@ -316,15 +316,18 @@
   const FIRE_INTERVAL = 170; // ms
   const FIRE_POSE_DURATION = 80; // ms — how long the FIRE sprite shows per shot
   const MUZZLE_DIST = SPRITE_DRAW_H * 0.46; // same muzzle offset used previously
-  // The replacement RIGHT/FIRE sprite's muzzle flash sits at a fixed point
-  // on screen (measured directly from the asset), noticeably higher and
-  // further out than the generic radial offset above. The sprite doesn't
-  // rotate with the fine aim angle inside the +-45 cone, so a fixed
-  // screen-space point is the correct match for it, not another radial
-  // formula. Scoped to RIGHT + FIRE only — every other direction/pose still
-  // uses the generic MUZZLE_DIST radial offset above, unchanged.
+  // The replacement RIGHT/FIRE and LEFT/FIRE sprites each have their muzzle
+  // flash at a fixed point on screen (measured directly from each asset),
+  // noticeably higher and further out than the generic radial offset above.
+  // The sprite doesn't rotate with the fine aim angle inside the +-45 cone,
+  // so a fixed screen-space point is the correct match for it, not another
+  // radial formula. Scoped to RIGHT+FIRE / LEFT+FIRE only — every other
+  // direction/pose still uses the generic MUZZLE_DIST radial offset above,
+  // unchanged.
   const RIGHT_FIRE_MUZZLE_DX = SPRITE_DRAW_H * 0.503;
   const RIGHT_FIRE_MUZZLE_DY = SPRITE_DRAW_H * -0.253;
+  const LEFT_FIRE_MUZZLE_DX = SPRITE_DRAW_H * -0.506;
+  const LEFT_FIRE_MUZZLE_DY = SPRITE_DRAW_H * -0.321;
   let lastFireTime = -Infinity;
 
   function spawnBullet() {
@@ -333,6 +336,9 @@
     if (player.baseDir === 'right') {
       bx = player.x + RIGHT_FIRE_MUZZLE_DX;
       by = player.y + RIGHT_FIRE_MUZZLE_DY;
+    } else if (player.baseDir === 'left') {
+      bx = player.x + LEFT_FIRE_MUZZLE_DX;
+      by = player.y + LEFT_FIRE_MUZZLE_DY;
     } else {
       bx = player.x + Math.cos(angle) * MUZZLE_DIST;
       by = player.y + Math.sin(angle) * MUZZLE_DIST;
