@@ -56,18 +56,21 @@
     return 'left';
   }
 
+  // Screen-space meaning is fixed regardless of internal representation:
+  // up=true up, right=true right, down=true down, left=true left.
   const BASE_ANGLE = { right: 0, down: Math.PI / 2, left: Math.PI, up: -Math.PI / 2 };
-  const HALF_RANGE = Math.PI / 2; // +-90 degrees
+  const HALF_RANGE = Math.PI / 4; // +-45 degrees (90-degree total aim wedge)
 
-  // Clamp `angle` to within +-HALF_RANGE of `center`, preserving whichever
-  // side of center it's already on (nearest-valid-angle correction).
+  // Returns (angle - center) clamped to +-HALF_RANGE, preserving whichever
+  // side of center it's already on (nearest-valid-angle correction). The
+  // result is an offset relative to `center`, not an absolute angle.
   function clampToHalfRange(angle, center) {
     const TWO_PI = Math.PI * 2;
     let diff = angle - center;
     diff = ((diff + Math.PI) % TWO_PI + TWO_PI) % TWO_PI - Math.PI;
     if (diff > HALF_RANGE) diff = HALF_RANGE;
     else if (diff < -HALF_RANGE) diff = -HALF_RANGE;
-    return center + diff;
+    return diff;
   }
 
   // ---------- Player state ----------
@@ -75,10 +78,19 @@
     x: 0,
     y: 0,
     speed: 240, // px/sec
-    baseDir: 'down',      // discrete sprite bucket, set only by ACTION STICK
-    aimAngle: BASE_ANGLE.down, // continuous radians, set only by AIM STICK, clamped to base+-90
+    baseDir: 'down',   // discrete sprite bucket, set only by ACTION STICK
+    aimOffset: 0,      // radians relative to BASE_ANGLE[baseDir], within +-HALF_RANGE
     moving: false,
   };
+
+  // The single source of truth for firing/aim-line direction: always the
+  // current base facing's center angle plus the (clamped) aim offset. When
+  // aimOffset is 0 — the default, and what it resets to whenever the base
+  // facing changes or the AIM STICK is released — this is exactly the base
+  // direction's true angle, so an un-aimed shot always matches the sprite.
+  function getAimAngle() {
+    return BASE_ANGLE[player.baseDir] + player.aimOffset;
+  }
 
   function resetPlayerPosition() {
     player.x = W / 2;
@@ -89,7 +101,10 @@
   function setBaseDir(dir) {
     if (dir === player.baseDir) return;
     player.baseDir = dir;
-    player.aimAngle = clampToHalfRange(player.aimAngle, BASE_ANGLE[dir]);
+    // The base facing just changed — snap aim back to its center immediately
+    // rather than carrying over an offset computed for the old direction.
+    player.aimOffset = 0;
+    aimStickKnob.style.transform = 'translate(0px, 0px)';
   }
 
   // ---------- ACTION STICK (movement + base facing) ----------
@@ -161,6 +176,9 @@
     aimStickTouchId = null;
     aimStickMouseDown = false;
     aimStickActive = false;
+    // Releasing the stick always drops the aim back to the base direction's
+    // center — an un-aimed shot must never fire along a stale angle.
+    player.aimOffset = 0;
     aimStickKnob.style.transform = 'translate(0px, 0px)';
   }
 
@@ -176,17 +194,18 @@
 
     if (dist < AIM_DEADZONE_PX) {
       // Too close to center to have a reliable direction — keep the last
-      // aim angle and just show the knob near center.
+      // aim offset and just show the knob near center.
       aimStickKnob.style.transform = `translate(${dx * 0.5}px, ${dy * 0.5}px)`;
       return;
     }
 
     const rawAngle = Math.atan2(dy, dx);
-    const clampedAngle = clampToHalfRange(rawAngle, BASE_ANGLE[player.baseDir]);
-    player.aimAngle = clampedAngle;
+    const center = BASE_ANGLE[player.baseDir];
+    player.aimOffset = clampToHalfRange(rawAngle, center);
 
-    // Knob visually stops at the same +-90 deg wall as the actual aim,
+    // Knob visually stops at the same +-45 deg wall as the actual aim,
     // so the limit is felt physically, not just applied invisibly.
+    const clampedAngle = center + player.aimOffset;
     const clamped = Math.min(dist, maxR);
     const nx = (Math.cos(clampedAngle) * clamped) / maxR;
     const ny = (Math.sin(clampedAngle) * clamped) / maxR;
@@ -300,7 +319,7 @@
   let lastFireTime = -Infinity;
 
   function spawnBullet() {
-    const angle = player.aimAngle;
+    const angle = getAimAngle();
     const bx = player.x + Math.cos(angle) * MUZZLE_DIST;
     const by = player.y + Math.sin(angle) * MUZZLE_DIST;
     bullets.push({
@@ -344,7 +363,8 @@
     player.x = Math.max(halfW, Math.min(W - halfW, player.x));
     player.y = Math.max(halfH, Math.min(H - halfH, player.y));
 
-    // Firing — direction comes from AIM STICK (player.aimAngle), never from movement
+    // Firing — direction comes from getAimAngle() (AIM STICK offset applied
+    // to the current base facing), never from movement
     const wantsFire = fireHeld || keys.fire;
     if (wantsFire && now - lastFireTime >= FIRE_INTERVAL) {
       lastFireTime = now;
@@ -402,10 +422,39 @@
     ctx.restore();
   }
 
+  // Scope/reticle marker: ring + 4 outward tick marks + tiny center dot.
+  // Replaces the old plain filled dot.
+  function drawReticle(x, y) {
+    const r = 7;
+    const gap = 2;
+    const tick = 4;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 1.5;
+
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(0, -(r + gap)); ctx.lineTo(0, -(r + gap + tick));
+    ctx.moveTo(0, r + gap); ctx.lineTo(0, r + gap + tick);
+    ctx.moveTo(-(r + gap), 0); ctx.lineTo(-(r + gap + tick), 0);
+    ctx.moveTo(r + gap, 0); ctx.lineTo(r + gap + tick, 0);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath();
+    ctx.arc(0, 0, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   // ---------- Aim prediction line: dotted, matches the actual firing angle ----------
   function drawAimLine() {
     if (!aimStickActive) return;
-    const angle = player.aimAngle;
+    const angle = getAimAngle();
     const bx = player.x + Math.cos(angle) * MUZZLE_DIST;
     const by = player.y + Math.sin(angle) * MUZZLE_DIST;
     const lineLen = 240;
@@ -421,15 +470,9 @@
     ctx.lineTo(ex, ey);
     ctx.stroke();
     ctx.setLineDash([]);
-
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.beginPath();
-    ctx.arc(ex, ey, 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.lineWidth = 1.5;
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-    ctx.stroke();
     ctx.restore();
+
+    drawReticle(ex, ey);
   }
 
   function draw(now) {
