@@ -21,6 +21,17 @@
   window.addEventListener('orientationchange', () => setTimeout(resize, 100));
   resize();
 
+  // ---------- Stage background ----------
+  // Decorative floor image only — no collision is derived from it, the
+  // player still moves freely across the whole canvas as before. Used for
+  // portrait/tall viewports (where its aspect ratio fits well); landscape
+  // keeps the original dark grid background rather than force-fitting a
+  // tall image into a wide screen.
+  const stageBg = new Image();
+  let stageBgReady = false;
+  stageBg.onload = () => { stageBgReady = true; };
+  stageBg.src = 'assets/stage/lab_b03_floor.png';
+
   // ---------- Sprite loading ----------
   // Only 4 cardinal directions this asset set: UP (back-facing), DOWN
   // (front-facing), LEFT, RIGHT — no diagonals, no separate idle pose.
@@ -500,18 +511,35 @@
     ctx.clearRect(0, 0, W, H);
 
     // background
-    ctx.fillStyle = '#131416';
-    ctx.fillRect(0, 0, W, H);
+    if (stageBgReady && H >= W) {
+      // Portrait viewport: draw the lab-floor stage image "cover"-style —
+      // uniformly scaled (never stretched on one axis only) so it fills
+      // the screen, center-cropping only the minimum needed on one axis.
+      const iw = stageBg.naturalWidth, ih = stageBg.naturalHeight;
+      const scale = Math.max(W / iw, H / ih);
+      const dw = iw * scale, dh = ih * scale;
+      const dx = (W - dw) / 2, dy = (H - dh) / 2;
+      ctx.drawImage(stageBg, dx, dy, dw, dh);
+      // Light darkening overlay only, drawn on the canvas — the source
+      // image file itself is never modified — so the character, bullets
+      // and aim reticle stay legible against the bright metal floor.
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+      ctx.fillRect(0, 0, W, H);
+    } else {
+      // Landscape (or image not yet loaded): unchanged original background.
+      ctx.fillStyle = '#131416';
+      ctx.fillRect(0, 0, W, H);
 
-    // subtle ground grid for spatial reference (minimal, non-intrusive)
-    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
-    ctx.lineWidth = 1;
-    const grid = 64;
-    for (let gx = (W / 2) % grid; gx < W; gx += grid) {
-      ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
-    }
-    for (let gy = (H / 2) % grid; gy < H; gy += grid) {
-      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+      // subtle ground grid for spatial reference (minimal, non-intrusive)
+      ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+      ctx.lineWidth = 1;
+      const grid = 64;
+      for (let gx = (W / 2) % grid; gx < W; gx += grid) {
+        ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+      }
+      for (let gy = (H / 2) % grid; gy < H; gy += grid) {
+        ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+      }
     }
 
     drawAimLine();
