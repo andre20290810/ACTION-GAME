@@ -22,8 +22,12 @@
   resize();
 
   // ---------- Sprite loading ----------
-  const DIRS = ['left', 'leftdiag', 'front', 'rightdiag', 'right'];
-  const POSES = ['idle', 'aim', 'fire'];
+  // Only 4 cardinal directions this asset set: UP (back-facing), DOWN
+  // (front-facing), LEFT, RIGHT — no diagonals, no separate idle pose.
+  // Both AIM and FIRE frames are genuine dedicated renders per direction
+  // (confirmed by inspection), so no canvas-side flip is needed.
+  const DIRS = ['up', 'down', 'left', 'right'];
+  const POSES = ['aim', 'fire'];
   const sprites = {};
   let spritesReady = 0;
   const spritesTotal = DIRS.length * POSES.length;
@@ -32,7 +36,7 @@
     sprites[pose] = {};
     DIRS.forEach((dir) => {
       const img = new Image();
-      img.src = `assets/alexandre/${pose}_${dir}.png`;
+      img.src = `assets/alexandre/${dir}_${pose}.png`;
       img.onload = () => { spritesReady++; };
       sprites[pose][dir] = img;
     });
@@ -44,7 +48,7 @@
     y: 0,
     speed: 240, // px/sec
     facingAngle: 0, // radians, 0 = right, continuous
-    facingDir: 'front', // discrete sprite bucket
+    facingDir: 'down', // discrete sprite bucket
     moving: false,
   };
 
@@ -55,18 +59,7 @@
   resetPlayerPosition();
 
   const SPRITE_DRAW_H = 116; // on-screen character height in px (unchanged from previous asset set)
-  let spriteAspect = 272 / 336;
-
-  // In this reference sheet every column (left/leftdiag/front/rightdiag/right)
-  // is drawn facing right for all three poses (idle/aim/fire) — checked per
-  // frame, not assumed; none of them mirror by column. So the "left" and
-  // "leftdiag" frames are the ones that need a canvas-side flip to face left;
-  // "right"/"rightdiag" already match and "front" is never flipped.
-  const FLIP_KEYS = new Set(['idle_left', 'idle_leftdiag', 'aim_left', 'aim_leftdiag', 'fire_left', 'fire_leftdiag']);
-  // Fraction (0-1) of the sprite canvas width where each frame's own anchor
-  // (body center of mass) sits — matches the alignment baked into the PNGs,
-  // so flipping about this line keeps the character from jumping sideways.
-  const SPRITE_ANCHOR_X_FRAC = 0.43799337449244424;
+  let spriteAspect = 384 / 340;
 
   // ---------- Direction bucket mapping ----------
   // angle: 0 = right, positive = clockwise (down), using atan2(dy, dx) with screen dy-down positive
@@ -75,10 +68,8 @@
     // normalize to [-180, 180]
     deg = ((deg + 180) % 360 + 360) % 360 - 180;
     const a = Math.abs(deg);
-    if (a <= 22.5) return 'right';
-    if (a <= 67.5) return 'rightdiag'; // covers up-right and down-right (deg>0 is down here)
-    if (a <= 112.5) return 'front'; // near-vertical (up or down)
-    if (a <= 157.5) return 'leftdiag';
+    if (a <= 45) return 'right';
+    if (a <= 135) return deg > 0 ? 'down' : 'up';
     return 'left';
   }
 
@@ -268,8 +259,7 @@
   function currentPose(now) {
     const wantsFire = fireHeld || keys.fire;
     if (wantsFire || now - lastFireTime < 90) return 'fire';
-    if (player.moving) return 'aim';
-    return 'idle';
+    return 'aim'; // no dedicated idle art in this asset set — aim doubles as the ready/standing pose
   }
 
   function draw(now) {
@@ -317,20 +307,7 @@
       spriteAspect = img.naturalWidth / img.naturalHeight;
       const drawH = SPRITE_DRAW_H;
       const drawW = drawH * spriteAspect;
-      const drawX = player.x - drawW / 2;
-      const drawY = player.y - drawH / 2;
-      const flip = dir !== 'front' && FLIP_KEYS.has(`${pose}_${dir}`);
-      if (flip) {
-        const anchorScreenX = drawX + drawW * SPRITE_ANCHOR_X_FRAC;
-        ctx.save();
-        ctx.translate(anchorScreenX, 0);
-        ctx.scale(-1, 1);
-        ctx.translate(-anchorScreenX, 0);
-        ctx.drawImage(img, drawX, drawY, drawW, drawH);
-        ctx.restore();
-      } else {
-        ctx.drawImage(img, drawX, drawY, drawW, drawH);
-      }
+      ctx.drawImage(img, player.x - drawW / 2, player.y - drawH / 2, drawW, drawH);
     } else {
       // fallback placeholder while sprites load
       ctx.fillStyle = '#888';
