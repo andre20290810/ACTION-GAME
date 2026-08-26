@@ -54,18 +54,19 @@
   }
   resetPlayerPosition();
 
-  const SPRITE_DRAW_H = 116; // on-screen character height in px (was 140, x0.83)
-  let spriteAspect = 304 / 344;
+  const SPRITE_DRAW_H = 116; // on-screen character height in px (unchanged from previous asset set)
+  let spriteAspect = 272 / 336;
 
-  // The source reference sheet only mirrors the pure "left" column for the
-  // IDLE pose; every other left-facing column (idle_leftdiag, and all of
-  // aim/fire's left + leftdiag) is actually drawn facing right in the PNG
-  // itself. For those keys we flip the canvas draw instead of the asset.
-  const FLIP_FOR_LEFT = new Set(['idle_leftdiag', 'aim_left', 'aim_leftdiag', 'fire_left', 'fire_leftdiag']);
+  // In this reference sheet every column (left/leftdiag/front/rightdiag/right)
+  // is drawn facing right for all three poses (idle/aim/fire) — checked per
+  // frame, not assumed; none of them mirror by column. So the "left" and
+  // "leftdiag" frames are the ones that need a canvas-side flip to face left;
+  // "right"/"rightdiag" already match and "front" is never flipped.
+  const FLIP_KEYS = new Set(['idle_left', 'idle_leftdiag', 'aim_left', 'aim_leftdiag', 'fire_left', 'fire_leftdiag']);
   // Fraction (0-1) of the sprite canvas width where each frame's own anchor
   // (body center of mass) sits — matches the alignment baked into the PNGs,
   // so flipping about this line keeps the character from jumping sideways.
-  const SPRITE_ANCHOR_X_FRAC = 0.44167717269913337;
+  const SPRITE_ANCHOR_X_FRAC = 0.43799337449244424;
 
   // ---------- Direction bucket mapping ----------
   // angle: 0 = right, positive = clockwise (down), using atan2(dy, dx) with screen dy-down positive
@@ -318,7 +319,7 @@
       const drawW = drawH * spriteAspect;
       const drawX = player.x - drawW / 2;
       const drawY = player.y - drawH / 2;
-      const flip = (dir === 'left' || dir === 'leftdiag') && FLIP_FOR_LEFT.has(`${pose}_${dir}`);
+      const flip = dir !== 'front' && FLIP_KEYS.has(`${pose}_${dir}`);
       if (flip) {
         const anchorScreenX = drawX + drawW * SPRITE_ANCHOR_X_FRAC;
         ctx.save();
