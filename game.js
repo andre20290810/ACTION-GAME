@@ -55,7 +55,7 @@
   resetPlayerPosition();
 
   const SPRITE_DRAW_H = 140; // on-screen character height in px
-  let spriteAspect = 100 / 106;
+  let spriteAspect = 304 / 344;
 
   // ---------- Direction bucket mapping ----------
   // angle: 0 = right, positive = clockwise (down), using atan2(dy, dx) with screen dy-down positive
@@ -192,7 +192,7 @@
   let lastFireTime = -Infinity;
 
   function spawnBullet() {
-    const muzzleDist = SPRITE_DRAW_H * 0.28;
+    const muzzleDist = SPRITE_DRAW_H * 0.46;
     const bx = player.x + Math.cos(player.facingAngle) * muzzleDist;
     const by = player.y + Math.sin(player.facingAngle) * muzzleDist;
     bullets.push({
