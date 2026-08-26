@@ -38,7 +38,7 @@ html, body {
   touch-action: none;
 }
 
-#stick-zone {
+#action-stick-zone {
   position: absolute;
   left: max(16px, env(safe-area-inset-left));
   bottom: max(16px, env(safe-area-inset-bottom));
@@ -52,7 +52,7 @@ html, body {
   touch-action: none;
 }
 
-#stick-base {
+#action-stick-base {
   position: absolute;
   inset: 0;
   border-radius: 50%;
@@ -61,7 +61,7 @@ html, body {
   touch-action: none;
 }
 
-#stick-knob {
+#action-stick-knob {
   position: absolute;
   width: 42%;
   height: 42%;
@@ -86,6 +86,46 @@ html, body {
   min-height: 100px;
   pointer-events: auto;
   touch-action: none;
+}
+
+/* AIM STICK sits above the FIRE button on the right side; the fixed
+   168px offset (150px fire-zone max-height + 18px gap) guarantees no
+   overlap regardless of viewport width since fire-zone never exceeds
+   150px tall. */
+#aim-stick-zone {
+  position: absolute;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 168px);
+  width: 34vw;
+  height: 34vw;
+  max-width: 190px;
+  max-height: 190px;
+  min-width: 130px;
+  min-height: 130px;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+#aim-stick-base {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(80, 160, 255, 0.08);
+  border: 2px solid rgba(120, 190, 255, 0.28);
+  touch-action: none;
+}
+
+#aim-stick-knob {
+  position: absolute;
+  width: 40%;
+  height: 40%;
+  left: 30%;
+  top: 30%;
+  border-radius: 50%;
+  background: rgba(150, 205, 255, 0.4);
+  border: 2px solid rgba(180, 220, 255, 0.65);
+  touch-action: none;
+  will-change: transform;
 }
 
 #fire-button {
