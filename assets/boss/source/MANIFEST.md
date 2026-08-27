@@ -1,12 +1,13 @@
-# Boss character asset manifest — all 16 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5)
+# Boss character asset manifest — all 19 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6)
 
-All 16 files below are byte-identical copies of the originally attached
+All 19 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
 these `source/` copies. The processed, game-ready frames built from them
 live in `assets/boss/*.png` (see `assets/boss/sprite_build_meta.json` for
-batches 1-2's exact per-frame alignment measurements, and
+batches 1-2's exact per-frame alignment measurements,
 `assets/boss/defense_dirs_build_meta.json` for batch 3's,
-`assets/boss/attack_ns_build_meta.json` for batch 5's).
+`assets/boss/attack_ns_build_meta.json` for batch 5's, and
+`assets/boss/attack_release_build_meta.json` for batch 6's).
 
 ## Batch 1 (5 images)
 
@@ -116,6 +117,40 @@ Batch 5 notes:
   the player at the exact instant ATTACK begins, via the existing CHASE->
   ATTACK and GUARD BREAK->ATTACK transitions) — up->NORTH ATTACK,
   down->SOUTH ATTACK, left/right unchanged (generic `attack.png`).
+
+## Batch 6 (3 images)
+
+| # | Role | Saved filename | Source dims | md5 |
+|---|------|-----------------|-------------|-----|
+| 17 | SOUTH ATTACK (blade-release) | `boss_attack_south_release_source.png` | 1076x1866 RGBA | 13fca4f73ee112b37ed6d8c5df90703e |
+| 18 | WEST ATTACK (blade-release) | `boss_attack_west_release_source.png` | 1156x1795 RGBA | dbb3c8ae2e96f748d947fa44c5d3b598 |
+| 19 | EAST ATTACK (blade-release) | `boss_attack_east_release_source.png` | 1242x1654 RGBA | 15fc4f61babb4df3e4275d69ab664f73 |
+
+Batch 6 notes:
+- Direction labels were taken as authoritative from the user's explicit
+  instruction, not inferred from the images' own visual content or
+  filename conventions: the user stated outright which attached image is
+  WEST and which is EAST, overriding any visual read of left/right facing.
+- These 3 images are the NEW dedicated blade-release ATTACK art for SOUTH/
+  EAST/WEST. The previously-active attack art for those directions —
+  `boss_attack_south_source.png` (batch 5, was `attack_south.png`) for
+  SOUTH, and the old generic `attack.png` for EAST/WEST — was NOT deleted
+  or replaced; it was repurposed as the new PRE_ATTACK (wind-up) pose for
+  those same 3 directions (`preattack_south`/`preattack_east`/
+  `preattack_west` in `game.js`, drawn at 113% scale). NORTH keeps its
+  own single-image attack (`boss_attack_north_source.png`, batch 5)
+  entirely unchanged — it has no PRE_ATTACK phase.
+- All 3 already had real per-pixel alpha with the opaque bbox spanning
+  almost the entire source canvas, so only a uniform rescale + anchor-paste
+  (no crop) was needed onto the same shared 700x920 boss canvas, at the
+  same (centerX=350, footY=900) anchor and the same 873px target body
+  height used by every other frame on that canvas — comparing actual
+  character bounding boxes (head/shoulders/torso/waist/legs), not raw
+  pixel dimensions — so switching PRE_ATTACK -> ATTACK causes no
+  body-size or foot-position jump. See
+  `assets/boss/attack_release_build_meta.json` for the exact per-image
+  source-bbox/scale/paste-offset values (scale 0.4691/0.4874/0.5294 for
+  south/west/east respectively; no horizontal clamping needed for any).
 
 Notes:
 - Verified visually (not assumed) that EAST images face screen-right with

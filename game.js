@@ -6,6 +6,13 @@
   const ctx = canvas.getContext('2d');
 
   let W = 0, H = 0;
+  // Extra walkable WORLD space that opens up above the original screen once
+  // a boss is fully defeated (PART 21-29) — see the "Stage world / camera"
+  // section below. Declared here (not there) so the very first resize()
+  // call below can safely set it before anything else runs.
+  let worldExtraAbove = 0;
+  let cameraY = 0;
+  const WORLD_EXTRA_ABOVE_FACTOR = 1.3; // world opens up to 1.3x the screen height taller, post-victory
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -16,21 +23,42 @@
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    worldExtraAbove = H * WORLD_EXTRA_ABOVE_FACTOR;
   }
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', () => setTimeout(resize, 100));
   resize();
 
-  // ---------- Stage background ----------
-  // Decorative floor image only — no collision is derived from it, the
-  // player still moves freely across the whole canvas as before. Used for
-  // portrait/tall viewports (where its aspect ratio fits well); landscape
-  // keeps the original dark grid background rather than force-fitting a
-  // tall image into a wide screen.
-  const stageBg = new Image();
-  let stageBgReady = false;
-  stageBg.onload = () => { stageBgReady = true; };
-  stageBg.src = 'assets/stage/lab_b03_floor.png';
+  // ---------- Stage background(s) ----------
+  // Data-driven list so adding another stage later is just one more entry
+  // here — no other code needs to change. Decorative floor art only; no
+  // collision is derived from it. Used for portrait/tall viewports (where
+  // the aspect ratio fits well); landscape keeps the original dark grid
+  // background rather than force-fitting a tall image into a wide screen.
+  // The pre-existing lab floor stays first/default so a fresh page load
+  // looks exactly as it did before this batch (no regression).
+  const STAGES = [
+    { key: 'lab_b03', file: 'assets/stage/lab_b03_floor.png' },
+    { key: 'stage_a', file: 'assets/stage/stage_a_floor.png' },
+    { key: 'stage_b', file: 'assets/stage/stage_b_floor.jpg' },
+  ];
+  STAGES.forEach((s) => {
+    s.img = new Image();
+    s.ready = false;
+    s.img.onload = () => { s.ready = true; };
+    s.img.src = s.file;
+  });
+  let currentStageIndex = 0;
+  function currentStage() { return STAGES[currentStageIndex]; }
+  // Picks a stage guaranteed to differ from the one passed in — the EXIT
+  // must never send the player straight back into the same stage they just
+  // cleared (PART 27).
+  function pickRandomOtherStage(excludeIndex) {
+    if (STAGES.length <= 1) return excludeIndex;
+    let idx;
+    do { idx = Math.floor(Math.random() * STAGES.length); } while (idx === excludeIndex);
+    return idx;
+  }
 
   // ---------- Sprite loading ----------
   // Only 4 cardinal directions this asset set: UP (back-facing), DOWN
@@ -83,10 +111,20 @@
   // filename for the south one.
   const BOSS_FRAME_FILES = {
     south_idle: 'south_idle', east_idle: 'east_idle', west_idle: 'west_idle', north_idle: 'north_idle',
-    // 'attack' (generic) is still used for EAST/WEST — no dedicated art
-    // exists for those yet. NORTH/SOUTH each got their own dedicated
-    // attack render this round; see bossFrameName()'s 'attack' branch.
-    attack: 'attack', attack_south: 'attack_south', attack_north: 'attack_north',
+    // NORTH has no PRE_ATTACK (per spec) — attack_north is its only attack
+    // frame, shown directly. SOUTH/EAST/WEST each go through a PRE_ATTACK
+    // telegraph before the actual blade-release ATTACK frame: the
+    // telegraph reuses OLDER attack renders from earlier rounds (the
+    // dedicated south one, and the generic one previously shared by east/
+    // west) rather than any new art, while attack_*_release are the 3
+    // brand-new dedicated release-moment renders added this round.
+    attack_north: 'attack_north',
+    attack_south_release: 'attack_south_release',
+    attack_west_release: 'attack_west_release',
+    attack_east_release: 'attack_east_release',
+    preattack_south: 'attack_south',
+    preattack_east: 'attack',
+    preattack_west: 'attack',
     defense_south: 'defense', defense_north: 'defense_north', defense_east: 'defense_east', defense_west: 'defense_west',
     // The on-disk walk_east.png/walk_west.png pair has its content swapped
     // from its filename (walk_east.png is actually the left/west-facing
@@ -117,7 +155,7 @@
   const cinematicPoseImg = new Image();
   cinematicPoseImg.src = 'assets/boss/cinematic_pose.png';
   const CINEMATIC_ASPECT = 1190 / 1317; // the source image's own W/H
-  const CINEMATIC_SCALE = 1.1; // ~1.0-1.2x the normal boss size, per spec
+  const CINEMATIC_SCALE = 1.1 * 0.7; // 70% of the previous 1.1x — uniform across intro/threshold/death
   const CINEMATIC_DRAW_H = BOSS_DRAW_H * CINEMATIC_SCALE;
   const CINEMATIC_DRAW_W = CINEMATIC_DRAW_H * CINEMATIC_ASPECT;
 
@@ -205,7 +243,9 @@
     // all 4 now have dedicated dash art, so no horizontal-fallback is
     // needed for south/north anymore.
     dashing: false,
-    dashDir: 'right', // 'right' | 'left' | 'up' | 'down'
+    dashDir: 'right', // 'right' | 'left' | 'up' | 'down' — SPRITE selection only (nearest cardinal)
+    dashAngle: 0, // radians — the REAL movement direction (can be diagonal via MOVE STICK double-tap)
+    bufferedDashAngle: null, // angle to use for an auto-chained 2nd dash, if it was requested with one
     dashStartAt: -Infinity,
     dashFromX: 0,
     dashFromY: 0,
@@ -213,6 +253,7 @@
     dashBuffered: false, // a DASH press received near the end of the current DASH
     dashChainCount: 0, // dashes used in the current chain (max DASH_CHAIN_MAX)
     facingLockUntil: 0, // briefly holds baseDir after a completed 2-dash chain reversal
+    knockbackUntil: 0, // brief movement-input suppression after a forced-counter KNOCKBACK
     // RELAXED IDLE (SOUTH only): tracks how long all inputs have been idle.
     lastActivityAt: performance.now(),
     relaxed: false,
@@ -243,6 +284,7 @@
     player.aimOffsetRaw = 0;
     player.aimOffset = 0;
     aimStickKnob.style.transform = 'translate(0px, 0px)';
+    updateAimSectorOverlay();
   }
 
   function setBaseDir(dir) {
@@ -253,8 +295,12 @@
   function clampPlayerToScreen() {
     const halfW = (SPRITE_DRAW_H * spriteAspect) / 2;
     const halfH = SPRITE_DRAW_H / 2;
+    // Before the boss is fully defeated, this is pixel-identical to the
+    // original single-screen clamp (worldScrollUnlocked() is false) — the
+    // extra world space above only becomes walkable post-victory.
+    const topY = worldScrollUnlocked() ? -worldExtraAbove + halfH : halfH;
     player.x = Math.max(halfW, Math.min(W - halfW, player.x));
-    player.y = Math.max(halfH, Math.min(H - halfH, player.y));
+    player.y = Math.max(topY, Math.min(H - halfH, player.y));
   }
 
   // ---------- DASH (4 directions, max 2 chained) ----------
@@ -265,14 +311,19 @@
   const FACING_LOCK_MS = 200; // briefly holds the post-chain reversed facing against stick input
   const OPPOSITE_DIR = { up: 'down', down: 'up', left: 'right', right: 'left' };
 
-  function tryStartDash(now) {
+  // angleOverride (radians) lets a MOVE STICK double-tap dash in the exact
+  // diagonal direction it was pressed, while player.dashDir (nearest
+  // cardinal, via angleToBucket — the same 4-way split used everywhere
+  // else) still picks which of the 4 existing DASH sprites to show, since
+  // no diagonal dash art exists. Omitting it (the DASH button / old
+  // move-stick flow) keeps the previous cardinal-only behavior exactly.
+  function tryStartDash(now, angleOverride) {
     if (player.dashing) return;
     if (player.dashChainCount >= DASH_CHAIN_MAX) return; // chain already used up
-    // Direction is always the player's current facing — all 4 cardinal
-    // directions have dedicated dash art now, so no fallback is needed.
-    const dir = player.baseDir;
+    const angle = (angleOverride === undefined || angleOverride === null) ? BASE_ANGLE[player.baseDir] : angleOverride;
     player.dashing = true;
-    player.dashDir = dir;
+    player.dashAngle = angle;
+    player.dashDir = angleToBucket(angle);
     player.dashChainCount += 1;
     player.dashStartAt = now;
     player.dashFromX = player.x;
@@ -292,9 +343,9 @@
   // "tap-tap" always chains, with no visible pause between the two —
   // unless the chain is already at DASH_CHAIN_MAX, in which case a 3rd
   // request (buffered or not) is simply dropped.
-  function requestDash(now) {
+  function requestDash(now, angleOverride) {
     if (!player.dashing) {
-      tryStartDash(now);
+      tryStartDash(now, angleOverride);
       return;
     }
     if (player.dashChainCount >= DASH_CHAIN_MAX) return;
@@ -305,6 +356,7 @@
     // actually ends (see updateDash()), so there's never a visible pause
     // and never more than DASH_CHAIN_MAX dashes in the chain.
     player.dashBuffered = true;
+    player.bufferedDashAngle = (angleOverride === undefined) ? null : angleOverride;
   }
 
   // Fast burst then a short settle, not a constant 0.8s slide: full travel
@@ -326,8 +378,10 @@
       const canChain = player.dashChainCount < DASH_CHAIN_MAX;
       const buffered = player.dashBuffered && canChain;
       player.dashBuffered = false;
+      const bufferedAngle = player.bufferedDashAngle;
+      player.bufferedDashAngle = null;
       if (buffered) {
-        tryStartDash(now); // chain immediately, no cooldown gap
+        tryStartDash(now, bufferedAngle); // chain immediately, no cooldown gap
         return;
       }
       // The chain ends here — either only 1 dash was used, or the 2nd just
@@ -345,15 +399,12 @@
       player.dashChainCount = 0;
       return;
     }
+    // Real movement always follows the exact dashAngle (which may be a
+    // diagonal from a MOVE STICK double-tap) — dashDir only ever affects
+    // which sprite is drawn, never the actual travel vector.
     const progress = dashTravelProgress(elapsed / DASH_DURATION_MS);
-    if (player.dashDir === 'up') {
-      player.y = player.dashFromY - player.dashDistance * progress;
-    } else if (player.dashDir === 'down') {
-      player.y = player.dashFromY + player.dashDistance * progress;
-    } else {
-      const sign = player.dashDir === 'right' ? 1 : -1;
-      player.x = player.dashFromX + sign * player.dashDistance * progress;
-    }
+    player.x = player.dashFromX + Math.cos(player.dashAngle) * player.dashDistance * progress;
+    player.y = player.dashFromY + Math.sin(player.dashAngle) * player.dashDistance * progress;
   }
 
   // Single source of truth for "can the player be damaged right now" — DASH
@@ -388,8 +439,26 @@
   // straight into ATTACK, instead of just chipping the guard down forever.
   const DEFENSE_GUARD_BREAK_HITS = 4;
   const GUARD_BREAK_PAUSE_MS = 250;
+  // Separate from GUARD BREAK above: ANY valid weak-point damage hit
+  // (manually aimed or AUTO-AIM-assisted) counts toward this one, so a
+  // player who only ever lands manual precision shots — never triggering
+  // GUARD BREAK's AUTO-AIM-only counter — still eventually gets forced off
+  // the weak point. In practice GUARD BREAK's lower threshold (4) always
+  // preempts this (5) when every hit happens to be AUTO-AIM-assisted, so
+  // the two never double-fire on the same hit — see applyWeakPointHitToBoss().
+  const WEAKPOINT_FORCED_COUNTER_HITS = 5;
+  const KNOCKBACK_DISTANCE = 110; // px, pushed directly away from the boss
+  const KNOCKBACK_SUPPRESS_MS = 280; // brief movement-input suppression, not a full stun
   const WALK_FRAME_PERIOD_MS = 260; // south 2-frame alternation period
   const NORTH_BOUNCE_AMPLITUDE = 4; // px, decorative only (no NORTH walk art)
+  const SOUTH_WALK_SCALE = 1.10; // visual-only — SOUTH WALK reads a touch small next to the other directions
+  const PRE_ATTACK_SCALE = 1.13; // visual-only — the reused older attack art reads a touch small for its telegraph
+  // SOUTH/EAST/WEST attacks telegraph with a PRE_ATTACK pose before the
+  // real ATTACK (blade release) frame; NORTH skips straight to ATTACK
+  // (no dedicated PRE_ATTACK art for it) — see updateBoss()'s CHASE
+  // branch. Matches the old BOSS_ATTACK_WINDUP_MS so the total telegraph
+  // time (and therefore attack difficulty/reaction window) is unchanged.
+  const PRE_ATTACK_MS = 400;
 
   // ---------- Boss cinematic sequences (intro / HP threshold / death) ----------
   // Intro: flash -> shadow grows -> descend -> land -> normal AI begins.
@@ -471,7 +540,7 @@
   const boss = {
     x: 0, y: 0,
     spawned: false,
-    state: 'inactive', // inactive | chase | attack | defense | guardbreak | recover | dead
+    state: 'inactive', // inactive | chase | preattack | attack | defense | guardbreak | recover | dead
     dir: 'down', // shared player-style bucket key; mapped to north/south/east/west for movement/attack facing
     defenseDir: 'south', // 'north'|'south'|'east'|'west' — which DEFENSE sprite/weak-point is active; set from incoming fire, independent of `dir`
     moving: false,
@@ -479,10 +548,12 @@
     stateEnteredAt: 0,
     attackHitApplied: false,
     attackProjectileSpawned: false,
+    attackFiresImmediately: false, // true when ATTACK arrived via PRE_ATTACK/forced-counter (blade fires on entry, no extra windup)
     chaseBackoffUntil: 0,
     deadAt: 0,
     warningUntil: 0,
     defenseAimHits: 0, // valid AUTO-AIM-assisted hits landed during the current DEFENSE
+    weakPointConsecutiveHits: 0, // ANY valid weak-point damage hit (auto-aimed or manual) landed during the current DEFENSE
     // Cinematic sequence state (intro / HP threshold / death) — see the
     // "Boss cinematic sequences" constants above and startBossThreshold(),
     // startBossDying(), updateBossIntro/Threshold/Dying(), drawBoss*().
@@ -509,10 +580,14 @@
       boss.attackHitApplied = false;
       boss.attackProjectileSpawned = false;
     }
-    // The GUARD BREAK counter only ever means something mid-DEFENSE — reset
-    // it the instant any other state (fresh DEFENSE included, since this
-    // covers entering it too) is entered so a stale count never survives.
-    if (state !== 'defense') boss.defenseAimHits = 0;
+    // The GUARD BREAK and weak-point-streak counters only ever mean
+    // something mid-DEFENSE — reset them the instant any other state
+    // (fresh DEFENSE included, since this covers entering it too) is
+    // entered so a stale count never survives.
+    if (state !== 'defense') {
+      boss.defenseAimHits = 0;
+      boss.weakPointConsecutiveHits = 0;
+    }
     // Cinematic phases track their own progress by accumulating `dt` inside
     // update() (which PAUSE already skips entirely) rather than by
     // `now - stateEnteredAt` — the latter would jump forward by however
@@ -520,6 +595,21 @@
     // skipping the rest of the cinematic instead of continuing it.
     if (state === 'intro' || state === 'threshold' || state === 'dying') {
       boss.cinematicElapsed = 0;
+    }
+  }
+
+  // Shared entry point for "boss.dir is already set toward the target,
+  // now begin an attack" — used by CHASE->ATTACK and the weak-point
+  // forced-counter (PART 9/10). NORTH has no PRE_ATTACK art, so it skips
+  // straight to ATTACK (self-contained windup, unchanged); SOUTH/EAST/WEST
+  // telegraph through PRE_ATTACK first. GUARD BREAK's own attack entry
+  // deliberately does NOT go through this — see its branch in updateBoss().
+  function enterAttackSequence(now) {
+    if (DIR_TO_BOSS_KEY[boss.dir] === 'north') {
+      boss.attackFiresImmediately = false;
+      bossEnterState('attack', now);
+    } else {
+      bossEnterState('preattack', now);
     }
   }
 
@@ -722,6 +812,31 @@
   // AIM (a manually-aimed precision shot still works, unchanged from
   // before) — but only an AUTO-AIM-assisted weak-point hit also counts
   // toward GUARD BREAK, same rule as the body-target fallback above.
+  // Pushes the player straight away from the boss by KNOCKBACK_DISTANCE
+  // (no damage) and briefly suppresses movement input — used only by the
+  // weak-point forced counter below, to guarantee distance actually opens
+  // up rather than relying on where the subsequent attack happens to land.
+  function applyPlayerKnockback(now) {
+    const dx = player.x - boss.x, dy = player.y - boss.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    player.x += (dx / dist) * KNOCKBACK_DISTANCE;
+    player.y += (dy / dist) * KNOCKBACK_DISTANCE;
+    clampPlayerToScreen();
+    player.knockbackUntil = now + KNOCKBACK_SUPPRESS_MS;
+  }
+
+  // 5 consecutive valid weak-point hits (any aim mode) force DEFENSE open:
+  // the boss immediately counterattacks (through PRE_ATTACK for S/E/W, or
+  // straight into ATTACK for N, via the same enterAttackSequence() CHASE
+  // uses) and shoves the player away (0 damage) so the fight can't be
+  // trivially chain-stunned from the weak point forever.
+  function triggerWeakPointForcedCounter(now) {
+    boss.weakPointConsecutiveHits = 0;
+    applyPlayerKnockback(now);
+    boss.dir = angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x));
+    enterAttackSequence(now);
+  }
+
   function applyWeakPointHitToBoss(now, autoAimed) {
     if (!boss.spawned || boss.state !== 'defense') return;
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
@@ -729,6 +844,12 @@
     const wp = getWeakPointScreenPos(boss.defenseDir);
     if (wp) weakPointFlashAt = wp;
     if (checkBossHpMilestones(now)) return; // death or a threshold cinematic took over
+
+    boss.weakPointConsecutiveHits += 1;
+    if (boss.weakPointConsecutiveHits >= WEAKPOINT_FORCED_COUNTER_HITS) {
+      triggerWeakPointForcedCounter(now); // this hit is "spent" here — never also registers toward GUARD BREAK
+      return;
+    }
     if (autoAimed) registerDefenseAimHit(now);
   }
 
@@ -764,7 +885,7 @@
         // is used (for the forward claw-hitbox offset and the projectile's
         // spawn-side offset).
         boss.dir = angleToBucket(Math.atan2(dy, dx));
-        bossEnterState('attack', now);
+        enterAttackSequence(now);
       } else {
         let dirX = toPlayerX, dirY = toPlayerY;
         if (now < boss.chaseBackoffUntil) {
@@ -785,14 +906,28 @@
         boss.y += vy * dt;
         boss.moving = true;
       }
+    } else if (boss.state === 'preattack') {
+      // SOUTH/EAST/WEST telegraph before ATTACK's blade release — NORTH
+      // never enters this state (enterAttackSequence() skips straight to
+      // 'attack' for it, using its own self-contained windup below,
+      // unchanged from before this round).
+      if (now - boss.stateEnteredAt >= PRE_ATTACK_MS) {
+        boss.attackFiresImmediately = true;
+        bossEnterState('attack', now);
+      }
     } else if (boss.state === 'attack') {
       const elapsed = now - boss.stateEnteredAt;
-      if (elapsed >= BOSS_ATTACK_WINDUP_MS) {
+      // Arriving via PRE_ATTACK (or the weak-point forced counter) already
+      // spent its telegraph time in that state, so ATTACK fires the blade
+      // right away; NORTH and GUARD BREAK's attack entry (unchanged from
+      // before) still do their own self-contained windup here.
+      const fireAt = boss.attackFiresImmediately ? 0 : BOSS_ATTACK_WINDUP_MS;
+      if (elapsed >= fireAt) {
         if (!boss.attackProjectileSpawned) {
           boss.attackProjectileSpawned = true;
           spawnClawProjectile(now);
         }
-        if (elapsed < BOSS_ATTACK_WINDUP_MS + BOSS_ATTACK_ACTIVE_MS && !boss.attackHitApplied) {
+        if (elapsed < fireAt + BOSS_ATTACK_ACTIVE_MS && !boss.attackHitApplied) {
           const facing = BASE_ANGLE[boss.dir];
           const hx = boss.x + Math.cos(facing) * BOSS_ATTACK_REACH;
           const hy = boss.y + Math.sin(facing) * BOSS_ATTACK_REACH;
@@ -808,7 +943,7 @@
           }
         }
       }
-      if (elapsed >= BOSS_ATTACK_WINDUP_MS + BOSS_ATTACK_ACTIVE_MS) {
+      if (elapsed >= fireAt + BOSS_ATTACK_ACTIVE_MS) {
         boss.chaseBackoffUntil = now + 300;
         bossEnterState('recover', now);
       }
@@ -820,8 +955,12 @@
       // Brief stagger after the 4th AUTO-AIM-assisted DEFENSE hit, then
       // straight into ATTACK (facing the player at that instant) rather
       // than back to CHASE — the guard was broken, not just timed out.
+      // Unchanged from before this round: no PRE_ATTACK telegraph here,
+      // regardless of direction — GUARD BREAK's counter should feel
+      // immediate/punishing, not telegraphed.
       if (now - boss.stateEnteredAt >= GUARD_BREAK_PAUSE_MS) {
         boss.dir = angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x));
+        boss.attackFiresImmediately = false;
         bossEnterState('attack', now);
       }
     } else if (boss.state === 'recover') {
@@ -916,7 +1055,7 @@
       const p = clawProjectiles[i];
       p.x += p.vx * dt;
       p.y += p.vy * dt;
-      if (p.x < -40 || p.x > W + 40 || p.y < -40 || p.y > H + 40) {
+      if (p.x < -40 || p.x > W + 40 || p.y < cameraY - 40 || p.y > cameraY + H + 40) {
         clawProjectiles.splice(i, 1);
         continue;
       }
@@ -967,6 +1106,97 @@
     paused: false, // game starts running in BOSS MODE, same as before PAUSE existed
   };
   let modeStartTime = performance.now();
+
+  // ---------- Stage world / camera / EXIT (PART 21-29) ----------
+  // Before the boss is fully defeated (state 'dead', not merely HP<=0 and
+  // still mid-dissolve), the playable area is pixel-identical to the
+  // original single-screen layout — cameraY stays 0 and clampPlayerToScreen
+  // behaves exactly as it always did, so nothing about the fight itself
+  // changes. Only once worldScrollUnlocked() flips true does extra walkable
+  // space open up ABOVE the original screen (negative world Y), with a
+  // vertical camera following the player up toward a locked-until-now EXIT
+  // at the very top — reaching it is always a deliberate walk, never
+  // automatic on boss death. TRAINING MODE (and landscape) never unlocks
+  // this at all, same as the stage background itself.
+  const EXIT_ZONE_W = 150, EXIT_ZONE_H = 90;
+  function worldScrollUnlocked() {
+    return H >= W && gameState.mode === 'boss' && boss.state === 'dead' && !stageTransition.active;
+  }
+  function exitWorldPos() {
+    return { x: W / 2, y: -worldExtraAbove + EXIT_ZONE_H / 2 + 20 };
+  }
+
+  // Short, simple fade sequence (never a long loading-style one): fade to
+  // black -> swap to a genuinely different random stage + fresh full-HP
+  // boss (with its full existing intro cinematic) + reposition the player
+  // -> fade back in.
+  const STAGE_FADE_MS = 260;
+  const stageTransition = { active: false, phase: null, startedAt: 0 }; // phase: 'out' | 'in'
+  function beginStageTransition(now) {
+    if (stageTransition.active) return;
+    stageTransition.active = true;
+    stageTransition.phase = 'out';
+    stageTransition.startedAt = now;
+  }
+  function updateStageTransition(now) {
+    if (!stageTransition.active) return;
+    const elapsed = now - stageTransition.startedAt;
+    if (stageTransition.phase === 'out') {
+      if (elapsed < STAGE_FADE_MS) return;
+      currentStageIndex = pickRandomOtherStage(currentStageIndex);
+      cameraY = 0;
+      resetPlayerPosition();
+      player.baseDir = 'down';
+      player.aimOffsetRaw = 0; player.aimOffset = 0;
+      bullets.length = 0; clawProjectiles.length = 0; explosions.length = 0;
+      barrels.length = 0;
+      spawnBarrels(2 + Math.floor(Math.random() * 3));
+      spawnBoss(now); // fresh full-HP boss; plays the existing FLASH/SHADOW/DESCEND/LANDING intro
+      stageTransition.phase = 'in';
+      stageTransition.startedAt = now;
+    } else if (stageTransition.phase === 'in') {
+      if (elapsed < STAGE_FADE_MS) return;
+      stageTransition.active = false;
+      stageTransition.phase = null;
+    }
+  }
+  function getStageTransitionOverlayAlpha(now) {
+    if (!stageTransition.active) return 0;
+    const t = Math.min(1, (now - stageTransition.startedAt) / STAGE_FADE_MS);
+    return stageTransition.phase === 'out' ? t : (1 - t);
+  }
+
+  // Stage lighting: brightness drifts gently up and down over time (mimics
+  // unstable industrial power) instead of sitting at one fixed darkness.
+  // Two incommensurate low-frequency sines combined (a single one reads too
+  // mechanical/regular) — amplitude is deliberately small and clamped so it
+  // can NEVER go fully black, blow out to white, or make the player/boss
+  // hard to see; and it's applied as its own screen-space overlay (see
+  // draw()), entirely independent of the boss-intro FLASH effect, so the
+  // two never visually interfere.
+  function getAmbientDarkenAlpha(now) {
+    const t = now / 1000;
+    const w1 = Math.sin(t * (2 * Math.PI / 23));
+    const w2 = Math.sin(t * (2 * Math.PI / 37) + 1.7);
+    const combined = w1 * 0.6 + w2 * 0.4; // roughly within [-1, 1]
+    const alpha = 0.22 + combined * 0.08; // drifts around the old fixed 0.22
+    return Math.max(0.12, Math.min(0.32, alpha));
+  }
+
+  function drawExitZone(now) {
+    if (!worldScrollUnlocked()) return;
+    const e = exitWorldPos();
+    const pulse = 0.5 + 0.5 * Math.sin(now / 260);
+    ctx.save();
+    ctx.strokeStyle = `rgba(140, 230, 190, ${0.55 + 0.3 * pulse})`;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(e.x - EXIT_ZONE_W / 2, e.y - EXIT_ZONE_H / 2, EXIT_ZONE_W, EXIT_ZONE_H);
+    ctx.fillStyle = 'rgba(150, 235, 200, 0.9)';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('EXIT', e.x, e.y + 7);
+    ctx.restore();
+  }
 
   // ---------- Explosive barrels ----------
   // Stage prop / destructible object, not an enemy: shoot one and it
@@ -1219,6 +1449,14 @@
   }
 
   function updateAutoAim(now) {
+    if (now < aimDoubleTapLockUntil) {
+      // A double-tap nearest-target snap is locked in — keep showing the
+      // snapped angle (and its red-reticle feedback) exactly as set,
+      // rather than recomputing anything from the (possibly released) stick.
+      autoAimActive = true;
+      autoAimTargetIsBoss = aimDoubleTapTargetIsBoss;
+      return;
+    }
     autoAimActive = false;
     autoAimTargetIsBoss = false;
     if (!aimStickActive) {
@@ -1276,8 +1514,10 @@
     player.aimOffset = 0;
     player.dashing = false;
     player.dashBuffered = false;
+    player.bufferedDashAngle = null;
     player.dashChainCount = 0;
     player.facingLockUntil = 0;
+    player.knockbackUntil = 0;
     player.lastActivityAt = performance.now();
     player.relaxed = false;
 
@@ -1288,6 +1528,13 @@
     boss.spawned = false;
     boss.state = 'inactive';
     boss.hp = BOSS_HP_MAX;
+
+    // Stage world/camera/EXIT (PART 21-29) — a RESTART or mode switch always
+    // returns to the first/default stage with the world fully closed back up.
+    currentStageIndex = 0;
+    cameraY = 0;
+    stageTransition.active = false;
+    stageTransition.phase = null;
 
     modeStartTime = performance.now();
     spawnBarrels(2 + Math.floor(Math.random() * 3)); // 2-4
@@ -1326,6 +1573,11 @@
 
   document.getElementById('mode-boss-btn').addEventListener('click', () => startMode('boss'));
   document.getElementById('mode-training-btn').addEventListener('click', () => startMode('training'));
+  // Restarts whichever mode is currently selected, from scratch — startMode()
+  // already does a full resetModeState() (player/boss/HP/bullets/blade
+  // projectiles/barrels/cinematic+milestone flags/DASH state/AUTO AIM/
+  // explosions), so restarting is just re-entering the same mode.
+  document.getElementById('mode-restart-btn').addEventListener('click', () => startMode(gameState.mode));
   document.getElementById('mode-resume-btn').addEventListener('click', () => {
     gameState.paused = false;
     hideModeMenu();
@@ -1361,11 +1613,67 @@
     actionStickKnob.style.transform = `translate(${nx * maxR * 0.7}px, ${ny * maxR * 0.7}px)`;
   }
 
+  // MOVE STICK double-tap DASH: pressing a clear direction on the stick
+  // twice quickly triggers a DASH that way, on top of the DASH button
+  // (kept as a fallback/alternate input, not replaced). Guards against
+  // firing during ordinary play: (1) TIME — the two presses must land
+  // within MOVE_DASH_DOUBLE_TAP_WINDOW_MS of each other; (2) POSITION/
+  // MAGNITUDE — a press near the stick's center never counts (it also
+  // resets the streak, so a deliberate re-center doesn't leave a stale
+  // half-double-tap waiting to misfire on the next real press); (3)
+  // VECTOR SIMILARITY — the two presses' angles must be within
+  // MOVE_DASH_ANGLE_TOLERANCE of each other, so pressing e.g. up then
+  // right in quick succession is just two separate moves, not a dash.
+  const MOVE_DASH_DOUBLE_TAP_WINDOW_MS = 320;
+  const MOVE_DASH_MIN_MAGNITUDE_FRAC = 0.55; // fraction of the stick's radius
+  const MOVE_DASH_ANGLE_TOLERANCE = 40 * Math.PI / 180;
+  let lastMoveTapAt = -Infinity;
+  let lastMoveTapAngle = null;
+
+  function angleDelta(a, b) {
+    let d = a - b;
+    d = ((d + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    return Math.abs(d);
+  }
+
+  function tryMoveStickDoubleTapDash(now, dx, dy, maxR) {
+    const dist = Math.hypot(dx, dy);
+    if (dist < maxR * MOVE_DASH_MIN_MAGNITUDE_FRAC) {
+      lastMoveTapAt = -Infinity;
+      lastMoveTapAngle = null;
+      return;
+    }
+    const angle = Math.atan2(dy, dx);
+    if (
+      lastMoveTapAngle !== null &&
+      (now - lastMoveTapAt) <= MOVE_DASH_DOUBLE_TAP_WINDOW_MS &&
+      angleDelta(angle, lastMoveTapAngle) <= MOVE_DASH_ANGLE_TOLERANCE
+    ) {
+      // Face the dash's nearest cardinal immediately (for the sprite and
+      // for whatever direction the player ends up in afterward); the
+      // actual dash travel still uses the full-precision diagonal angle.
+      setBaseDir(angleToBucket(angle));
+      requestDash(now, angle);
+      lastMoveTapAt = -Infinity;
+      lastMoveTapAngle = null; // consumed — a 3rd tap starts a fresh pair, not an immediate re-trigger
+      return;
+    }
+    lastMoveTapAt = now;
+    lastMoveTapAngle = angle;
+  }
+
   actionStickZone.addEventListener('touchstart', (e) => {
     e.preventDefault();
     if (actionStickTouchId !== null) return;
     const t = e.changedTouches[0];
     actionStickTouchId = t.identifier;
+    const rect = actionStickZone.getBoundingClientRect();
+    tryMoveStickDoubleTapDash(
+      performance.now(),
+      t.clientX - (rect.left + rect.width / 2),
+      t.clientY - (rect.top + rect.height / 2),
+      rect.width / 2
+    );
     handleActionStickMove(t.clientX, t.clientY);
   }, { passive: false });
 
@@ -1391,14 +1699,114 @@
   // ---------- AIM STICK (aim angle only, does not move the character) ----------
   const aimStickZone = document.getElementById('aim-stick-zone');
   const aimStickKnob = document.getElementById('aim-stick-knob');
+  const aimStickSector = document.getElementById('aim-stick-sector');
+
+  // Colors the AIM STICK's own ±45deg allowed wedge (relative to the
+  // player's CURRENT facing) as a translucent sector, so it's visually
+  // obvious which angles are actually reachable before even touching the
+  // stick. Recomputed only when baseDir changes (see forceSetBaseDir()),
+  // not every frame. CSS conic-gradient's 0deg points up and increases
+  // clockwise, while BASE_ANGLE's 0 points right and increases clockwise
+  // too (atan2 convention) — so a game-angle of G maps to conic-angle
+  // G+90; the highlighted arc is exactly the same ±HALF_RANGE band
+  // clampToHalfRange() already enforces for real aim input.
+  function updateAimSectorOverlay() {
+    const gameDeg = BASE_ANGLE[player.baseDir] * 180 / Math.PI;
+    const conicCenter = gameDeg + 90;
+    const halfDeg = HALF_RANGE * 180 / Math.PI;
+    const from = conicCenter - halfDeg;
+    aimStickSector.style.background =
+      `conic-gradient(from ${from}deg at 50% 50%, rgba(120,190,255,0.4) 0deg ${halfDeg * 2}deg, transparent ${halfDeg * 2}deg 360deg)`;
+  }
+  updateAimSectorOverlay(); // initial paint for the default baseDir
+
   let aimStickTouchId = null;
   let aimStickMouseDown = false;
   let aimStickActive = false; // whether to draw the dotted prediction line
-  const AIM_DEADZONE_PX = 6;
+  const AIM_DEADZONE_PX = 3; // reduced from 6 — just enough to ignore a resting thumb's tremor
+
+  // Double-tap the AIM STICK's CENTER -> snap to the nearest valid AUTO AIM
+  // target (by distance from the player, not screen position). The snap
+  // survives the tap's own touchend (which would otherwise immediately
+  // zero it back to center) for AIM_DOUBLE_TAP_LOCK_MS, so the player can
+  // lift their finger and press FIRE separately and still fire along the
+  // snapped angle — see aimStickReset() and updateAutoAim().
+  const AIM_DOUBLE_TAP_WINDOW_MS = 350;
+  const AIM_DOUBLE_TAP_CENTER_PX = 24;
+  const AIM_DOUBLE_TAP_LOCK_MS = 1500;
+  let lastAimTapAt = -Infinity;
+  let lastAimTapWasCenter = false;
+  let aimDoubleTapLockUntil = 0;
+  let aimDoubleTapTargetIsBoss = false;
+
+  function getNearestAutoAimCandidate() {
+    // Same target universe as the existing drag-to-snap AUTO AIM: the boss
+    // (its weak point takes priority while DEFENSE is active, same as
+    // elsewhere), or any alive barrel — excluding a boss that's dead or
+    // mid-cinematic. Distance is measured from the PLAYER, not the stick
+    // or reticle, since this is a deliberate "snap to whatever is
+    // actually closest to me" gesture, not a proximity-to-cursor magnet.
+    const candidates = [];
+    if (boss.spawned && !bossIsInCinematic()) {
+      if (boss.state === 'defense') {
+        const wp = getWeakPointScreenPos(boss.defenseDir);
+        candidates.push({ x: wp ? wp.x : boss.x, y: wp ? wp.y : boss.y, isBoss: true });
+      } else {
+        candidates.push({ x: boss.x, y: boss.y, isBoss: true });
+      }
+    }
+    for (const b of barrels) {
+      if (b.alive) candidates.push({ x: b.x, y: b.y, isBoss: false });
+    }
+    let best = null, bestDist = Infinity;
+    for (const c of candidates) {
+      const d = Math.hypot(c.x - player.x, c.y - player.y);
+      if (d < bestDist) { bestDist = d; best = c; }
+    }
+    return best;
+  }
+
+  function performNearestAutoAimSnap(now) {
+    const target = getNearestAutoAimCandidate();
+    if (!target) return;
+    const center = BASE_ANGLE[player.baseDir];
+    const angle = Math.atan2(target.y - player.y, target.x - player.x);
+    const offset = clampToHalfRange(angle, center);
+    player.aimOffsetRaw = offset;
+    player.aimOffset = offset;
+    aimDoubleTapLockUntil = now + AIM_DOUBLE_TAP_LOCK_MS;
+    aimDoubleTapTargetIsBoss = target.isBoss;
+    aimStickActive = true;
+    const rect = aimStickZone.getBoundingClientRect();
+    const maxR = rect.width / 2;
+    const finalAngle = center + offset;
+    aimStickKnob.style.transform = `translate(${Math.cos(finalAngle) * maxR * 0.7}px, ${Math.sin(finalAngle) * maxR * 0.7}px)`;
+  }
+
+  // Returns true if this press completed a double-tap (and already
+  // performed the snap) — the caller should skip normal drag handling.
+  function tryAimDoubleTap(now, distFromCenter) {
+    const isCenter = distFromCenter <= AIM_DOUBLE_TAP_CENTER_PX;
+    if (isCenter && lastAimTapWasCenter && (now - lastAimTapAt) <= AIM_DOUBLE_TAP_WINDOW_MS) {
+      performNearestAutoAimSnap(now);
+      lastAimTapAt = -Infinity;
+      lastAimTapWasCenter = false;
+      return true;
+    }
+    lastAimTapAt = now;
+    lastAimTapWasCenter = isCenter;
+    return false;
+  }
 
   function aimStickReset() {
     aimStickTouchId = null;
     aimStickMouseDown = false;
+    if (performance.now() < aimDoubleTapLockUntil) {
+      // A double-tap snap is still locked in — keep the reticle/aim line
+      // showing the snapped angle instead of zeroing it on release.
+      aimStickActive = true;
+      return;
+    }
     aimStickActive = false;
     // Releasing the stick always drops the aim back to the base direction's
     // center — an un-aimed shot must never fire along a stale angle.
@@ -1445,6 +1853,9 @@
     const t = e.changedTouches[0];
     aimStickTouchId = t.identifier;
     aimStickActive = true;
+    const rect = aimStickZone.getBoundingClientRect();
+    const distFromCenter = Math.hypot(t.clientX - (rect.left + rect.width / 2), t.clientY - (rect.top + rect.height / 2));
+    if (tryAimDoubleTap(performance.now(), distFromCenter)) return; // snap already applied
     handleAimStickMove(t.clientX, t.clientY);
   }, { passive: false });
 
@@ -1471,6 +1882,9 @@
   aimStickZone.addEventListener('mousedown', (e) => {
     aimStickMouseDown = true;
     aimStickActive = true;
+    const rect = aimStickZone.getBoundingClientRect();
+    const distFromCenter = Math.hypot(e.clientX - (rect.left + rect.width / 2), e.clientY - (rect.top + rect.height / 2));
+    if (tryAimDoubleTap(performance.now(), distFromCenter)) return;
     handleAimStickMove(e.clientX, e.clientY);
   });
   window.addEventListener('mousemove', (e) => {
@@ -1653,6 +2067,15 @@
     bossIsInCinematic, checkBossHpMilestones, startBossThreshold, startBossDying,
     BOSS_PHASE_THRESHOLDS, INTRO_TOTAL_MS, THRESHOLD_CINEMATIC_MS, DYING_DURATION_MS,
     DEFENSE_GUARD_BREAK_HITS, BARREL_EXPLOSION_RADIUS, BOSS_HURT_RADIUS,
+    // Debug/verification only — stage world/camera/EXIT (PART 21-29).
+    STAGES,
+    get currentStageIndex() { return currentStageIndex; },
+    set currentStageIndex(v) { currentStageIndex = v; }, // debug/verification only
+    get cameraY() { return cameraY; },
+    get worldExtraAbove() { return worldExtraAbove; },
+    worldScrollUnlocked, exitWorldPos, beginStageTransition,
+    get stageTransition() { return stageTransition; },
+    getAmbientDarkenAlpha,
   };
 
   // ---------- Main loop ----------
@@ -1660,6 +2083,15 @@
 
   function update(dt, now) {
     if (gameState.paused) return; // PAUSE freezes everything: no movement, AI, bullets, timers
+    updateStageTransition(now); // always ticks, even while frozen below
+    if (stageTransition.active) {
+      // Freezes player input/movement/barrels for the whole short fade
+      // sequence, same spirit as the INTRO freeze below — updateBoss still
+      // runs so a freshly-spawned boss's own intro timer can start advancing
+      // during the fade-in, exactly like a normal BOSS MODE start.
+      updateBoss(dt, now);
+      return;
+    }
     if (boss.state === 'intro') {
       // The BOSS MODE intro cinematic freezes player movement/FIRE/DASH/AIM,
       // barrels, and the boss's own combat AI entirely — only the intro's
@@ -1688,13 +2120,30 @@
     player.moving = moving && !player.dashing;
 
     updateDash(now); // may override player.x for the duration of a DASH
-    if (!player.dashing && moving) {
+    // Brief movement suppression right after a weak-point forced-counter
+    // KNOCKBACK — deliberately short (KNOCKBACK_SUPPRESS_MS), not a full
+    // stun; facing/aim/fire are all still available during it.
+    if (!player.dashing && moving && now >= player.knockbackUntil) {
       player.x += vx * player.speed * dt;
       player.y += vy * player.speed * dt;
     }
 
     // Clamp to screen bounds (keep character fully visible)
     clampPlayerToScreen();
+
+    // Camera + EXIT (PART 21-29) — only meaningful once worldScrollUnlocked()
+    // (boss fully dead, portrait, BOSS MODE, not already mid-transition).
+    // Reaching the exit is never automatic on boss death: the player must
+    // physically walk into this zone themselves.
+    if (worldScrollUnlocked()) {
+      cameraY = Math.max(-worldExtraAbove, Math.min(0, player.y - H * 0.6));
+      const exit = exitWorldPos();
+      if (Math.abs(player.x - exit.x) < EXIT_ZONE_W / 2 && Math.abs(player.y - exit.y) < EXIT_ZONE_H / 2) {
+        beginStageTransition(now);
+      }
+    } else {
+      cameraY = 0;
+    }
 
     // Firing — direction comes from getAimAngle() (AIM STICK offset applied
     // to the current base facing), never from movement
@@ -1722,7 +2171,7 @@
       const b = bullets[i];
       b.x += b.vx * dt;
       b.y += b.vy * dt;
-      if (b.x < -20 || b.x > W + 20 || b.y < -20 || b.y > H + 20) {
+      if (b.x < -20 || b.x > W + 20 || b.y < cameraY - 20 || b.y > cameraY + H + 20) {
         bullets.splice(i, 1);
         continue;
       }
@@ -1864,34 +2313,44 @@
     const shake = getScreenShakeOffset(now);
     ctx.translate(shake.x, shake.y);
 
-    // background
-    if (stageBgReady && H >= W) {
-      // Portrait viewport: draw the lab-floor stage image "cover"-style —
-      // uniformly scaled (never stretched on one axis only) so it fills
-      // the screen, center-cropping only the minimum needed on one axis.
-      const iw = stageBg.naturalWidth, ih = stageBg.naturalHeight;
+    // ---- World content (PART 21-29): everything below is drawn in WORLD
+    // space, shifted by the vertical scroll camera. Before the boss is
+    // fully dead, cameraY is always 0, so this is pixel-identical to the
+    // original single-screen rendering. ----
+    const stage = currentStage();
+    const stageOn = stage.ready && H >= W;
+    ctx.save();
+    ctx.translate(0, -cameraY);
+
+    if (stageOn) {
+      // Portrait viewport: draw the stage floor image "cover"-style —
+      // uniformly scaled (never stretched on one axis only) so it fills the
+      // screen, center-cropping only the minimum needed on one axis. Tiled
+      // vertically (same real pixels, no distortion) to also cover the
+      // extra world space above the original screen once unlocked — this
+      // is what gives the world its extra vertical extent post-victory.
+      const iw = stage.img.naturalWidth, ih = stage.img.naturalHeight;
       const scale = Math.max(W / iw, H / ih);
       const dw = iw * scale, dh = ih * scale;
-      const dx = (W - dw) / 2, dy = (H - dh) / 2;
-      ctx.drawImage(stageBg, dx, dy, dw, dh);
-      // Light darkening overlay only, drawn on the canvas — the source
-      // image file itself is never modified — so the character, bullets
-      // and aim reticle stay legible against the bright metal floor.
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
-      ctx.fillRect(0, 0, W, H);
+      const dx = (W - dw) / 2;
+      const baseDy = (H - dh) / 2;
+      const topLimit = -worldExtraAbove - dh;
+      for (let y = baseDy; y > topLimit; y -= dh) {
+        ctx.drawImage(stage.img, dx, y, dw, dh);
+      }
     } else {
       // Landscape (or image not yet loaded): unchanged original background.
       ctx.fillStyle = '#131416';
-      ctx.fillRect(0, 0, W, H);
+      ctx.fillRect(0, cameraY, W, H);
 
       // subtle ground grid for spatial reference (minimal, non-intrusive)
       ctx.strokeStyle = 'rgba(255,255,255,0.03)';
       ctx.lineWidth = 1;
       const grid = 64;
       for (let gx = (W / 2) % grid; gx < W; gx += grid) {
-        ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(gx, cameraY); ctx.lineTo(gx, cameraY + H); ctx.stroke();
       }
-      for (let gy = (H / 2) % grid; gy < H; gy += grid) {
+      for (let gy = cameraY - (((cameraY % grid) + grid) % grid); gy < cameraY + H; gy += grid) {
         ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
       }
     }
@@ -1927,6 +2386,17 @@
 
     drawBossHud(now);
     drawBossFeedback(now);
+    drawExitZone(now); // no-op until worldScrollUnlocked() (boss fully dead)
+
+    ctx.restore(); // undo the camera translate — everything below is screen-space
+
+    // Ambient stage lighting: a slow, gentle brightness drift instead of a
+    // fixed darkening amount — screen-space and computed independently of
+    // the boss-intro FLASH below, so the two can never wash each other out.
+    if (stageOn) {
+      ctx.fillStyle = `rgba(0, 0, 0, ${getAmbientDarkenAlpha(now)})`;
+      ctx.fillRect(0, 0, W, H);
+    }
 
     if (now < playerHitFlashUntil) {
       ctx.fillStyle = 'rgba(220, 30, 30, 0.18)';
@@ -1948,6 +2418,14 @@
           break;
         }
       }
+    }
+
+    // Stage transition fade (PART 26) — a short, simple fade, never a
+    // long loading-style sequence; screen-space, on top of everything.
+    const stageFadeAlpha = getStageTransitionOverlayAlpha(now);
+    if (stageFadeAlpha > 0) {
+      ctx.fillStyle = `rgba(6, 8, 10, ${stageFadeAlpha})`;
+      ctx.fillRect(0, 0, W, H);
     }
 
     ctx.restore(); // matches the shake-translate ctx.save() at the top of this function
@@ -1985,17 +2463,26 @@
 
   // ---------- Boss rendering ----------
   function bossFrameName(now) {
+    if (boss.state === 'preattack') {
+      // SOUTH/EAST/WEST only — NORTH never enters this state (see
+      // updateBoss()'s CHASE->PRE_ATTACK/ATTACK branch).
+      const key = DIR_TO_BOSS_KEY[boss.dir];
+      if (key === 'south') return 'preattack_south';
+      if (key === 'east') return 'preattack_east';
+      if (key === 'west') return 'preattack_west';
+      return 'attack_north'; // unreachable in practice — safe fallback
+    }
     if (boss.state === 'attack') {
       // boss.dir is set to face the player at the exact moment ATTACK
       // begins (see the CHASE->ATTACK and GUARD BREAK->ATTACK transitions),
       // so it's already "where the player was relative to the boss when
-      // the attack started" — exactly what picks the sprite here. NORTH/
-      // SOUTH get their own dedicated art; EAST/WEST keep the existing
-      // generic 'attack' render (no dedicated art for those directions yet).
+      // the attack started" — exactly what picks the sprite here. Each
+      // direction has its own dedicated release-moment render now.
       const atkKey = DIR_TO_BOSS_KEY[boss.dir];
       if (atkKey === 'north') return 'attack_north';
-      if (atkKey === 'south') return 'attack_south';
-      return 'attack';
+      if (atkKey === 'south') return 'attack_south_release';
+      if (atkKey === 'east') return 'attack_east_release';
+      return 'attack_west_release';
     }
     // DEFENSE always shows the direction the attack came FROM
     // (boss.defenseDir), not boss.dir — see applyBodyHitToBoss().
@@ -2033,13 +2520,19 @@
     if (boss.moving && DIR_TO_BOSS_KEY[boss.dir] === 'north') {
       bounce = Math.sin(now / 120) * NORTH_BOUNCE_AMPLITUDE;
     }
+    // Per-frame visual-only scale — never touches the hurtbox/hitbox, only
+    // the drawn size. SOUTH WALK reads a little small next to the other
+    // directions (110%); PRE_ATTACK's reused older art reads a little
+    // small for its dramatic telegraph moment (113%). Both scale up from
+    // the sprite's BOTTOM edge (feet) so the boss never visibly jumps or
+    // grows from its center when the frame changes — only the top extends.
+    let scale = 1;
+    if (name === 'walk_south_1' || name === 'walk_south_2') scale = SOUTH_WALK_SCALE;
+    else if (name === 'preattack_south' || name === 'preattack_east' || name === 'preattack_west') scale = PRE_ATTACK_SCALE;
     if (img && img.complete && img.naturalWidth > 0) {
-      ctx.drawImage(
-        img,
-        boss.x - BOSS_DRAW_W / 2,
-        boss.y - BOSS_DRAW_H / 2 + bounce,
-        BOSS_DRAW_W, BOSS_DRAW_H
-      );
+      const w = BOSS_DRAW_W * scale, h = BOSS_DRAW_H * scale;
+      const bottomY = boss.y + BOSS_DRAW_H / 2 + bounce;
+      ctx.drawImage(img, boss.x - w / 2, bottomY - h, w, h);
     }
   }
 

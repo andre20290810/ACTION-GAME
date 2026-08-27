@@ -1,0 +1,92 @@
+{
+  "attack_south_release": {
+    "source": "south_attack_raw.png",
+    "source_canvas": [
+      1076,
+      1866
+    ],
+    "source_bbox": [
+      1,
+      3,
+      1074,
+      1864
+    ],
+    "source_center_x": 537.5,
+    "source_foot_y": 1864,
+    "scale": 0.4691026329930145,
+    "paste_xy": [
+      98,
+      26
+    ],
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      700,
+      920
+    ],
+    "target_height_ref": 873,
+    "anchor": [
+      350,
+      900
+    ]
+  },
+  "attack_west_release": {
+    "source": "west_attack_raw.png",
+    "source_canvas": [
+      1156,
+      1795
+    ],
+    "source_bbox": [
+      1,
+      2,
+      1154,
+      1793
+    ],
+    "source_center_x": 577.5,
+    "source_foot_y": 1793,
+    "scale": 0.48743718592964824,
+    "paste_xy": [
+      69,
+      26
+    ],
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      700,
+      920
+    ],
+    "target_height_ref": 873,
+    "anchor": [
+      350,
+      900
+    ]
+  },
+  "attack_east_release": {
+    "source": "east_attack_raw.png",
+    "source_canvas": [
+      1242,
+      1654
+    ],
+    "source_bbox": [
+      1,
+      2,
+      1240,
+      1651
+    ],
+    "source_center_x": 620.5,
+    "source_foot_y": 1651,
+    "scale": 0.5294117647058824,
+    "paste_xy": [
+      22,
+      26
+    ],
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      700,
+      920
+    ],
+    "target_height_ref": 873,
+    "anchor": [
+      350,
+      900
+    ]
+  }
+}

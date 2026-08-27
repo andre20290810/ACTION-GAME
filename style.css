@@ -56,13 +56,14 @@ html, body {
   }
 }
 
-/* Left column: AIM STICK stacked directly above ACTION STICK, both flush
-   to the left edge. Right column: DASH stacked directly above FIRE, both
-   flush to the right edge. Each is a flex column so the gap between the
-   two stacked zones is never a guessed fixed pixel offset (that bug bit
-   the old FIRE/DASH-row layout once already — a sibling's real rendered
-   size didn't match the assumed max, and it overlapped ACTION STICK).
-   Flexbox lays out real boxes next to each other, so it can't happen. */
+/* Left column: DASH stacked directly above ACTION STICK, both flush to the
+   left edge. Right column: AIM STICK stacked directly above FIRE, both
+   flush to the right edge (AIM sits right above the button it fires from).
+   Each is a flex column so the gap between the two stacked zones is never
+   a guessed fixed pixel offset (that bug bit the old FIRE/DASH-row layout
+   once already — a sibling's real rendered size didn't match the assumed
+   max, and it overlapped ACTION STICK). Flexbox lays out real boxes next
+   to each other, so it can't happen. */
 #left-stick-col {
   position: absolute;
   left: max(16px, env(safe-area-inset-left));
@@ -131,14 +132,19 @@ html, body {
   touch-action: none;
 }
 
+/* Enlarged from the previous 34vw/190/130 — both the visible circle and
+   the touch area grow together here (unlike the other 3 controls, which
+   only shrink visually while keeping their old hit area) since the goal
+   this round is specifically to make AIM easier to use, not just smaller
+   on screen. Close to ACTION STICK's own footprint now. */
 #aim-stick-zone {
   position: relative;
-  width: 34vw;
-  height: 34vw;
-  max-width: 190px;
-  max-height: 190px;
-  min-width: 130px;
-  min-height: 130px;
+  width: 38vw;
+  height: 38vw;
+  max-width: 220px;
+  max-height: 220px;
+  min-width: 150px;
+  min-height: 150px;
   pointer-events: auto;
   touch-action: none;
 }
@@ -149,6 +155,18 @@ html, body {
   border-radius: 50%;
   background: rgba(80, 160, 255, 0.08);
   border: 2px solid rgba(120, 190, 255, 0.28);
+  touch-action: none;
+  overflow: hidden; /* clips #aim-stick-sector to the circle */
+}
+
+/* Highlights the ±45deg wedge currently reachable for the player's facing
+   — see updateAimSectorOverlay() in game.js, which sets the actual
+   conic-gradient background reflecting the real clampToHalfRange() logic.
+   Sits behind the knob, inside the same circle as the base. */
+#aim-stick-sector {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
   touch-action: none;
 }
 
@@ -256,7 +274,10 @@ html, body {
    for the original sizes, so this only applies to landscape. */
 @media (orientation: landscape) {
   #action-stick-zone { width: 20vw; height: 20vw; max-width: 168px; max-height: 168px; min-width: 108px; min-height: 108px; }
-  #aim-stick-zone { width: 16vw; height: 16vw; max-width: 128px; max-height: 128px; min-width: 92px; min-height: 92px; }
+  /* Enlarged along with the portrait size above (AIM is now paired with
+     FIRE on the right column, not ACTION) — aim(148)+gap(8)+fire(128)=284,
+     comfortably inside a ~390px-tall landscape screen with PAUSE clearance. */
+  #aim-stick-zone { width: 19vw; height: 19vw; max-width: 148px; max-height: 148px; min-width: 106px; min-height: 106px; }
   #fire-zone { width: 16vw; height: 16vw; max-width: 128px; max-height: 128px; min-width: 92px; min-height: 92px; }
   #dash-zone { width: 11vw; height: 11vw; max-width: 82px; max-height: 82px; min-width: 58px; min-height: 58px; }
   #left-stick-col, #right-button-col { gap: 8px; }
@@ -345,6 +366,9 @@ html, body {
 }
 .mode-btn:active {
   background: rgba(150, 200, 230, 0.22);
+}
+#mode-restart-btn {
+  border-color: rgba(230, 190, 120, 0.4);
 }
 #mode-resume-btn {
   border-color: rgba(150, 220, 170, 0.4);
