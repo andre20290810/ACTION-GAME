@@ -90,6 +90,22 @@
   const BOSS_DRAW_H = SPRITE_DRAW_H * 1.5; // ~1.5x player height
   const BOSS_DRAW_W = BOSS_DRAW_H * (BOSS_CANVAS_W / BOSS_CANVAS_H);
 
+  // ---------- Explosive barrel (game object, supplied image) ----------
+  // The attached render used as-is (real alpha transparency already
+  // present, no crop/regeneration applied) — see
+  // assets/objects/source/explosive_barrel_source.png for the untouched
+  // original. Drawn at a deliberately small scale (not the image's native
+  // 512x512) so it reads as a small stage prop, never rivaling the player
+  // or boss in size.
+  const barrelImg = new Image();
+  barrelImg.src = 'assets/objects/explosive_barrel.png';
+  // Full draw box (including the image's own transparent margin); the
+  // visible drum within it ends up ~26% of the player's height, inside
+  // the requested 20-30% band.
+  const BARREL_DRAW_H = SPRITE_DRAW_H * 0.30;
+  const BARREL_HITBOX_RADIUS = 12; // scaled down to match the smaller draw size
+  const BARREL_EXPLOSION_RADIUS = 100; // area-effect range, not tied to the sprite size
+
   // ---------- Direction bucket mapping (ACTION STICK -> base facing) ----------
   // angle: 0 = right, positive = clockwise (down), atan2(dy, dx), dy-down positive
   function angleToBucket(angle) {
@@ -124,7 +140,8 @@
     y: 0,
     speed: 240, // px/sec
     baseDir: 'down',   // discrete sprite bucket, set only by ACTION STICK
-    aimOffset: 0,      // radians relative to BASE_ANGLE[baseDir], within +-HALF_RANGE
+    aimOffsetRaw: 0,   // radians relative to BASE_ANGLE[baseDir], within +-HALF_RANGE — raw AIM STICK input
+    aimOffset: 0,      // effective offset actually used to fire/draw — aimOffsetRaw, lightly pulled toward a nearby AUTO AIM target
     moving: false,
     // DASH: horizontal-only burst move, independent of baseDir/aim.
     lastHorizontalDir: 'right', // 'right' | 'left' — last non-zero horizontal ACTION STICK input
@@ -133,7 +150,7 @@
     dashStartAt: -Infinity,
     dashFromX: 0,
     dashDistance: 0,
-    dashCooldownUntil: 0,
+    dashBuffered: false, // a DASH press received near the end of the current DASH
     // RELAXED IDLE (SOUTH only): tracks how long all inputs have been idle.
     lastActivityAt: performance.now(),
     relaxed: false,
@@ -160,6 +177,7 @@
     player.baseDir = dir;
     // The base facing just changed — snap aim back to its center immediately
     // rather than carrying over an offset computed for the old direction.
+    player.aimOffsetRaw = 0;
     player.aimOffset = 0;
     aimStickKnob.style.transform = 'translate(0px, 0px)';
   }
@@ -173,12 +191,12 @@
 
   // ---------- DASH (right/left only) ----------
   const DASH_DURATION_MS = 800;
-  const DASH_COOLDOWN_MS = 1200;
   const DASH_DISTANCE_FRAC = 0.20; // 20% of screen width — within the 15-25% target
+  const DASH_INPUT_BUFFER_MS = 150; // a press this close to DASH's own end still queues
   const RELAXED_IDLE_DELAY_MS = 400;
 
   function tryStartDash(now) {
-    if (player.dashing || now < player.dashCooldownUntil) return;
+    if (player.dashing) return;
     // Direction priority per spec: current horizontal ACTION STICK bucket
     // if there is one, otherwise the last horizontal direction recorded —
     // NORTH/SOUTH facing never blocks a DASH.
@@ -190,6 +208,22 @@
     player.dashFromX = player.x;
     player.dashDistance = W * DASH_DISTANCE_FRAC;
     player.lastActivityAt = now;
+  }
+
+  // No extra cooldown after DASH — the next DASH is available the instant
+  // the current one ends. A press can't multi-trigger the same DASH (it's
+  // just ignored while player.dashing), but a press landing in the last
+  // DASH_INPUT_BUFFER_MS of the current DASH is remembered and fired the
+  // moment this one ends, so mashing the button doesn't lose the input.
+  function requestDash(now) {
+    if (!player.dashing) {
+      tryStartDash(now);
+      return;
+    }
+    const remaining = DASH_DURATION_MS - (now - player.dashStartAt);
+    if (remaining <= DASH_INPUT_BUFFER_MS) {
+      player.dashBuffered = true;
+    }
   }
 
   // Fast burst then a short settle, not a constant 0.8s slide: full travel
@@ -207,7 +241,9 @@
     const elapsed = now - player.dashStartAt;
     if (elapsed >= DASH_DURATION_MS) {
       player.dashing = false;
-      player.dashCooldownUntil = now + DASH_COOLDOWN_MS;
+      const buffered = player.dashBuffered;
+      player.dashBuffered = false;
+      if (buffered) tryStartDash(now); // chain immediately, no cooldown gap
       return;
     }
     const progress = dashTravelProgress(elapsed / DASH_DURATION_MS);
@@ -229,8 +265,8 @@
   // (north/south/east/west), chosen from the boss's movement vector the
   // same way the player's ACTION STICK picks a direction bucket
   // (angleToBucket + BASE_ANGLE keys, mapped to the boss's asset names).
-  const BOSS_HP_MAX = 1000;
-  const BOSS_SPEED = 130; // px/sec — slower than the player's 240
+  const BOSS_HP_MAX = 5000; // 5x the previous 1000
+  const BOSS_SPEED = 78; // px/sec — 60% of the previous 130 (was too fast to react to)
   const BOSS_SPAWN_DELAY_MS = 5000;
   const BOSS_ATTACK_RANGE = 130; // distance at which CHASE -> ATTACK
   const BOSS_ATTACK_WINDUP_MS = 400;
@@ -340,8 +376,9 @@
   }
 
   function updateBoss(dt, now) {
+    if (gameState.mode !== 'boss') return; // TRAINING MODE never spawns a boss
     if (!boss.spawned) {
-      if (now - gameStartTime >= BOSS_SPAWN_DELAY_MS) spawnBoss(now);
+      if (now - modeStartTime >= BOSS_SPAWN_DELAY_MS) spawnBoss(now);
       return;
     }
     if (boss.state === 'dead') return;
@@ -497,6 +534,252 @@
     ctx.restore();
   }
 
+  // ---------- Game mode / PAUSE ----------
+  const gameState = {
+    mode: 'boss', // 'boss' | 'training'
+    paused: false, // game starts running in BOSS MODE, same as before PAUSE existed
+  };
+  let modeStartTime = performance.now();
+
+  // ---------- Explosive barrels ----------
+  // Stage prop / destructible object, not an enemy: shoot one and it
+  // explodes, damaging the boss if it's caught in the blast — a tactical
+  // option alongside straight gunfire, and (in TRAINING MODE) just a
+  // target to practice aim/AUTO AIM/DASH against.
+  const barrels = [];
+
+  function isNearUIZone(x, y) {
+    // Conservative rectangles around the bottom-left (ACTION STICK) and
+    // bottom-right (AIM STICK/FIRE/DASH) control clusters, sized generously
+    // since exact control geometry varies by orientation/viewport.
+    const bottomBand = Math.max(180, H * 0.32);
+    if (y < H - bottomBand) return false;
+    return x < Math.min(240, W * 0.42) || x > W - Math.min(260, W * 0.46);
+  }
+
+  function pickBarrelSpot() {
+    const marginX = BARREL_DRAW_H * 1.5;
+    const marginTop = H * 0.22; // stay clear of the boss's spawn band up top
+    const marginBottom = H * 0.30;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const x = marginX + Math.random() * (W - marginX * 2);
+      const y = marginTop + Math.random() * (H - marginTop - marginBottom);
+      if (isNearUIZone(x, y)) continue;
+      if (Math.hypot(x - W / 2, y - H / 2) < 70) continue; // player spawn
+      if (Math.hypot(x - W / 2, y - Math.max(BOSS_DRAW_H * 0.55, H * 0.16)) < 90) continue; // boss spawn
+      let tooClose = false;
+      for (const b of barrels) {
+        if (b.alive && Math.hypot(x - b.x, y - b.y) < BARREL_DRAW_H * 3) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      return { x, y };
+    }
+    // Fallback if 30 attempts all collided with something (very small screens)
+    return { x: W / 2 + (Math.random() - 0.5) * W * 0.5, y: H * 0.5 };
+  }
+
+  function spawnBarrels(count) {
+    barrels.length = 0;
+    for (let i = 0; i < count; i++) {
+      const spot = pickBarrelSpot();
+      barrels.push({ x: spot.x, y: spot.y, alive: true, respawnAt: 0 });
+    }
+  }
+
+  const explosions = [];
+  const EXPLOSION_DURATION_MS = 350;
+  const BARREL_DAMAGE = BULLET_DAMAGE * 15; // ~15 normal shots worth, per spec's 10-20x range
+  const TRAINING_RESPAWN_MIN_MS = 800, TRAINING_RESPAWN_MAX_MS = 1500;
+
+  function explodeBarrel(barrel, now) {
+    barrel.alive = false;
+    explosions.push({ x: barrel.x, y: barrel.y, startAt: now });
+    // Explosion damage bypasses DEFENSE entirely — a stage gimmick that
+    // works regardless of the boss's current state, unlike gunfire.
+    if (boss.spawned && boss.state !== 'dead' &&
+        Math.hypot(barrel.x - boss.x, barrel.y - boss.y) <= BARREL_EXPLOSION_RADIUS) {
+      applyExplosionDamageToBoss(BARREL_DAMAGE, now);
+    }
+    if (gameState.mode === 'training') {
+      barrel.respawnAt = now + TRAINING_RESPAWN_MIN_MS + Math.random() * (TRAINING_RESPAWN_MAX_MS - TRAINING_RESPAWN_MIN_MS);
+    }
+  }
+
+  function updateBarrels(now) {
+    for (const b of barrels) {
+      if (!b.alive && b.respawnAt && now >= b.respawnAt) {
+        const spot = pickBarrelSpot();
+        b.x = spot.x; b.y = spot.y; b.alive = true; b.respawnAt = 0;
+      }
+    }
+  }
+
+  function drawBarrel(b) {
+    if (!barrelImg.complete || barrelImg.naturalWidth === 0) return;
+    const aspect = barrelImg.naturalWidth / barrelImg.naturalHeight;
+    const h = BARREL_DRAW_H, w = h * aspect;
+    ctx.drawImage(barrelImg, b.x - w / 2, b.y - h / 2, w, h);
+  }
+
+  // Short white/yellow-core, orange/red-edge burst, then gone — a stage
+  // effect, not a persistent hazard.
+  function drawExplosion(e, now) {
+    const t = (now - e.startAt) / EXPLOSION_DURATION_MS;
+    if (t >= 1) return;
+    const r = 10 + t * 46;
+    const alpha = 1 - t;
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+    grad.addColorStop(0, `rgba(255,250,210,${alpha})`);
+    grad.addColorStop(0.45, `rgba(255,170,60,${alpha * 0.9})`);
+    grad.addColorStop(1, `rgba(200,40,20,0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function applyExplosionDamageToBoss(amount, now) {
+    if (!boss.spawned || boss.state === 'dead') return;
+    boss.hp = Math.max(0, boss.hp - amount);
+    if (boss.hp <= 0) {
+      boss.state = 'dead';
+      boss.deadAt = now;
+    }
+  }
+
+  // ---------- AUTO AIM ----------
+  // Manual AIM STICK aiming is always available; when the reticle (driven
+  // by the raw stick angle) comes within AUTO_AIM_RADIUS of a targetable
+  // object's target point, the effective aim is pulled a fraction of the
+  // way toward that point each frame (a gentle, releasable magnet, not a
+  // hard lock), and only while the player is actively holding the AIM
+  // STICK near it — never automatically without stick input. The pull is
+  // clamped through the exact same +-45 deg function as manual aim, so it
+  // can never point outside the current base-direction wedge.
+  const AUTO_AIM_RADIUS = 46; // screen px, around the reticle tip
+  const AUTO_AIM_SNAP_STRENGTH = 0.35; // fraction of remaining angle closed per frame
+  let autoAimActive = false;
+
+  function getAutoAimTargetPoint() {
+    // DEFENSE: the forehead weak point takes priority over the body — only
+    // fall back to the body center if the weak point itself isn't in range.
+    if (boss.spawned && boss.state === 'defense') {
+      const wp = getWeakPointScreenPos();
+      return { primary: wp, secondary: { x: boss.x, y: boss.y } };
+    }
+    if (boss.spawned && boss.state !== 'dead') {
+      return { primary: { x: boss.x, y: boss.y }, secondary: null };
+    }
+    return { primary: null, secondary: null };
+  }
+
+  function updateAutoAim(now) {
+    autoAimActive = false;
+    if (!aimStickActive) {
+      player.aimOffset = player.aimOffsetRaw;
+      return;
+    }
+
+    const center = BASE_ANGLE[player.baseDir];
+    const rawAngle = center + player.aimOffsetRaw;
+    const mx = player.x + Math.cos(rawAngle) * MUZZLE_DIST;
+    const my = player.y + Math.sin(rawAngle) * MUZZLE_DIST;
+    const tipX = mx + Math.cos(rawAngle) * AIM_LINE_LEN;
+    const tipY = my + Math.sin(rawAngle) * AIM_LINE_LEN;
+
+    let best = null, bestDist = AUTO_AIM_RADIUS;
+    const bossTargets = getAutoAimTargetPoint();
+    if (bossTargets.primary) {
+      const d = Math.hypot(tipX - bossTargets.primary.x, tipY - bossTargets.primary.y);
+      if (d < bestDist) { bestDist = d; best = bossTargets.primary; }
+      else if (bossTargets.secondary) {
+        const d2 = Math.hypot(tipX - bossTargets.secondary.x, tipY - bossTargets.secondary.y);
+        if (d2 < bestDist) { bestDist = d2; best = bossTargets.secondary; }
+      }
+    }
+    for (const b of barrels) {
+      if (!b.alive) continue;
+      const d = Math.hypot(tipX - b.x, tipY - b.y);
+      if (d < bestDist) { bestDist = d; best = { x: b.x, y: b.y }; }
+    }
+
+    if (best) {
+      const desiredAngle = Math.atan2(best.y - my, best.x - mx);
+      const desiredOffset = clampToHalfRange(desiredAngle, center);
+      player.aimOffset += (desiredOffset - player.aimOffset) * AUTO_AIM_SNAP_STRENGTH;
+      autoAimActive = true;
+    } else {
+      player.aimOffset = player.aimOffsetRaw;
+    }
+  }
+
+  // ---------- Mode select / PAUSE ----------
+  // Resets everything that belongs to "a run" — nothing from the previous
+  // mode (bullets, claw projectiles, explosions, boss state/HP, barrels,
+  // DASH state) is allowed to survive into the next one.
+  function resetModeState() {
+    resetPlayerPosition();
+    player.baseDir = 'down';
+    player.aimOffsetRaw = 0;
+    player.aimOffset = 0;
+    player.dashing = false;
+    player.dashBuffered = false;
+    player.lastActivityAt = performance.now();
+    player.relaxed = false;
+
+    bullets.length = 0;
+    clawProjectiles.length = 0;
+    explosions.length = 0;
+
+    boss.spawned = false;
+    boss.state = 'inactive';
+    boss.hp = BOSS_HP_MAX;
+
+    modeStartTime = performance.now();
+    spawnBarrels(2 + Math.floor(Math.random() * 3)); // 2-4
+  }
+
+  function startMode(mode) {
+    gameState.mode = mode;
+    resetModeState();
+    gameState.paused = false;
+    hideModeMenu();
+  }
+
+  function releaseAllHeldInputs() {
+    // So nothing stays "stuck held" across a pause and fires the instant
+    // the game resumes.
+    fireHeld = false;
+    fireButton.classList.remove('active');
+    actionStickReset();
+    aimStickReset();
+    dashButton.classList.remove('active');
+  }
+
+  const modeMenu = document.getElementById('mode-menu');
+  function showModeMenu() { modeMenu.classList.add('open'); }
+  function hideModeMenu() { modeMenu.classList.remove('open'); }
+
+  function pausePress(e) {
+    e.preventDefault();
+    gameState.paused = true;
+    releaseAllHeldInputs();
+    showModeMenu();
+  }
+  const pauseZone = document.getElementById('pause-zone');
+  pauseZone.addEventListener('touchstart', pausePress, { passive: false });
+  pauseZone.addEventListener('mousedown', pausePress);
+
+  document.getElementById('mode-boss-btn').addEventListener('click', () => startMode('boss'));
+  document.getElementById('mode-training-btn').addEventListener('click', () => startMode('training'));
+  document.getElementById('mode-resume-btn').addEventListener('click', () => {
+    gameState.paused = false;
+    hideModeMenu();
+  });
+
   // ---------- ACTION STICK (movement + base facing) ----------
   const actionStickZone = document.getElementById('action-stick-zone');
   const actionStickKnob = document.getElementById('action-stick-knob');
@@ -568,6 +851,7 @@
     aimStickActive = false;
     // Releasing the stick always drops the aim back to the base direction's
     // center — an un-aimed shot must never fire along a stale angle.
+    player.aimOffsetRaw = 0;
     player.aimOffset = 0;
     aimStickKnob.style.transform = 'translate(0px, 0px)';
   }
@@ -591,11 +875,13 @@
 
     const rawAngle = Math.atan2(dy, dx);
     const center = BASE_ANGLE[player.baseDir];
-    player.aimOffset = clampToHalfRange(rawAngle, center);
+    player.aimOffsetRaw = clampToHalfRange(rawAngle, center);
 
-    // Knob visually stops at the same +-45 deg wall as the actual aim,
-    // so the limit is felt physically, not just applied invisibly.
-    const clampedAngle = center + player.aimOffset;
+    // Knob visually stops at the same +-45 deg wall as the raw input, so
+    // the limit is felt physically under the thumb; the reticle (drawn
+    // from the AUTO-AIM-adjusted effective offset) is what shows any
+    // target snap.
+    const clampedAngle = center + player.aimOffsetRaw;
     const clamped = Math.min(dist, maxR);
     const nx = (Math.cos(clampedAngle) * clamped) / maxR;
     const ny = (Math.sin(clampedAngle) * clamped) / maxR;
@@ -677,6 +963,7 @@
   }
 
   // ---------- Fire button ----------
+  const fireZone = document.getElementById('fire-zone');
   const fireButton = document.getElementById('fire-button');
   let fireHeld = false;
 
@@ -690,39 +977,49 @@
     fireHeld = false;
     fireButton.classList.remove('active');
   }
-  fireButton.addEventListener('touchstart', fireStart, { passive: false });
-  fireButton.addEventListener('touchend', fireEnd, { passive: false });
-  fireButton.addEventListener('touchcancel', fireEnd, { passive: false });
-  fireButton.addEventListener('mousedown', fireStart);
+  // Listeners on the zone (full touch hit area), not the smaller visual
+  // button — see PART 11: the visible circle shrinks but the tappable
+  // region must not shrink by the same amount.
+  fireZone.addEventListener('touchstart', fireStart, { passive: false });
+  fireZone.addEventListener('touchend', fireEnd, { passive: false });
+  fireZone.addEventListener('touchcancel', fireEnd, { passive: false });
+  fireZone.addEventListener('mousedown', fireStart);
   window.addEventListener('mouseup', fireEnd);
 
   // ---------- DASH button ----------
   // A separate DOM element from FIRE, so a distinct touch on it never
   // collides with FIRE's own touch identifier — same independent-zone
   // pattern already used for ACTION STICK / AIM STICK / FIRE.
+  const dashZone = document.getElementById('dash-zone');
   const dashButton = document.getElementById('dash-button');
 
   function dashPress(e) {
     e.preventDefault();
     dashButton.classList.add('active');
-    tryStartDash(performance.now());
+    requestDash(performance.now());
   }
   function dashRelease(e) {
     if (e) e.preventDefault();
     dashButton.classList.remove('active');
   }
-  dashButton.addEventListener('touchstart', dashPress, { passive: false });
-  dashButton.addEventListener('touchend', dashRelease, { passive: false });
-  dashButton.addEventListener('touchcancel', dashRelease, { passive: false });
-  dashButton.addEventListener('mousedown', dashPress);
+  // Listeners live on the zone (the actual touch hit area), not the smaller
+  // visual button inside it — see #dash-zone/#dash-button sizing in
+  // style.css. A tap anywhere in the zone still reaches this handler
+  // because the button is its descendant and the event bubbles.
+  dashZone.addEventListener('touchstart', dashPress, { passive: false });
+  dashZone.addEventListener('touchend', dashRelease, { passive: false });
+  dashZone.addEventListener('touchcancel', dashRelease, { passive: false });
+  dashZone.addEventListener('mousedown', dashPress);
   window.addEventListener('mouseup', dashRelease);
 
   function updateDashButtonUI(now) {
     const dir = (player.baseDir === 'left' || player.baseDir === 'right')
       ? player.baseDir : player.lastHorizontalDir;
-    dashButton.textContent = dir === 'right' ? 'DASH ▶' : '◀ DASH';
-    const onCooldown = player.dashing || now < player.dashCooldownUntil;
-    dashButton.classList.toggle('cooldown', onCooldown);
+    // No emoji/arrow glyphs — plain text, matches the military/SF UI style.
+    dashButton.textContent = dir === 'right' ? 'DASH R' : 'DASH L';
+    // Dim only while the current DASH is actually running (no more added
+    // cooldown afterward — it's ready again the instant this clears).
+    dashButton.classList.toggle('cooldown', player.dashing);
   }
 
   // Prevent default touch scroll/zoom anywhere on the game UI
@@ -735,6 +1032,7 @@
   const FIRE_INTERVAL = 170; // ms
   const FIRE_POSE_DURATION = 80; // ms — how long the FIRE sprite shows per shot
   const MUZZLE_DIST = SPRITE_DRAW_H * 0.46; // same muzzle offset used previously
+  const AIM_LINE_LEN = 240; // shared by the aim line and AUTO AIM's reticle-tip check
   // The replacement RIGHT/FIRE and LEFT/FIRE sprites each have their muzzle
   // flash at a fixed point on screen (measured directly from each asset),
   // noticeably higher and further out than the generic radial offset above.
@@ -769,13 +1067,10 @@
       vy: Math.sin(angle) * BULLET_SPEED,
       born: performance.now(),
     });
-    muzzleFlashUntil = performance.now() + 60;
-    muzzleFlashX = bx;
-    muzzleFlashY = by;
+    // No canvas muzzle-flash circle — the FIRE sprites already carry their
+    // own baked-in flash art; an extra orange dot on top was redundant.
   }
 
-  let muzzleFlashUntil = 0;
-  let muzzleFlashX = 0, muzzleFlashY = 0;
   let playerHitFlashUntil = 0;
 
   // Exposed for Playwright/manual verification only — not part of gameplay.
@@ -783,13 +1078,17 @@
     player, boss, playerHitCount: 0,
     applyBodyHitToBoss, applyWeakPointHitToBoss, bossEnterState,
     getWeakPointScreenPos, clawProjectiles,
+    gameState, barrels, explosions, spawnBarrels, startMode,
+    get autoAimActive() { return autoAimActive; },
+    MUZZLE_DIST, AIM_LINE_LEN, AUTO_AIM_RADIUS,
   };
 
   // ---------- Main loop ----------
-  const gameStartTime = performance.now();
-  let lastTime = gameStartTime;
+  let lastTime = performance.now();
 
   function update(dt, now) {
+    if (gameState.paused) return; // PAUSE freezes everything: no movement, AI, bullets, timers
+
     const kb = getKeyboardVec();
     let vx = actionStickVec.x + kb.x;
     let vy = actionStickVec.y + kb.y;
@@ -830,9 +1129,10 @@
       (now - player.lastActivityAt) >= RELAXED_IDLE_DELAY_MS;
 
     updateDashButtonUI(now);
+    updateAutoAim(now);
 
     // Update bullets — weak point is checked first (only matters while
-    // boss.state === 'defense'), body hurtbox otherwise.
+    // boss.state === 'defense'), body hurtbox otherwise, then alive barrels.
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i];
       b.x += b.vx * dt;
@@ -841,21 +1141,34 @@
         bullets.splice(i, 1);
         continue;
       }
-      if (!boss.spawned || boss.state === 'dead') continue;
-      if (boss.state === 'defense') {
-        const wp = getWeakPointScreenPos();
-        if (Math.hypot(b.x - wp.x, b.y - wp.y) <= WEAKPOINT_HIT_RADIUS) {
-          applyWeakPointHitToBoss(now);
-          bullets.splice(i, 1);
-          continue;
+      let consumed = false;
+      if (boss.spawned && boss.state !== 'dead') {
+        if (boss.state === 'defense') {
+          const wp = getWeakPointScreenPos();
+          if (Math.hypot(b.x - wp.x, b.y - wp.y) <= WEAKPOINT_HIT_RADIUS) {
+            applyWeakPointHitToBoss(now);
+            consumed = true;
+          }
+        }
+        if (!consumed && Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS) {
+          applyBodyHitToBoss(now);
+          consumed = true;
         }
       }
-      if (Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS) {
-        applyBodyHitToBoss(now);
-        bullets.splice(i, 1);
+      if (!consumed) {
+        for (const barrel of barrels) {
+          if (!barrel.alive) continue;
+          if (Math.hypot(b.x - barrel.x, b.y - barrel.y) <= BARREL_HITBOX_RADIUS) {
+            explodeBarrel(barrel, now);
+            consumed = true;
+            break;
+          }
+        }
       }
+      if (consumed) bullets.splice(i, 1);
     }
 
+    updateBarrels(now);
     updateBoss(dt, now);
     updateClawProjectiles(dt, now);
   }
@@ -901,14 +1214,15 @@
   }
 
   // Scope/reticle marker: ring + 4 outward tick marks + tiny center dot.
-  // Replaces the old plain filled dot.
-  function drawReticle(x, y) {
+  // Turns red while AUTO AIM has a target engaged (PART 2/3).
+  function drawReticle(x, y, hot) {
     const r = 7;
     const gap = 2;
     const tick = 4;
+    const color = hot ? 'rgba(255,70,60,0.95)' : 'rgba(255,255,255,0.9)';
     ctx.save();
     ctx.translate(x, y);
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.strokeStyle = color;
     ctx.lineWidth = 1.5;
 
     ctx.beginPath();
@@ -922,7 +1236,7 @@
     ctx.moveTo(r + gap, 0); ctx.lineTo(r + gap + tick, 0);
     ctx.stroke();
 
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(0, 0, 1.2, 0, Math.PI * 2);
     ctx.fill();
@@ -935,12 +1249,11 @@
     const angle = getAimAngle();
     const bx = player.x + Math.cos(angle) * MUZZLE_DIST;
     const by = player.y + Math.sin(angle) * MUZZLE_DIST;
-    const lineLen = 240;
-    const ex = bx + Math.cos(angle) * lineLen;
-    const ey = by + Math.sin(angle) * lineLen;
+    const ex = bx + Math.cos(angle) * AIM_LINE_LEN;
+    const ey = by + Math.sin(angle) * AIM_LINE_LEN;
 
     ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.strokeStyle = autoAimActive ? 'rgba(255,90,80,0.6)' : 'rgba(255,255,255,0.55)';
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 8]);
     ctx.beginPath();
@@ -950,7 +1263,7 @@
     ctx.setLineDash([]);
     ctx.restore();
 
-    drawReticle(ex, ey);
+    drawReticle(ex, ey, autoAimActive);
   }
 
   function draw(now) {
@@ -988,21 +1301,13 @@
       }
     }
 
-    drawAimLine();
+    // Barrels sit on the ground, above the background but below the
+    // characters (drawn next), same as an ordinary game object.
+    for (const b of barrels) if (b.alive) drawBarrel(b);
+    for (const e of explosions) drawExplosion(e, now);
 
     // bullets
     for (const b of bullets) drawBullet(b);
-
-    // muzzle flash
-    if (now < muzzleFlashUntil) {
-      ctx.save();
-      ctx.translate(muzzleFlashX, muzzleFlashY);
-      ctx.fillStyle = 'rgba(255, 210, 120, 0.9)';
-      ctx.beginPath();
-      ctx.arc(0, 0, 9, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
 
     // Claw projectiles draw alongside the player's own bullets.
     for (const p of clawProjectiles) drawClawProjectile(p);
@@ -1017,12 +1322,27 @@
       if (boss.spawned) drawBoss(now);
     }
 
+    // PART 1: the aim line/reticle draw last among game-world content —
+    // strictly above the background, barrels, bullets, claw projectiles,
+    // player, and boss — so the boss's sprite (or anything else) can never
+    // paint over the dashed line or hide the reticle. It stays below the
+    // DOM control UI (ACTION/AIM/FIRE/DASH/PAUSE), which is a separate
+    // layer entirely and always on top regardless of canvas draw order.
+    drawAimLine();
+
     drawBossHud(now);
     drawBossFeedback(now);
 
     if (now < playerHitFlashUntil) {
       ctx.fillStyle = 'rgba(220, 30, 30, 0.18)';
       ctx.fillRect(0, 0, W, H);
+    }
+
+    // Expired explosion effects are pruned here rather than in update(),
+    // purely so a paused game still shows a mid-explosion frame frozen
+    // instead of having it vanish while update() isn't running.
+    for (let i = explosions.length - 1; i >= 0; i--) {
+      if (now - explosions[i].startAt > EXPLOSION_DURATION_MS) explosions.splice(i, 1);
     }
   }
 
@@ -1100,29 +1420,10 @@
 
   function drawBossHud(now) {
     if (!boss.spawned) return;
-    // Simple top-of-screen HP bar; kept clear of the bottom-anchored
-    // ACTION/AIM/FIRE controls entirely, so it never overlaps existing UI.
-    const barW = Math.min(320, W * 0.7);
-    const barH = 14;
-    const barX = (W - barW) / 2;
+    // No HP gauge on screen (removed per spec) — HP/damage/kill logic is
+    // all still tracked internally, just not displayed. The WARNING banner
+    // is a spawn cue, not a gauge, so it stays.
     const barY = Math.max(10, (H * 0.03));
-    const pct = Math.max(0, boss.hp / BOSS_HP_MAX);
-
-    ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(barX - 3, barY - 3, barW + 6, barH + 6);
-    ctx.fillStyle = 'rgba(255,255,255,0.15)';
-    ctx.fillRect(barX, barY, barW, barH);
-    ctx.fillStyle = boss.state === 'defense' ? 'rgba(120,180,255,0.9)' : 'rgba(220,40,40,0.9)';
-    ctx.fillRect(barX, barY, barW * pct, barH);
-    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(barX, barY, barW, barH);
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.font = '11px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('BOSS', W / 2, barY - 6);
-    ctx.restore();
 
     if (now < boss.warningUntil) {
       ctx.save();
@@ -1171,5 +1472,6 @@
     requestAnimationFrame(loop);
   }
 
+  spawnBarrels(2 + Math.floor(Math.random() * 3)); // initial BOSS MODE barrels (2-4)
   requestAnimationFrame((t) => { lastTime = t; requestAnimationFrame(loop); });
 })();
