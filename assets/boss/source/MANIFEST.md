@@ -1,11 +1,12 @@
-# Boss character asset manifest — all 14 source images (batch 1 + batch 2 + batch 3 + batch 4)
+# Boss character asset manifest — all 16 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5)
 
-All 14 files below are byte-identical copies of the originally attached
+All 16 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
 these `source/` copies. The processed, game-ready frames built from them
 live in `assets/boss/*.png` (see `assets/boss/sprite_build_meta.json` for
 batches 1-2's exact per-frame alignment measurements, and
-`assets/boss/defense_dirs_build_meta.json` for batch 3's).
+`assets/boss/defense_dirs_build_meta.json` for batch 3's,
+`assets/boss/attack_ns_build_meta.json` for batch 5's).
 
 ## Batch 1 (5 images)
 
@@ -87,6 +88,34 @@ Batch 4 notes:
   within the requested 1.0-1.2x band), keeping its own aspect ratio rather
   than forcing it onto the narrower 700x920 movement-sprite canvas (its
   wingspan is wide enough that doing so would clip it).
+
+## Batch 5 (2 images)
+
+| # | Role | Saved filename | Source dims | md5 |
+|---|------|-----------------|-------------|-----|
+| 15 | SOUTH ATTACK | `boss_attack_south_source.png` | 1213x1944 RGBA | b6154a4444f5a172a265825991c9124f |
+| 16 | NORTH ATTACK | `boss_attack_north_source.png` | 1182x1774 RGBA | d0f70ab0fa2677ebbfaad8ac7da97bb7 |
+
+Batch 5 notes:
+- SOUTH ATTACK replaces the generic `attack.png` for the SOUTH facing only
+  — `attack.png` itself is untouched on disk and still used as-is for
+  EAST/WEST (no dedicated art exists for those directions). NORTH ATTACK
+  is a wholly new direction; no NORTH attack art existed before this
+  batch, and it was never derived from SOUTH by flipping — both are
+  independent renders used exactly as supplied.
+- Both already had real per-pixel alpha with the opaque bbox spanning
+  almost the entire source canvas, so only a uniform rescale + anchor-paste
+  (no crop) was needed. Built onto the same shared 700x920 boss canvas at
+  the same (centerX=350, footY=900) anchor and the same 873px target body
+  height used by every other frame on that canvas (measured directly off
+  the existing `attack.png`/`defense.png`), so switching into/out of
+  ATTACK from either direction causes no body-size or foot-position jump.
+  See `assets/boss/attack_ns_build_meta.json` for the exact per-image
+  source-bbox/scale/paste-offset values.
+- ATTACK direction is selected from `boss.dir` (already computed toward
+  the player at the exact instant ATTACK begins, via the existing CHASE->
+  ATTACK and GUARD BREAK->ATTACK transitions) — up->NORTH ATTACK,
+  down->SOUTH ATTACK, left/right unchanged (generic `attack.png`).
 
 Notes:
 - Verified visually (not assumed) that EAST images face screen-right with

@@ -83,7 +83,10 @@
   // filename for the south one.
   const BOSS_FRAME_FILES = {
     south_idle: 'south_idle', east_idle: 'east_idle', west_idle: 'west_idle', north_idle: 'north_idle',
-    attack: 'attack',
+    // 'attack' (generic) is still used for EAST/WEST — no dedicated art
+    // exists for those yet. NORTH/SOUTH each got their own dedicated
+    // attack render this round; see bossFrameName()'s 'attack' branch.
+    attack: 'attack', attack_south: 'attack_south', attack_north: 'attack_north',
     defense_south: 'defense', defense_north: 'defense_north', defense_east: 'defense_east', defense_west: 'defense_west',
     // The on-disk walk_east.png/walk_west.png pair has its content swapped
     // from its filename (walk_east.png is actually the left/west-facing
@@ -257,7 +260,6 @@
   // ---------- DASH (4 directions, max 2 chained) ----------
   const DASH_DURATION_MS = 800;
   const DASH_DISTANCE_FRAC = 0.20; // 20% of screen width — within the 15-25% target
-  const DASH_INPUT_BUFFER_MS = 150; // a press this close to DASH's own end still queues
   const RELAXED_IDLE_DELAY_MS = 400;
   const DASH_CHAIN_MAX = 2; // at most 2 dashes per chain — a 3rd request is refused
   const FACING_LOCK_MS = 200; // briefly holds the post-chain reversed facing against stick input
@@ -285,9 +287,9 @@
   // No extra cooldown after DASH — the next DASH is available the instant
   // the current one ends (as long as the chain hasn't already used its 2
   // dashes). A press can't multi-trigger the same DASH (it's just ignored
-  // while player.dashing), but a press landing in the last
-  // DASH_INPUT_BUFFER_MS of the current DASH is remembered and fired the
-  // moment this one ends, so mashing the button doesn't lose the input —
+  // while player.dashing), but ANY press received at any point while DASH 1
+  // is running is remembered and fired the instant it ends — a fast
+  // "tap-tap" always chains, with no visible pause between the two —
   // unless the chain is already at DASH_CHAIN_MAX, in which case a 3rd
   // request (buffered or not) is simply dropped.
   function requestDash(now) {
@@ -296,10 +298,13 @@
       return;
     }
     if (player.dashChainCount >= DASH_CHAIN_MAX) return;
-    const remaining = DASH_DURATION_MS - (now - player.dashStartAt);
-    if (remaining <= DASH_INPUT_BUFFER_MS) {
-      player.dashBuffered = true;
-    }
+    // A 2nd press is accepted as buffered at ANY point during the 1st
+    // DASH's run — not just its final DASH_INPUT_BUFFER_MS — so two fast
+    // taps ("tap-tap") always chain, including a 2nd tap landing right at
+    // the start of the 1st DASH. It still only fires the instant DASH 1
+    // actually ends (see updateDash()), so there's never a visible pause
+    // and never more than DASH_CHAIN_MAX dashes in the chain.
+    player.dashBuffered = true;
   }
 
   // Fast burst then a short settle, not a constant 0.8s slide: full travel
@@ -411,9 +416,38 @@
   const DYING_CELL_SIZE = 10; // px, sampled at the cinematic sprite's on-screen size
   const PLAYER_HIT_RADIUS = 22;
 
-  // Claw-projectile ranged attack, fired once per ATTACK cycle.
+  // Claw-projectile ranged attack, fired once per ATTACK cycle as a 3-way
+  // volley (see spawnClawProjectile()).
   const CLAW_PROJECTILE_SPEED = 340; // slower than the player's 620 bullets — dodgeable
-  const CLAW_PROJECTILE_HIT_RADIUS = 14;
+  const CLAW_PROJECTILE_HIT_RADIUS = 16; // a touch larger than before (14) for the longer blade, still tight relative to its visual length
+  const BLADE_SPREAD_ANGLE = 15 * Math.PI / 180; // +-15 degrees either side of the center blade
+
+  // Where each of the 3 blades spawns from — near the claws, not the torso
+  // center. NORTH/SOUTH use fixed points measured directly on their own
+  // attack_{north,south}.png canvas (converted to a boss-relative screen
+  // offset the same way the DEFENSE weak points are); EAST/WEST keep the
+  // pre-existing generic radial offset toward the facing direction, since
+  // there's no dedicated EAST/WEST attack art to measure a claw position on.
+  const CLAW_ORIGIN_CANVAS = {
+    south: { x: 480, y: 470 }, // base of the extended claw cluster in attack_south.png
+    north: { x: 200, y: 140 }, // raised claw joint in attack_north.png
+  };
+  function getClawOrigin() {
+    const key = DIR_TO_BOSS_KEY[boss.dir];
+    const off = CLAW_ORIGIN_CANVAS[key];
+    if (off) {
+      const scale = BOSS_DRAW_H / BOSS_CANVAS_H;
+      return {
+        x: boss.x + (off.x - BOSS_CANVAS_W / 2) * scale,
+        y: boss.y + (off.y - BOSS_CANVAS_H / 2) * scale,
+      };
+    }
+    const facing = BASE_ANGLE[boss.dir];
+    return {
+      x: boss.x + Math.cos(facing) * (BOSS_DRAW_W * 0.32),
+      y: boss.y + Math.sin(facing) * (BOSS_DRAW_W * 0.32),
+    };
+  }
 
   // Weak point: the large red eye on the DEFENSE mask. Its screen position
   // depends on which DEFENSE direction is currently showing, since the
@@ -569,10 +603,70 @@
     };
   }
 
-  let bossBlockFlashUntil = 0;
   let weakPointFlashUntil = 0;
   let weakPointFlashAt = { x: 0, y: 0 };
   let guardBreakFlashUntil = 0;
+
+  // DEFENSE block feedback: NOT a shield — a plain (non-AUTO-AIM) body hit
+  // reads as the bullet striking hard armor/claw/blade and deflecting off,
+  // not being absorbed by a glowing barrier. No blue circles, no rings, no
+  // rippling waves — a brief metallic spark burst plus a short ricochet
+  // trail bent away from the bullet's own incoming angle, both anchored at
+  // the bullet's actual impact point (never the boss's center). Purely
+  // decorative: the hit is already fully resolved (0 damage) by the time
+  // this spawns, so the deflected trail carries no hitbox of its own.
+  const defenseRicochets = [];
+  const RICOCHET_DURATION_MS = 90; // within the requested 50-120ms window
+  const RICOCHET_SPARK_COUNT = 6; // within the requested 4-8 sparks
+
+  function spawnDefenseRicochet(now, x, y, bulletVx, bulletVy) {
+    const inAngle = Math.atan2(bulletVy, bulletVx);
+    const sign = Math.random() < 0.5 ? -1 : 1;
+    const deflectDeg = 30 + Math.random() * 40; // 30-70 degrees off the incoming line
+    const deflectAngle = inAngle + sign * deflectDeg * Math.PI / 180;
+    const sparks = [];
+    for (let i = 0; i < RICOCHET_SPARK_COUNT; i++) {
+      const a = inAngle + Math.PI + (Math.random() - 0.5) * 1.6; // scattered back toward where the bullet came from
+      sparks.push({ angle: a, speed: 90 + Math.random() * 150, size: 1 + Math.random() * 1.3 });
+    }
+    defenseRicochets.push({ x, y, startAt: now, deflectAngle, sparks });
+  }
+
+  function drawDefenseRicochets(now) {
+    for (const r of defenseRicochets) {
+      const t = now - r.startAt;
+      if (t >= RICOCHET_DURATION_MS) continue;
+      const frac = t / RICOCHET_DURATION_MS;
+      const alpha = 1 - frac;
+      ctx.save();
+      ctx.translate(r.x, r.y);
+      // The deflected bullet trail — white/pale-yellow, short, no glow.
+      const trailLen = 20 * (0.4 + frac * 0.6);
+      ctx.strokeStyle = `rgba(255,248,222,${alpha * 0.9})`;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(r.deflectAngle) * trailLen, Math.sin(r.deflectAngle) * trailLen);
+      ctx.stroke();
+      // A handful of small sparks (white/pale-yellow/orange/silver).
+      for (const s of r.sparks) {
+        const d = s.speed * (t / 1000);
+        ctx.fillStyle = `rgba(255,225,180,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(Math.cos(s.angle) * d, Math.sin(s.angle) * d, s.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // A tiny, near-instant white flash right at the impact point.
+      ctx.fillStyle = `rgba(255,255,250,${Math.max(0, alpha - 0.5) * 1.4})`;
+      ctx.beginPath();
+      ctx.arc(0, 0, 3.2 * (1 - frac * 0.5), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    for (let i = defenseRicochets.length - 1; i >= 0; i--) {
+      if (now - defenseRicochets[i].startAt > RICOCHET_DURATION_MS) defenseRicochets.splice(i, 1);
+    }
+  }
 
   // Shared by both damage paths below: registers one valid AUTO-AIM-assisted
   // hit landed while the boss is defending, and breaks the guard outright on
@@ -597,7 +691,7 @@
   // reticle was locked on, which for a direction with no weak point — e.g.
   // NORTH — is the only target DEFENSE ever offers) instead counts as a
   // genuine hit: full damage, and it counts toward GUARD BREAK.
-  function applyBodyHitToBoss(now, bulletVx, bulletVy, autoAimed) {
+  function applyBodyHitToBoss(now, bulletX, bulletY, bulletVx, bulletVy, autoAimed) {
     // GUARD BREAK's stagger pause is a brief (250ms), deliberately
     // untargetable beat between DEFENSE ending and ATTACK beginning — a hit
     // landing in that window must not re-trigger DEFENSE mid-transition.
@@ -610,10 +704,12 @@
       if (autoAimed) {
         boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
         if (checkBossHpMilestones(now)) return; // death or a threshold cinematic took over
+        weakPointFlashUntil = now + 220; // "valid hit" feedback — same as a real weak-point hit, not a ricochet
+        weakPointFlashAt = { x: bulletX, y: bulletY };
         registerDefenseAimHit(now);
         return;
       }
-      bossBlockFlashUntil = now + 120;
+      spawnDefenseRicochet(now, bulletX, bulletY, bulletVx, bulletVy);
       return;
     }
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
@@ -795,19 +891,24 @@
   // exact instant it spawns — no homing, trajectory is fixed forever after.
   const clawProjectiles = [];
 
+  // Fires a 3-way volley (LEFT/CENTER/RIGHT blades): the center blade aims
+  // at the player's position at this exact instant, the outer two diverge
+  // by +-BLADE_SPREAD_ANGLE from that same center trajectory. All 3 are
+  // independent projectiles — their own x/y/vx/vy/angle/hitbox — with
+  // velocity fixed at spawn; nothing here re-aims them afterward (see
+  // updateClawProjectiles(), which only ever adds vx*dt/vy*dt).
   function spawnClawProjectile(now) {
-    const facing = BASE_ANGLE[boss.dir];
-    // Spawn near the claw: a forward offset from boss center, roughly
-    // where the melee hitbox also sits.
-    const sx = boss.x + Math.cos(facing) * (BOSS_DRAW_W * 0.32);
-    const sy = boss.y + Math.sin(facing) * (BOSS_DRAW_W * 0.32);
-    const angle = Math.atan2(player.y - sy, player.x - sx);
-    clawProjectiles.push({
-      x: sx, y: sy,
-      vx: Math.cos(angle) * CLAW_PROJECTILE_SPEED,
-      vy: Math.sin(angle) * CLAW_PROJECTILE_SPEED,
-      angle,
-    });
+    const origin = getClawOrigin();
+    const centerAngle = Math.atan2(player.y - origin.y, player.x - origin.x);
+    for (const spread of [-BLADE_SPREAD_ANGLE, 0, BLADE_SPREAD_ANGLE]) {
+      const angle = centerAngle + spread;
+      clawProjectiles.push({
+        x: origin.x, y: origin.y,
+        vx: Math.cos(angle) * CLAW_PROJECTILE_SPEED,
+        vy: Math.sin(angle) * CLAW_PROJECTILE_SPEED,
+        angle,
+      });
+    }
   }
 
   function updateClawProjectiles(dt, now) {
@@ -830,26 +931,32 @@
 
   // Canvas-drawn blade — slender, metallic silver-to-black, oriented along
   // its travel direction, with a short trailing streak. No image asset.
+  // A long, thin, sharply-pointed claw-blade — not a bullet, not a short
+  // triangle: a pronounced tip, narrow shoulders just behind it, then a
+  // long thin tapering tail. Total tip-to-tail length ~62px, ~1.7x the
+  // previous 36px blade (within the requested 1.5-2x band); width is
+  // narrower than before (5.2px vs 8px) so it still reads as a thin spike
+  // despite being longer.
   function drawClawProjectile(p) {
-    const len = 26, halfW = 4;
+    const tipX = 24, shoulderX = 4, shoulderHalfW = 2.6, tailX = -38, tailHalfW = 0.8;
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.angle);
-    const grad = ctx.createLinearGradient(-len * 0.9, 0, len * 0.5, 0);
-    grad.addColorStop(0, 'rgba(30,30,34,0)');
-    grad.addColorStop(0.45, 'rgba(95,98,108,0.6)');
-    grad.addColorStop(1, 'rgba(230,232,238,0.95)');
+    const grad = ctx.createLinearGradient(tailX, 0, tipX, 0);
+    grad.addColorStop(0, 'rgba(20,20,24,0)');
+    grad.addColorStop(0.5, 'rgba(110,113,122,0.75)');
+    grad.addColorStop(1, 'rgba(240,242,246,0.98)');
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.moveTo(len * 0.5, 0);
-    ctx.lineTo(len * 0.05, -halfW);
-    ctx.lineTo(-len * 0.9, -halfW * 0.25);
-    ctx.lineTo(-len * 0.9, halfW * 0.25);
-    ctx.lineTo(len * 0.05, halfW);
+    ctx.moveTo(tipX, 0);
+    ctx.lineTo(shoulderX, -shoulderHalfW);
+    ctx.lineTo(tailX, -tailHalfW);
+    ctx.lineTo(tailX, tailHalfW);
+    ctx.lineTo(shoulderX, shoulderHalfW);
     ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle = 'rgba(15,15,18,0.7)';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(10,10,12,0.75)';
+    ctx.lineWidth = 0.75;
     ctx.stroke();
     ctx.restore();
   }
@@ -1633,7 +1740,7 @@
           }
         }
         if (!consumed && Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS) {
-          applyBodyHitToBoss(now, b.vx, b.vy, b.autoAimedBoss);
+          applyBodyHitToBoss(now, b.x, b.y, b.vx, b.vy, b.autoAimedBoss);
           consumed = true;
         }
       }
@@ -1878,7 +1985,18 @@
 
   // ---------- Boss rendering ----------
   function bossFrameName(now) {
-    if (boss.state === 'attack') return 'attack';
+    if (boss.state === 'attack') {
+      // boss.dir is set to face the player at the exact moment ATTACK
+      // begins (see the CHASE->ATTACK and GUARD BREAK->ATTACK transitions),
+      // so it's already "where the player was relative to the boss when
+      // the attack started" — exactly what picks the sprite here. NORTH/
+      // SOUTH get their own dedicated art; EAST/WEST keep the existing
+      // generic 'attack' render (no dedicated art for those directions yet).
+      const atkKey = DIR_TO_BOSS_KEY[boss.dir];
+      if (atkKey === 'north') return 'attack_north';
+      if (atkKey === 'south') return 'attack_south';
+      return 'attack';
+    }
     // DEFENSE always shows the direction the attack came FROM
     // (boss.defenseDir), not boss.dir — see applyBodyHitToBoss().
     if (boss.state === 'defense') return `defense_${boss.defenseDir}`;
@@ -2123,19 +2241,13 @@
     }
   }
 
-  // Small, non-intrusive combat feedback: a blocked-hit spark on the body
-  // during DEFENSE, and a brighter flash + "WEAK" label right on the eye
-  // when the weak point is actually hit.
+  // Small, non-intrusive combat feedback: a metallic spark + ricochet on a
+  // blocked hit during DEFENSE (see spawnDefenseRicochet()/
+  // drawDefenseRicochets()), and a brighter flash + "WEAK" label at the
+  // exact impact point when a genuine damaging hit lands (weak point, or
+  // the AUTO-AIM-assisted body-target fallback for a direction with none).
   function drawBossFeedback(now) {
     if (!boss.spawned) return;
-    if (now < bossBlockFlashUntil) {
-      ctx.save();
-      ctx.fillStyle = 'rgba(140,190,255,0.5)';
-      ctx.beginPath();
-      ctx.arc(boss.x, boss.y, 20, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
     if (now < weakPointFlashUntil) {
       ctx.save();
       ctx.fillStyle = `rgba(255,90,60,${0.5 + 0.5 * Math.abs(Math.sin(now / 35))})`;
@@ -2162,6 +2274,7 @@
       ctx.fillText('GUARD BREAK', boss.x, boss.y - BOSS_DRAW_H * 0.5 - 12);
       ctx.restore();
     }
+    drawDefenseRicochets(now);
   }
 
   function loop(now) {
