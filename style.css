@@ -74,10 +74,23 @@ html, body {
   will-change: transform;
 }
 
-#fire-zone {
+/* FIRE and DASH share one flex row so DASH's position is always relative
+   to FIRE's actual rendered size — never a guessed fixed-pixel gap, which
+   would misjudge FIRE's true width once its own vw-based size gets
+   clamped (as it does around typical phone widths) and could otherwise
+   overlap ACTION STICK on the opposite side of the screen. */
+#fire-dash-row {
   position: absolute;
   right: max(16px, env(safe-area-inset-right));
   bottom: max(16px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  pointer-events: none;
+}
+
+#fire-zone {
+  position: relative;
   width: 30vw;
   height: 30vw;
   max-width: 150px;
@@ -148,4 +161,53 @@ html, body {
 #fire-button:active,
 #fire-button.active {
   background: rgba(255, 60, 40, 0.6);
+}
+
+/* DASH sits directly to the left of FIRE at the same bottom edge (via the
+   #fire-dash-row flexbox above), never stacked on top of it, so it adds
+   zero extra vertical space — the concern flagged for landscape, where
+   height is already tight. */
+#dash-zone {
+  position: relative;
+  /* Deliberately smaller than FIRE (allowed by spec) and sized so that,
+     combined with ACTION STICK's own independent left-anchored width, the
+     two never meet even at the narrowest current iPhone width (375pt,
+     iPhone SE) — verified with real layout measurements down to 360px. */
+  width: 14vw;
+  height: 14vw;
+  max-width: 60px;
+  max-height: 60px;
+  min-width: 46px;
+  min-height: 46px;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+#dash-button {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(90, 200, 140, 0.32);
+  border: 2px solid rgba(130, 230, 170, 0.55);
+  color: #eaffee;
+  font-family: sans-serif;
+  font-weight: bold;
+  font-size: clamp(10px, 2.6vw, 13px);
+  letter-spacing: 0.03em;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+  padding: 0;
+  transition: opacity 0.15s ease;
+}
+
+#dash-button:active,
+#dash-button.active {
+  background: rgba(120, 230, 165, 0.6);
+}
+
+/* Cooldown: dimmed only, no gauge — a quick "not ready yet" read without
+   adding new UI chrome. */
+#dash-button.cooldown {
+  opacity: 0.4;
 }

@@ -56,6 +56,18 @@
   const SPRITE_DRAW_H = 116; // on-screen character height in px (unchanged)
   let spriteAspect = 384 / 340;
 
+  // DASH (right/left only) and SOUTH RELAXED IDLE — separate from the
+  // aim/fire pose grid above since they're pose overrides, not part of the
+  // 4-direction x {aim,fire} cycle. Same shared 384x340 canvas as every
+  // other player frame (see assets/alexandre/dash_relaxed_build_meta.json
+  // for the exact per-frame crop/scale/anchor measurements), so switching
+  // into/out of DASH or RELAXED never jumps or resizes the character.
+  const dashSprites = { right: new Image(), left: new Image() };
+  dashSprites.right.src = 'assets/alexandre/right_dash.png';
+  dashSprites.left.src = 'assets/alexandre/left_dash.png';
+  const relaxedSprite = { down: new Image() };
+  relaxedSprite.down.src = 'assets/alexandre/down_relaxed.png';
+
   // ---------- Boss sprite loading ----------
   // 10 pre-aligned frames (built offline from the 10 supplied renders via
   // alpha-crop + uniform rescale + foot-baseline/center-of-mass anchoring
@@ -114,6 +126,17 @@
     baseDir: 'down',   // discrete sprite bucket, set only by ACTION STICK
     aimOffset: 0,      // radians relative to BASE_ANGLE[baseDir], within +-HALF_RANGE
     moving: false,
+    // DASH: horizontal-only burst move, independent of baseDir/aim.
+    lastHorizontalDir: 'right', // 'right' | 'left' — last non-zero horizontal ACTION STICK input
+    dashing: false,
+    dashDir: 'right',
+    dashStartAt: -Infinity,
+    dashFromX: 0,
+    dashDistance: 0,
+    dashCooldownUntil: 0,
+    // RELAXED IDLE (SOUTH only): tracks how long all inputs have been idle.
+    lastActivityAt: performance.now(),
+    relaxed: false,
   };
 
   // The single source of truth for firing/aim-line direction: always the
@@ -132,6 +155,7 @@
   resetPlayerPosition();
 
   function setBaseDir(dir) {
+    if (dir === 'left' || dir === 'right') player.lastHorizontalDir = dir;
     if (dir === player.baseDir) return;
     player.baseDir = dir;
     // The base facing just changed — snap aim back to its center immediately
@@ -147,13 +171,64 @@
     player.y = Math.max(halfH, Math.min(H - halfH, player.y));
   }
 
+  // ---------- DASH (right/left only) ----------
+  const DASH_DURATION_MS = 800;
+  const DASH_COOLDOWN_MS = 1200;
+  const DASH_DISTANCE_FRAC = 0.20; // 20% of screen width — within the 15-25% target
+  const RELAXED_IDLE_DELAY_MS = 400;
+
+  function tryStartDash(now) {
+    if (player.dashing || now < player.dashCooldownUntil) return;
+    // Direction priority per spec: current horizontal ACTION STICK bucket
+    // if there is one, otherwise the last horizontal direction recorded —
+    // NORTH/SOUTH facing never blocks a DASH.
+    const dir = (player.baseDir === 'left' || player.baseDir === 'right')
+      ? player.baseDir : player.lastHorizontalDir;
+    player.dashing = true;
+    player.dashDir = dir;
+    player.dashStartAt = now;
+    player.dashFromX = player.x;
+    player.dashDistance = W * DASH_DISTANCE_FRAC;
+    player.lastActivityAt = now;
+  }
+
+  // Fast burst then a short settle, not a constant 0.8s slide: full travel
+  // distance is reached by 45% of the duration (ease-out cubic), the
+  // remaining time is just the recovery/invulnerability tail.
+  function dashTravelProgress(t) {
+    const travelPortion = 0.45;
+    if (t >= travelPortion) return 1;
+    const u = t / travelPortion;
+    return 1 - Math.pow(1 - u, 3);
+  }
+
+  function updateDash(now) {
+    if (!player.dashing) return;
+    const elapsed = now - player.dashStartAt;
+    if (elapsed >= DASH_DURATION_MS) {
+      player.dashing = false;
+      player.dashCooldownUntil = now + DASH_COOLDOWN_MS;
+      return;
+    }
+    const progress = dashTravelProgress(elapsed / DASH_DURATION_MS);
+    const sign = player.dashDir === 'right' ? 1 : -1;
+    player.x = player.dashFromX + sign * player.dashDistance * progress;
+  }
+
+  // Single source of truth for "can the player be damaged right now" — DASH
+  // grants full invulnerability to every enemy-origin hit for its whole
+  // 0.8s duration (boss melee, boss claw projectile, any future source).
+  function isPlayerInvulnerable() {
+    return player.dashing;
+  }
+
   // ---------- Boss ----------
-  // Simple state machine: CHASE -> ATTACK -> RECOVER -> CHASE, with
-  // occasional DEFENSE interruptions after taking enough hits. Only 4
-  // facing directions (north/south/east/west), chosen from the boss's
-  // movement vector the same way the player's ACTION STICK picks a
-  // direction bucket (angleToBucket + BASE_ANGLE keys, mapped to the
-  // boss's asset names).
+  // State machine: CHASE -> ATTACK -> RECOVER -> CHASE, with DEFENSE now
+  // entered instantly the moment any body shot lands (not after a hit
+  // count) — see applyBodyHitToBoss(). Only 4 facing directions
+  // (north/south/east/west), chosen from the boss's movement vector the
+  // same way the player's ACTION STICK picks a direction bucket
+  // (angleToBucket + BASE_ANGLE keys, mapped to the boss's asset names).
   const BOSS_HP_MAX = 1000;
   const BOSS_SPEED = 130; // px/sec — slower than the player's 240
   const BOSS_SPAWN_DELAY_MS = 5000;
@@ -163,14 +238,25 @@
   const BOSS_ATTACK_REACH = 108; // forward offset of the claw hitbox center
   const BOSS_ATTACK_HIT_RADIUS = 68;
   const BOSS_RECOVER_MS = 350;
-  const BOSS_DEFENSE_MS = 1500;
-  const BOSS_DEFENSE_DAMAGE_MULT = 0.3; // 70% reduction while defending
-  const BOSS_DEFENSE_COOLDOWN_MS = 2000;
+  const BOSS_DEFENSE_MS = 1800;
   const BOSS_HURT_RADIUS = 46; // small torso-only hurtbox, not the full sprite
   const BULLET_DAMAGE = 40;
   const WALK_FRAME_PERIOD_MS = 260; // south 2-frame alternation period
   const NORTH_BOUNCE_AMPLITUDE = 4; // px, decorative only (no NORTH walk art)
   const PLAYER_HIT_RADIUS = 22;
+
+  // Claw-projectile ranged attack, fired once per ATTACK cycle.
+  const CLAW_PROJECTILE_SPEED = 340; // slower than the player's 620 bullets — dodgeable
+  const CLAW_PROJECTILE_HIT_RADIUS = 14;
+
+  // Weak point: the large red eye on the DEFENSE-pose mask, measured
+  // directly on assets/boss/defense.png's 700x920 canvas (color-cluster
+  // detection, centroid ~(344.6, 215.5), confirmed visually — see the
+  // report for the marked-up crop). Converted to a boss-relative screen
+  // offset using the same single uniform scale the sprite itself is drawn
+  // with, so it tracks boss.x/boss.y and BOSS_DRAW_H exactly.
+  const WEAKPOINT_CANVAS_X = 344.6, WEAKPOINT_CANVAS_Y = 215.5;
+  const WEAKPOINT_HIT_RADIUS = 16; // screen px — generous for touch, still eye-only not head-wide
 
   const DIR_TO_BOSS_KEY = { up: 'north', down: 'south', left: 'west', right: 'east' };
 
@@ -182,28 +268,19 @@
     moving: false,
     hp: BOSS_HP_MAX,
     stateEnteredAt: 0,
-    hitsSinceDefense: 0,
-    defenseHitThreshold: 3,
-    defenseCooldownUntil: 0,
     attackHitApplied: false,
+    attackProjectileSpawned: false,
     chaseBackoffUntil: 0,
     deadAt: 0,
     warningUntil: 0,
   };
-
-  function bossRollDefenseThreshold() {
-    boss.defenseHitThreshold = 3 + Math.floor(Math.random() * 3); // 3..5
-  }
-  bossRollDefenseThreshold();
 
   function bossEnterState(state, now) {
     boss.state = state;
     boss.stateEnteredAt = now;
     if (state === 'attack') {
       boss.attackHitApplied = false;
-    } else if (state === 'defense') {
-      boss.hitsSinceDefense = 0;
-      bossRollDefenseThreshold();
+      boss.attackProjectileSpawned = false;
     }
   }
 
@@ -218,14 +295,47 @@
     bossEnterState('chase', now);
   }
 
-  function applyDamageToBoss(amount) {
+  function getWeakPointScreenPos() {
+    const scale = BOSS_DRAW_H / BOSS_CANVAS_H; // uniform scale, aspect preserved
+    return {
+      x: boss.x + (WEAKPOINT_CANVAS_X - BOSS_CANVAS_W / 2) * scale,
+      y: boss.y + (WEAKPOINT_CANVAS_Y - BOSS_CANVAS_H / 2) * scale,
+    };
+  }
+
+  let bossBlockFlashUntil = 0;
+  let weakPointFlashUntil = 0;
+  let weakPointFlashAt = { x: 0, y: 0 };
+
+  // A shot landing on the body/wings/claws/mask while the boss is NOT
+  // already defending applies normal damage once, then instantly forces
+  // DEFENSE — sustained fire can never freely melt the body hurtbox.
+  // While already in DEFENSE, body hits are fully blocked (0 damage, not
+  // reduced); only applyWeakPointHitToBoss() can still hurt it.
+  function applyBodyHitToBoss(now) {
     if (!boss.spawned || boss.state === 'dead') return;
-    const mult = boss.state === 'defense' ? BOSS_DEFENSE_DAMAGE_MULT : 1;
-    boss.hp = Math.max(0, boss.hp - amount * mult);
-    if (boss.state !== 'defense') boss.hitsSinceDefense++;
+    if (boss.state === 'defense') {
+      bossBlockFlashUntil = now + 120;
+      return;
+    }
+    boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
     if (boss.hp <= 0) {
       boss.state = 'dead';
-      boss.deadAt = performance.now();
+      boss.deadAt = now;
+      return;
+    }
+    bossEnterState('defense', now);
+  }
+
+  function applyWeakPointHitToBoss(now) {
+    if (!boss.spawned || boss.state !== 'defense') return;
+    boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
+    weakPointFlashUntil = now + 220;
+    const wp = getWeakPointScreenPos();
+    weakPointFlashAt = wp;
+    if (boss.hp <= 0) {
+      boss.state = 'dead';
+      boss.deadAt = now;
     }
   }
 
@@ -251,11 +361,10 @@
       if (dist <= BOSS_ATTACK_RANGE) {
         // Lock facing toward the player at the instant ATTACK begins; the
         // attack image itself is never rotated, only this bucket direction
-        // is used (for the forward claw-hitbox offset).
+        // is used (for the forward claw-hitbox offset and the projectile's
+        // spawn-side offset).
         boss.dir = angleToBucket(Math.atan2(dy, dx));
         bossEnterState('attack', now);
-      } else if (boss.hitsSinceDefense >= boss.defenseHitThreshold && now >= boss.defenseCooldownUntil) {
-        bossEnterState('defense', now);
       } else {
         let dirX = toPlayerX, dirY = toPlayerY;
         if (now < boss.chaseBackoffUntil) {
@@ -278,13 +387,17 @@
       }
     } else if (boss.state === 'attack') {
       const elapsed = now - boss.stateEnteredAt;
-      if (elapsed >= BOSS_ATTACK_WINDUP_MS && elapsed < BOSS_ATTACK_WINDUP_MS + BOSS_ATTACK_ACTIVE_MS) {
-        if (!boss.attackHitApplied) {
+      if (elapsed >= BOSS_ATTACK_WINDUP_MS) {
+        if (!boss.attackProjectileSpawned) {
+          boss.attackProjectileSpawned = true;
+          spawnClawProjectile(now);
+        }
+        if (elapsed < BOSS_ATTACK_WINDUP_MS + BOSS_ATTACK_ACTIVE_MS && !boss.attackHitApplied) {
           const facing = BASE_ANGLE[boss.dir];
           const hx = boss.x + Math.cos(facing) * BOSS_ATTACK_REACH;
           const hy = boss.y + Math.sin(facing) * BOSS_ATTACK_REACH;
           const hd = Math.hypot(player.x - hx, player.y - hy);
-          if (hd <= BOSS_ATTACK_HIT_RADIUS + PLAYER_HIT_RADIUS) {
+          if (!isPlayerInvulnerable() && hd <= BOSS_ATTACK_HIT_RADIUS + PLAYER_HIT_RADIUS) {
             boss.attackHitApplied = true;
             window.__game.playerHitCount++;
             playerHitFlashUntil = now + 150;
@@ -294,13 +407,13 @@
             clampPlayerToScreen();
           }
         }
-      } else if (elapsed >= BOSS_ATTACK_WINDUP_MS + BOSS_ATTACK_ACTIVE_MS) {
+      }
+      if (elapsed >= BOSS_ATTACK_WINDUP_MS + BOSS_ATTACK_ACTIVE_MS) {
         boss.chaseBackoffUntil = now + 300;
         bossEnterState('recover', now);
       }
     } else if (boss.state === 'defense') {
       if (now - boss.stateEnteredAt >= BOSS_DEFENSE_MS) {
-        boss.defenseCooldownUntil = now + BOSS_DEFENSE_COOLDOWN_MS;
         bossEnterState('recover', now);
       }
     } else if (boss.state === 'recover') {
@@ -318,6 +431,70 @@
 
     boss.x = Math.max(BOSS_DRAW_W * 0.3, Math.min(W - BOSS_DRAW_W * 0.3, boss.x));
     boss.y = Math.max(BOSS_DRAW_H * 0.3, Math.min(H - BOSS_DRAW_H * 0.3, boss.y));
+  }
+
+  // ---------- Boss claw projectile (ranged ATTACK payload) ----------
+  // Fired once per ATTACK cycle, aimed at the player's position at the
+  // exact instant it spawns — no homing, trajectory is fixed forever after.
+  const clawProjectiles = [];
+
+  function spawnClawProjectile(now) {
+    const facing = BASE_ANGLE[boss.dir];
+    // Spawn near the claw: a forward offset from boss center, roughly
+    // where the melee hitbox also sits.
+    const sx = boss.x + Math.cos(facing) * (BOSS_DRAW_W * 0.32);
+    const sy = boss.y + Math.sin(facing) * (BOSS_DRAW_W * 0.32);
+    const angle = Math.atan2(player.y - sy, player.x - sx);
+    clawProjectiles.push({
+      x: sx, y: sy,
+      vx: Math.cos(angle) * CLAW_PROJECTILE_SPEED,
+      vy: Math.sin(angle) * CLAW_PROJECTILE_SPEED,
+      angle,
+    });
+  }
+
+  function updateClawProjectiles(dt, now) {
+    for (let i = clawProjectiles.length - 1; i >= 0; i--) {
+      const p = clawProjectiles[i];
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      if (p.x < -40 || p.x > W + 40 || p.y < -40 || p.y > H + 40) {
+        clawProjectiles.splice(i, 1);
+        continue;
+      }
+      if (!isPlayerInvulnerable() &&
+          Math.hypot(p.x - player.x, p.y - player.y) <= CLAW_PROJECTILE_HIT_RADIUS + PLAYER_HIT_RADIUS) {
+        clawProjectiles.splice(i, 1);
+        window.__game.playerHitCount++;
+        playerHitFlashUntil = now + 150;
+      }
+    }
+  }
+
+  // Canvas-drawn blade — slender, metallic silver-to-black, oriented along
+  // its travel direction, with a short trailing streak. No image asset.
+  function drawClawProjectile(p) {
+    const len = 26, halfW = 4;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.angle);
+    const grad = ctx.createLinearGradient(-len * 0.9, 0, len * 0.5, 0);
+    grad.addColorStop(0, 'rgba(30,30,34,0)');
+    grad.addColorStop(0.45, 'rgba(95,98,108,0.6)');
+    grad.addColorStop(1, 'rgba(230,232,238,0.95)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(len * 0.5, 0);
+    ctx.lineTo(len * 0.05, -halfW);
+    ctx.lineTo(-len * 0.9, -halfW * 0.25);
+    ctx.lineTo(-len * 0.9, halfW * 0.25);
+    ctx.lineTo(len * 0.05, halfW);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(15,15,18,0.7)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
   }
 
   // ---------- ACTION STICK (movement + base facing) ----------
@@ -519,6 +696,35 @@
   fireButton.addEventListener('mousedown', fireStart);
   window.addEventListener('mouseup', fireEnd);
 
+  // ---------- DASH button ----------
+  // A separate DOM element from FIRE, so a distinct touch on it never
+  // collides with FIRE's own touch identifier — same independent-zone
+  // pattern already used for ACTION STICK / AIM STICK / FIRE.
+  const dashButton = document.getElementById('dash-button');
+
+  function dashPress(e) {
+    e.preventDefault();
+    dashButton.classList.add('active');
+    tryStartDash(performance.now());
+  }
+  function dashRelease(e) {
+    if (e) e.preventDefault();
+    dashButton.classList.remove('active');
+  }
+  dashButton.addEventListener('touchstart', dashPress, { passive: false });
+  dashButton.addEventListener('touchend', dashRelease, { passive: false });
+  dashButton.addEventListener('touchcancel', dashRelease, { passive: false });
+  dashButton.addEventListener('mousedown', dashPress);
+  window.addEventListener('mouseup', dashRelease);
+
+  function updateDashButtonUI(now) {
+    const dir = (player.baseDir === 'left' || player.baseDir === 'right')
+      ? player.baseDir : player.lastHorizontalDir;
+    dashButton.textContent = dir === 'right' ? 'DASH ▶' : '◀ DASH';
+    const onCooldown = player.dashing || now < player.dashCooldownUntil;
+    dashButton.classList.toggle('cooldown', onCooldown);
+  }
+
   // Prevent default touch scroll/zoom anywhere on the game UI
   document.addEventListener('touchmove', (e) => { e.preventDefault(); }, { passive: false });
   document.addEventListener('gesturestart', (e) => { e.preventDefault(); });
@@ -575,7 +781,8 @@
   // Exposed for Playwright/manual verification only — not part of gameplay.
   window.__game = {
     player, boss, playerHitCount: 0,
-    applyDamageToBoss, bossEnterState,
+    applyBodyHitToBoss, applyWeakPointHitToBoss, bossEnterState,
+    getWeakPointScreenPos, clawProjectiles,
   };
 
   // ---------- Main loop ----------
@@ -590,13 +797,16 @@
     if (mag > 1) { vx /= mag; vy /= mag; }
 
     const moving = mag > 0.05;
-    player.moving = moving;
-
     if (moving) {
-      player.x += vx * player.speed * dt;
-      player.y += vy * player.speed * dt;
       const moveAngle = Math.atan2(vy, vx);
       setBaseDir(angleToBucket(moveAngle));
+    }
+    player.moving = moving && !player.dashing;
+
+    updateDash(now); // may override player.x for the duration of a DASH
+    if (!player.dashing && moving) {
+      player.x += vx * player.speed * dt;
+      player.y += vy * player.speed * dt;
     }
 
     // Clamp to screen bounds (keep character fully visible)
@@ -610,7 +820,19 @@
       spawnBullet();
     }
 
-    // Update bullets
+    // SOUTH RELAXED IDLE: any input activity resets the idle clock; it only
+    // engages after RELAXED_IDLE_DELAY_MS of total silence while facing
+    // south, and drops out the instant any input resumes (checked fresh
+    // every frame, not just on a timer).
+    const inputActive = moving || aimStickActive || wantsFire || player.dashing;
+    if (inputActive) player.lastActivityAt = now;
+    player.relaxed = player.baseDir === 'down' && !player.dashing &&
+      (now - player.lastActivityAt) >= RELAXED_IDLE_DELAY_MS;
+
+    updateDashButtonUI(now);
+
+    // Update bullets — weak point is checked first (only matters while
+    // boss.state === 'defense'), body hurtbox otherwise.
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i];
       b.x += b.vx * dt;
@@ -619,14 +841,23 @@
         bullets.splice(i, 1);
         continue;
       }
-      if (boss.spawned && boss.state !== 'dead' &&
-          Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS) {
-        applyDamageToBoss(BULLET_DAMAGE);
+      if (!boss.spawned || boss.state === 'dead') continue;
+      if (boss.state === 'defense') {
+        const wp = getWeakPointScreenPos();
+        if (Math.hypot(b.x - wp.x, b.y - wp.y) <= WEAKPOINT_HIT_RADIUS) {
+          applyWeakPointHitToBoss(now);
+          bullets.splice(i, 1);
+          continue;
+        }
+      }
+      if (Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS) {
+        applyBodyHitToBoss(now);
         bullets.splice(i, 1);
       }
     }
 
     updateBoss(dt, now);
+    updateClawProjectiles(dt, now);
   }
 
   function currentPose(now) {
@@ -773,6 +1004,9 @@
       ctx.restore();
     }
 
+    // Claw projectiles draw alongside the player's own bullets.
+    for (const p of clawProjectiles) drawClawProjectile(p);
+
     // Player and boss are painter-sorted by Y so whichever is visually
     // "closer" (further down the screen) draws on top of the other.
     if (boss.spawned && boss.y < player.y) {
@@ -784,6 +1018,7 @@
     }
 
     drawBossHud(now);
+    drawBossFeedback(now);
 
     if (now < playerHitFlashUntil) {
       ctx.fillStyle = 'rgba(220, 30, 30, 0.18)';
@@ -792,9 +1027,15 @@
   }
 
   function drawPlayer(now) {
-    const pose = currentPose(now);
-    const dir = player.baseDir;
-    const img = sprites[pose] && sprites[pose][dir];
+    let img;
+    if (player.dashing) {
+      img = dashSprites[player.dashDir];
+    } else if (player.baseDir === 'down' && player.relaxed) {
+      img = relaxedSprite.down;
+    } else {
+      const pose = currentPose(now);
+      img = sprites[pose] && sprites[pose][player.baseDir];
+    }
     if (img && img.complete && img.naturalWidth > 0) {
       spriteAspect = img.naturalWidth / img.naturalHeight;
       const drawH = SPRITE_DRAW_H;
@@ -891,6 +1132,33 @@
       ctx.fillText('WARNING', W / 2, barY + 44);
       ctx.font = 'bold 14px sans-serif';
       ctx.fillText('BOSS DETECTED', W / 2, barY + 64);
+      ctx.restore();
+    }
+  }
+
+  // Small, non-intrusive combat feedback: a blocked-hit spark on the body
+  // during DEFENSE, and a brighter flash + "WEAK" label right on the eye
+  // when the weak point is actually hit.
+  function drawBossFeedback(now) {
+    if (!boss.spawned) return;
+    if (now < bossBlockFlashUntil) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(140,190,255,0.5)';
+      ctx.beginPath();
+      ctx.arc(boss.x, boss.y, 20, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    if (now < weakPointFlashUntil) {
+      ctx.save();
+      ctx.fillStyle = `rgba(255,90,60,${0.5 + 0.5 * Math.abs(Math.sin(now / 35))})`;
+      ctx.beginPath();
+      ctx.arc(weakPointFlashAt.x, weakPointFlashAt.y, 14, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,230,120,0.95)';
+      ctx.font = 'bold 13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('WEAK', weakPointFlashAt.x, weakPointFlashAt.y - 22);
       ctx.restore();
     }
   }

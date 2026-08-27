@@ -1,0 +1,86 @@
+{
+  "right_dash": {
+    "source": "right_dash_source.png",
+    "source_canvas": [
+      1408,
+      1408
+    ],
+    "source_bbox": [
+      122,
+      70,
+      1400,
+      1299
+    ],
+    "source_center_x": 761.0,
+    "source_foot_y": 1299,
+    "scale": 0.27135882831570385,
+    "paste_xy": [
+      2,
+      -16
+    ],
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 238.0,
+    "unclamped_paste_x": 31,
+    "horizontal_clamp_applied": true
+  },
+  "left_dash": {
+    "source": "left_dash_source.png",
+    "source_canvas": [
+      1408,
+      1408
+    ],
+    "source_bbox": [
+      74,
+      68,
+      1364,
+      1312
+    ],
+    "source_center_x": 719.0,
+    "source_foot_y": 1312,
+    "scale": 0.26808681672025725,
+    "paste_xy": [
+      0,
+      -16
+    ],
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 147.75,
+    "unclamped_paste_x": -45,
+    "horizontal_clamp_applied": true
+  },
+  "down_relaxed": {
+    "source": "down_relaxed_source.png",
+    "source_canvas": [
+      1206,
+      1206
+    ],
+    "source_bbox": [
+      354,
+      22,
+      855,
+      1151
+    ],
+    "source_center_x": 604.5,
+    "source_foot_y": 1151,
+    "scale": 0.2953941541186891,
+    "paste_xy": [
+      8,
+      -4
+    ],
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 186.75,
+    "unclamped_paste_x": 8,
+    "horizontal_clamp_applied": false
+  }
+}
