@@ -1,0 +1,80 @@
+{
+  "defense_north": {
+    "source": "def1_clean.png",
+    "source_canvas": [
+      944,
+      2080
+    ],
+    "source_bbox": [
+      1,
+      328,
+      942,
+      1760
+    ],
+    "source_center_x": 471.5,
+    "source_foot_y": 1760,
+    "scale": 0.6089385474860335,
+    "paste_xy": [
+      63,
+      -172
+    ],
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      700,
+      920
+    ],
+    "target_height_ref": 872
+  },
+  "defense_west": {
+    "source": "def2_clean.png",
+    "source_canvas": [
+      1008,
+      1792
+    ],
+    "source_bbox": [
+      165,
+      120,
+      879,
+      1715
+    ],
+    "source_center_x": 522.0,
+    "source_foot_y": 1715,
+    "scale": 0.5467084639498433,
+    "paste_xy": [
+      65,
+      -38
+    ],
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      700,
+      920
+    ],
+    "target_height_ref": 872
+  },
+  "defense_east": {
+    "source": "def3_clean.png",
+    "source_canvas": [
+      1008,
+      1792
+    ],
+    "source_bbox": [
+      168,
+      56,
+      784,
+      1657
+    ],
+    "source_center_x": 476.0,
+    "source_foot_y": 1657,
+    "scale": 0.5446595877576514,
+    "paste_xy": [
+      91,
+      -3
+    ],
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      700,
+      920
+    ],
+    "target_height_ref": 872
+  }
+}

@@ -69,22 +69,29 @@
   relaxedSprite.down.src = 'assets/alexandre/down_relaxed.png';
 
   // ---------- Boss sprite loading ----------
-  // 10 pre-aligned frames (built offline from the 10 supplied renders via
-  // alpha-crop + uniform rescale + foot-baseline/center-of-mass anchoring
-  // onto one shared 700x920 canvas — see assets/boss/sprite_build_meta.json
-  // for the exact per-frame measurements). No AI regeneration/redraw; only
-  // crop/resize/pad/translate was applied to the original pixels.
-  const BOSS_FRAME_NAMES = [
-    'south_idle', 'east_idle', 'west_idle', 'north_idle', 'attack', 'defense',
-    'walk_south_1', 'walk_south_2', 'walk_east', 'walk_west',
-  ];
+  // 13 pre-aligned frames (built offline via alpha-crop + uniform rescale +
+  // foot-baseline/center-of-mass anchoring onto one shared 700x920 canvas —
+  // see assets/boss/sprite_build_meta.json and
+  // assets/boss/defense_dirs_build_meta.json for the exact per-frame
+  // measurements). No AI regeneration/redraw; only crop/resize/pad/
+  // translate was applied to the original pixels. The 4 DEFENSE frames
+  // (defense_south is the original "defense.png" file, kept under that
+  // name for continuity) are keyed by asset key -> filename since the key
+  // naming (defense_south/_north/_east/_west) differs from the on-disk
+  // filename for the south one.
+  const BOSS_FRAME_FILES = {
+    south_idle: 'south_idle', east_idle: 'east_idle', west_idle: 'west_idle', north_idle: 'north_idle',
+    attack: 'attack',
+    defense_south: 'defense', defense_north: 'defense_north', defense_east: 'defense_east', defense_west: 'defense_west',
+    walk_south_1: 'walk_south_1', walk_south_2: 'walk_south_2', walk_east: 'walk_east', walk_west: 'walk_west',
+  };
   const bossSprites = {};
   let bossSpritesReady = 0;
-  BOSS_FRAME_NAMES.forEach((name) => {
+  Object.entries(BOSS_FRAME_FILES).forEach(([key, file]) => {
     const img = new Image();
-    img.src = `assets/boss/${name}.png`;
+    img.src = `assets/boss/${file}.png`;
     img.onload = () => { bossSpritesReady++; };
-    bossSprites[name] = img;
+    bossSprites[key] = img;
   });
   const BOSS_CANVAS_W = 700, BOSS_CANVAS_H = 920; // shared aligned canvas size
   const BOSS_DRAW_H = SPRITE_DRAW_H * 1.5; // ~1.5x player height
@@ -143,12 +150,14 @@
     aimOffsetRaw: 0,   // radians relative to BASE_ANGLE[baseDir], within +-HALF_RANGE — raw AIM STICK input
     aimOffset: 0,      // effective offset actually used to fire/draw — aimOffsetRaw, lightly pulled toward a nearby AUTO AIM target
     moving: false,
-    // DASH: horizontal-only burst move, independent of baseDir/aim.
+    // DASH: horizontal (left/right) or, when facing north, straight up —
+    // independent of baseDir/aim otherwise.
     lastHorizontalDir: 'right', // 'right' | 'left' — last non-zero horizontal ACTION STICK input
     dashing: false,
-    dashDir: 'right',
+    dashDir: 'right', // 'right' | 'left' | 'up'
     dashStartAt: -Infinity,
     dashFromX: 0,
+    dashFromY: 0,
     dashDistance: 0,
     dashBuffered: false, // a DASH press received near the end of the current DASH
     // RELAXED IDLE (SOUTH only): tracks how long all inputs have been idle.
@@ -197,15 +206,23 @@
 
   function tryStartDash(now) {
     if (player.dashing) return;
-    // Direction priority per spec: current horizontal ACTION STICK bucket
-    // if there is one, otherwise the last horizontal direction recorded —
-    // NORTH/SOUTH facing never blocks a DASH.
-    const dir = (player.baseDir === 'left' || player.baseDir === 'right')
-      ? player.baseDir : player.lastHorizontalDir;
+    // Direction priority: facing north always dashes straight up (no
+    // dedicated NORTH DASH art exists, so the sprite stays whatever the
+    // normal north pose is — see drawPlayer()). Facing left/right dashes
+    // that way. Facing south still falls back to the last horizontal
+    // direction, exactly as before — no new SOUTH DASH art was supplied.
+    const dir = player.baseDir === 'up'
+      ? 'up'
+      : (player.baseDir === 'left' || player.baseDir === 'right')
+        ? player.baseDir : player.lastHorizontalDir;
     player.dashing = true;
     player.dashDir = dir;
     player.dashStartAt = now;
     player.dashFromX = player.x;
+    player.dashFromY = player.y;
+    // Same distance value on every axis (screen-width based, not
+    // screen-height) so NORTH DASH feels like the same distance as
+    // RIGHT/LEFT DASH instead of being stretched on tall portrait screens.
     player.dashDistance = W * DASH_DISTANCE_FRAC;
     player.lastActivityAt = now;
   }
@@ -247,8 +264,12 @@
       return;
     }
     const progress = dashTravelProgress(elapsed / DASH_DURATION_MS);
-    const sign = player.dashDir === 'right' ? 1 : -1;
-    player.x = player.dashFromX + sign * player.dashDistance * progress;
+    if (player.dashDir === 'up') {
+      player.y = player.dashFromY - player.dashDistance * progress;
+    } else {
+      const sign = player.dashDir === 'right' ? 1 : -1;
+      player.x = player.dashFromX + sign * player.dashDistance * progress;
+    }
   }
 
   // Single source of truth for "can the player be damaged right now" — DASH
@@ -285,22 +306,31 @@
   const CLAW_PROJECTILE_SPEED = 340; // slower than the player's 620 bullets — dodgeable
   const CLAW_PROJECTILE_HIT_RADIUS = 14;
 
-  // Weak point: the large red eye on the DEFENSE-pose mask, measured
-  // directly on assets/boss/defense.png's 700x920 canvas (color-cluster
-  // detection, centroid ~(344.6, 215.5), confirmed visually — see the
-  // report for the marked-up crop). Converted to a boss-relative screen
-  // offset using the same single uniform scale the sprite itself is drawn
-  // with, so it tracks boss.x/boss.y and BOSS_DRAW_H exactly.
-  const WEAKPOINT_CANVAS_X = 344.6, WEAKPOINT_CANVAS_Y = 215.5;
+  // Weak point: the large red eye on the DEFENSE mask. Its screen position
+  // depends on which DEFENSE direction is currently showing, since the
+  // boss is a completely different silhouette from each side — measured
+  // separately on each of the 4 defense_*.png 700x920 canvases (color-
+  // cluster detection, confirmed visually against a marked-up crop for
+  // each). NORTH is the boss's back — no face is visible at all — so it
+  // has no weak point; a bullet can never score a weak-point hit while the
+  // boss is defending north, no matter how precisely aimed.
+  const WEAKPOINT_OFFSETS = {
+    south: { x: 344.6, y: 215.5 },
+    east: { x: 434.4, y: 248.8 },
+    west: { x: 282.8, y: 193.3 },
+    north: null, // back view — eye not visible, weak point disabled for this direction
+  };
   const WEAKPOINT_HIT_RADIUS = 16; // screen px — generous for touch, still eye-only not head-wide
 
   const DIR_TO_BOSS_KEY = { up: 'north', down: 'south', left: 'west', right: 'east' };
+  const OPPOSITE_COMPASS = { north: 'south', south: 'north', east: 'west', west: 'east' };
 
   const boss = {
     x: 0, y: 0,
     spawned: false,
     state: 'inactive', // inactive | chase | attack | defense | recover | dead
-    dir: 'down', // shared player-style bucket key; mapped to north/south/east/west for assets
+    dir: 'down', // shared player-style bucket key; mapped to north/south/east/west for movement/attack facing
+    defenseDir: 'south', // 'north'|'south'|'east'|'west' — which DEFENSE sprite/weak-point is active; set from incoming fire, independent of `dir`
     moving: false,
     hp: BOSS_HP_MAX,
     stateEnteredAt: 0,
@@ -326,16 +356,27 @@
     boss.spawned = true;
     boss.hp = BOSS_HP_MAX;
     boss.dir = 'down';
+    boss.defenseDir = 'south';
     boss.moving = false;
     boss.warningUntil = now + 1500;
     bossEnterState('chase', now);
   }
 
-  function getWeakPointScreenPos() {
+  // Compass bucket (north/south/east/west) a bullet is travelling in,
+  // reusing the same 4-way split the player's own ACTION STICK uses.
+  function velocityToCompass(vx, vy) {
+    return DIR_TO_BOSS_KEY[angleToBucket(Math.atan2(vy, vx))];
+  }
+
+  // Returns null when the current defense direction has no visible eye
+  // (NORTH) — callers must treat that as "no weak point exists right now".
+  function getWeakPointScreenPos(dir) {
+    const off = WEAKPOINT_OFFSETS[dir];
+    if (!off) return null;
     const scale = BOSS_DRAW_H / BOSS_CANVAS_H; // uniform scale, aspect preserved
     return {
-      x: boss.x + (WEAKPOINT_CANVAS_X - BOSS_CANVAS_W / 2) * scale,
-      y: boss.y + (WEAKPOINT_CANVAS_Y - BOSS_CANVAS_H / 2) * scale,
+      x: boss.x + (off.x - BOSS_CANVAS_W / 2) * scale,
+      y: boss.y + (off.y - BOSS_CANVAS_H / 2) * scale,
     };
   }
 
@@ -345,12 +386,18 @@
 
   // A shot landing on the body/wings/claws/mask while the boss is NOT
   // already defending applies normal damage once, then instantly forces
-  // DEFENSE — sustained fire can never freely melt the body hurtbox.
-  // While already in DEFENSE, body hits are fully blocked (0 damage, not
-  // reduced); only applyWeakPointHitToBoss() can still hurt it.
-  function applyBodyHitToBoss(now) {
+  // DEFENSE, facing the direction the shot came FROM (i.e. the opposite of
+  // the bullet's own travel direction) — PART 2/3 of the directional
+  // rewrite. While already in DEFENSE, every body hit is still fully
+  // blocked (0 damage, never reduced — unchanged from before) regardless
+  // of its direction, but it also updates defenseDir to face that new
+  // attack angle, so a player who flanks the boss makes it turn to meet
+  // them (PART 16) instead of leaving it facing a now-stale direction.
+  function applyBodyHitToBoss(now, bulletVx, bulletVy) {
     if (!boss.spawned || boss.state === 'dead') return;
+    const incomingFrom = OPPOSITE_COMPASS[velocityToCompass(bulletVx, bulletVy)];
     if (boss.state === 'defense') {
+      boss.defenseDir = incomingFrom;
       bossBlockFlashUntil = now + 120;
       return;
     }
@@ -360,6 +407,7 @@
       boss.deadAt = now;
       return;
     }
+    boss.defenseDir = incomingFrom;
     bossEnterState('defense', now);
   }
 
@@ -367,8 +415,8 @@
     if (!boss.spawned || boss.state !== 'defense') return;
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
     weakPointFlashUntil = now + 220;
-    const wp = getWeakPointScreenPos();
-    weakPointFlashAt = wp;
+    const wp = getWeakPointScreenPos(boss.defenseDir);
+    if (wp) weakPointFlashAt = wp;
     if (boss.hp <= 0) {
       boss.state = 'dead';
       boss.deadAt = now;
@@ -665,9 +713,10 @@
 
   function getAutoAimTargetPoint() {
     // DEFENSE: the forehead weak point takes priority over the body — only
-    // fall back to the body center if the weak point itself isn't in range.
+    // fall back to the body center if the weak point itself isn't in range
+    // (or doesn't exist at all for the current defenseDir, e.g. NORTH).
     if (boss.spawned && boss.state === 'defense') {
-      const wp = getWeakPointScreenPos();
+      const wp = getWeakPointScreenPos(boss.defenseDir);
       return { primary: wp, secondary: { x: boss.x, y: boss.y } };
     }
     if (boss.spawned && boss.state !== 'dead') {
@@ -1013,10 +1062,9 @@
   window.addEventListener('mouseup', dashRelease);
 
   function updateDashButtonUI(now) {
-    const dir = (player.baseDir === 'left' || player.baseDir === 'right')
-      ? player.baseDir : player.lastHorizontalDir;
-    // No emoji/arrow glyphs — plain text, matches the military/SF UI style.
-    dashButton.textContent = dir === 'right' ? 'DASH R' : 'DASH L';
+    // Label is always just "DASH" — no direction text, arrows, or emoji.
+    // The actual DASH direction is decided internally from the player's
+    // current facing/input (tryStartDash()), not shown on the button.
     // Dim only while the current DASH is actually running (no more added
     // cooldown afterward — it's ready again the instant this clears).
     dashButton.classList.toggle('cooldown', player.dashing);
@@ -1144,14 +1192,18 @@
       let consumed = false;
       if (boss.spawned && boss.state !== 'dead') {
         if (boss.state === 'defense') {
-          const wp = getWeakPointScreenPos();
-          if (Math.hypot(b.x - wp.x, b.y - wp.y) <= WEAKPOINT_HIT_RADIUS) {
+          // Genuine physical hitbox overlap only — never inferred from
+          // "same direction as the sprite". getWeakPointScreenPos returns
+          // null for a direction with no visible eye (NORTH), so a bullet
+          // can never register a weak-point hit while defending that way.
+          const wp = getWeakPointScreenPos(boss.defenseDir);
+          if (wp && Math.hypot(b.x - wp.x, b.y - wp.y) <= WEAKPOINT_HIT_RADIUS) {
             applyWeakPointHitToBoss(now);
             consumed = true;
           }
         }
         if (!consumed && Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS) {
-          applyBodyHitToBoss(now);
+          applyBodyHitToBoss(now, b.vx, b.vy);
           consumed = true;
         }
       }
@@ -1348,7 +1400,10 @@
 
   function drawPlayer(now) {
     let img;
-    if (player.dashing) {
+    if (player.dashing && (player.dashDir === 'right' || player.dashDir === 'left')) {
+      // NORTH DASH has no dedicated art (per spec) — falls through to the
+      // normal pose branch below, which keeps showing the regular 'up'
+      // sprite (aim/fire cycling continues normally) throughout the dash.
       img = dashSprites[player.dashDir];
     } else if (player.baseDir === 'down' && player.relaxed) {
       img = relaxedSprite.down;
@@ -1371,7 +1426,9 @@
   // ---------- Boss rendering ----------
   function bossFrameName(now) {
     if (boss.state === 'attack') return 'attack';
-    if (boss.state === 'defense') return 'defense';
+    // DEFENSE always shows the direction the attack came FROM
+    // (boss.defenseDir), not boss.dir — see applyBodyHitToBoss().
+    if (boss.state === 'defense') return `defense_${boss.defenseDir}`;
     const key = DIR_TO_BOSS_KEY[boss.dir]; // north | south | east | west
     if (key === 'south') {
       if (!boss.moving) return 'south_idle';

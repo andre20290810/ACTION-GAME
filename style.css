@@ -56,10 +56,37 @@ html, body {
   }
 }
 
-#action-stick-zone {
+/* Left column: AIM STICK stacked directly above ACTION STICK, both flush
+   to the left edge. Right column: DASH stacked directly above FIRE, both
+   flush to the right edge. Each is a flex column so the gap between the
+   two stacked zones is never a guessed fixed pixel offset (that bug bit
+   the old FIRE/DASH-row layout once already — a sibling's real rendered
+   size didn't match the assumed max, and it overlapped ACTION STICK).
+   Flexbox lays out real boxes next to each other, so it can't happen. */
+#left-stick-col {
   position: absolute;
   left: max(16px, env(safe-area-inset-left));
   bottom: max(16px, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  pointer-events: none;
+}
+
+#right-button-col {
+  position: absolute;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  pointer-events: none;
+}
+
+#action-stick-zone {
+  position: relative;
   width: 38vw;
   height: 38vw;
   max-width: 220px;
@@ -92,23 +119,6 @@ html, body {
   will-change: transform;
 }
 
-/* PAUSE / DASH / FIRE share one flex row so each one's position is always
-   relative to its siblings' actual rendered size — never a guessed
-   fixed-pixel gap, which would misjudge a sibling's true width once its
-   own vw-based size gets clamped (as happens around typical phone
-   widths) and could otherwise overlap ACTION STICK on the far side of
-   the screen. Order is PAUSE (smallest, furthest from FIRE, least used)
-   -> DASH -> FIRE. */
-#fire-dash-row {
-  position: absolute;
-  right: max(16px, env(safe-area-inset-right));
-  bottom: max(16px, env(safe-area-inset-bottom));
-  display: flex;
-  align-items: flex-end;
-  gap: 5px;
-  pointer-events: none;
-}
-
 #fire-zone {
   position: relative;
   width: 30vw;
@@ -121,14 +131,8 @@ html, body {
   touch-action: none;
 }
 
-/* AIM STICK sits above the FIRE button on the right side; the fixed
-   168px offset (150px fire-zone max-height + 18px gap) guarantees no
-   overlap regardless of viewport width since fire-zone's hit-area size is
-   unchanged from before (only its visible circle shrinks). */
 #aim-stick-zone {
-  position: absolute;
-  right: max(16px, env(safe-area-inset-right));
-  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 168px);
+  position: relative;
   width: 34vw;
   height: 34vw;
   max-width: 190px;
@@ -183,23 +187,19 @@ html, body {
   background: rgba(255, 60, 40, 0.6);
 }
 
-/* DASH sits directly to the left of FIRE at the same bottom edge (via the
-   #fire-dash-row flexbox above), never stacked on top of it, so it adds
-   zero extra vertical space — the concern flagged for landscape, where
-   height is already tight. */
 #dash-zone {
   position: relative;
-  /* Deliberately smaller than FIRE (allowed by spec) and, together with
-     PAUSE now sharing this row, sized so the whole row still clears
-     ACTION STICK's own independent left-anchored width at the narrowest
-     current iPhone width (375pt, iPhone SE) — verified with real layout
-     measurements down to 360px. */
-  width: 11vw;
-  height: 11vw;
-  max-width: 50px;
-  max-height: 50px;
-  min-width: 38px;
-  min-height: 38px;
+  /* Deliberately smaller than FIRE (allowed by spec); stacking above FIRE
+     instead of squeezing sideways past it means it no longer needs to
+     fight ACTION STICK for horizontal room, so it can be a bit larger
+     than the previous side-by-side layout without re-enlarging the UI
+     overall (still clearly smaller than FIRE). */
+  width: 20vw;
+  height: 20vw;
+  max-width: 100px;
+  max-height: 100px;
+  min-width: 68px;
+  min-height: 68px;
   pointer-events: auto;
   touch-action: none;
 }
@@ -213,8 +213,8 @@ html, body {
   color: #eaffee;
   font-family: sans-serif;
   font-weight: bold;
-  font-size: clamp(9px, 2.3vw, 12px);
-  letter-spacing: 0.02em;
+  font-size: clamp(11px, 2.6vw, 15px);
+  letter-spacing: 0.03em;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
   outline: none;
@@ -233,16 +233,29 @@ html, body {
   opacity: 0.4;
 }
 
-/* PAUSE: smallest and plainest of the row — a utility button, not a
-   combat control, so it stays visually out of the way. */
+/* Stacking AIM above ACTION and DASH above FIRE means, in landscape
+   (screen height as low as ~390px), the two side columns' zone sizes
+   must shrink beyond just the visual inset, or the top zone in each
+   column would run off the top of the screen. Portrait has ample height
+   for the original sizes, so this only applies to landscape. */
+@media (orientation: landscape) {
+  #action-stick-zone { width: 20vw; height: 20vw; max-width: 168px; max-height: 168px; min-width: 108px; min-height: 108px; }
+  #aim-stick-zone { width: 16vw; height: 16vw; max-width: 128px; max-height: 128px; min-width: 92px; min-height: 92px; }
+  #fire-zone { width: 16vw; height: 16vw; max-width: 128px; max-height: 128px; min-width: 92px; min-height: 92px; }
+  #dash-zone { width: 11vw; height: 11vw; max-width: 82px; max-height: 82px; min-width: 58px; min-height: 58px; }
+  #left-stick-col, #right-button-col { gap: 8px; }
+}
+
+/* PAUSE now lives at the very top of the screen, clear of the Dynamic
+   Island / notch / status bar via safe-area-inset-top, and clear of every
+   other control since all of them anchor to the bottom. */
 #pause-zone {
-  position: relative;
-  width: 6vw;
-  height: 6vw;
-  max-width: 32px;
-  max-height: 32px;
-  min-width: 22px;
-  min-height: 22px;
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  width: 64px;
+  height: 26px;
   pointer-events: auto;
   touch-action: none;
 }
@@ -256,8 +269,8 @@ html, body {
   color: rgba(230, 235, 240, 0.75);
   font-family: sans-serif;
   font-weight: 600;
-  font-size: 7px;
-  letter-spacing: 0.02em;
+  font-size: 10px;
+  letter-spacing: 0.06em;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
   outline: none;
