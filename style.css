@@ -213,13 +213,29 @@ html, body {
   color: #eaffee;
   font-family: sans-serif;
   font-weight: bold;
-  font-size: clamp(11px, 2.6vw, 15px);
   letter-spacing: 0.03em;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
   outline: none;
   padding: 0;
   transition: opacity 0.15s ease;
+  /* Two stacked lines: "DASH" label + a live direction arrow — plain text
+     glyphs only (no color emoji), matching the military/SF UI style. */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  line-height: 1;
+}
+
+#dash-label {
+  font-size: clamp(10px, 2.3vw, 13px);
+}
+
+#dash-arrow {
+  font-size: clamp(13px, 3.2vw, 18px);
+  font-weight: 700;
 }
 
 #dash-button:active,

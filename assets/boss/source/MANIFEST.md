@@ -1,6 +1,6 @@
-# Boss character asset manifest — all 13 source images (batch 1 + batch 2 + batch 3)
+# Boss character asset manifest — all 14 source images (batch 1 + batch 2 + batch 3 + batch 4)
 
-All 13 files below are byte-identical copies of the originally attached
+All 14 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
 these `source/` copies. The processed, game-ready frames built from them
 live in `assets/boss/*.png` (see `assets/boss/sprite_build_meta.json` for
@@ -67,6 +67,26 @@ Batch 3 notes:
   causes no body-size or foot-position jump. See
   `assets/boss/defense_dirs_build_meta.json` for exact per-image
   source-bbox/scale/paste-offset values.
+
+## Batch 4 (1 image)
+
+| # | Role | Saved filename | Source dims | md5 |
+|---|------|-----------------|-------------|-----|
+| 14 | CINEMATIC POSE / 演出専用ポーズ | `boss_cinematic_source.png` | 1190x1317 RGBA | 2747f079707d3829a6ba1e803228abb0 |
+
+Batch 4 notes:
+- Used for the intro cinematic (BOSS MODE start), the 30/60/90%-cumulative-
+  damage HP-threshold reactions, and the death/dissolve sequence ONLY —
+  never as a normal IDLE/WALK/ATTACK/DEFENSE movement frame.
+- Already had real per-pixel alpha with its opaque bbox spanning almost
+  the entire source canvas (x:1-1187 of 1190, y:3-1314 of 1317), so it was
+  saved to `assets/boss/cinematic_pose.png` as a byte-identical copy with
+  no cropping needed at all — the only non-generative processing applied
+  anywhere is the runtime scale-to-height done in `game.js`
+  (`CINEMATIC_SCALE = 1.1`, i.e. ~1.1x the normal boss's on-screen height,
+  within the requested 1.0-1.2x band), keeping its own aspect ratio rather
+  than forcing it onto the narrower 700x920 movement-sprite canvas (its
+  wingspan is wide enough that doing so would clip it).
 
 Notes:
 - Verified visually (not assumed) that EAST images face screen-right with

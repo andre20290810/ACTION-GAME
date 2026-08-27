@@ -62,9 +62,11 @@
   // other player frame (see assets/alexandre/dash_relaxed_build_meta.json
   // for the exact per-frame crop/scale/anchor measurements), so switching
   // into/out of DASH or RELAXED never jumps or resizes the character.
-  const dashSprites = { right: new Image(), left: new Image() };
+  const dashSprites = { right: new Image(), left: new Image(), up: new Image(), down: new Image() };
   dashSprites.right.src = 'assets/alexandre/right_dash.png';
   dashSprites.left.src = 'assets/alexandre/left_dash.png';
+  dashSprites.up.src = 'assets/alexandre/dash_north.png';
+  dashSprites.down.src = 'assets/alexandre/dash_south.png';
   const relaxedSprite = { down: new Image() };
   relaxedSprite.down.src = 'assets/alexandre/down_relaxed.png';
 
@@ -83,7 +85,12 @@
     south_idle: 'south_idle', east_idle: 'east_idle', west_idle: 'west_idle', north_idle: 'north_idle',
     attack: 'attack',
     defense_south: 'defense', defense_north: 'defense_north', defense_east: 'defense_east', defense_west: 'defense_west',
-    walk_south_1: 'walk_south_1', walk_south_2: 'walk_south_2', walk_east: 'walk_east', walk_west: 'walk_west',
+    // The on-disk walk_east.png/walk_west.png pair has its content swapped
+    // from its filename (walk_east.png is actually the left/west-facing
+    // render and vice versa — confirmed by visual comparison against the
+    // correctly-labeled east_idle/west_idle pair). Rather than touch the
+    // image files, the logical keys below simply load the other file.
+    walk_south_1: 'walk_south_1', walk_south_2: 'walk_south_2', walk_east: 'walk_west', walk_west: 'walk_east',
   };
   const bossSprites = {};
   let bossSpritesReady = 0;
@@ -96,6 +103,20 @@
   const BOSS_CANVAS_W = 700, BOSS_CANVAS_H = 920; // shared aligned canvas size
   const BOSS_DRAW_H = SPRITE_DRAW_H * 1.5; // ~1.5x player height
   const BOSS_DRAW_W = BOSS_DRAW_H * (BOSS_CANVAS_W / BOSS_CANVAS_H);
+
+  // ---------- Boss CINEMATIC POSE (intro / HP-threshold / death only) ----------
+  // A separate, standalone image — never mixed into the normal IDLE/WALK/
+  // ATTACK/DEFENSE frame set above, never used as a movement sprite. Used
+  // as-is (its bbox already spans almost the entire source canvas, so no
+  // extra crop was needed) at its own aspect ratio rather than forced onto
+  // the narrower 700x920 movement-sprite canvas, since its wings are
+  // spread wide enough that doing so would clip them.
+  const cinematicPoseImg = new Image();
+  cinematicPoseImg.src = 'assets/boss/cinematic_pose.png';
+  const CINEMATIC_ASPECT = 1190 / 1317; // the source image's own W/H
+  const CINEMATIC_SCALE = 1.1; // ~1.0-1.2x the normal boss size, per spec
+  const CINEMATIC_DRAW_H = BOSS_DRAW_H * CINEMATIC_SCALE;
+  const CINEMATIC_DRAW_W = CINEMATIC_DRAW_H * CINEMATIC_ASPECT;
 
   // ---------- Explosive barrel (game object, supplied image) ----------
   // The attached render used as-is (real alpha transparency already
@@ -111,7 +132,7 @@
   // the requested 20-30% band.
   const BARREL_DRAW_H = SPRITE_DRAW_H * 0.30;
   const BARREL_HITBOX_RADIUS = 12; // scaled down to match the smaller draw size
-  const BARREL_EXPLOSION_RADIUS = 100; // area-effect range, not tied to the sprite size
+  const BARREL_EXPLOSION_RADIUS = 300; // area-effect range, not tied to the sprite size (3x the previous 100)
 
   // ---------- Direction bucket mapping (ACTION STICK -> base facing) ----------
   // angle: 0 = right, positive = clockwise (down), atan2(dy, dx), dy-down positive
@@ -124,10 +145,36 @@
     return 'left';
   }
 
+  // Same 4-way split as angleToBucket, but widens the zone around whichever
+  // bucket is already current by a few degrees, so a stick angle sitting
+  // right on a 45/135 boundary doesn't flicker between two buckets every
+  // frame. The widened margin is small (HYST) so it never perceptibly
+  // delays a real direction change — only stabilizes a boundary that's
+  // already essentially neutral.
+  const STICK_BUCKET_HYSTERESIS_DEG = 6;
+  function stickAngleToBucket(angle, prevBucket) {
+    let deg = angle * 180 / Math.PI;
+    deg = ((deg + 180) % 360 + 360) % 360 - 180;
+    const a = Math.abs(deg);
+    const H = STICK_BUCKET_HYSTERESIS_DEG;
+    if (prevBucket === 'right' && a <= 45 + H) return 'right';
+    if (prevBucket === 'left' && a >= 135 - H) return 'left';
+    if ((prevBucket === 'up' || prevBucket === 'down') && a > 45 - H && a < 135 + H) {
+      return deg > 0 ? 'down' : 'up';
+    }
+    return angleToBucket(angle);
+  }
+
   // Screen-space meaning is fixed regardless of internal representation:
   // up=true up, right=true right, down=true down, left=true left.
   const BASE_ANGLE = { right: 0, down: Math.PI / 2, left: Math.PI, up: -Math.PI / 2 };
   const HALF_RANGE = Math.PI / 4; // +-45 degrees (90-degree total aim wedge)
+
+  // ACTION STICK dead zone: fraction of the stick's radius that must be
+  // crossed before any direction/movement registers at all. Kept small
+  // (~12%) so input feels immediate — big enough only to ignore a resting
+  // thumb's tiny involuntary tremor, not to noticeably delay a real push.
+  const ACTION_STICK_DEADZONE = 0.12;
 
   // Returns (angle - center) clamped to +-HALF_RANGE, preserving whichever
   // side of center it's already on (nearest-valid-angle correction). The
@@ -150,16 +197,19 @@
     aimOffsetRaw: 0,   // radians relative to BASE_ANGLE[baseDir], within +-HALF_RANGE — raw AIM STICK input
     aimOffset: 0,      // effective offset actually used to fire/draw — aimOffsetRaw, lightly pulled toward a nearby AUTO AIM target
     moving: false,
-    // DASH: horizontal (left/right) or, when facing north, straight up —
-    // independent of baseDir/aim otherwise.
-    lastHorizontalDir: 'right', // 'right' | 'left' — last non-zero horizontal ACTION STICK input
+    // DASH: one of the 4 cardinal directions, always the direction the
+    // player is currently facing (baseDir) at the moment DASH is pressed —
+    // all 4 now have dedicated dash art, so no horizontal-fallback is
+    // needed for south/north anymore.
     dashing: false,
-    dashDir: 'right', // 'right' | 'left' | 'up'
+    dashDir: 'right', // 'right' | 'left' | 'up' | 'down'
     dashStartAt: -Infinity,
     dashFromX: 0,
     dashFromY: 0,
     dashDistance: 0,
     dashBuffered: false, // a DASH press received near the end of the current DASH
+    dashChainCount: 0, // dashes used in the current chain (max DASH_CHAIN_MAX)
+    facingLockUntil: 0, // briefly holds baseDir after a completed 2-dash chain reversal
     // RELAXED IDLE (SOUTH only): tracks how long all inputs have been idle.
     lastActivityAt: performance.now(),
     relaxed: false,
@@ -180,15 +230,21 @@
   }
   resetPlayerPosition();
 
-  function setBaseDir(dir) {
-    if (dir === 'left' || dir === 'right') player.lastHorizontalDir = dir;
-    if (dir === player.baseDir) return;
+  // Unconditionally applies a new base facing (used by the DASH-chain
+  // reversal, which must force the flip even though the requested direction
+  // may momentarily equal whatever the stick already reports). Snaps aim
+  // back to its center immediately rather than carrying over an offset
+  // computed for the old direction — same as the guarded setBaseDir below.
+  function forceSetBaseDir(dir) {
     player.baseDir = dir;
-    // The base facing just changed — snap aim back to its center immediately
-    // rather than carrying over an offset computed for the old direction.
     player.aimOffsetRaw = 0;
     player.aimOffset = 0;
     aimStickKnob.style.transform = 'translate(0px, 0px)';
+  }
+
+  function setBaseDir(dir) {
+    if (dir === player.baseDir) return;
+    forceSetBaseDir(dir);
   }
 
   function clampPlayerToScreen() {
@@ -198,45 +254,48 @@
     player.y = Math.max(halfH, Math.min(H - halfH, player.y));
   }
 
-  // ---------- DASH (right/left only) ----------
+  // ---------- DASH (4 directions, max 2 chained) ----------
   const DASH_DURATION_MS = 800;
   const DASH_DISTANCE_FRAC = 0.20; // 20% of screen width — within the 15-25% target
   const DASH_INPUT_BUFFER_MS = 150; // a press this close to DASH's own end still queues
   const RELAXED_IDLE_DELAY_MS = 400;
+  const DASH_CHAIN_MAX = 2; // at most 2 dashes per chain — a 3rd request is refused
+  const FACING_LOCK_MS = 200; // briefly holds the post-chain reversed facing against stick input
+  const OPPOSITE_DIR = { up: 'down', down: 'up', left: 'right', right: 'left' };
 
   function tryStartDash(now) {
     if (player.dashing) return;
-    // Direction priority: facing north always dashes straight up (no
-    // dedicated NORTH DASH art exists, so the sprite stays whatever the
-    // normal north pose is — see drawPlayer()). Facing left/right dashes
-    // that way. Facing south still falls back to the last horizontal
-    // direction, exactly as before — no new SOUTH DASH art was supplied.
-    const dir = player.baseDir === 'up'
-      ? 'up'
-      : (player.baseDir === 'left' || player.baseDir === 'right')
-        ? player.baseDir : player.lastHorizontalDir;
+    if (player.dashChainCount >= DASH_CHAIN_MAX) return; // chain already used up
+    // Direction is always the player's current facing — all 4 cardinal
+    // directions have dedicated dash art now, so no fallback is needed.
+    const dir = player.baseDir;
     player.dashing = true;
     player.dashDir = dir;
+    player.dashChainCount += 1;
     player.dashStartAt = now;
     player.dashFromX = player.x;
     player.dashFromY = player.y;
     // Same distance value on every axis (screen-width based, not
-    // screen-height) so NORTH DASH feels like the same distance as
-    // RIGHT/LEFT DASH instead of being stretched on tall portrait screens.
+    // screen-height) so vertical DASH feels like the same distance as
+    // horizontal DASH instead of being stretched on tall portrait screens.
     player.dashDistance = W * DASH_DISTANCE_FRAC;
     player.lastActivityAt = now;
   }
 
   // No extra cooldown after DASH — the next DASH is available the instant
-  // the current one ends. A press can't multi-trigger the same DASH (it's
-  // just ignored while player.dashing), but a press landing in the last
+  // the current one ends (as long as the chain hasn't already used its 2
+  // dashes). A press can't multi-trigger the same DASH (it's just ignored
+  // while player.dashing), but a press landing in the last
   // DASH_INPUT_BUFFER_MS of the current DASH is remembered and fired the
-  // moment this one ends, so mashing the button doesn't lose the input.
+  // moment this one ends, so mashing the button doesn't lose the input —
+  // unless the chain is already at DASH_CHAIN_MAX, in which case a 3rd
+  // request (buffered or not) is simply dropped.
   function requestDash(now) {
     if (!player.dashing) {
       tryStartDash(now);
       return;
     }
+    if (player.dashChainCount >= DASH_CHAIN_MAX) return;
     const remaining = DASH_DURATION_MS - (now - player.dashStartAt);
     if (remaining <= DASH_INPUT_BUFFER_MS) {
       player.dashBuffered = true;
@@ -258,14 +317,34 @@
     const elapsed = now - player.dashStartAt;
     if (elapsed >= DASH_DURATION_MS) {
       player.dashing = false;
-      const buffered = player.dashBuffered;
+      const finishedDir = player.dashDir;
+      const canChain = player.dashChainCount < DASH_CHAIN_MAX;
+      const buffered = player.dashBuffered && canChain;
       player.dashBuffered = false;
-      if (buffered) tryStartDash(now); // chain immediately, no cooldown gap
+      if (buffered) {
+        tryStartDash(now); // chain immediately, no cooldown gap
+        return;
+      }
+      // The chain ends here — either only 1 dash was used, or the 2nd just
+      // finished with nothing buffered. A completed 2-dash chain reverses
+      // facing to the opposite direction and shows that direction's normal
+      // pose (never left standing in the DASH pose); a lone single dash
+      // keeps facing the dash direction, unchanged from before chaining
+      // existed. The reversed facing is held briefly (FACING_LOCK_MS)
+      // against the ACTION STICK so it's actually visible for a moment
+      // even if the stick is still held in the original direction.
+      if (player.dashChainCount >= DASH_CHAIN_MAX) {
+        forceSetBaseDir(OPPOSITE_DIR[finishedDir]);
+        player.facingLockUntil = now + FACING_LOCK_MS;
+      }
+      player.dashChainCount = 0;
       return;
     }
     const progress = dashTravelProgress(elapsed / DASH_DURATION_MS);
     if (player.dashDir === 'up') {
       player.y = player.dashFromY - player.dashDistance * progress;
+    } else if (player.dashDir === 'down') {
+      player.y = player.dashFromY + player.dashDistance * progress;
     } else {
       const sign = player.dashDir === 'right' ? 1 : -1;
       player.x = player.dashFromX + sign * player.dashDistance * progress;
@@ -298,8 +377,38 @@
   const BOSS_DEFENSE_MS = 1800;
   const BOSS_HURT_RADIUS = 46; // small torso-only hurtbox, not the full sprite
   const BULLET_DAMAGE = 40;
+  // GUARD BREAK: a valid AUTO-AIM-assisted hit during DEFENSE (weak point or,
+  // where none exists, the body target AUTO AIM falls back to) counts toward
+  // this; the 4th one breaks DEFENSE outright into a brief stagger and then
+  // straight into ATTACK, instead of just chipping the guard down forever.
+  const DEFENSE_GUARD_BREAK_HITS = 4;
+  const GUARD_BREAK_PAUSE_MS = 250;
   const WALK_FRAME_PERIOD_MS = 260; // south 2-frame alternation period
   const NORTH_BOUNCE_AMPLITUDE = 4; // px, decorative only (no NORTH walk art)
+
+  // ---------- Boss cinematic sequences (intro / HP threshold / death) ----------
+  // Intro: flash -> shadow grows -> descend -> land -> normal AI begins.
+  const INTRO_FLASH_MS = 700;
+  const INTRO_SHADOW_MS = 900;
+  const INTRO_DESCEND_MS = 800;
+  const INTRO_LANDING_MS = 250;
+  const INTRO_TOTAL_MS = INTRO_FLASH_MS + INTRO_SHADOW_MS + INTRO_DESCEND_MS + INTRO_LANDING_MS;
+  // HP-threshold reactions: keyed by CUMULATIVE damage taken this life,
+  // expressed as the HP value at/below which that much damage has landed
+  // (HP only ever decreases, so this is equivalent and simpler than
+  // tracking a separate cumulative-damage counter). Ordered deepest first
+  // so a single hit that crosses more than one at once only plays the
+  // deepest one's cinematic — see checkBossHpMilestones().
+  const BOSS_PHASE_THRESHOLDS = [
+    { key: 'p90', hpAtOrBelow: BOSS_HP_MAX * 0.10 }, // 90% of max HP lost
+    { key: 'p60', hpAtOrBelow: BOSS_HP_MAX * 0.40 }, // 60% of max HP lost
+    { key: 'p30', hpAtOrBelow: BOSS_HP_MAX * 0.70 }, // 30% of max HP lost
+  ];
+  const THRESHOLD_CINEMATIC_MS = 600;
+  // Death: brief hold on the cinematic pose, then a real (non-opacity-only)
+  // particle dissolve — see buildDyingParticles()/drawBossDying().
+  const DYING_DURATION_MS = 1600;
+  const DYING_CELL_SIZE = 10; // px, sampled at the cinematic sprite's on-screen size
   const PLAYER_HIT_RADIUS = 22;
 
   // Claw-projectile ranged attack, fired once per ATTACK cycle.
@@ -328,7 +437,7 @@
   const boss = {
     x: 0, y: 0,
     spawned: false,
-    state: 'inactive', // inactive | chase | attack | defense | recover | dead
+    state: 'inactive', // inactive | chase | attack | defense | guardbreak | recover | dead
     dir: 'down', // shared player-style bucket key; mapped to north/south/east/west for movement/attack facing
     defenseDir: 'south', // 'north'|'south'|'east'|'west' — which DEFENSE sprite/weak-point is active; set from incoming fire, independent of `dir`
     moving: false,
@@ -339,6 +448,24 @@
     chaseBackoffUntil: 0,
     deadAt: 0,
     warningUntil: 0,
+    defenseAimHits: 0, // valid AUTO-AIM-assisted hits landed during the current DEFENSE
+    // Cinematic sequence state (intro / HP threshold / death) — see the
+    // "Boss cinematic sequences" constants above and startBossThreshold(),
+    // startBossDying(), updateBossIntro/Threshold/Dying(), drawBoss*().
+    phaseTriggered: { p30: false, p60: false, p90: false },
+    introFromY: 0,
+    introTargetY: 0,
+    introLandingTriggered: false,
+    // Elapsed ms into the CURRENT cinematic phase — updated only from
+    // inside update() (which PAUSE already short-circuits entirely), so
+    // every cinematic timer freezes for free whenever the game is paused
+    // and resumes exactly where it left off; draw()-side rendering reads
+    // this cached value instead of computing its own now-vs-stateEnteredAt
+    // elapsed time, since draw() keeps receiving a live, ever-advancing
+    // `now` even while paused.
+    cinematicElapsed: 0,
+    dyingParticlesBuilt: false,
+    dyingParticles: [],
   };
 
   function bossEnterState(state, now) {
@@ -348,18 +475,80 @@
       boss.attackHitApplied = false;
       boss.attackProjectileSpawned = false;
     }
+    // The GUARD BREAK counter only ever means something mid-DEFENSE — reset
+    // it the instant any other state (fresh DEFENSE included, since this
+    // covers entering it too) is entered so a stale count never survives.
+    if (state !== 'defense') boss.defenseAimHits = 0;
+    // Cinematic phases track their own progress by accumulating `dt` inside
+    // update() (which PAUSE already skips entirely) rather than by
+    // `now - stateEnteredAt` — the latter would jump forward by however
+    // long a real-world PAUSE lasted the instant it resumes, effectively
+    // skipping the rest of the cinematic instead of continuing it.
+    if (state === 'intro' || state === 'threshold' || state === 'dying') {
+      boss.cinematicElapsed = 0;
+    }
   }
 
   function spawnBoss(now) {
     boss.x = W / 2;
-    boss.y = Math.max(BOSS_DRAW_H * 0.55, H * 0.16); // appear near the top
+    boss.introTargetY = Math.max(BOSS_DRAW_H * 0.55, H * 0.16); // the normal resting spawn spot
+    boss.introFromY = -CINEMATIC_DRAW_H; // starts just above the visible screen
+    boss.y = boss.introFromY;
     boss.spawned = true;
     boss.hp = BOSS_HP_MAX;
     boss.dir = 'down';
     boss.defenseDir = 'south';
     boss.moving = false;
     boss.warningUntil = now + 1500;
-    bossEnterState('chase', now);
+    boss.defenseAimHits = 0;
+    boss.phaseTriggered = { p30: false, p60: false, p90: false };
+    boss.introLandingTriggered = false;
+    boss.cinematicElapsed = 0;
+    boss.dyingParticlesBuilt = false;
+    boss.dyingParticles = [];
+    // BOSS MODE only ever shows this — TRAINING MODE never calls
+    // spawnBoss() at all, so it never plays.
+    bossEnterState('intro', now);
+  }
+
+  function bossIsInCinematic() {
+    return boss.state === 'intro' || boss.state === 'threshold' || boss.state === 'dying' || boss.state === 'dead';
+  }
+
+  // Called after any HP reduction. Returns true if the hit was instead
+  // absorbed by a cinematic transition (death, or a newly-crossed HP
+  // threshold) — callers must stop and not apply any further state change
+  // of their own for that same hit (this is also what makes a threshold
+  // cinematic take priority over a same-frame GUARD BREAK, per spec).
+  function checkBossHpMilestones(now) {
+    if (boss.hp <= 0) {
+      startBossDying(now);
+      return true;
+    }
+    let deepestNew = null;
+    for (const th of BOSS_PHASE_THRESHOLDS) {
+      if (!boss.phaseTriggered[th.key] && boss.hp <= th.hpAtOrBelow) {
+        boss.phaseTriggered[th.key] = true; // mark every crossed threshold so none re-fires later...
+        if (!deepestNew) deepestNew = th.key; // ...but only the single deepest one actually plays
+      }
+    }
+    if (deepestNew) {
+      startBossThreshold(now);
+      return true;
+    }
+    return false;
+  }
+
+  function startBossThreshold(now) {
+    triggerScreenShake(now, 5, 150);
+    bossEnterState('threshold', now);
+  }
+
+  function startBossDying(now) {
+    clawProjectiles.length = 0; // no lingering attack hazards during the death cinematic
+    boss.dyingParticlesBuilt = false;
+    boss.dyingParticles = [];
+    bossEnterState('dying', now);
   }
 
   // Compass bucket (north/south/east/west) a bullet is travelling in,
@@ -383,44 +572,68 @@
   let bossBlockFlashUntil = 0;
   let weakPointFlashUntil = 0;
   let weakPointFlashAt = { x: 0, y: 0 };
+  let guardBreakFlashUntil = 0;
+
+  // Shared by both damage paths below: registers one valid AUTO-AIM-assisted
+  // hit landed while the boss is defending, and breaks the guard outright on
+  // the DEFENSE_GUARD_BREAK_HITSth one — entering a brief stagger pause and
+  // then straight into ATTACK — instead of letting DEFENSE block forever.
+  function registerDefenseAimHit(now) {
+    boss.defenseAimHits += 1;
+    if (boss.defenseAimHits >= DEFENSE_GUARD_BREAK_HITS) {
+      guardBreakFlashUntil = now + GUARD_BREAK_PAUSE_MS;
+      bossEnterState('guardbreak', now); // also resets defenseAimHits back to 0
+    }
+  }
 
   // A shot landing on the body/wings/claws/mask while the boss is NOT
   // already defending applies normal damage once, then instantly forces
   // DEFENSE, facing the direction the shot came FROM (i.e. the opposite of
   // the bullet's own travel direction) — PART 2/3 of the directional
-  // rewrite. While already in DEFENSE, every body hit is still fully
-  // blocked (0 damage, never reduced — unchanged from before) regardless
-  // of its direction, but it also updates defenseDir to face that new
-  // attack angle, so a player who flanks the boss makes it turn to meet
-  // them (PART 16) instead of leaving it facing a now-stale direction.
-  function applyBodyHitToBoss(now, bulletVx, bulletVy) {
-    if (!boss.spawned || boss.state === 'dead') return;
+  // rewrite. While already in DEFENSE, a plain (non-AUTO-AIM) body hit is
+  // still fully blocked (0 damage, never reduced) but updates defenseDir to
+  // face the new attack angle, so a player who flanks the boss makes it
+  // turn to meet them. A body hit that WAS AUTO-AIM-assisted (the red
+  // reticle was locked on, which for a direction with no weak point — e.g.
+  // NORTH — is the only target DEFENSE ever offers) instead counts as a
+  // genuine hit: full damage, and it counts toward GUARD BREAK.
+  function applyBodyHitToBoss(now, bulletVx, bulletVy, autoAimed) {
+    // GUARD BREAK's stagger pause is a brief (250ms), deliberately
+    // untargetable beat between DEFENSE ending and ATTACK beginning — a hit
+    // landing in that window must not re-trigger DEFENSE mid-transition.
+    // bossIsInCinematic() also covers intro/threshold/dying/dead: the boss
+    // is untargetable throughout every cinematic sequence, not just death.
+    if (!boss.spawned || bossIsInCinematic() || boss.state === 'guardbreak') return;
     const incomingFrom = OPPOSITE_COMPASS[velocityToCompass(bulletVx, bulletVy)];
     if (boss.state === 'defense') {
       boss.defenseDir = incomingFrom;
+      if (autoAimed) {
+        boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
+        if (checkBossHpMilestones(now)) return; // death or a threshold cinematic took over
+        registerDefenseAimHit(now);
+        return;
+      }
       bossBlockFlashUntil = now + 120;
       return;
     }
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
-    if (boss.hp <= 0) {
-      boss.state = 'dead';
-      boss.deadAt = now;
-      return;
-    }
+    if (checkBossHpMilestones(now)) return;
     boss.defenseDir = incomingFrom;
     bossEnterState('defense', now);
   }
 
-  function applyWeakPointHitToBoss(now) {
+  // The weak point always takes genuine physical hits regardless of AUTO
+  // AIM (a manually-aimed precision shot still works, unchanged from
+  // before) — but only an AUTO-AIM-assisted weak-point hit also counts
+  // toward GUARD BREAK, same rule as the body-target fallback above.
+  function applyWeakPointHitToBoss(now, autoAimed) {
     if (!boss.spawned || boss.state !== 'defense') return;
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
     weakPointFlashUntil = now + 220;
     const wp = getWeakPointScreenPos(boss.defenseDir);
     if (wp) weakPointFlashAt = wp;
-    if (boss.hp <= 0) {
-      boss.state = 'dead';
-      boss.deadAt = now;
-    }
+    if (checkBossHpMilestones(now)) return; // death or a threshold cinematic took over
+    if (autoAimed) registerDefenseAimHit(now);
   }
 
   function updateBoss(dt, now) {
@@ -430,6 +643,12 @@
       return;
     }
     if (boss.state === 'dead') return;
+    // Cinematic sequences each own their own progression/timing entirely —
+    // see updateBossIntro/Threshold/Dying() — and never fall through to the
+    // normal CHASE/ATTACK/DEFENSE/RECOVER AI below.
+    if (boss.state === 'intro') { updateBossIntro(dt, now); return; }
+    if (boss.state === 'threshold') { updateBossThreshold(dt, now); return; }
+    if (boss.state === 'dying') { updateBossDying(dt, now); return; }
     if (window.__game.freezeBossAI) return; // debug/verification only
 
 
@@ -501,6 +720,14 @@
       if (now - boss.stateEnteredAt >= BOSS_DEFENSE_MS) {
         bossEnterState('recover', now);
       }
+    } else if (boss.state === 'guardbreak') {
+      // Brief stagger after the 4th AUTO-AIM-assisted DEFENSE hit, then
+      // straight into ATTACK (facing the player at that instant) rather
+      // than back to CHASE — the guard was broken, not just timed out.
+      if (now - boss.stateEnteredAt >= GUARD_BREAK_PAUSE_MS) {
+        boss.dir = angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x));
+        bossEnterState('attack', now);
+      }
     } else if (boss.state === 'recover') {
       if (now - boss.stateEnteredAt >= BOSS_RECOVER_MS) {
         bossEnterState('chase', now);
@@ -516,6 +743,51 @@
 
     boss.x = Math.max(BOSS_DRAW_W * 0.3, Math.min(W - BOSS_DRAW_W * 0.3, boss.x));
     boss.y = Math.max(BOSS_DRAW_H * 0.3, Math.min(H - BOSS_DRAW_H * 0.3, boss.y));
+  }
+
+  // BOSS MODE start: flash -> shadow grows -> descend -> land -> normal AI.
+  // boss.cinematicElapsed is cached here (not recomputed in draw()) so a
+  // PAUSE mid-sequence freezes it for free and RESUME continues from
+  // exactly the same point — see the boss object's cinematicElapsed field.
+  function updateBossIntro(dt, now) {
+    boss.cinematicElapsed += dt * 1000;
+    const elapsed = boss.cinematicElapsed;
+    const descendStart = INTRO_FLASH_MS + INTRO_SHADOW_MS;
+    if (elapsed >= descendStart) {
+      const t = Math.min(1, (elapsed - descendStart) / INTRO_DESCEND_MS);
+      const eased = 1 - Math.pow(1 - t, 2); // ease-out — slows into the landing
+      boss.y = boss.introFromY + (boss.introTargetY - boss.introFromY) * eased;
+    }
+    if (elapsed >= descendStart + INTRO_DESCEND_MS && !boss.introLandingTriggered) {
+      boss.introLandingTriggered = true;
+      triggerScreenShake(now, 8, 220);
+    }
+    if (elapsed >= INTRO_TOTAL_MS) {
+      boss.y = boss.introTargetY;
+      bossEnterState('chase', now);
+    }
+  }
+
+  // Brief HP-milestone reaction (30/60/90% cumulative damage) — boss AI is
+  // paused and untargetable (see bossIsInCinematic()) for THRESHOLD_CINEMATIC_MS,
+  // then resumes into CHASE regardless of what it was doing beforehand.
+  function updateBossThreshold(dt, now) {
+    boss.cinematicElapsed += dt * 1000;
+    if (boss.cinematicElapsed >= THRESHOLD_CINEMATIC_MS) {
+      bossEnterState('chase', now);
+    }
+  }
+
+  // Death: hold on the cinematic pose while it particle-dissolves (see
+  // buildDyingParticles()/drawBossDying()), then flip to the true terminal
+  // 'dead' state once the dissolve finishes — 'dead' itself draws nothing
+  // at all, since the dissolve already completed the visual disappearance.
+  function updateBossDying(dt, now) {
+    boss.cinematicElapsed += dt * 1000;
+    if (boss.cinematicElapsed >= DYING_DURATION_MS) {
+      boss.state = 'dead';
+      boss.deadAt = now;
+    }
   }
 
   // ---------- Boss claw projectile (ranged ATTACK payload) ----------
@@ -635,17 +907,55 @@
   }
 
   const explosions = [];
-  const EXPLOSION_DURATION_MS = 350;
-  const BARREL_DAMAGE = BULLET_DAMAGE * 15; // ~15 normal shots worth, per spec's 10-20x range
+  const EXPLOSION_DURATION_MS = 600; // 0-100 flash, 100-300 fireball, 300-600 sparks/debris/smoke decay
+  const BARREL_DAMAGE = BULLET_DAMAGE * 15; // ~15 normal shots worth, per spec's 10-20x range — unchanged
   const TRAINING_RESPAWN_MIN_MS = 800, TRAINING_RESPAWN_MAX_MS = 1500;
+
+  // Brief, small camera shake on a barrel detonation — canvas-only, applied
+  // as a temporary draw()-time translate (see getScreenShakeOffset()) that
+  // never touches actual world coordinates, so it can't desync hit tests.
+  let screenShakeUntil = 0;
+  let screenShakeStartAt = 0;
+  let screenShakeDurationMs = 0;
+  let screenShakeMag = 0;
+  function triggerScreenShake(now, mag, durationMs) {
+    screenShakeUntil = now + durationMs;
+    screenShakeStartAt = now;
+    screenShakeDurationMs = durationMs;
+    screenShakeMag = mag;
+  }
+  function getScreenShakeOffset(now) {
+    if (now >= screenShakeUntil) return { x: 0, y: 0 };
+    const t = (screenShakeUntil - now) / screenShakeDurationMs; // 1 -> 0
+    const mag = screenShakeMag * t;
+    return { x: (Math.random() * 2 - 1) * mag, y: (Math.random() * 2 - 1) * mag };
+  }
 
   function explodeBarrel(barrel, now) {
     barrel.alive = false;
-    explosions.push({ x: barrel.x, y: barrel.y, startAt: now });
+    // A handful of sparks (fast, bright, short-lived), a few chunky metal
+    // debris pieces (slower, tumbling, longer-lived), and some soft smoke
+    // puffs (slow drift, fades in late, lingers longest) — generated once
+    // here and just aged/positioned by elapsed time in drawExplosion(),
+    // canvas-only, no image assets.
+    const particles = [];
+    for (let i = 0; i < 14; i++) {
+      particles.push({ type: 'spark', angle: Math.random() * Math.PI * 2, speed: 220 + Math.random() * 190, size: 1.4 + Math.random() * 1.6 });
+    }
+    for (let i = 0; i < 8; i++) {
+      particles.push({ type: 'debris', angle: Math.random() * Math.PI * 2, speed: 90 + Math.random() * 150, size: 3 + Math.random() * 3.5, spin: (Math.random() - 0.5) * 12 });
+    }
+    for (let i = 0; i < 5; i++) {
+      particles.push({ type: 'smoke', angle: Math.random() * Math.PI * 2, speed: 16 + Math.random() * 34, size: 13 + Math.random() * 11 });
+    }
+    explosions.push({ x: barrel.x, y: barrel.y, startAt: now, particles });
+    triggerScreenShake(now, 6, 180);
     // Explosion damage bypasses DEFENSE entirely — a stage gimmick that
-    // works regardless of the boss's current state, unlike gunfire.
+    // works regardless of the boss's current state, unlike gunfire. The
+    // reach check adds BOSS_HURT_RADIUS so it's the boss's hurtbox CIRCLE
+    // (not just its exact center point) that has to be within blast range.
     if (boss.spawned && boss.state !== 'dead' &&
-        Math.hypot(barrel.x - boss.x, barrel.y - boss.y) <= BARREL_EXPLOSION_RADIUS) {
+        Math.hypot(barrel.x - boss.x, barrel.y - boss.y) <= BARREL_EXPLOSION_RADIUS + BOSS_HURT_RADIUS) {
       applyExplosionDamageToBoss(BARREL_DAMAGE, now);
     }
     if (gameState.mode === 'training') {
@@ -669,33 +979,105 @@
     ctx.drawImage(barrelImg, b.x - w / 2, b.y - h / 2, w, h);
   }
 
-  // Short white/yellow-core, orange/red-edge burst, then gone — a stage
-  // effect, not a persistent hazard.
+  // Three overlapping phases, all canvas-drawn (no image assets): a sharp
+  // white/yellow flash (0-100ms), a growing orange/red fireball built from
+  // several offset irregular blobs rather than one perfect circle
+  // (~80-340ms), and sparks/debris/smoke that fly outward and decay
+  // (through ~600ms). The damage radius (BARREL_EXPLOSION_RADIUS, 300px) is
+  // intentionally much larger than anything drawn here — this is a stage
+  // effect sized to read as "big", not a literal hitbox outline.
   function drawExplosion(e, now) {
-    const t = (now - e.startAt) / EXPLOSION_DURATION_MS;
-    if (t >= 1) return;
-    const r = 10 + t * 46;
-    const alpha = 1 - t;
+    const t = now - e.startAt;
+    if (t >= EXPLOSION_DURATION_MS) return;
     ctx.save();
     ctx.translate(e.x, e.y);
-    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
-    grad.addColorStop(0, `rgba(255,250,210,${alpha})`);
-    grad.addColorStop(0.45, `rgba(255,170,60,${alpha * 0.9})`);
-    grad.addColorStop(1, `rgba(200,40,20,0)`);
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
-    ctx.fill();
+
+    // Phase 1: strong white-yellow flash, sharp and brief.
+    if (t < 100) {
+      const ft = t / 100;
+      const r = 16 + ft * 78;
+      const alpha = 1 - ft * 0.25;
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+      grad.addColorStop(0, `rgba(255,255,245,${alpha})`);
+      grad.addColorStop(0.5, `rgba(255,238,150,${alpha * 0.9})`);
+      grad.addColorStop(1, `rgba(255,200,80,0)`);
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Phase 2: orange/red fireball — a main blob plus a few smaller offset
+    // blobs (fixed angles, so no per-frame jitter) for an irregular silhouette.
+    if (t > 60 && t < 340) {
+      const ft = Math.min(1, (t - 60) / 280);
+      const baseR = 22 + ft * 74;
+      const alpha = 1 - ft * 0.85;
+      const mainGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, baseR);
+      mainGrad.addColorStop(0, `rgba(255,230,150,${alpha})`);
+      mainGrad.addColorStop(0.4, `rgba(255,140,40,${alpha * 0.85})`);
+      mainGrad.addColorStop(1, `rgba(180,30,10,0)`);
+      ctx.fillStyle = mainGrad;
+      ctx.beginPath();
+      ctx.arc(0, 0, baseR, 0, Math.PI * 2);
+      ctx.fill();
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2 + 0.4;
+        const dist = baseR * 0.4;
+        const bx = Math.cos(a) * dist, by = Math.sin(a) * dist;
+        const br = baseR * 0.5;
+        const grad2 = ctx.createRadialGradient(bx, by, 0, bx, by, br);
+        grad2.addColorStop(0, `rgba(255,175,85,${alpha * 0.8})`);
+        grad2.addColorStop(1, `rgba(200,60,20,0)`);
+        ctx.fillStyle = grad2;
+        ctx.beginPath();
+        ctx.arc(bx, by, br, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Phase 3: sparks (fast/bright/short), metal debris (tumbling squares),
+    // smoke (slow soft puffs, fades in late and lingers to the very end).
+    const tSec = t / 1000;
+    for (const p of e.particles) {
+      const dx = Math.cos(p.angle) * p.speed * tSec;
+      const dy = Math.sin(p.angle) * p.speed * tSec;
+      if (p.type === 'spark') {
+        if (t > 260) continue;
+        const alpha = Math.max(0, 1 - t / 260);
+        ctx.fillStyle = `rgba(255,235,180,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(dx, dy, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.type === 'debris') {
+        if (t < 40 || t > 480) continue;
+        const lt = (t - 40) / 440;
+        const alpha = Math.max(0, 1 - lt);
+        ctx.save();
+        ctx.translate(dx, dy);
+        ctx.rotate(p.spin * lt);
+        ctx.fillStyle = `rgba(90,90,96,${alpha})`;
+        ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+        ctx.restore();
+      } else {
+        if (t < 150) continue;
+        const lt = Math.min(1, (t - 150) / 450);
+        const alpha = (1 - lt) * 0.35;
+        const r = p.size * (0.6 + lt * 1.2);
+        ctx.fillStyle = `rgba(70,70,74,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(dx, dy - lt * 18, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     ctx.restore();
   }
 
   function applyExplosionDamageToBoss(amount, now) {
-    if (!boss.spawned || boss.state === 'dead') return;
+    if (!boss.spawned || bossIsInCinematic()) return;
     boss.hp = Math.max(0, boss.hp - amount);
-    if (boss.hp <= 0) {
-      boss.state = 'dead';
-      boss.deadAt = now;
-    }
+    checkBossHpMilestones(now);
   }
 
   // ---------- AUTO AIM ----------
@@ -710,8 +1092,12 @@
   const AUTO_AIM_RADIUS = 46; // screen px, around the reticle tip
   const AUTO_AIM_SNAP_STRENGTH = 0.35; // fraction of remaining angle closed per frame
   let autoAimActive = false;
+  let autoAimTargetIsBoss = false; // true when the current snap target is the boss (weak point or body), not a barrel
 
   function getAutoAimTargetPoint() {
+    // No lock-on target at all during any cinematic (intro/threshold/dying)
+    // or once truly dead — bossIsInCinematic() covers all four.
+    if (boss.spawned && bossIsInCinematic()) return { primary: null, secondary: null };
     // DEFENSE: the forehead weak point takes priority over the body — only
     // fall back to the body center if the weak point itself isn't in range
     // (or doesn't exist at all for the current defenseDir, e.g. NORTH).
@@ -727,6 +1113,7 @@
 
   function updateAutoAim(now) {
     autoAimActive = false;
+    autoAimTargetIsBoss = false;
     if (!aimStickActive) {
       player.aimOffset = player.aimOffsetRaw;
       return;
@@ -739,20 +1126,25 @@
     const tipX = mx + Math.cos(rawAngle) * AIM_LINE_LEN;
     const tipY = my + Math.sin(rawAngle) * AIM_LINE_LEN;
 
-    let best = null, bestDist = AUTO_AIM_RADIUS;
+    let best = null, bestDist = AUTO_AIM_RADIUS, bestIsBoss = false;
     const bossTargets = getAutoAimTargetPoint();
+    // Strict priority: try the weak point (primary) first; only fall back to
+    // the body (secondary) if primary doesn't win — either because it's out
+    // of range, or because it doesn't exist at all for the current
+    // defenseDir (e.g. NORTH), in which case primary is null and this
+    // fallback is the ONLY way DEFENSE can be AUTO-AIM-targeted at all.
     if (bossTargets.primary) {
       const d = Math.hypot(tipX - bossTargets.primary.x, tipY - bossTargets.primary.y);
-      if (d < bestDist) { bestDist = d; best = bossTargets.primary; }
-      else if (bossTargets.secondary) {
-        const d2 = Math.hypot(tipX - bossTargets.secondary.x, tipY - bossTargets.secondary.y);
-        if (d2 < bestDist) { bestDist = d2; best = bossTargets.secondary; }
-      }
+      if (d < bestDist) { bestDist = d; best = bossTargets.primary; bestIsBoss = true; }
+    }
+    if (!best && bossTargets.secondary) {
+      const d = Math.hypot(tipX - bossTargets.secondary.x, tipY - bossTargets.secondary.y);
+      if (d < bestDist) { bestDist = d; best = bossTargets.secondary; bestIsBoss = true; }
     }
     for (const b of barrels) {
       if (!b.alive) continue;
       const d = Math.hypot(tipX - b.x, tipY - b.y);
-      if (d < bestDist) { bestDist = d; best = { x: b.x, y: b.y }; }
+      if (d < bestDist) { bestDist = d; best = { x: b.x, y: b.y }; bestIsBoss = false; }
     }
 
     if (best) {
@@ -760,6 +1152,7 @@
       const desiredOffset = clampToHalfRange(desiredAngle, center);
       player.aimOffset += (desiredOffset - player.aimOffset) * AUTO_AIM_SNAP_STRENGTH;
       autoAimActive = true;
+      autoAimTargetIsBoss = bestIsBoss;
     } else {
       player.aimOffset = player.aimOffsetRaw;
     }
@@ -776,6 +1169,8 @@
     player.aimOffset = 0;
     player.dashing = false;
     player.dashBuffered = false;
+    player.dashChainCount = 0;
+    player.facingLockUntil = 0;
     player.lastActivityAt = performance.now();
     player.relaxed = false;
 
@@ -1041,6 +1436,7 @@
   // pattern already used for ACTION STICK / AIM STICK / FIRE.
   const dashZone = document.getElementById('dash-zone');
   const dashButton = document.getElementById('dash-button');
+  const dashArrowEl = document.getElementById('dash-arrow');
 
   function dashPress(e) {
     e.preventDefault();
@@ -1061,13 +1457,23 @@
   dashZone.addEventListener('mousedown', dashPress);
   window.addEventListener('mouseup', dashRelease);
 
+  // Plain text arrow glyphs only (no color emoji), matching the
+  // military/SF UI style. DASH's actual direction is always the player's
+  // current base facing (tryStartDash() reads player.baseDir directly), so
+  // showing player.baseDir here can never drift from where DASH will go.
+  const DASH_ARROW = { up: '↑', down: '↓', left: '←', right: '→' };
+  let lastDashArrowDir = null;
+
   function updateDashButtonUI(now) {
-    // Label is always just "DASH" — no direction text, arrows, or emoji.
-    // The actual DASH direction is decided internally from the player's
-    // current facing/input (tryStartDash()), not shown on the button.
     // Dim only while the current DASH is actually running (no more added
     // cooldown afterward — it's ready again the instant this clears).
     dashButton.classList.toggle('cooldown', player.dashing);
+    // Only touch the DOM when the direction actually changes, not every
+    // frame, to avoid needless layout/text churn.
+    if (player.baseDir !== lastDashArrowDir) {
+      lastDashArrowDir = player.baseDir;
+      dashArrowEl.textContent = DASH_ARROW[player.baseDir];
+    }
   }
 
   // Prevent default touch scroll/zoom anywhere on the game UI
@@ -1114,6 +1520,12 @@
       vx: Math.cos(angle) * BULLET_SPEED,
       vy: Math.sin(angle) * BULLET_SPEED,
       born: performance.now(),
+      // Captured at fire time, not checked later: whether AUTO AIM was
+      // actively locked onto the boss's own target (weak point or its body
+      // fallback) for THIS shot — a barrel-locked or unassisted shot must
+      // never count toward DEFENSE's GUARD BREAK counter even if it happens
+      // to also land on the boss.
+      autoAimedBoss: autoAimActive && autoAimTargetIsBoss,
     });
     // No canvas muzzle-flash circle — the FIRE sprites already carry their
     // own baked-in flash art; an extra orange dot on top was redundant.
@@ -1124,11 +1536,16 @@
   // Exposed for Playwright/manual verification only — not part of gameplay.
   window.__game = {
     player, boss, playerHitCount: 0,
-    applyBodyHitToBoss, applyWeakPointHitToBoss, bossEnterState,
+    applyBodyHitToBoss, applyWeakPointHitToBoss, applyExplosionDamageToBoss, bossEnterState,
     getWeakPointScreenPos, clawProjectiles,
     gameState, barrels, explosions, spawnBarrels, startMode,
     get autoAimActive() { return autoAimActive; },
+    get autoAimTargetIsBoss() { return autoAimTargetIsBoss; },
     MUZZLE_DIST, AIM_LINE_LEN, AUTO_AIM_RADIUS,
+    // Debug/verification only — boss cinematic sequences.
+    bossIsInCinematic, checkBossHpMilestones, startBossThreshold, startBossDying,
+    BOSS_PHASE_THRESHOLDS, INTRO_TOTAL_MS, THRESHOLD_CINEMATIC_MS, DYING_DURATION_MS,
+    DEFENSE_GUARD_BREAK_HITS, BARREL_EXPLOSION_RADIUS, BOSS_HURT_RADIUS,
   };
 
   // ---------- Main loop ----------
@@ -1136,6 +1553,16 @@
 
   function update(dt, now) {
     if (gameState.paused) return; // PAUSE freezes everything: no movement, AI, bullets, timers
+    if (boss.state === 'intro') {
+      // The BOSS MODE intro cinematic freezes player movement/FIRE/DASH/AIM,
+      // barrels, and the boss's own combat AI entirely — only the intro's
+      // own phase timer (inside updateBoss()) advances. THRESHOLD and DYING
+      // do NOT freeze gameplay this way (only the boss's own AI/hittability
+      // pauses for those — see bossIsInCinematic() usage elsewhere), so
+      // this early-return only applies to 'intro'.
+      updateBoss(dt, now);
+      return;
+    }
 
     const kb = getKeyboardVec();
     let vx = actionStickVec.x + kb.x;
@@ -1143,10 +1570,13 @@
     const mag = Math.hypot(vx, vy);
     if (mag > 1) { vx /= mag; vy /= mag; }
 
-    const moving = mag > 0.05;
-    if (moving) {
+    const moving = mag > ACTION_STICK_DEADZONE;
+    // The reversed facing from a just-completed 2-dash chain is held for a
+    // brief window (FACING_LOCK_MS) even if the stick is still pushed the
+    // original way, so the reversal is actually visible — see updateDash().
+    if (moving && now >= player.facingLockUntil) {
       const moveAngle = Math.atan2(vy, vx);
-      setBaseDir(angleToBucket(moveAngle));
+      setBaseDir(stickAngleToBucket(moveAngle, player.baseDir));
     }
     player.moving = moving && !player.dashing;
 
@@ -1198,12 +1628,12 @@
           // can never register a weak-point hit while defending that way.
           const wp = getWeakPointScreenPos(boss.defenseDir);
           if (wp && Math.hypot(b.x - wp.x, b.y - wp.y) <= WEAKPOINT_HIT_RADIUS) {
-            applyWeakPointHitToBoss(now);
+            applyWeakPointHitToBoss(now, b.autoAimedBoss);
             consumed = true;
           }
         }
         if (!consumed && Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS) {
-          applyBodyHitToBoss(now, b.vx, b.vy);
+          applyBodyHitToBoss(now, b.vx, b.vy, b.autoAimedBoss);
           consumed = true;
         }
       }
@@ -1320,6 +1750,12 @@
 
   function draw(now) {
     ctx.clearRect(0, 0, W, H);
+    // Barrel-explosion camera shake: a small temporary translate applied to
+    // every canvas draw below, restored at the end of this function. Purely
+    // visual — world coordinates (hit tests, positions) never see it.
+    ctx.save();
+    const shake = getScreenShakeOffset(now);
+    ctx.translate(shake.x, shake.y);
 
     // background
     if (stageBgReady && H >= W) {
@@ -1390,6 +1826,25 @@
       ctx.fillRect(0, 0, W, H);
     }
 
+    // BOSS MODE intro: 3 short, well-separated screen flashes within the
+    // first INTRO_FLASH_MS (~700ms total) — a brief pale pulse each, never
+    // a rapid/strobing flicker. Drawn as a full-screen overlay here (not
+    // inside drawBoss()) since it isn't tied to the boss's own position.
+    if (boss.state === 'intro' && boss.cinematicElapsed < INTRO_FLASH_MS) {
+      const windows = [[0, 120], [220, 320], [420, 520]];
+      for (const [s, e] of windows) {
+        if (boss.cinematicElapsed >= s && boss.cinematicElapsed < e) {
+          const t = (boss.cinematicElapsed - s) / (e - s);
+          const alpha = Math.sin(t * Math.PI) * 0.55;
+          ctx.fillStyle = `rgba(235,240,245,${alpha})`;
+          ctx.fillRect(0, 0, W, H);
+          break;
+        }
+      }
+    }
+
+    ctx.restore(); // matches the shake-translate ctx.save() at the top of this function
+
     // Expired explosion effects are pruned here rather than in update(),
     // purely so a paused game still shows a mid-explosion frame frozen
     // instead of having it vanish while update() isn't running.
@@ -1400,10 +1855,8 @@
 
   function drawPlayer(now) {
     let img;
-    if (player.dashing && (player.dashDir === 'right' || player.dashDir === 'left')) {
-      // NORTH DASH has no dedicated art (per spec) — falls through to the
-      // normal pose branch below, which keeps showing the regular 'up'
-      // sprite (aim/fire cycling continues normally) throughout the dash.
+    if (player.dashing) {
+      // All 4 cardinal directions have dedicated dash art now.
       img = dashSprites[player.dashDir];
     } else if (player.baseDir === 'down' && player.relaxed) {
       img = relaxedSprite.down;
@@ -1429,6 +1882,10 @@
     // DEFENSE always shows the direction the attack came FROM
     // (boss.defenseDir), not boss.dir — see applyBodyHitToBoss().
     if (boss.state === 'defense') return `defense_${boss.defenseDir}`;
+    // GUARD BREAK's brief stagger keeps showing the same defense pose (a
+    // flash overlay sells the "guard just broke" moment — see
+    // drawBossFeedback()) right up until it flips into ATTACK.
+    if (boss.state === 'guardbreak') return `defense_${boss.defenseDir}`;
     const key = DIR_TO_BOSS_KEY[boss.dir]; // north | south | east | west
     if (key === 'south') {
       if (!boss.moving) return 'south_idle';
@@ -1444,19 +1901,12 @@
   }
 
   function drawBoss(now) {
-    if (boss.state === 'dead') {
-      const fadeMs = 1200;
-      const t = now - boss.deadAt;
-      if (t > fadeMs) return;
-      ctx.save();
-      ctx.globalAlpha = Math.max(0, 1 - t / fadeMs);
-      const img = bossSprites[DIR_TO_BOSS_KEY[boss.dir] + '_idle'] || bossSprites.south_idle;
-      if (img.complete && img.naturalWidth > 0) {
-        ctx.drawImage(img, boss.x - BOSS_DRAW_W / 2, boss.y - BOSS_DRAW_H / 2, BOSS_DRAW_W, BOSS_DRAW_H);
-      }
-      ctx.restore();
-      return;
-    }
+    // 'dead' is the true terminal state, reached only after DYING's particle
+    // dissolve finishes — there is nothing left to draw by then.
+    if (boss.state === 'dead') return;
+    if (boss.state === 'intro') { drawBossIntro(now); return; }
+    if (boss.state === 'threshold') { drawBossThreshold(now); return; }
+    if (boss.state === 'dying') { drawBossDying(now); return; }
 
     const name = bossFrameName(now);
     window.__game.bossFrame = name; // debug/verification only
@@ -1472,6 +1922,185 @@
         boss.y - BOSS_DRAW_H / 2 + bounce,
         BOSS_DRAW_W, BOSS_DRAW_H
       );
+    }
+  }
+
+  // All timing here reads boss.cinematicElapsed (cached by updateBossIntro()
+  // during update(), which PAUSE already skips) rather than recomputing
+  // from `now`, which keeps advancing every frame regardless of PAUSE.
+  function drawBossIntro(now) {
+    const elapsed = boss.cinematicElapsed;
+    const shadowStart = INTRO_FLASH_MS;
+    const descendStart = INTRO_FLASH_MS + INTRO_SHADOW_MS;
+    const landStart = descendStart + INTRO_DESCEND_MS;
+
+    // Growing ground shadow — appears once the flash ends, deepens through
+    // the shadow + descend phases, then holds at full size through landing.
+    if (elapsed >= shadowStart) {
+      const shadowT = Math.min(1, (elapsed - shadowStart) / (INTRO_SHADOW_MS + INTRO_DESCEND_MS));
+      const rx = BOSS_DRAW_W * (0.22 + shadowT * 0.30);
+      const ry = rx * 0.30;
+      const alpha = 0.18 + shadowT * 0.42;
+      ctx.save();
+      ctx.translate(W / 2, boss.introTargetY + BOSS_DRAW_H * 0.42);
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+      grad.addColorStop(0, `rgba(5,5,5,${alpha})`);
+      grad.addColorStop(1, 'rgba(5,5,5,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // The CINEMATIC POSE itself only appears once it starts descending.
+    if (elapsed >= descendStart && cinematicPoseImg.complete && cinematicPoseImg.naturalWidth > 0) {
+      ctx.drawImage(
+        cinematicPoseImg,
+        boss.x - CINEMATIC_DRAW_W / 2,
+        boss.y - CINEMATIC_DRAW_H / 2,
+        CINEMATIC_DRAW_W, CINEMATIC_DRAW_H
+      );
+    }
+
+    // Landing impact: a brief pale flash at the ground, fading out.
+    if (elapsed >= landStart && elapsed < landStart + INTRO_LANDING_MS) {
+      const ft = (elapsed - landStart) / INTRO_LANDING_MS;
+      ctx.save();
+      ctx.globalAlpha = 1 - ft;
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.beginPath();
+      ctx.arc(boss.x, boss.introTargetY + BOSS_DRAW_H * 0.3, BOSS_DRAW_W * (0.3 + ft * 0.3), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // Brief HP-milestone reaction: hold on the CINEMATIC POSE with a quick
+  // impact flash, in place (boss.x/y don't move during this).
+  function drawBossThreshold(now) {
+    const elapsed = boss.cinematicElapsed;
+    if (cinematicPoseImg.complete && cinematicPoseImg.naturalWidth > 0) {
+      ctx.drawImage(
+        cinematicPoseImg,
+        boss.x - CINEMATIC_DRAW_W / 2,
+        boss.y - CINEMATIC_DRAW_H / 2,
+        CINEMATIC_DRAW_W, CINEMATIC_DRAW_H
+      );
+    }
+    if (elapsed < 180) {
+      const ft = elapsed / 180;
+      ctx.save();
+      ctx.globalAlpha = (1 - ft) * 0.7;
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.beginPath();
+      ctx.arc(boss.x, boss.y, BOSS_DRAW_W * (0.3 + ft * 0.35), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // Samples the CINEMATIC POSE image (as actually drawn on-screen, so
+  // colors/silhouette match exactly) into a grid of small opaque cells —
+  // built once per death via boss.dyingParticlesBuilt. Outer/edge cells get
+  // an earlier dissolveAt than central ones, so the body visibly peels
+  // apart from the outside in rather than dissolving uniformly.
+  function buildDyingParticles() {
+    const off = document.createElement('canvas');
+    off.width = Math.max(1, Math.ceil(CINEMATIC_DRAW_W));
+    off.height = Math.max(1, Math.ceil(CINEMATIC_DRAW_H));
+    const octx = off.getContext('2d');
+    if (cinematicPoseImg.complete && cinematicPoseImg.naturalWidth > 0) {
+      octx.drawImage(cinematicPoseImg, 0, 0, off.width, off.height);
+    }
+    let data = null;
+    try { data = octx.getImageData(0, 0, off.width, off.height).data; } catch (e) { data = null; }
+
+    const cols = Math.ceil(off.width / DYING_CELL_SIZE);
+    const rows = Math.ceil(off.height / DYING_CELL_SIZE);
+    const cells = [];
+    let sumX = 0, sumY = 0;
+    for (let gy = 0; gy < rows; gy++) {
+      for (let gx = 0; gx < cols; gx++) {
+        const px = Math.min(off.width - 1, gx * DYING_CELL_SIZE + (DYING_CELL_SIZE >> 1));
+        const py = Math.min(off.height - 1, gy * DYING_CELL_SIZE + (DYING_CELL_SIZE >> 1));
+        let a = 0, r = 60, g = 60, b = 66;
+        if (data) {
+          const idx = (py * off.width + px) * 4;
+          a = data[idx + 3];
+          if (a > 40) { r = data[idx]; g = data[idx + 1]; b = data[idx + 2]; }
+        } else {
+          a = 255; // getImageData unavailable — fall back to a solid silhouette-less block field
+        }
+        if (a <= 40) continue; // transparent background cell — not part of the character
+        cells.push({ gx, gy, r, g, b });
+        sumX += gx; sumY += gy;
+      }
+    }
+    const cx = cells.length ? sumX / cells.length : cols / 2;
+    const cy = cells.length ? sumY / cells.length : rows / 2;
+    let maxDist = 1;
+    for (const c of cells) maxDist = Math.max(maxDist, Math.hypot(c.gx - cx, c.gy - cy));
+
+    const particles = cells.map((c) => {
+      const distFrac = Math.hypot(c.gx - cx, c.gy - cy) / maxDist; // 0 center -> 1 edge
+      const dissolveAt = Math.max(0, Math.min(0.85, (1 - distFrac) * 0.55 + Math.random() * 0.25));
+      const angle = Math.atan2(c.gy - cy, c.gx - cx) + (Math.random() - 0.5) * 0.6;
+      return {
+        gx: c.gx, gy: c.gy,
+        color: `rgba(${c.r},${c.g},${c.b},`,
+        dissolveAt,
+        angle,
+        speed: 30 + Math.random() * 70,
+        spin: (Math.random() - 0.5) * 4,
+      };
+    });
+    boss.dyingParticles = particles;
+    boss.dyingParticlesBuilt = true;
+  }
+
+  // Real particle dissolve, not a plain opacity fade: the intact sprite is
+  // drawn first, then every already-dissolved cell is punched out of it
+  // (destination-out) and redrawn as a separate fragment drifting outward/
+  // upward and fading — so the body visibly comes apart in pieces over
+  // DYING_DURATION_MS instead of just fading transparent in place.
+  function drawBossDying(now) {
+    if (!boss.dyingParticlesBuilt) buildDyingParticles();
+    const frac = Math.min(1, boss.cinematicElapsed / DYING_DURATION_MS);
+    const drawX = boss.x - CINEMATIC_DRAW_W / 2;
+    const drawY = boss.y - CINEMATIC_DRAW_H / 2;
+
+    ctx.save();
+    ctx.globalAlpha = frac > 0.85 ? Math.max(0, (1 - frac) / 0.15) : 1;
+    if (cinematicPoseImg.complete && cinematicPoseImg.naturalWidth > 0) {
+      ctx.drawImage(cinematicPoseImg, drawX, drawY, CINEMATIC_DRAW_W, CINEMATIC_DRAW_H);
+    }
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.globalAlpha = 1;
+    for (const p of boss.dyingParticles) {
+      if (frac < p.dissolveAt) continue;
+      ctx.fillRect(drawX + p.gx * DYING_CELL_SIZE, drawY + p.gy * DYING_CELL_SIZE, DYING_CELL_SIZE + 1, DYING_CELL_SIZE + 1);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+
+    for (const p of boss.dyingParticles) {
+      if (frac < p.dissolveAt) continue;
+      const localT = Math.min(1, (frac - p.dissolveAt) / Math.max(0.05, 1 - p.dissolveAt));
+      const driftSec = (frac - p.dissolveAt) * (DYING_DURATION_MS / 1000);
+      const dx = Math.cos(p.angle) * p.speed * driftSec;
+      const dy = Math.sin(p.angle) * p.speed * driftSec - driftSec * 40; // drifts upward over time
+      const alpha = Math.max(0, 1 - localT);
+      const px = drawX + p.gx * DYING_CELL_SIZE + DYING_CELL_SIZE / 2 + dx;
+      const py = drawY + p.gy * DYING_CELL_SIZE + DYING_CELL_SIZE / 2 + dy;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color + '1)';
+      ctx.translate(px, py);
+      ctx.rotate(p.spin * driftSec);
+      const size = (DYING_CELL_SIZE - 1) * (1 - localT * 0.4);
+      ctx.fillRect(-size / 2, -size / 2, size, size);
+      ctx.restore();
     }
   }
 
@@ -1517,6 +2146,20 @@
       ctx.font = 'bold 13px sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText('WEAK', weakPointFlashAt.x, weakPointFlashAt.y - 22);
+      ctx.restore();
+    }
+    if (now < guardBreakFlashUntil) {
+      const t = 1 - Math.max(0, (guardBreakFlashUntil - now) / GUARD_BREAK_PAUSE_MS);
+      ctx.save();
+      ctx.globalAlpha = 1 - t;
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.beginPath();
+      ctx.arc(boss.x, boss.y, BOSS_DRAW_W * (0.35 + t * 0.3), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,230,120,0.95)';
+      ctx.font = 'bold 15px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('GUARD BREAK', boss.x, boss.y - BOSS_DRAW_H * 0.5 - 12);
       ctx.restore();
     }
   }

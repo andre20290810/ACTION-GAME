@@ -1,0 +1,60 @@
+{
+  "dash_south": {
+    "source": "south_dash_raw.png",
+    "source_canvas": [
+      1408,
+      1408
+    ],
+    "source_bbox": [
+      409,
+      29,
+      1072,
+      1366
+    ],
+    "source_center_x": 740.5,
+    "source_foot_y": 1366,
+    "scale": 0.2494390426327599,
+    "paste_xy": [
+      2,
+      -5
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 186.75,
+    "unclamped_paste_x": 2,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5
+  },
+  "dash_north": {
+    "source": "north_dash_raw.png",
+    "source_canvas": [
+      1408,
+      1408
+    ],
+    "source_bbox": [
+      280,
+      28,
+      1004,
+      1358
+    ],
+    "source_center_x": 642.0,
+    "source_foot_y": 1358,
+    "scale": 0.2507518796992481,
+    "paste_xy": [
+      31,
+      -5
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 203.0,
+    "unclamped_paste_x": 42,
+    "horizontal_clamp_applied": true,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5
+  }
+}
