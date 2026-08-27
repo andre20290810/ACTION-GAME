@@ -56,6 +56,28 @@
   const SPRITE_DRAW_H = 116; // on-screen character height in px (unchanged)
   let spriteAspect = 384 / 340;
 
+  // ---------- Boss sprite loading ----------
+  // 10 pre-aligned frames (built offline from the 10 supplied renders via
+  // alpha-crop + uniform rescale + foot-baseline/center-of-mass anchoring
+  // onto one shared 700x920 canvas — see assets/boss/sprite_build_meta.json
+  // for the exact per-frame measurements). No AI regeneration/redraw; only
+  // crop/resize/pad/translate was applied to the original pixels.
+  const BOSS_FRAME_NAMES = [
+    'south_idle', 'east_idle', 'west_idle', 'north_idle', 'attack', 'defense',
+    'walk_south_1', 'walk_south_2', 'walk_east', 'walk_west',
+  ];
+  const bossSprites = {};
+  let bossSpritesReady = 0;
+  BOSS_FRAME_NAMES.forEach((name) => {
+    const img = new Image();
+    img.src = `assets/boss/${name}.png`;
+    img.onload = () => { bossSpritesReady++; };
+    bossSprites[name] = img;
+  });
+  const BOSS_CANVAS_W = 700, BOSS_CANVAS_H = 920; // shared aligned canvas size
+  const BOSS_DRAW_H = SPRITE_DRAW_H * 1.5; // ~1.5x player height
+  const BOSS_DRAW_W = BOSS_DRAW_H * (BOSS_CANVAS_W / BOSS_CANVAS_H);
+
   // ---------- Direction bucket mapping (ACTION STICK -> base facing) ----------
   // angle: 0 = right, positive = clockwise (down), atan2(dy, dx), dy-down positive
   function angleToBucket(angle) {
@@ -116,6 +138,186 @@
     // rather than carrying over an offset computed for the old direction.
     player.aimOffset = 0;
     aimStickKnob.style.transform = 'translate(0px, 0px)';
+  }
+
+  function clampPlayerToScreen() {
+    const halfW = (SPRITE_DRAW_H * spriteAspect) / 2;
+    const halfH = SPRITE_DRAW_H / 2;
+    player.x = Math.max(halfW, Math.min(W - halfW, player.x));
+    player.y = Math.max(halfH, Math.min(H - halfH, player.y));
+  }
+
+  // ---------- Boss ----------
+  // Simple state machine: CHASE -> ATTACK -> RECOVER -> CHASE, with
+  // occasional DEFENSE interruptions after taking enough hits. Only 4
+  // facing directions (north/south/east/west), chosen from the boss's
+  // movement vector the same way the player's ACTION STICK picks a
+  // direction bucket (angleToBucket + BASE_ANGLE keys, mapped to the
+  // boss's asset names).
+  const BOSS_HP_MAX = 1000;
+  const BOSS_SPEED = 130; // px/sec — slower than the player's 240
+  const BOSS_SPAWN_DELAY_MS = 5000;
+  const BOSS_ATTACK_RANGE = 130; // distance at which CHASE -> ATTACK
+  const BOSS_ATTACK_WINDUP_MS = 400;
+  const BOSS_ATTACK_ACTIVE_MS = 150;
+  const BOSS_ATTACK_REACH = 108; // forward offset of the claw hitbox center
+  const BOSS_ATTACK_HIT_RADIUS = 68;
+  const BOSS_RECOVER_MS = 350;
+  const BOSS_DEFENSE_MS = 1500;
+  const BOSS_DEFENSE_DAMAGE_MULT = 0.3; // 70% reduction while defending
+  const BOSS_DEFENSE_COOLDOWN_MS = 2000;
+  const BOSS_HURT_RADIUS = 46; // small torso-only hurtbox, not the full sprite
+  const BULLET_DAMAGE = 40;
+  const WALK_FRAME_PERIOD_MS = 260; // south 2-frame alternation period
+  const NORTH_BOUNCE_AMPLITUDE = 4; // px, decorative only (no NORTH walk art)
+  const PLAYER_HIT_RADIUS = 22;
+
+  const DIR_TO_BOSS_KEY = { up: 'north', down: 'south', left: 'west', right: 'east' };
+
+  const boss = {
+    x: 0, y: 0,
+    spawned: false,
+    state: 'inactive', // inactive | chase | attack | defense | recover | dead
+    dir: 'down', // shared player-style bucket key; mapped to north/south/east/west for assets
+    moving: false,
+    hp: BOSS_HP_MAX,
+    stateEnteredAt: 0,
+    hitsSinceDefense: 0,
+    defenseHitThreshold: 3,
+    defenseCooldownUntil: 0,
+    attackHitApplied: false,
+    chaseBackoffUntil: 0,
+    deadAt: 0,
+    warningUntil: 0,
+  };
+
+  function bossRollDefenseThreshold() {
+    boss.defenseHitThreshold = 3 + Math.floor(Math.random() * 3); // 3..5
+  }
+  bossRollDefenseThreshold();
+
+  function bossEnterState(state, now) {
+    boss.state = state;
+    boss.stateEnteredAt = now;
+    if (state === 'attack') {
+      boss.attackHitApplied = false;
+    } else if (state === 'defense') {
+      boss.hitsSinceDefense = 0;
+      bossRollDefenseThreshold();
+    }
+  }
+
+  function spawnBoss(now) {
+    boss.x = W / 2;
+    boss.y = Math.max(BOSS_DRAW_H * 0.55, H * 0.16); // appear near the top
+    boss.spawned = true;
+    boss.hp = BOSS_HP_MAX;
+    boss.dir = 'down';
+    boss.moving = false;
+    boss.warningUntil = now + 1500;
+    bossEnterState('chase', now);
+  }
+
+  function applyDamageToBoss(amount) {
+    if (!boss.spawned || boss.state === 'dead') return;
+    const mult = boss.state === 'defense' ? BOSS_DEFENSE_DAMAGE_MULT : 1;
+    boss.hp = Math.max(0, boss.hp - amount * mult);
+    if (boss.state !== 'defense') boss.hitsSinceDefense++;
+    if (boss.hp <= 0) {
+      boss.state = 'dead';
+      boss.deadAt = performance.now();
+    }
+  }
+
+  function updateBoss(dt, now) {
+    if (!boss.spawned) {
+      if (now - gameStartTime >= BOSS_SPAWN_DELAY_MS) spawnBoss(now);
+      return;
+    }
+    if (boss.state === 'dead') return;
+    if (window.__game.freezeBossAI) return; // debug/verification only
+
+
+
+    const dx = player.x - boss.x;
+    const dy = player.y - boss.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const toPlayerX = dx / dist, toPlayerY = dy / dist;
+
+    let vx = 0, vy = 0;
+    boss.moving = false;
+
+    if (boss.state === 'chase') {
+      if (dist <= BOSS_ATTACK_RANGE) {
+        // Lock facing toward the player at the instant ATTACK begins; the
+        // attack image itself is never rotated, only this bucket direction
+        // is used (for the forward claw-hitbox offset).
+        boss.dir = angleToBucket(Math.atan2(dy, dx));
+        bossEnterState('attack', now);
+      } else if (boss.hitsSinceDefense >= boss.defenseHitThreshold && now >= boss.defenseCooldownUntil) {
+        bossEnterState('defense', now);
+      } else {
+        let dirX = toPlayerX, dirY = toPlayerY;
+        if (now < boss.chaseBackoffUntil) {
+          // Brief separation after an attack before closing in again.
+          dirX = -toPlayerX; dirY = -toPlayerY;
+        } else {
+          // Slight weave instead of a perfectly straight approach.
+          const weave = Math.sin(now / 500) * 0.35;
+          const perpX = -toPlayerY, perpY = toPlayerX;
+          dirX = toPlayerX + perpX * weave;
+          dirY = toPlayerY + perpY * weave;
+          const len = Math.hypot(dirX, dirY) || 1;
+          dirX /= len; dirY /= len;
+        }
+        vx = dirX * BOSS_SPEED;
+        vy = dirY * BOSS_SPEED;
+        boss.x += vx * dt;
+        boss.y += vy * dt;
+        boss.moving = true;
+      }
+    } else if (boss.state === 'attack') {
+      const elapsed = now - boss.stateEnteredAt;
+      if (elapsed >= BOSS_ATTACK_WINDUP_MS && elapsed < BOSS_ATTACK_WINDUP_MS + BOSS_ATTACK_ACTIVE_MS) {
+        if (!boss.attackHitApplied) {
+          const facing = BASE_ANGLE[boss.dir];
+          const hx = boss.x + Math.cos(facing) * BOSS_ATTACK_REACH;
+          const hy = boss.y + Math.sin(facing) * BOSS_ATTACK_REACH;
+          const hd = Math.hypot(player.x - hx, player.y - hy);
+          if (hd <= BOSS_ATTACK_HIT_RADIUS + PLAYER_HIT_RADIUS) {
+            boss.attackHitApplied = true;
+            window.__game.playerHitCount++;
+            playerHitFlashUntil = now + 150;
+            const pushLen = 18;
+            player.x += Math.cos(facing) * pushLen;
+            player.y += Math.sin(facing) * pushLen;
+            clampPlayerToScreen();
+          }
+        }
+      } else if (elapsed >= BOSS_ATTACK_WINDUP_MS + BOSS_ATTACK_ACTIVE_MS) {
+        boss.chaseBackoffUntil = now + 300;
+        bossEnterState('recover', now);
+      }
+    } else if (boss.state === 'defense') {
+      if (now - boss.stateEnteredAt >= BOSS_DEFENSE_MS) {
+        boss.defenseCooldownUntil = now + BOSS_DEFENSE_COOLDOWN_MS;
+        bossEnterState('recover', now);
+      }
+    } else if (boss.state === 'recover') {
+      if (now - boss.stateEnteredAt >= BOSS_RECOVER_MS) {
+        bossEnterState('chase', now);
+      }
+    }
+
+    // Facing: derived from actual movement, same 4-direction bucket the
+    // player's ACTION STICK uses; held steady while stopped/attacking so
+    // the boss keeps facing the direction it last moved/attacked in.
+    if (boss.moving && (vx !== 0 || vy !== 0)) {
+      boss.dir = angleToBucket(Math.atan2(vy, vx));
+    }
+
+    boss.x = Math.max(BOSS_DRAW_W * 0.3, Math.min(W - BOSS_DRAW_W * 0.3, boss.x));
+    boss.y = Math.max(BOSS_DRAW_H * 0.3, Math.min(H - BOSS_DRAW_H * 0.3, boss.y));
   }
 
   // ---------- ACTION STICK (movement + base facing) ----------
@@ -368,9 +570,17 @@
 
   let muzzleFlashUntil = 0;
   let muzzleFlashX = 0, muzzleFlashY = 0;
+  let playerHitFlashUntil = 0;
+
+  // Exposed for Playwright/manual verification only — not part of gameplay.
+  window.__game = {
+    player, boss, playerHitCount: 0,
+    applyDamageToBoss, bossEnterState,
+  };
 
   // ---------- Main loop ----------
-  let lastTime = performance.now();
+  const gameStartTime = performance.now();
+  let lastTime = gameStartTime;
 
   function update(dt, now) {
     const kb = getKeyboardVec();
@@ -390,10 +600,7 @@
     }
 
     // Clamp to screen bounds (keep character fully visible)
-    const halfW = (SPRITE_DRAW_H * spriteAspect) / 2;
-    const halfH = SPRITE_DRAW_H / 2;
-    player.x = Math.max(halfW, Math.min(W - halfW, player.x));
-    player.y = Math.max(halfH, Math.min(H - halfH, player.y));
+    clampPlayerToScreen();
 
     // Firing — direction comes from getAimAngle() (AIM STICK offset applied
     // to the current base facing), never from movement
@@ -410,8 +617,16 @@
       b.y += b.vy * dt;
       if (b.x < -20 || b.x > W + 20 || b.y < -20 || b.y > H + 20) {
         bullets.splice(i, 1);
+        continue;
+      }
+      if (boss.spawned && boss.state !== 'dead' &&
+          Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS) {
+        applyDamageToBoss(BULLET_DAMAGE);
+        bullets.splice(i, 1);
       }
     }
+
+    updateBoss(dt, now);
   }
 
   function currentPose(now) {
@@ -558,7 +773,25 @@
       ctx.restore();
     }
 
-    // player sprite
+    // Player and boss are painter-sorted by Y so whichever is visually
+    // "closer" (further down the screen) draws on top of the other.
+    if (boss.spawned && boss.y < player.y) {
+      drawBoss(now);
+      drawPlayer(now);
+    } else {
+      drawPlayer(now);
+      if (boss.spawned) drawBoss(now);
+    }
+
+    drawBossHud(now);
+
+    if (now < playerHitFlashUntil) {
+      ctx.fillStyle = 'rgba(220, 30, 30, 0.18)';
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  function drawPlayer(now) {
     const pose = currentPose(now);
     const dir = player.baseDir;
     const img = sprites[pose] && sprites[pose][dir];
@@ -571,6 +804,94 @@
       // fallback placeholder while sprites load
       ctx.fillStyle = '#888';
       ctx.fillRect(player.x - 20, player.y - 40, 40, 80);
+    }
+  }
+
+  // ---------- Boss rendering ----------
+  function bossFrameName(now) {
+    if (boss.state === 'attack') return 'attack';
+    if (boss.state === 'defense') return 'defense';
+    const key = DIR_TO_BOSS_KEY[boss.dir]; // north | south | east | west
+    if (key === 'south') {
+      if (!boss.moving) return 'south_idle';
+      const frame = Math.floor(now / WALK_FRAME_PERIOD_MS) % 2;
+      return frame === 0 ? 'walk_south_1' : 'walk_south_2';
+    }
+    if (key === 'east') return boss.moving ? 'walk_east' : 'east_idle';
+    if (key === 'west') return boss.moving ? 'walk_west' : 'west_idle';
+    // NORTH has no dedicated walk art — reuse the back-facing idle frame
+    // per spec (no new pose may be generated); a tiny vertical bounce
+    // stands in for a walk cycle, canvas-side only.
+    return 'north_idle';
+  }
+
+  function drawBoss(now) {
+    if (boss.state === 'dead') {
+      const fadeMs = 1200;
+      const t = now - boss.deadAt;
+      if (t > fadeMs) return;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - t / fadeMs);
+      const img = bossSprites[DIR_TO_BOSS_KEY[boss.dir] + '_idle'] || bossSprites.south_idle;
+      if (img.complete && img.naturalWidth > 0) {
+        ctx.drawImage(img, boss.x - BOSS_DRAW_W / 2, boss.y - BOSS_DRAW_H / 2, BOSS_DRAW_W, BOSS_DRAW_H);
+      }
+      ctx.restore();
+      return;
+    }
+
+    const name = bossFrameName(now);
+    window.__game.bossFrame = name; // debug/verification only
+    const img = bossSprites[name];
+    let bounce = 0;
+    if (boss.moving && DIR_TO_BOSS_KEY[boss.dir] === 'north') {
+      bounce = Math.sin(now / 120) * NORTH_BOUNCE_AMPLITUDE;
+    }
+    if (img && img.complete && img.naturalWidth > 0) {
+      ctx.drawImage(
+        img,
+        boss.x - BOSS_DRAW_W / 2,
+        boss.y - BOSS_DRAW_H / 2 + bounce,
+        BOSS_DRAW_W, BOSS_DRAW_H
+      );
+    }
+  }
+
+  function drawBossHud(now) {
+    if (!boss.spawned) return;
+    // Simple top-of-screen HP bar; kept clear of the bottom-anchored
+    // ACTION/AIM/FIRE controls entirely, so it never overlaps existing UI.
+    const barW = Math.min(320, W * 0.7);
+    const barH = 14;
+    const barX = (W - barW) / 2;
+    const barY = Math.max(10, (H * 0.03));
+    const pct = Math.max(0, boss.hp / BOSS_HP_MAX);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(barX - 3, barY - 3, barW + 6, barH + 6);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.fillStyle = boss.state === 'defense' ? 'rgba(120,180,255,0.9)' : 'rgba(220,40,40,0.9)';
+    ctx.fillRect(barX, barY, barW * pct, barH);
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(barX, barY, barW, barH);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('BOSS', W / 2, barY - 6);
+    ctx.restore();
+
+    if (now < boss.warningUntil) {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = `rgba(255,60,60,${0.55 + 0.45 * Math.abs(Math.sin(now / 150))})`;
+      ctx.font = 'bold 20px sans-serif';
+      ctx.fillText('WARNING', W / 2, barY + 44);
+      ctx.font = 'bold 14px sans-serif';
+      ctx.fillText('BOSS DETECTED', W / 2, barY + 64);
+      ctx.restore();
     }
   }
 

@@ -1,0 +1,282 @@
+{
+  "south_idle": {
+    "source": "boss_south_idle_source.png",
+    "source_canvas": [
+      1546,
+      2176
+    ],
+    "source_bbox": [
+      64,
+      64,
+      1480,
+      2111
+    ],
+    "source_center_x": 772.0,
+    "source_foot_y": 2111,
+    "scale": 0.4263382283278067,
+    "paste_xy": [
+      21,
+      0
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "anchor": [
+      350,
+      900
+    ]
+  },
+  "east_idle": {
+    "source": "boss_east_idle_source.png",
+    "source_canvas": [
+      1546,
+      2176
+    ],
+    "source_bbox": [
+      339,
+      65,
+      1208,
+      2111
+    ],
+    "source_center_x": 773.5,
+    "source_foot_y": 2111,
+    "scale": 0.4263382283278067,
+    "paste_xy": [
+      20,
+      0
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "anchor": [
+      350,
+      900
+    ]
+  },
+  "west_idle": {
+    "source": "boss_west_idle_source.png",
+    "source_canvas": [
+      1546,
+      2176
+    ],
+    "source_bbox": [
+      368,
+      66,
+      1177,
+      2111
+    ],
+    "source_center_x": 772.5,
+    "source_foot_y": 2111,
+    "scale": 0.4263382283278067,
+    "paste_xy": [
+      21,
+      0
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "anchor": [
+      350,
+      900
+    ]
+  },
+  "north_idle": {
+    "source": "boss_north_idle_source.png",
+    "source_canvas": [
+      1546,
+      2176
+    ],
+    "source_bbox": [
+      113,
+      67,
+      1432,
+      2111
+    ],
+    "source_center_x": 772.5,
+    "source_foot_y": 2111,
+    "scale": 0.4263382283278067,
+    "paste_xy": [
+      21,
+      0
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "anchor": [
+      350,
+      900
+    ]
+  },
+  "attack": {
+    "source": "boss_attack_source.png",
+    "source_canvas": [
+      1546,
+      2176
+    ],
+    "source_bbox": [
+      257,
+      64,
+      1288,
+      2111
+    ],
+    "source_center_x": 772.5,
+    "source_foot_y": 2111,
+    "scale": 0.4263382283278067,
+    "paste_xy": [
+      21,
+      0
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "anchor": [
+      350,
+      900
+    ]
+  },
+  "defense": {
+    "source": "boss_defense_source.png",
+    "source_canvas": [
+      1546,
+      2176
+    ],
+    "source_bbox": [
+      69,
+      64,
+      1474,
+      2110
+    ],
+    "source_center_x": 771.5,
+    "source_foot_y": 2110,
+    "scale": 0.4263382283278067,
+    "paste_xy": [
+      21,
+      0
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "anchor": [
+      350,
+      900
+    ]
+  },
+  "walk_south_1": {
+    "source": "boss_walk_south_1_source.png",
+    "source_canvas": [
+      1200,
+      1800
+    ],
+    "source_bbox": [
+      78,
+      120,
+      1120,
+      1719
+    ],
+    "source_center_x": 599.0,
+    "source_foot_y": 1719,
+    "scale": 0.5238649592549476,
+    "paste_xy": [
+      36,
+      -1
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "anchor": [
+      350,
+      900
+    ]
+  },
+  "walk_south_2": {
+    "source": "boss_walk_south_2_source.png",
+    "source_canvas": [
+      1200,
+      1800
+    ],
+    "source_bbox": [
+      75,
+      120,
+      1124,
+      1719
+    ],
+    "source_center_x": 599.5,
+    "source_foot_y": 1719,
+    "scale": 0.5238649592549476,
+    "paste_xy": [
+      36,
+      -1
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "anchor": [
+      350,
+      900
+    ]
+  },
+  "walk_east": {
+    "source": "boss_walk_east_source.png",
+    "source_canvas": [
+      1200,
+      1800
+    ],
+    "source_bbox": [
+      157,
+      120,
+      1042,
+      1719
+    ],
+    "source_center_x": 599.5,
+    "source_foot_y": 1719,
+    "scale": 0.5238649592549476,
+    "paste_xy": [
+      36,
+      -1
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "anchor": [
+      350,
+      900
+    ]
+  },
+  "walk_west": {
+    "source": "boss_walk_west_source.png",
+    "source_canvas": [
+      1200,
+      1800
+    ],
+    "source_bbox": [
+      256,
+      122,
+      942,
+      1717
+    ],
+    "source_center_x": 599.0,
+    "source_foot_y": 1717,
+    "scale": 0.5238649592549476,
+    "paste_xy": [
+      36,
+      1
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "anchor": [
+      350,
+      900
+    ]
+  }
+}
