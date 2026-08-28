@@ -175,6 +175,51 @@
   const BARREL_HITBOX_RADIUS = 12; // scaled down to match the smaller draw size
   const BARREL_EXPLOSION_RADIUS = 300; // area-effect range, not tied to the sprite size (3x the previous 100)
 
+  // ---------- ARC CLAW SLASH (boss ranged attack, supplied image) ----------
+  // The attached claw render used as-is — its background arrived already
+  // keyed out with real per-pixel alpha (soft anti-aliased edges, silver
+  // highlights/speed-lines intact, verified by compositing over both a
+  // solid green and solid black test background before adoption), so the
+  // only processing applied was a crop of the ~2px fully-transparent
+  // margin down to the opaque content's own bounding box — see
+  // assets/boss/source/arc_claw_slash_source.png for the untouched
+  // original and assets/boss/attacks/arc_claw_slash.png for the cropped
+  // game-ready file (crop box measured directly off the alpha channel:
+  // (2,3)-(1247,1336) of the original 1249x1337 canvas).
+  const arcClawImg = new Image();
+  let arcClawImgReady = false;
+  arcClawImg.onload = () => { arcClawImgReady = true; };
+  arcClawImg.src = 'assets/boss/attacks/arc_claw_slash.png';
+  // Measured directly on the cropped image via PCA of its opaque-pixel
+  // mask (the elongated claw+speed-line silhouette's own long axis) to
+  // find the claw-tip <-> wrist/base direction objectively rather than by
+  // eye. At zero canvas rotation, "base -> tip" points at ~135.19 deg; a
+  // horizontal mirror (used for the counter-clockwise slash variant, see
+  // pickArcClawGeometry()) reflects that to ~44.81 deg. These are used to
+  // work out how much extra ctx.rotate() is needed so the claw's own tip
+  // visually points exactly along the slash's current direction of travel
+  // (see updateArcClawSlashes()).
+  const ARC_CLAW_BASE_TIP_ANGLE = 2.3594412320307216; // ~135.19deg, unmirrored
+  const ARC_CLAW_BASE_TIP_ANGLE_FLIPPED = Math.PI - ARC_CLAW_BASE_TIP_ANGLE; // ~44.81deg, mirrored
+  const ARC_CLAW_TIP_LOCAL = { x: 3, y: 1251 }; // tip pixel, cropped-image space
+  const ARC_CLAW_IMG_DIAG = 1742.6; // measured tip<->base pixel distance in the cropped source art
+  const ARC_CLAW_DRAW_LENGTH = 72; // on-screen tip-to-base length, px — ~62% of SPRITE_DRAW_H(116), within the 45-65% band
+  const ARC_CLAW_DRAW_SCALE = ARC_CLAW_DRAW_LENGTH / ARC_CLAW_IMG_DIAG;
+  const ARC_CLAW_LIFETIME_MS = 650; // start -> full wind-through -> finish
+  const ARC_CLAW_TRAIL_LEN = 4; // afterimage frames kept
+  // Start/end angular deviation from the straight boss->player line, each
+  // independently randomized within its own band per PART spec (start:
+  // 45-70deg either side; end: 45-90deg the opposite side), giving a total
+  // sweep of 90-160deg — enough to read as a real swing, never a full
+  // 360deg spin.
+  const ARC_CLAW_DEV_START_MIN = 45 * Math.PI / 180, ARC_CLAW_DEV_START_MAX = 70 * Math.PI / 180;
+  const ARC_CLAW_DEV_END_MIN = 45 * Math.PI / 180, ARC_CLAW_DEV_END_MAX = 90 * Math.PI / 180;
+  const ARC_CLAW_HIT_HALF_LEN_FWD = ARC_CLAW_DRAW_LENGTH * 0.20; // small margin ahead of the exact tip pixel
+  const ARC_CLAW_HIT_HALF_LEN_BACK = ARC_CLAW_DRAW_LENGTH * 1.0; // covers the claw body trailing behind the tip
+  const ARC_CLAW_HIT_HALF_WIDTH = 16;
+  const ARC_CLAW_KNOCKBACK_DISTANCE = 170; // ~1.5x player sprite height (116px), within the requested 1-2x band
+  const ARC_CLAW_KNOCKBACK_SUPPRESS_MS = 240;
+
   // ---------- Direction bucket mapping (ACTION STICK -> base facing) ----------
   // angle: 0 = right, positive = clockwise (down), atan2(dy, dx), dy-down positive
   function angleToBucket(angle) {
@@ -549,6 +594,8 @@
     attackHitApplied: false,
     attackProjectileSpawned: false,
     attackFiresImmediately: false, // true when ATTACK arrived via PRE_ATTACK/forced-counter (blade fires on entry, no extra windup)
+    attackType: 'blade', // 'blade' (existing 3-way volley + melee swing) | 'arcClaw' (ARC CLAW SLASH) — chosen in enterAttackSequence()
+    lastAttackType: 'blade', // tracks the previous attack so arcClaw can never fire twice in a row
     chaseBackoffUntil: 0,
     deadAt: 0,
     warningUntil: 0,
@@ -598,6 +645,15 @@
     }
   }
 
+  // Picks which attack this cycle will be. ARC CLAW SLASH is deliberately
+  // never allowed twice in a row (falls back to the existing blade attack
+  // instead) so the boss's attack pattern stays varied rather than
+  // repeating the newest, flashiest move every time.
+  function rollAttackType() {
+    if (boss.lastAttackType === 'arcClaw') return 'blade';
+    return Math.random() < 0.5 ? 'arcClaw' : 'blade';
+  }
+
   // Shared entry point for "boss.dir is already set toward the target,
   // now begin an attack" — used by CHASE->ATTACK and the weak-point
   // forced-counter (PART 9/10). NORTH has no PRE_ATTACK art, so it skips
@@ -605,6 +661,8 @@
   // telegraph through PRE_ATTACK first. GUARD BREAK's own attack entry
   // deliberately does NOT go through this — see its branch in updateBoss().
   function enterAttackSequence(now) {
+    boss.attackType = rollAttackType();
+    boss.lastAttackType = boss.attackType;
     if (DIR_TO_BOSS_KEY[boss.dir] === 'north') {
       boss.attackFiresImmediately = false;
       bossEnterState('attack', now);
@@ -625,6 +683,8 @@
     boss.moving = false;
     boss.warningUntil = now + 1500;
     boss.defenseAimHits = 0;
+    boss.attackType = 'blade';
+    boss.lastAttackType = 'blade';
     boss.phaseTriggered = { p30: false, p60: false, p90: false };
     boss.introLandingTriggered = false;
     boss.cinematicElapsed = 0;
@@ -670,6 +730,7 @@
 
   function startBossDying(now) {
     clawProjectiles.length = 0; // no lingering attack hazards during the death cinematic
+    arcClawSlashes.length = 0;
     boss.dyingParticlesBuilt = false;
     boss.dyingParticles = [];
     bossEnterState('dying', now);
@@ -816,13 +877,18 @@
   // (no damage) and briefly suppresses movement input — used only by the
   // weak-point forced counter below, to guarantee distance actually opens
   // up rather than relying on where the subsequent attack happens to land.
+  // Shared by every knockback source (weak-point forced counter, ARC CLAW
+  // SLASH, ...): pushes the player along an explicit angle, clamped within
+  // bounds, with a brief movement-input suppression — never any damage.
+  function applyPlayerKnockbackAlongAngle(angle, distance, suppressMs, now) {
+    player.x += Math.cos(angle) * distance;
+    player.y += Math.sin(angle) * distance;
+    clampPlayerToScreen();
+    player.knockbackUntil = now + suppressMs;
+  }
   function applyPlayerKnockback(now) {
     const dx = player.x - boss.x, dy = player.y - boss.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    player.x += (dx / dist) * KNOCKBACK_DISTANCE;
-    player.y += (dy / dist) * KNOCKBACK_DISTANCE;
-    clampPlayerToScreen();
-    player.knockbackUntil = now + KNOCKBACK_SUPPRESS_MS;
+    applyPlayerKnockbackAlongAngle(Math.atan2(dy, dx), KNOCKBACK_DISTANCE, KNOCKBACK_SUPPRESS_MS, now);
   }
 
   // 5 consecutive valid weak-point hits (any aim mode) force DEFENSE open:
@@ -922,12 +988,19 @@
       // right away; NORTH and GUARD BREAK's attack entry (unchanged from
       // before) still do their own self-contained windup here.
       const fireAt = boss.attackFiresImmediately ? 0 : BOSS_ATTACK_WINDUP_MS;
+      const isArcClaw = boss.attackType === 'arcClaw';
+      // ARC CLAW SLASH is a wholly separate attack (its own hitbox/damage/
+      // knockback, handled entirely inside updateArcClawSlashes()) — it
+      // replaces both the melee swing AND the 3-way blade for this cycle,
+      // it doesn't run alongside them, and it needs a longer active window
+      // to cover its own full sweep.
+      const activeMs = isArcClaw ? ARC_CLAW_LIFETIME_MS : BOSS_ATTACK_ACTIVE_MS;
       if (elapsed >= fireAt) {
         if (!boss.attackProjectileSpawned) {
           boss.attackProjectileSpawned = true;
-          spawnClawProjectile(now);
+          if (isArcClaw) spawnArcClawSlash(now); else spawnClawProjectile(now);
         }
-        if (elapsed < fireAt + BOSS_ATTACK_ACTIVE_MS && !boss.attackHitApplied) {
+        if (!isArcClaw && elapsed < fireAt + activeMs && !boss.attackHitApplied) {
           const facing = BASE_ANGLE[boss.dir];
           const hx = boss.x + Math.cos(facing) * BOSS_ATTACK_REACH;
           const hy = boss.y + Math.sin(facing) * BOSS_ATTACK_REACH;
@@ -943,7 +1016,7 @@
           }
         }
       }
-      if (elapsed >= fireAt + BOSS_ATTACK_ACTIVE_MS) {
+      if (elapsed >= fireAt + activeMs) {
         boss.chaseBackoffUntil = now + 300;
         bossEnterState('recover', now);
       }
@@ -961,6 +1034,8 @@
       if (now - boss.stateEnteredAt >= GUARD_BREAK_PAUSE_MS) {
         boss.dir = angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x));
         boss.attackFiresImmediately = false;
+        boss.attackType = 'blade'; // GUARD BREAK's punish is always the familiar attack, never ARC CLAW SLASH
+        boss.lastAttackType = 'blade';
         bossEnterState('attack', now);
       }
     } else if (boss.state === 'recover') {
@@ -1100,6 +1175,159 @@
     ctx.restore();
   }
 
+  // ---------- ARC CLAW SLASH (separate attack type from the 3-way blade) ----------
+  // Managed as its own array/object shape (type-distinct from clawProjectiles
+  // above) so the two never share update/draw/hit logic: a giant claw is
+  // swept through a quadratic-Bezier arc near the boss, its own sprite
+  // rotation kept locked to the arc's live tangent direction the whole way,
+  // rather than flying in a straight line at a fixed angle.
+  const arcClawSlashes = [];
+
+  function quadBezierPoint(p0, p1, p2, t) {
+    const mt = 1 - t;
+    return {
+      x: mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x,
+      y: mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y,
+    };
+  }
+  function quadBezierTangentAngle(p0, p1, p2, t) {
+    const dx = 2 * (1 - t) * (p1.x - p0.x) + 2 * t * (p2.x - p1.x);
+    const dy = 2 * (1 - t) * (p1.y - p0.y) + 2 * t * (p2.y - p1.y);
+    return Math.atan2(dy, dx);
+  }
+  // Slow -> fast -> slow: peak instantaneous speed lands at t=0.5, which is
+  // where the control points below place the player — "accelerate, hit top
+  // speed passing the player, then follow through" per spec, without a
+  // flat/constant-speed glide at any point.
+  function arcClawEase(u) {
+    return u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+  }
+
+  // Builds the P0/P1/P2 control points and CW/CCW choice for one slash.
+  // P0 = claw origin, P1 = an outward-bulged midpoint (so the path is a
+  // real arc, not a straight line with a rotating sprite on top), P2 = a
+  // point past the player along the swing's finishing angle. Two full
+  // candidate geometries (clockwise and counter-clockwise) are built and
+  // whichever stays closer to the current playable bounds is kept, so the
+  // random CW/CCW pick can't occasionally sweep the attack somewhere the
+  // player has no room to dodge.
+  function pickArcClawGeometry(origin, target) {
+    const dist = Math.hypot(target.x - origin.x, target.y - origin.y) || 1;
+    const baseAngle = Math.atan2(target.y - origin.y, target.x - origin.x);
+    const devStart = ARC_CLAW_DEV_START_MIN + Math.random() * (ARC_CLAW_DEV_START_MAX - ARC_CLAW_DEV_START_MIN);
+    const devEnd = ARC_CLAW_DEV_END_MIN + Math.random() * (ARC_CLAW_DEV_END_MAX - ARC_CLAW_DEV_END_MIN);
+
+    function buildFor(clockwise) {
+      const sign = clockwise ? 1 : -1;
+      const endAngle = baseAngle + sign * devEnd;
+      const midAngle = baseAngle + sign * ((devEnd - devStart) / 2);
+      return {
+        p0: origin,
+        p1: { x: origin.x + Math.cos(midAngle) * dist * 1.3, y: origin.y + Math.sin(midAngle) * dist * 1.3 },
+        p2: { x: origin.x + Math.cos(endAngle) * dist * 1.2, y: origin.y + Math.sin(endAngle) * dist * 1.2 },
+        mirrored: !clockwise, // the source art only has one hand — mirror it for the opposite swing direction
+      };
+    }
+    function outOfBoundsPenalty(g) {
+      const margin = 40;
+      let penalty = 0;
+      for (const pt of [g.p1, g.p2]) {
+        if (pt.x < -margin) penalty += -margin - pt.x;
+        if (pt.x > W + margin) penalty += pt.x - (W + margin);
+        if (pt.y < cameraY - margin) penalty += cameraY - margin - pt.y;
+        if (pt.y > cameraY + H + margin) penalty += pt.y - (cameraY + H + margin);
+      }
+      return penalty;
+    }
+    const cw = buildFor(true), ccw = buildFor(false);
+    const cwPenalty = outOfBoundsPenalty(cw), ccwPenalty = outOfBoundsPenalty(ccw);
+    if (Math.abs(cwPenalty - ccwPenalty) < 1) return Math.random() < 0.5 ? cw : ccw;
+    return cwPenalty < ccwPenalty ? cw : ccw;
+  }
+
+  function spawnArcClawSlash(now) {
+    const origin = getClawOrigin();
+    const geo = pickArcClawGeometry(origin, { x: player.x, y: player.y });
+    arcClawSlashes.push({
+      p0: geo.p0, p1: geo.p1, p2: geo.p2, mirrored: geo.mirrored,
+      startedAt: now, hasHit: false,
+      x: geo.p0.x, y: geo.p0.y, angle: 0, tangentAngle: 0, trail: [],
+    });
+  }
+
+  function updateArcClawSlashes(now) {
+    for (let i = arcClawSlashes.length - 1; i >= 0; i--) {
+      const s = arcClawSlashes[i];
+      const u = (now - s.startedAt) / ARC_CLAW_LIFETIME_MS;
+      if (u >= 1) { arcClawSlashes.splice(i, 1); continue; }
+      const t = arcClawEase(Math.max(0, u));
+      const pos = quadBezierPoint(s.p0, s.p1, s.p2, t);
+      const tangentAngle = quadBezierTangentAngle(s.p0, s.p1, s.p2, t);
+
+      s.trail.push({ x: s.x, y: s.y, angle: s.angle });
+      if (s.trail.length > ARC_CLAW_TRAIL_LEN) s.trail.shift();
+
+      s.x = pos.x; s.y = pos.y; s.tangentAngle = tangentAngle;
+      const baseTip = s.mirrored ? ARC_CLAW_BASE_TIP_ANGLE_FLIPPED : ARC_CLAW_BASE_TIP_ANGLE;
+      s.angle = tangentAngle - baseTip;
+
+      if (!s.hasHit && !isPlayerInvulnerable()) {
+        // Oriented rectangle aligned to the live travel direction (never a
+        // plain circle) — local +X is "ahead of the tip", local -X runs
+        // back along the trailing claw body.
+        const relX = player.x - s.x, relY = player.y - s.y;
+        const c = Math.cos(-tangentAngle), sn = Math.sin(-tangentAngle);
+        const localX = relX * c - relY * sn;
+        const localY = relX * sn + relY * c;
+        if (localX >= -ARC_CLAW_HIT_HALF_LEN_BACK && localX <= ARC_CLAW_HIT_HALF_LEN_FWD &&
+            Math.abs(localY) <= ARC_CLAW_HIT_HALF_WIDTH + PLAYER_HIT_RADIUS) {
+          s.hasHit = true; // at most one damage instance per slash, ever
+          window.__game.playerHitCount++;
+          playerHitFlashUntil = now + 150;
+          applyPlayerKnockbackAlongAngle(tangentAngle, ARC_CLAW_KNOCKBACK_DISTANCE, ARC_CLAW_KNOCKBACK_SUPPRESS_MS, now);
+        }
+      }
+    }
+  }
+
+  function drawArcClawPose(x, y, angle, mirrored, alpha) {
+    if (!arcClawImgReady) return;
+    const drawW = arcClawImg.naturalWidth * ARC_CLAW_DRAW_SCALE;
+    const drawH = arcClawImg.naturalHeight * ARC_CLAW_DRAW_SCALE;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    if (mirrored) ctx.scale(-1, 1);
+    ctx.drawImage(arcClawImg, -ARC_CLAW_TIP_LOCAL.x * ARC_CLAW_DRAW_SCALE, -ARC_CLAW_TIP_LOCAL.y * ARC_CLAW_DRAW_SCALE, drawW, drawH);
+    ctx.restore();
+  }
+
+  function drawArcClawSlash(s) {
+    // A very thin, non-magical white/silver trail connecting the recent
+    // positions — "air cut open", never a glowing/blue energy line.
+    if (s.trail.length >= 1) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(235,238,242,0.35)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(s.trail[0].x, s.trail[0].y);
+      for (let i = 1; i < s.trail.length; i++) ctx.lineTo(s.trail[i].x, s.trail[i].y);
+      ctx.lineTo(s.x, s.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+    // Afterimages: each keeps ITS OWN position/rotation from when it was
+    // the live frame, so the stack of afterimages itself traces the arc —
+    // not the current pose copy-pasted backward.
+    const n = s.trail.length;
+    for (let i = 0; i < n; i++) {
+      const sample = s.trail[i];
+      drawArcClawPose(sample.x, sample.y, sample.angle, s.mirrored, 0.10 + 0.16 * (i / Math.max(1, n)));
+    }
+    drawArcClawPose(s.x, s.y, s.angle, s.mirrored, 1);
+  }
+
   // ---------- Game mode / PAUSE ----------
   const gameState = {
     mode: 'boss', // 'boss' | 'training'
@@ -1148,7 +1376,7 @@
       resetPlayerPosition();
       player.baseDir = 'down';
       player.aimOffsetRaw = 0; player.aimOffset = 0;
-      bullets.length = 0; clawProjectiles.length = 0; explosions.length = 0;
+      bullets.length = 0; clawProjectiles.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
       barrels.length = 0;
       spawnBarrels(2 + Math.floor(Math.random() * 3));
       spawnBoss(now); // fresh full-HP boss; plays the existing FLASH/SHADOW/DESCEND/LANDING intro
@@ -1523,11 +1751,14 @@
 
     bullets.length = 0;
     clawProjectiles.length = 0;
+    arcClawSlashes.length = 0;
     explosions.length = 0;
 
     boss.spawned = false;
     boss.state = 'inactive';
     boss.hp = BOSS_HP_MAX;
+    boss.attackType = 'blade';
+    boss.lastAttackType = 'blade';
 
     // Stage world/camera/EXIT (PART 21-29) — a RESTART or mode switch always
     // returns to the first/default stage with the world fully closed back up.
@@ -2058,7 +2289,7 @@
   window.__game = {
     player, boss, playerHitCount: 0,
     applyBodyHitToBoss, applyWeakPointHitToBoss, applyExplosionDamageToBoss, bossEnterState,
-    getWeakPointScreenPos, clawProjectiles,
+    getWeakPointScreenPos, clawProjectiles, arcClawSlashes, spawnArcClawSlash,
     gameState, barrels, explosions, spawnBarrels, startMode,
     get autoAimActive() { return autoAimActive; },
     get autoAimTargetIsBoss() { return autoAimTargetIsBoss; },
@@ -2209,6 +2440,7 @@
     updateBarrels(now);
     updateBoss(dt, now);
     updateClawProjectiles(dt, now);
+    updateArcClawSlashes(now);
   }
 
   function currentPose(now) {
@@ -2365,6 +2597,7 @@
 
     // Claw projectiles draw alongside the player's own bullets.
     for (const p of clawProjectiles) drawClawProjectile(p);
+    for (const s of arcClawSlashes) drawArcClawSlash(s);
 
     // Player and boss are painter-sorted by Y so whichever is visually
     // "closer" (further down the screen) draws on top of the other.

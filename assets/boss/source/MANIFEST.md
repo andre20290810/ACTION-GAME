@@ -1,13 +1,14 @@
-# Boss character asset manifest — all 19 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6)
+# Boss character asset manifest — all 20 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7)
 
-All 19 files below are byte-identical copies of the originally attached
+All 20 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
 these `source/` copies. The processed, game-ready frames built from them
 live in `assets/boss/*.png` (see `assets/boss/sprite_build_meta.json` for
 batches 1-2's exact per-frame alignment measurements,
 `assets/boss/defense_dirs_build_meta.json` for batch 3's,
-`assets/boss/attack_ns_build_meta.json` for batch 5's, and
-`assets/boss/attack_release_build_meta.json` for batch 6's).
+`assets/boss/attack_ns_build_meta.json` for batch 5's,
+`assets/boss/attack_release_build_meta.json` for batch 6's, and the
+ARC CLAW SLASH notes below for batch 7's).
 
 ## Batch 1 (5 images)
 
@@ -151,6 +152,39 @@ Batch 6 notes:
   `assets/boss/attack_release_build_meta.json` for the exact per-image
   source-bbox/scale/paste-offset values (scale 0.4691/0.4874/0.5294 for
   south/west/east respectively; no horizontal clamping needed for any).
+
+## Batch 7 (1 image)
+
+| # | Role | Saved filename | Source dims | md5 |
+|---|------|-----------------|-------------|-----|
+| 20 | ARC CLAW SLASH projectile | `arc_claw_slash_source.png` | 1249x1337 RGBA | 3d0102334214be0b98b7f830e9903f92 |
+
+Batch 7 notes:
+- This one is NOT part of the shared 700x920 boss-body canvas used by every
+  frame above — it's a standalone projectile/attack-effect sprite, drawn
+  and rotated independently at its own aspect ratio (see the "ARC CLAW
+  SLASH" section of `game.js`).
+- The source file already arrived with real per-pixel alpha (soft
+  anti-aliased edges, not a hard cutout) — the white background was
+  already keyed out, with the silver claw, its highlights, and the
+  speed-line brush strokes all still intact. Verified by compositing the
+  untouched source over both a solid green and a solid black test
+  background before adoption (no leftover white fringing/haloing at the
+  edges, no accidental holes punched through the highlights or speed
+  lines). No additional color-key/background-removal step was applied on
+  top of that.
+- The only processing applied for the game-ready file
+  (`assets/boss/attacks/arc_claw_slash.png`, 1246x1334) was a crop of the
+  ~2px fully-transparent margin down to the opaque content's own bounding
+  box — measured directly off the alpha channel: (2,3)-(1247,1336) of the
+  1249x1337 source canvas.
+- The claw-tip <-> wrist/base direction (needed at runtime to line the
+  sprite's own rotation up with its current direction of travel) was
+  measured objectively via PCA of the cropped image's opaque-pixel mask
+  (the long axis of the elongated claw+speed-line silhouette), not by eye:
+  ~135.19deg at zero canvas rotation, ~44.81deg after a horizontal mirror
+  (used for the slash's counter-clockwise variant, since only one hand
+  orientation exists in the source art).
 
 Notes:
 - Verified visually (not assumed) that EAST images face screen-right with
