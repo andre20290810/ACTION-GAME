@@ -1,6 +1,6 @@
-# Boss character asset manifest — all 22 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9)
+# Boss character asset manifest — all 23 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9 + batch 10)
 
-All 22 files below are byte-identical copies of the originally attached
+All 23 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
 these `source/` copies. The processed, game-ready frames built from them
 live in `assets/boss/*.png` (see `assets/boss/sprite_build_meta.json` for
@@ -308,6 +308,52 @@ Batch 9 notes:
   `preattack_south` (SOUTH's own telegraph pose) reuses this same file with
   its own `PRE_ATTACK_SCALE`, likewise retuned to 1.10 to match. Full
   measurements in `assets/boss/attack_south_release_build_meta.json`.
+
+## Batch 10 (1 image)
+
+| # | Role | Saved filename | Source dims | md5 |
+|---|------|-----------------|-------------|-----|
+| 23 | DOWN/CINEMATIC — back-facing (NORTH/EAST/WEST) | `cinematic_pose_back_source.png` | 1314x1692 RGBA | 6107883f729c3756a5bcfe4568d01125 |
+
+Batch 10 notes:
+- User-supplied as "IMG_4691.jpeg"; the actual uploaded bytes are a PNG
+  (RGBA), so both the source archive copy and the game-ready file were
+  saved with a `.png` extension rather than relabeling the real format —
+  content is otherwise a byte-identical, unmodified copy of what was
+  attached (verified by md5).
+- **Role, strictly scoped**: used ONLY when GABRIEL enters a DOWN/CINEMATIC
+  sequence (intro, 30/60/90% HP milestones, DYING, or FLASH GRENADE's
+  FLASH DOWN) while facing anything other than SOUTH. It is NEVER used for
+  normal IDLE/WALK/ATTACK/DEFENSE. SOUTH-facing DOWN continues to use the
+  existing front image (`cinematic_pose.png`, batch 8) unchanged.
+  `boss.downFacing` is captured exactly once, at the moment each such
+  sequence begins (`startBossThreshold()`/`startBossDying()`/
+  `startBossFlashDown()`; a fresh boss spawn/intro defaults it to
+  `'south'`), and never re-evaluated mid-sequence even if `boss.dir`
+  changes underneath it — see `getCinematicImageInfo()` in `game.js`.
+- Game-ready file `assets/boss/cinematic_pose_back.png` is a byte-identical
+  copy, no cropping needed (its opaque bbox already spans nearly the whole
+  1314x1692 canvas: x:2-1310, y:4-1688) — same precedent as the front
+  CINEMATIC image never needing a crop either. Drawn at its own aspect
+  ratio, never forced onto the shared 700x920 movement-sprite canvas.
+- Body landmarks measured off the alpha channel (head band x:520-680 to
+  exclude the wing and trailing claw arm): head_top_y=351,
+  feet_bottom_y=1688 (lowest opaque pixel overall, a foot), center_x≈597.4.
+- **Size-matched to the front image, not just canvas-height-matched**: the
+  front and back photographs fill very different fractions of their own
+  canvases (front body spans 82.5% of its canvas height; back spans 79.0%
+  of its own), so `game.js` derives `CINEMATIC_BACK_SCALE` from
+  `CINEMATIC_SCALE * (frontBodyFrac / backBodyFrac)` rather than reusing
+  `CINEMATIC_SCALE` directly — this is what makes the two images' ACTUAL
+  body heights match on screen. `CINEMATIC_FRONT_OFFSET_X/Y` are 0 (the
+  front image's own existing, already-shipped anchor is the baseline);
+  `CINEMATIC_BACK_OFFSET_X/Y` are computed from the two images' own
+  center_x/feet_bottom_y fractions so the back image's body landmark lands
+  at the exact same on-screen position the front image's would — no
+  foot-position or left/right jump when the DOWN facing switches between
+  front and back. Confirmed via Playwright screenshot: SOUTH/NORTH/EAST/
+  WEST DOWN all crop to the same on-screen footprint at the same anchor.
+  Full measurements in `assets/boss/cinematic_pose_back_build_meta.json`.
 
 Notes:
 - Verified visually (not assumed) that EAST images face screen-right with

@@ -29,9 +29,25 @@
     </div>
   </div>
 
-  <div id="right-button-col">
-    <div id="fire-zone">
-      <button id="fire-button" aria-label="FIRE">FIRE</button>
+  <div id="right-side-row">
+    <div id="range-zone">
+      <div id="range-label">RANGE</div>
+      <input type="range" id="range-slider" min="0" max="100" value="60" step="1" aria-label="RANGE">
+    </div>
+
+    <div id="right-button-col">
+      <div id="flash-zone">
+        <button id="flash-button" aria-label="FLASH">
+          <svg id="flash-cooldown-ring" viewBox="0 0 100 100" aria-hidden="true">
+            <circle class="flash-ring-bg" cx="50" cy="50" r="44"></circle>
+            <circle id="flash-ring-progress" cx="50" cy="50" r="44"></circle>
+          </svg>
+          <span id="flash-label">FLASH</span>
+        </button>
+      </div>
+      <div id="fire-zone">
+        <button id="fire-button" aria-label="FIRE">FIRE</button>
+      </div>
     </div>
   </div>
 </div>

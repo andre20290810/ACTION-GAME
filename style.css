@@ -75,10 +75,21 @@ html, body {
   pointer-events: none;
 }
 
-#right-button-col {
+/* Right side: a row pairing the RANGE gauge with the FLASH/FIRE column, so
+   RANGE always sits immediately beside FIRE regardless of breakpoint —
+   same flexbox-not-guessed-pixels reasoning as the left column above. */
+#right-side-row {
   position: absolute;
   right: max(16px, env(safe-area-inset-right));
   bottom: max(16px, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+
+#right-button-col {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -206,6 +217,131 @@ html, body {
   background: rgba(255, 60, 40, 0.6);
 }
 
+/* ---------- RANGE gauge (aim-guide length only, NOT bullet distance) ----------
+   A small, modest vertical slider beside FIRE. Deliberately plain (native
+   <input type=range>, minimally themed) rather than an eye-catching custom
+   widget, per spec ("派手なUIにはしないでください"). */
+#range-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  height: 150px;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+#range-label {
+  font-family: sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: rgba(220, 225, 230, 0.55);
+  pointer-events: none;
+}
+#range-slider {
+  -webkit-appearance: slider-vertical;
+  appearance: slider-vertical;
+  width: 26px;
+  height: 120px;
+  background: transparent;
+  pointer-events: auto;
+  touch-action: none;
+  margin: 0;
+}
+#range-slider::-webkit-slider-runnable-track {
+  width: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 2px;
+}
+#range-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 10px;
+  border-radius: 3px;
+  background: rgba(200, 210, 220, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  margin-left: -7px;
+}
+#range-slider::-moz-range-track {
+  width: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 2px;
+}
+#range-slider::-moz-range-thumb {
+  width: 18px;
+  height: 10px;
+  border-radius: 3px;
+  background: rgba(200, 210, 220, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+}
+
+/* ---------- FLASH GRENADE button ---------- */
+#flash-zone {
+  position: relative;
+  width: 20vw;
+  height: 20vw;
+  max-width: 92px;
+  max-height: 92px;
+  min-width: 64px;
+  min-height: 64px;
+  pointer-events: auto;
+  touch-action: none;
+}
+#flash-button {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 2px solid rgba(255, 225, 140, 0.45);
+  color: #fff2c8;
+  font-family: sans-serif;
+  font-weight: bold;
+  font-size: clamp(9px, 2.6vw, 12px);
+  letter-spacing: 0.05em;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: filter 120ms ease, background 120ms ease;
+}
+#flash-button:active {
+  background: rgba(255, 225, 140, 0.18);
+}
+#flash-button.ready {
+  background: rgba(255, 225, 140, 0.14);
+  border-color: rgba(255, 235, 170, 0.75);
+}
+#flash-button.too-close {
+  filter: brightness(0.55);
+}
+#flash-cooldown-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.flash-ring-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.12);
+  stroke-width: 5;
+}
+#flash-ring-progress {
+  fill: none;
+  stroke: rgba(255, 225, 120, 0.9);
+  stroke-width: 5;
+  stroke-linecap: round;
+  transform-origin: 50% 50%;
+  transform: rotate(-90deg);
+}
+#flash-label {
+  position: relative;
+  z-index: 1;
+}
+
 /* Stacking AIM above MOVE means, in landscape (screen height as low as
    ~390px), the left column's zone sizes must shrink beyond just the
    visual inset, or the top zone would run off the top of the screen.
@@ -217,7 +353,11 @@ html, body {
   #action-stick-zone { width: 21vw; height: 21vw; max-width: 176.4px; max-height: 176.4px; min-width: 113.4px; min-height: 113.4px; }
   #aim-stick-zone { width: 19.95vw; height: 19.95vw; max-width: 155.4px; max-height: 155.4px; min-width: 111.3px; min-height: 111.3px; }
   #fire-zone { width: 16vw; height: 16vw; max-width: 128px; max-height: 128px; min-width: 92px; min-height: 92px; }
+  #flash-zone { width: 12vw; height: 12vw; max-width: 72px; max-height: 72px; min-width: 52px; min-height: 52px; }
+  #range-zone { height: 108px; }
+  #range-slider { height: 82px; }
   #left-stick-col, #right-button-col { gap: 4px; }
+  #right-side-row { gap: 6px; }
 }
 
 /* PAUSE now lives at the very top of the screen, clear of the Dynamic

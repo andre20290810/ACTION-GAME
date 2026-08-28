@@ -1,0 +1,23 @@
+{
+  "source": "IMG_4691.jpeg (newly attached back-facing DOWN/CINEMATIC image)",
+  "note_on_filename": "Saved with a .png extension (not .jpeg) because the uploaded file's actual bytes/format are PNG (RGBA) despite the .jpeg name the user referred to it by -- an accurate extension was used rather than relabeling the real format, per this project's byte-identical-source convention. Content is otherwise saved completely unmodified.",
+  "used_as_is": true,
+  "game_ready_file": "assets/boss/cinematic_pose_back.png",
+  "source_file": "assets/boss/source/cinematic_pose_back_source.png",
+  "processing": "None -- byte-identical copy for both the game-ready file and the source archive copy, same precedent as the front cinematic_pose.png (batch 4/8): opaque bbox already spans almost the entire canvas, so no crop was needed. Drawn at its own aspect ratio (not forced onto the shared 700x920 movement-sprite canvas), exactly like the front CINEMATIC image.",
+  "canvas": [1314, 1692],
+  "content_bbox": [2, 4, 1310, 1688],
+  "body_landmarks": {
+    "head_top_y": 351,
+    "feet_bottom_y": 1688,
+    "center_x": 597.4,
+    "measurement_method": "Alpha-channel scan restricted to the head/torso x-band (520-680) to exclude the wing (spread to the upper-right) and the trailing claw arm; feet_bottom_y is the single lowest opaque row overall (a foot, confirmed by visual crop)."
+  },
+  "front_reference_landmarks_for_comparison": {
+    "source_file": "assets/boss/cinematic_pose.png (1176x1636, same image documented in MANIFEST batch 8)",
+    "head_top_y": 284,
+    "feet_bottom_y": 1633,
+    "center_x": 592
+  },
+  "size_matching_note": "The front and back CINEMATIC images are two independent photographs with different body-to-canvas fill ratios (front body spans 1349/1636=82.5% of its own canvas height; back body spans 1337/1692=79.0% of its own). Both are drawn at their own aspect ratio via game.js's CINEMATIC_DRAW_W/H (front) and CINEMATIC_BACK_DRAW_W/H (back) -- CINEMATIC_BACK_SCALE is deliberately NOT equal to CINEMATIC_SCALE; it is derived as CINEMATIC_SCALE * (frontBodyFrac / backBodyFrac) so the two images' ACTUAL body heights read as the same size on screen, not just their canvas heights. CINEMATIC_FRONT_OFFSET_X/Y are 0 (front's existing, already-shipped anchor is the baseline); CINEMATIC_BACK_OFFSET_X/Y are computed in game.js from the two images' own center_x/feet_bottom_y fractions so the back image's body landmark lands at the exact same screen position the front image's would, eliminating any foot-position or left-right jump when GABRIEL's DOWN facing switches between front and back."
+}

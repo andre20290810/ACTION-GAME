@@ -146,24 +146,83 @@
   const BOSS_DRAW_H = SPRITE_DRAW_H * 1.5; // ~1.5x player height
   const BOSS_DRAW_W = BOSS_DRAW_H * (BOSS_CANVAS_W / BOSS_CANVAS_H);
 
-  // ---------- Boss CINEMATIC POSE (intro / HP-threshold / death only) ----------
-  // A separate, standalone image — never mixed into the normal IDLE/WALK/
+  // ---------- Boss CINEMATIC POSE / DOWN (intro / HP-threshold / death only) ----------
+  // Two separate, standalone images — never mixed into the normal IDLE/WALK/
   // ATTACK/DEFENSE frame set above, never used as a movement sprite. Used
-  // as-is (its bbox already spans almost the entire source canvas, so no
-  // extra crop was needed) at its own aspect ratio rather than forced onto
-  // the narrower 700x920 movement-sprite canvas, since its wings are
-  // spread wide enough that doing so would clip them.
+  // as-is (both images' bboxes already span almost the entire source
+  // canvas, so no extra crop was needed) at each image's own aspect ratio
+  // rather than forced onto the narrower 700x920 movement-sprite canvas,
+  // since their wings are spread wide enough that doing so would clip them.
+  //
+  // FRONT (south-facing) is the original image; BACK (north/east/west) is a
+  // second, distinct photograph — see getCinematicImageFor()/boss.downFacing
+  // below for which one is picked. GABRIEL's facing at the moment DOWN/
+  // CINEMATIC begins is captured once (boss.downFacing) and never changes
+  // mid-sequence, even if something else mutates boss.dir underneath it.
   const cinematicPoseImg = new Image();
   cinematicPoseImg.src = 'assets/boss/cinematic_pose.png';
-  const CINEMATIC_ASPECT = 1176 / 1636; // the source image's own W/H
+  const cinematicPoseBackImg = new Image();
+  cinematicPoseBackImg.src = 'assets/boss/cinematic_pose_back.png';
+  const CINEMATIC_ASPECT = 1176 / 1636; // the front source image's own W/H
+  const CINEMATIC_BACK_ASPECT = 1314 / 1692; // the back source image's own W/H
   // Drawn height as a fraction of BOSS_DRAW_H (the normal boss sprite's own
-  // on-screen height) — targeted within the requested ~85-95% band so the
-  // pose reads as slightly smaller than the normal sprite, never larger;
-  // the SAME single constant applies uniformly to intro/30%/60%/90%/death,
-  // there is no per-event variation.
-  const CINEMATIC_SCALE = 0.90;
+  // on-screen height) — the SAME single constant applies uniformly to
+  // intro/30%/60%/90%/death, there is no per-event variation. Reduced by a
+  // further 13% (x0.87) from the previously-tuned 0.90, per explicit
+  // instruction that the whole DOWN/CINEMATIC family read smaller relative
+  // to normal battle sprites (SOUTH WALK/ATTACK, NORTH IDLE/ATTACK, etc,
+  // are NOT touched by this — see those scales elsewhere, unchanged).
+  const CINEMATIC_SCALE = 0.90 * 0.87; // = 0.783
   const CINEMATIC_DRAW_H = BOSS_DRAW_H * CINEMATIC_SCALE;
   const CINEMATIC_DRAW_W = CINEMATIC_DRAW_H * CINEMATIC_ASPECT;
+  // Body-landmark fill fractions of each image's OWN canvas (head-top to
+  // feet-bottom / canvas height, and center-x / canvas width) — measured
+  // directly off each source's alpha channel; see
+  // assets/boss/cinematic_pose_back_build_meta.json for the exact pixel
+  // measurements. The front and back photographs fill their own canvases by
+  // different amounts, so matching canvas-height scale alone would NOT
+  // produce the same on-screen body size — CINEMATIC_BACK_SCALE below
+  // corrects for that directly from these measured fractions.
+  const CINEMATIC_FRONT_FEET_FRAC = 1633 / 1636;
+  const CINEMATIC_FRONT_CENTER_FRAC = 592 / 1176;
+  const CINEMATIC_FRONT_BODY_FRAC = (1633 - 284) / 1636;
+  const CINEMATIC_BACK_FEET_FRAC = 1688 / 1692;
+  const CINEMATIC_BACK_CENTER_FRAC = 597.4 / 1314;
+  const CINEMATIC_BACK_BODY_FRAC = (1688 - 351) / 1692;
+  const CINEMATIC_BACK_SCALE = CINEMATIC_SCALE * (CINEMATIC_FRONT_BODY_FRAC / CINEMATIC_BACK_BODY_FRAC);
+  const CINEMATIC_BACK_DRAW_H = BOSS_DRAW_H * CINEMATIC_BACK_SCALE;
+  const CINEMATIC_BACK_DRAW_W = CINEMATIC_BACK_DRAW_H * CINEMATIC_BACK_ASPECT;
+  // The front image's own anchor (plain center-on-boss.y/x, offset 0) is the
+  // already-shipped baseline; the back image gets an explicit per-axis
+  // offset so its OWN body landmark (feet-bottom / center-x) lands at
+  // exactly the same on-screen position the front image's would, at their
+  // respective drawn sizes — eliminating any foot-position or left/right
+  // jump when the DOWN facing switches between front and back.
+  const CINEMATIC_FRONT_OFFSET_X = 0;
+  const CINEMATIC_FRONT_OFFSET_Y = 0;
+  const CINEMATIC_BACK_OFFSET_X =
+    CINEMATIC_DRAW_W * (CINEMATIC_FRONT_CENTER_FRAC - 0.5) -
+    CINEMATIC_BACK_DRAW_W * (CINEMATIC_BACK_CENTER_FRAC - 0.5);
+  const CINEMATIC_BACK_OFFSET_Y =
+    CINEMATIC_DRAW_H * (CINEMATIC_FRONT_FEET_FRAC - 0.5) -
+    CINEMATIC_BACK_DRAW_H * (CINEMATIC_BACK_FEET_FRAC - 0.5);
+
+  // Picks which CINEMATIC/DOWN image + geometry to use for the CURRENT
+  // sequence, based on boss.downFacing (captured once when DOWN begins —
+  // see startBossThreshold()/startBossDying()/spawnBoss()). SOUTH uses the
+  // original front pose; NORTH/EAST/WEST all share the one back pose.
+  function getCinematicImageInfo() {
+    if (boss.downFacing === 'south') {
+      return {
+        img: cinematicPoseImg, w: CINEMATIC_DRAW_W, h: CINEMATIC_DRAW_H,
+        offX: CINEMATIC_FRONT_OFFSET_X, offY: CINEMATIC_FRONT_OFFSET_Y,
+      };
+    }
+    return {
+      img: cinematicPoseBackImg, w: CINEMATIC_BACK_DRAW_W, h: CINEMATIC_BACK_DRAW_H,
+      offX: CINEMATIC_BACK_OFFSET_X, offY: CINEMATIC_BACK_OFFSET_Y,
+    };
+  }
 
   // ---------- Explosive barrel (game object, supplied image) ----------
   // The attached render used as-is (real alpha transparency already
@@ -180,6 +239,12 @@
   const BARREL_DRAW_H = SPRITE_DRAW_H * 0.30;
   const BARREL_HITBOX_RADIUS = 12; // scaled down to match the smaller draw size
   const BARREL_EXPLOSION_RADIUS = 300; // area-effect range, not tied to the sprite size (3x the previous 100)
+  // Ceiling-drop restock: when every barrel on stage is gone, a fresh batch
+  // falls in from above instead of the field staying permanently empty.
+  const BARREL_RESTOCK_DELAY_MIN_MS = 1000, BARREL_RESTOCK_DELAY_MAX_MS = 2000;
+  const BARREL_RESTOCK_MIN_COUNT = 2, BARREL_RESTOCK_MAX_COUNT = 4;
+  const BARREL_FALL_MS = 550; // ceiling -> landing duration
+  const BARREL_FALL_HEIGHT = 460; // px above the landing spot the drop starts from (visual only)
 
   // ---------- ARC CLAW SLASH (boss melee-range attack) ----------
   // The claw IMAGE is the attack's actual body (real supplied art, no
@@ -608,6 +673,7 @@
 
   const boss = {
     name: 'GABRIEL', // official display name — internal field so every player-visible label (WARNING banner, debug/aria text) reads from one source
+    downFacing: 'south', // captured ONCE when a DOWN/CINEMATIC sequence begins (intro/threshold/dying) — see getCinematicImageInfo(); never mutated mid-sequence even if boss.dir changes underneath it
     x: 0, y: 0,
     spawned: false,
     state: 'inactive', // inactive | chase | preattack | attack | defense | guardbreak | recover | dead
@@ -667,7 +733,7 @@
     // `now - stateEnteredAt` — the latter would jump forward by however
     // long a real-world PAUSE lasted the instant it resumes, effectively
     // skipping the rest of the cinematic instead of continuing it.
-    if (state === 'intro' || state === 'threshold' || state === 'dying') {
+    if (state === 'intro' || state === 'threshold' || state === 'dying' || state === 'flashdown') {
       boss.cinematicElapsed = 0;
     }
   }
@@ -708,6 +774,7 @@
     boss.spawned = true;
     boss.hp = BOSS_HP_MAX;
     boss.dir = 'down';
+    boss.downFacing = 'south'; // fresh spawn always has no prior facing yet — default SOUTH per spec
     boss.defenseDir = 'south';
     boss.moving = false;
     boss.warningUntil = now + 1500;
@@ -755,16 +822,43 @@
   }
 
   function startBossThreshold(now) {
+    // Capture facing ONCE, right as the cinematic begins — bossEnterState()
+    // below (and anything that runs afterward) must never change which
+    // image this sequence uses partway through.
+    boss.downFacing = DIR_TO_BOSS_KEY[boss.dir];
     triggerScreenShake(now, 5, 150);
     bossEnterState('threshold', now);
   }
 
   function startBossDying(now) {
+    boss.downFacing = DIR_TO_BOSS_KEY[boss.dir]; // same one-time capture as startBossThreshold()
     clawProjectiles.length = 0; // no lingering attack hazards during the death cinematic
     arcClawSlashes.length = 0;
     boss.dyingParticlesBuilt = false;
     boss.dyingParticles = [];
     bossEnterState('dying', now);
+  }
+
+  // FLASH GRENADE success: GABRIEL goes fully DOWN for FLASH_DOWN_MS — no
+  // movement/attack/DEFENSE, but (unlike intro/threshold/dying/dead) still
+  // fully damageable, and still a valid AUTO AIM target. Uses the SAME
+  // direction-based DOWN image rule as threshold/dying (captured once, at
+  // entry). Deliberately NOT added to bossIsInCinematic() — that list means
+  // "untargetable", which flashdown must never be.
+  function startBossFlashDown(now) {
+    boss.downFacing = DIR_TO_BOSS_KEY[boss.dir];
+    clawProjectiles.length = 0; // no lingering attack hazards during the DOWN window
+    arcClawSlashes.length = 0;
+    boss.invulnerableUntil = 0; // FLASH is an explicit counter-tool for the 4-hit AUTO AIM invulnerability window
+    boss.autoAimHitStreak = 0;
+    bossEnterState('flashdown', now);
+  }
+
+  function updateBossFlashDown(dt, now) {
+    boss.cinematicElapsed += dt * 1000;
+    if (boss.cinematicElapsed >= FLASH_DOWN_MS) {
+      bossEnterState('chase', now);
+    }
   }
 
   // Compass bucket (north/south/east/west) a bullet is travelling in,
@@ -857,6 +951,47 @@
     }
   }
 
+  // ---------- Wall ricochet VFX (LEFT/RIGHT stage boundary only) ----------
+  // Deliberately small and metallic-reading — a handful of sparks and a
+  // short white/yellow tracer — never anything close to the barrel
+  // explosion's scale.
+  const wallSparks = [];
+  const WALL_SPARK_DURATION_MS = 160;
+  function spawnWallSpark(x, y, newVx, now) {
+    const bounceAngle = Math.atan2(0, newVx); // purely horizontal, matches the mirror-reflection bounce
+    const sparks = [];
+    for (let i = 0; i < 6; i++) {
+      const a = bounceAngle + (Math.random() - 0.5) * 2.0;
+      sparks.push({ angle: a, speed: 70 + Math.random() * 110, size: 0.9 + Math.random() * 1.2 });
+    }
+    wallSparks.push({ x, y, startAt: now, sparks });
+  }
+  function drawWallSparks(now) {
+    for (const s of wallSparks) {
+      const t = now - s.startAt;
+      if (t >= WALL_SPARK_DURATION_MS) continue;
+      const frac = t / WALL_SPARK_DURATION_MS;
+      const alpha = 1 - frac;
+      ctx.save();
+      ctx.translate(s.x, s.y);
+      for (const p of s.sparks) {
+        const d = p.speed * (t / 1000);
+        ctx.fillStyle = `rgba(255,240,190,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(Math.cos(p.angle) * d, Math.sin(p.angle) * d, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = `rgba(255,255,240,${Math.max(0, alpha - 0.4) * 1.5})`;
+      ctx.beginPath();
+      ctx.arc(0, 0, 2.6 * (1 - frac * 0.5), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    for (let i = wallSparks.length - 1; i >= 0; i--) {
+      if (now - wallSparks[i].startAt > WALL_SPARK_DURATION_MS) wallSparks.splice(i, 1);
+    }
+  }
+
   // Shared by both damage paths below: registers one valid AUTO-AIM-assisted
   // hit landed while the boss is defending, and breaks the guard outright on
   // the DEFENSE_GUARD_BREAK_HITSth one — entering a brief stagger pause and
@@ -896,7 +1031,7 @@
   // reticle was locked on, which for a direction with no weak point — e.g.
   // NORTH — is the only target DEFENSE ever offers) instead counts as a
   // genuine hit: full damage, and it counts toward GUARD BREAK.
-  function applyBodyHitToBoss(now, bulletX, bulletY, bulletVx, bulletVy, autoAimed) {
+  function applyBodyHitToBoss(now, bulletX, bulletY, bulletVx, bulletVy, autoAimed, isRicochet) {
     // GUARD BREAK's stagger pause is a brief (250ms), deliberately
     // untargetable beat between DEFENSE ending and ATTACK beginning — a hit
     // landing in that window must not re-trigger DEFENSE mid-transition.
@@ -915,15 +1050,24 @@
     }
     const incomingFrom = OPPOSITE_COMPASS[velocityToCompass(bulletVx, bulletVy)];
     if (boss.state === 'defense') {
+      const priorDefenseDir = boss.defenseDir; // captured before reassignment, for the ricochet-direction check below
       boss.defenseDir = incomingFrom;
-      if (autoAimed) {
+      // A wall-ricocheted bullet striking from a direction OTHER than the
+      // one just being defended bypasses the block entirely — a genuine
+      // flank/rear hit (per the wall-ricochet spec), dealing real damage
+      // regardless of auto-aim. This ADDS to, and never removes, the
+      // existing autoAimed-gated block/damage rule below: a non-ricocheted
+      // bullet's behavior is completely unchanged from before, and a
+      // ricocheted bullet that still lands from the SAME defended
+      // direction also falls through to that same existing rule.
+      const isFlankRicochet = isRicochet && incomingFrom !== priorDefenseDir;
+      if (autoAimed || isFlankRicochet) {
         boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
         if (checkBossHpMilestones(now)) return; // death or a threshold cinematic took over
         weakPointFlashUntil = now + 220; // "valid hit" feedback — same as a real weak-point hit, not a ricochet
         weakPointFlashAt = { x: bulletX, y: bulletY };
         bossHitTintUntil = now + BOSS_HIT_TINT_MS;
-        registerDefenseAimHit(now);
-        registerGlobalAutoAimHit(now);
+        if (autoAimed) { registerDefenseAimHit(now); registerGlobalAutoAimHit(now); }
         return;
       }
       spawnDefenseRicochet(now, bulletX, bulletY, bulletVx, bulletVy);
@@ -932,8 +1076,12 @@
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
     if (checkBossHpMilestones(now)) return;
     if (autoAimed) registerGlobalAutoAimHit(now);
-    boss.defenseDir = incomingFrom;
-    bossEnterState('defense', now);
+    // FLASH DOWN must never be interrupted into DEFENSE by an ordinary body
+    // hit — it stays fully damageable for its whole duration instead.
+    if (boss.state !== 'flashdown') {
+      boss.defenseDir = incomingFrom;
+      bossEnterState('defense', now);
+    }
   }
 
   // The weak point always takes genuine physical hits regardless of AUTO
@@ -1027,6 +1175,7 @@
     if (boss.state === 'intro') { updateBossIntro(dt, now); return; }
     if (boss.state === 'threshold') { updateBossThreshold(dt, now); return; }
     if (boss.state === 'dying') { updateBossDying(dt, now); return; }
+    if (boss.state === 'flashdown') { updateBossFlashDown(dt, now); return; }
     if (window.__game.freezeBossAI) return; // debug/verification only
 
 
@@ -1517,6 +1666,7 @@
       player.aimOffsetRaw = 0; player.aimOffset = 0;
       bullets.length = 0; clawProjectiles.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
       barrels.length = 0;
+      barrelLandings.length = 0;
       spawnBarrels(2 + Math.floor(Math.random() * 3));
       spawnBoss(now); // fresh full-HP boss; plays the existing FLASH/SHADOW/DESCEND/LANDING intro
       stageTransition.phase = 'in';
@@ -1577,15 +1727,21 @@
     const marginX = BARREL_DRAW_H * 1.5;
     const marginTop = H * 0.22; // stay clear of the boss's spawn band up top
     const marginBottom = H * 0.30;
+    // Live player/boss positions (not just their initial spawn points) —
+    // matters for the ceiling restock, which can fire mid-fight with both
+    // anywhere on the field, not only at mode-start.
+    const playerX = player.x, playerY = player.y;
+    const bossX = boss.spawned ? boss.x : W / 2;
+    const bossY = boss.spawned ? boss.y : Math.max(BOSS_DRAW_H * 0.55, H * 0.16);
     for (let attempt = 0; attempt < 30; attempt++) {
       const x = marginX + Math.random() * (W - marginX * 2);
       const y = marginTop + Math.random() * (H - marginTop - marginBottom);
       if (isNearUIZone(x, y)) continue;
-      if (Math.hypot(x - W / 2, y - H / 2) < 70) continue; // player spawn
-      if (Math.hypot(x - W / 2, y - Math.max(BOSS_DRAW_H * 0.55, H * 0.16)) < 90) continue; // boss spawn
+      if (Math.hypot(x - playerX, y - playerY) < 90) continue; // clear of the player
+      if (Math.hypot(x - bossX, y - bossY) < 110) continue; // clear of the boss
       let tooClose = false;
       for (const b of barrels) {
-        if (b.alive && Math.hypot(x - b.x, y - b.y) < BARREL_DRAW_H * 3) { tooClose = true; break; }
+        if ((b.alive || b.falling) && Math.hypot(x - b.x, y - b.y) < BARREL_DRAW_H * 3) { tooClose = true; break; }
       }
       if (tooClose) continue;
       return { x, y };
@@ -1598,14 +1754,36 @@
     barrels.length = 0;
     for (let i = 0; i < count; i++) {
       const spot = pickBarrelSpot();
-      barrels.push({ x: spot.x, y: spot.y, alive: true, respawnAt: 0 });
+      barrels.push({ x: spot.x, y: spot.y, alive: true, respawnAt: 0, falling: false });
+    }
+    barrelRestockPending = false; // a fresh explicit spawn (mode start/RESTART) supersedes any pending restock
+  }
+
+  // Drops `count` new barrels in from above, at safe random spots, landing
+  // over BARREL_FALL_MS each — see updateBarrels()/drawBarrel() for the
+  // fall animation itself. Used by the all-destroyed restock only; the
+  // initial per-mode spawn always uses spawnBarrels() (barrels already in
+  // place at mode start, no drop-in).
+  function spawnFallingBarrels(count, now) {
+    for (let i = 0; i < count; i++) {
+      const spot = pickBarrelSpot();
+      barrels.push({
+        x: spot.x, y: spot.y, alive: false, respawnAt: 0,
+        falling: true, fallElapsedMs: 0, landX: spot.x, landY: spot.y,
+      });
     }
   }
 
   const explosions = [];
   const EXPLOSION_DURATION_MS = 600; // 0-100 flash, 100-300 fireball, 300-600 sparks/debris/smoke decay
   const BARREL_DAMAGE = BULLET_DAMAGE * 15; // ~15 normal shots worth, per spec's 10-20x range — unchanged
-  const TRAINING_RESPAWN_MIN_MS = 800, TRAINING_RESPAWN_MAX_MS = 1500;
+  // Restock state: fires whenever every barrel is gone (none alive, none
+  // currently falling in) — a single unified path for BOTH BOSS MODE and
+  // TRAINING MODE, replacing the old TRAINING-only per-barrel respawnAt
+  // timer so the two mechanisms can never both fire and double-spawn.
+  let barrelRestockPending = false;
+  let barrelRestockRemainingMs = 0;
+  const barrelLandings = []; // small non-fiery "just landed" dust puffs — see drawBarrelLanding()
 
   // Brief, small camera shake on a barrel detonation — canvas-only, applied
   // as a temporary draw()-time translate (see getScreenShakeOffset()) that
@@ -1654,16 +1832,42 @@
         Math.hypot(barrel.x - boss.x, barrel.y - boss.y) <= BARREL_EXPLOSION_RADIUS + BOSS_HURT_RADIUS) {
       applyExplosionDamageToBoss(BARREL_DAMAGE, now);
     }
-    if (gameState.mode === 'training') {
-      barrel.respawnAt = now + TRAINING_RESPAWN_MIN_MS + Math.random() * (TRAINING_RESPAWN_MAX_MS - TRAINING_RESPAWN_MIN_MS);
-    }
+    // No more per-barrel respawn timer here (old TRAINING-only behavior) —
+    // restocking is now unified for both modes in updateBarrels() below,
+    // triggered once every barrel is gone, so the two paths can never
+    // double-spawn.
   }
 
-  function updateBarrels(now) {
+  // dt-driven (not absolute-deadline) countdowns so restock waiting and the
+  // fall animation genuinely stop advancing while PAUSE is active — update()
+  // as a whole returns early during PAUSE, so dt simply never arrives here.
+  function updateBarrels(dt, now) {
+    let pendingCount = 0;
     for (const b of barrels) {
-      if (!b.alive && b.respawnAt && now >= b.respawnAt) {
-        const spot = pickBarrelSpot();
-        b.x = spot.x; b.y = spot.y; b.alive = true; b.respawnAt = 0;
+      if (b.falling) {
+        b.fallElapsedMs = (b.fallElapsedMs || 0) + dt * 1000;
+        if (b.fallElapsedMs >= BARREL_FALL_MS) {
+          b.falling = false;
+          b.alive = true;
+          b.x = b.landX; b.y = b.landY;
+          barrelLandings.push({ x: b.landX, y: b.landY, startAt: now });
+          triggerScreenShake(now, 2.5, 90); // small impact — nowhere near explosion-sized
+        }
+        pendingCount++;
+      } else if (b.alive) {
+        pendingCount++;
+      }
+    }
+    if (pendingCount === 0 && !barrelRestockPending) {
+      barrelRestockPending = true;
+      barrelRestockRemainingMs = BARREL_RESTOCK_DELAY_MIN_MS + Math.random() * (BARREL_RESTOCK_DELAY_MAX_MS - BARREL_RESTOCK_DELAY_MIN_MS);
+    }
+    if (barrelRestockPending) {
+      barrelRestockRemainingMs -= dt * 1000;
+      if (barrelRestockRemainingMs <= 0) {
+        barrelRestockPending = false;
+        const count = BARREL_RESTOCK_MIN_COUNT + Math.floor(Math.random() * (BARREL_RESTOCK_MAX_COUNT - BARREL_RESTOCK_MIN_COUNT + 1));
+        spawnFallingBarrels(count, now);
       }
     }
   }
@@ -1672,7 +1876,39 @@
     if (!barrelImg.complete || barrelImg.naturalWidth === 0) return;
     const aspect = barrelImg.naturalWidth / barrelImg.naturalHeight;
     const h = BARREL_DRAW_H, w = h * aspect;
+    if (b.falling) {
+      const t = Math.min(1, (b.fallElapsedMs || 0) / BARREL_FALL_MS);
+      const et = t * t; // accelerating, gravity-like
+      const dropY = -(1 - et) * BARREL_FALL_HEIGHT;
+      const shadowT = et; // shadow grows/darkens as it nears the ground
+      ctx.save();
+      ctx.globalAlpha = 0.35 * shadowT;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(b.landX, b.landY + h * 0.42, w * 0.32 * shadowT, w * 0.32 * shadowT * 0.32, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.drawImage(barrelImg, b.x - w / 2, b.y + dropY - h / 2, w, h);
+      return;
+    }
     ctx.drawImage(barrelImg, b.x - w / 2, b.y - h / 2, w, h);
+  }
+
+  // Small, brief dust puff at a freshly-landed barrel's feet — deliberately
+  // much smaller/quieter than drawExplosion()'s fireball, per spec ("not as
+  // flashy as an explosion").
+  const BARREL_LANDING_MS = 260;
+  function drawBarrelLanding(l, now) {
+    const t = (now - l.startAt) / BARREL_LANDING_MS;
+    if (t >= 1) return;
+    ctx.save();
+    ctx.globalAlpha = 0.5 * (1 - t);
+    ctx.fillStyle = 'rgba(210,205,195,0.8)';
+    const r = BARREL_DRAW_H * (0.25 + t * 0.35);
+    ctx.beginPath();
+    ctx.ellipse(l.x, l.y + BARREL_DRAW_H * 0.3, r, r * 0.35, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   // Three overlapping phases, all canvas-drawn (no image assets): a sharp
@@ -1819,10 +2055,12 @@
       // rather than recomputing anything from the (possibly released) stick.
       autoAimActive = true;
       autoAimTargetIsBoss = aimDoubleTapTargetIsBoss;
+      autoAimLockedPoint = aimDoubleTapTargetPoint; // captured once, at the moment of the double-tap — see performNearestAutoAimSnap()
       return;
     }
     autoAimActive = false;
     autoAimTargetIsBoss = false;
+    autoAimLockedPoint = null;
     if (!aimStickActive) {
       player.aimOffset = player.aimOffsetRaw;
       return;
@@ -1862,6 +2100,7 @@
       player.aimOffset += (desiredOffset - player.aimOffset) * AUTO_AIM_SNAP_STRENGTH;
       autoAimActive = true;
       autoAimTargetIsBoss = bestIsBoss;
+      autoAimLockedPoint = best;
     } else {
       player.aimOffset = player.aimOffsetRaw;
     }
@@ -1904,7 +2143,12 @@
     stageTransition.phase = null;
 
     modeStartTime = performance.now();
+    barrelLandings.length = 0;
+    barrelRestockPending = false;
+    barrelRestockRemainingMs = 0;
     spawnBarrels(2 + Math.floor(Math.random() * 3)); // 2-4
+    resetRangeSlider();
+    resetFlashGrenade();
   }
 
   function startMode(mode) {
@@ -2104,6 +2348,7 @@
   let lastAimTapWasCenter = false;
   let aimDoubleTapLockUntil = 0;
   let aimDoubleTapTargetIsBoss = false;
+  let aimDoubleTapTargetPoint = null;
 
   function getNearestAutoAimCandidate() {
     // Same target universe as the existing drag-to-snap AUTO AIM: the boss
@@ -2142,6 +2387,7 @@
     player.aimOffset = offset;
     aimDoubleTapLockUntil = now + AIM_DOUBLE_TAP_LOCK_MS;
     aimDoubleTapTargetIsBoss = target.isBoss;
+    aimDoubleTapTargetPoint = { x: target.x, y: target.y };
     aimStickActive = true;
     const rect = aimStickZone.getBoundingClientRect();
     const maxR = rect.width / 2;
@@ -2321,6 +2567,117 @@
   // triggered exclusively by double-tapping a direction on the MOVE
   // (ACTION) STICK itself (see tryMoveStickDoubleTapDash() below).
 
+  // ---------- FLASH GRENADE ----------
+  // A short toss (Canvas-drawn arc object, no image asset) that, once it
+  // detonates, briefly whites out the screen and drops GABRIEL into a fully
+  // damageable DOWN state for FLASH_DOWN_MS — see startBossFlashDown()/
+  // updateBossFlashDown() above. Every timer here is dt-driven (not an
+  // absolute deadline), so PAUSE genuinely freezes them mid-count — see the
+  // same reasoning already used for barrel restocking.
+  const flashZone = document.getElementById('flash-zone');
+  const flashButton = document.getElementById('flash-button');
+  const flashRingProgress = document.getElementById('flash-ring-progress');
+  const FLASH_RING_R = 44;
+  const FLASH_RING_CIRCUMFERENCE = 2 * Math.PI * FLASH_RING_R;
+  flashRingProgress.style.strokeDasharray = `${FLASH_RING_CIRCUMFERENCE}`;
+
+  const FLASH_THROW_MS = 350; // toss travel time before it detonates
+  const FLASH_SCREEN_FLASH_MS = 180; // within the requested 100-250ms band
+  const FLASH_DOWN_MS = 5000;
+  const FLASH_COOLDOWN_MS = 10000;
+  // Within the requested "~2-3x player height" band (SPRITE_DRAW_H is the
+  // player's own on-screen height).
+  const FLASH_MIN_DISTANCE = SPRITE_DRAW_H * 2.5;
+
+  let flashCooldownRemainingMs = 0; // 0 = ready to use
+  let flashGrenade = null; // {startX, startY, endX, endY, elapsedMs} while in flight, else null
+  let flashScreenFlashRemainingMs = 0;
+
+  function flashDisabledByCinematic() {
+    // Covers INTRO/milestone/DYING/DEAD (bossIsInCinematic()) plus the two
+    // states it deliberately does NOT include: FLASH DOWN itself (using
+    // FLASH again on an already-downed boss is simply pointless, not a
+    // special case) and the stage fade transition.
+    return bossIsInCinematic() || boss.state === 'flashdown' || stageTransition.active;
+  }
+
+  function flashPress(e) {
+    if (e) e.preventDefault();
+    if (gameState.paused) return;
+    if (flashCooldownRemainingMs > 0) return; // cooldown active: nothing happens at all, not even feedback
+    if (!boss.spawned || flashDisabledByCinematic()) return;
+    const dist = Math.hypot(boss.x - player.x, boss.y - player.y);
+    if (dist < FLASH_MIN_DISTANCE) {
+      // Too close: brief button-darken feedback only — no throw, no
+      // cooldown, no screen flash, no DOWN.
+      flashButton.classList.add('too-close');
+      setTimeout(() => flashButton.classList.remove('too-close'), 150);
+      return;
+    }
+    flashCooldownRemainingMs = FLASH_COOLDOWN_MS; // starts the instant a valid throw is accepted
+    flashGrenade = { startX: player.x, startY: player.y, endX: boss.x, endY: boss.y, elapsedMs: 0 };
+  }
+  flashZone.addEventListener('touchstart', flashPress, { passive: false });
+  flashZone.addEventListener('mousedown', flashPress);
+
+  function updateFlashGrenade(dt, now) {
+    if (flashCooldownRemainingMs > 0) {
+      flashCooldownRemainingMs = Math.max(0, flashCooldownRemainingMs - dt * 1000);
+    }
+    if (flashScreenFlashRemainingMs > 0) {
+      flashScreenFlashRemainingMs = Math.max(0, flashScreenFlashRemainingMs - dt * 1000);
+    }
+    if (flashGrenade) {
+      flashGrenade.elapsedMs += dt * 1000;
+      if (flashGrenade.elapsedMs >= FLASH_THROW_MS) {
+        flashGrenade = null;
+        flashScreenFlashRemainingMs = FLASH_SCREEN_FLASH_MS;
+        if (boss.spawned && !flashDisabledByCinematic()) {
+          startBossFlashDown(now);
+        }
+      }
+    }
+    // Cooldown ring: fills up (0 -> full circumference) as flashCooldownRemainingMs counts down to 0.
+    const readyFrac = 1 - flashCooldownRemainingMs / FLASH_COOLDOWN_MS;
+    flashRingProgress.style.strokeDashoffset = `${FLASH_RING_CIRCUMFERENCE * (1 - readyFrac)}`;
+    flashButton.classList.toggle('ready', flashCooldownRemainingMs <= 0);
+  }
+
+  function resetFlashGrenade() {
+    flashCooldownRemainingMs = 0;
+    flashGrenade = null;
+    flashScreenFlashRemainingMs = 0;
+    flashButton.classList.remove('too-close');
+  }
+
+  // A small tossed object arcing from the player to GABRIEL — deliberately
+  // plain (no image asset, no glow), just enough to read as "something was
+  // thrown", per spec.
+  function drawFlashGrenade() {
+    if (!flashGrenade) return;
+    const t = Math.min(1, flashGrenade.elapsedMs / FLASH_THROW_MS);
+    const x = flashGrenade.startX + (flashGrenade.endX - flashGrenade.startX) * t;
+    const groundY = flashGrenade.startY + (flashGrenade.endY - flashGrenade.startY) * t;
+    const arcHeight = 90;
+    const y = groundY - Math.sin(t * Math.PI) * arcHeight;
+    ctx.save();
+    ctx.globalAlpha = 0.3 * (1 - t * 0.3);
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.ellipse(x, groundY, 6, 2.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    ctx.save();
+    ctx.fillStyle = '#43483a';
+    ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // Prevent default touch scroll/zoom anywhere on the game UI
   document.addEventListener('touchmove', (e) => { e.preventDefault(); }, { passive: false });
   document.addEventListener('gesturestart', (e) => { e.preventDefault(); });
@@ -2331,7 +2688,38 @@
   const FIRE_INTERVAL = 170; // ms
   const FIRE_POSE_DURATION = 80; // ms — how long the FIRE sprite shows per shot
   const MUZZLE_DIST = SPRITE_DRAW_H * 0.46; // same muzzle offset used previously
-  const AIM_LINE_LEN = 240; // shared by the aim line and AUTO AIM's reticle-tip check
+  const AIM_LINE_LEN = 240; // AUTO AIM's reticle-tip search distance — fixed, NOT the player-adjustable RANGE below (keeps existing AUTO AIM target-detection behavior completely unchanged)
+  // ---------- RANGE gauge (aim-guide length only — never bullet distance) ----------
+  // Purely a "where the dotted aim guide/reticle is drawn" control, kept
+  // fully independent of the actual firing angle (AIM STICK) and of
+  // AIM_LINE_LEN's internal AUTO AIM target-search math above. spawnBullet()
+  // never reads this — bullets always fly their existing full lifetime/
+  // stage-bounds distance regardless of what RANGE is set to.
+  const AIM_RANGE_DEFAULT = AIM_LINE_LEN; // 240 — slider starts at today's existing guide length
+  const AIM_RANGE_MIN = AIM_LINE_LEN * 0.40; // 96 — within the requested ~35-45% band
+  const AIM_RANGE_MAX = AIM_LINE_LEN * 1.40; // 336 — within the requested ~130-150% band
+  let aimRangeLen = AIM_RANGE_DEFAULT;
+  let rangeSliderActive = false; // true while the player is actively dragging #range-slider
+  let autoAimLockedPoint = null; // {x,y} of whatever AUTO AIM is currently snapped onto, or null — see updateAutoAim()/performNearestAutoAimSnap()
+
+  const rangeSlider = document.getElementById('range-slider');
+  function applyRangeSliderValue() {
+    const t = Number(rangeSlider.value) / 100; // 0..1
+    aimRangeLen = AIM_RANGE_MIN + t * (AIM_RANGE_MAX - AIM_RANGE_MIN);
+  }
+  applyRangeSliderValue(); // slider's own default value (50) already matches AIM_RANGE_DEFAULT — see resetRangeSlider()
+  rangeSlider.addEventListener('input', () => {
+    rangeSliderActive = true;
+    applyRangeSliderValue();
+  });
+  rangeSlider.addEventListener('pointerdown', () => { rangeSliderActive = true; });
+  rangeSlider.addEventListener('pointerup', () => { rangeSliderActive = false; });
+  rangeSlider.addEventListener('touchend', () => { rangeSliderActive = false; });
+  function resetRangeSlider() {
+    rangeSlider.value = '60'; // maps exactly to AIM_RANGE_DEFAULT (240)
+    rangeSliderActive = false;
+    applyRangeSliderValue();
+  }
   // The replacement RIGHT/FIRE and LEFT/FIRE sprites each have their muzzle
   // flash at a fixed point on screen (measured directly from each asset),
   // noticeably higher and further out than the generic radial offset above.
@@ -2371,6 +2759,7 @@
       // never count toward DEFENSE's GUARD BREAK counter even if it happens
       // to also land on the boss.
       autoAimedBoss: autoAimActive && autoAimTargetIsBoss,
+      ricochetCount: 0, // bumped to 1 on a single left/right-wall bounce — see the wall-ricochet check in update()
     });
     // No canvas muzzle-flash circle — the FIRE sprites already carry their
     // own baked-in flash art; an extra orange dot on top was redundant.
@@ -2402,6 +2791,22 @@
     getAmbientDarkenAlpha,
     requestDash, // debug/verification only — drives the DASH chain directly, bypassing touch-gesture detection
     HALF_RANGE, clampToHalfRange, BASE_ANGLE, keys,
+    getCinematicImageInfo, CINEMATIC_SCALE, CINEMATIC_BACK_SCALE, DIR_TO_BOSS_KEY, // debug/verification only
+    get barrelRestockPending() { return barrelRestockPending; },
+    get barrelRestockRemainingMs() { return barrelRestockRemainingMs; },
+    barrelLandings, spawnFallingBarrels, BARREL_FALL_MS, // debug/verification only
+    wallSparks, // debug/verification only
+    get aimRangeLen() { return aimRangeLen; },
+    AIM_RANGE_MIN, AIM_RANGE_MAX, AIM_RANGE_DEFAULT,
+    get autoAimLockedPoint() { return autoAimLockedPoint; },
+    get rangeSliderActive() { return rangeSliderActive; },
+    set rangeSliderActive(v) { rangeSliderActive = v; }, // debug/verification only
+    flashPress, startBossFlashDown, // debug/verification only
+    get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
+    set flashCooldownRemainingMs(v) { flashCooldownRemainingMs = v; }, // debug/verification only
+    get flashGrenade() { return flashGrenade; },
+    get flashScreenFlashRemainingMs() { return flashScreenFlashRemainingMs; },
+    FLASH_DOWN_MS, FLASH_COOLDOWN_MS, FLASH_MIN_DISTANCE, FLASH_THROW_MS,
   };
 
   // ---------- Main loop ----------
@@ -2500,6 +2905,14 @@
       const b = bullets[i];
       b.x += b.vx * dt;
       b.y += b.vy * dt;
+      // LEFT/RIGHT wall ricochet — mirror reflection (vx flips, vy
+      // unchanged), exactly once per bullet. Top/bottom never ricochet.
+      if (b.ricochetCount < 1 && (b.x <= 0 || b.x >= W)) {
+        b.x = b.x <= 0 ? 0 : W;
+        b.vx = -b.vx;
+        b.ricochetCount = 1;
+        spawnWallSpark(b.x, b.y, b.vx, now);
+      }
       if (b.x < -20 || b.x > W + 20 || b.y < cameraY - 20 || b.y > cameraY + H + 20) {
         bullets.splice(i, 1);
         continue;
@@ -2518,7 +2931,7 @@
           }
         }
         if (!consumed && Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS) {
-          applyBodyHitToBoss(now, b.x, b.y, b.vx, b.vy, b.autoAimedBoss);
+          applyBodyHitToBoss(now, b.x, b.y, b.vx, b.vy, b.autoAimedBoss, b.ricochetCount > 0);
           consumed = true;
         }
       }
@@ -2535,7 +2948,8 @@
       if (consumed) bullets.splice(i, 1);
     }
 
-    updateBarrels(now);
+    updateBarrels(dt, now);
+    updateFlashGrenade(dt, now);
     updateBoss(dt, now);
     updateClawProjectiles(dt, now);
     updateArcClawSlashes(now);
@@ -2612,13 +3026,23 @@
   }
 
   // ---------- Aim prediction line: dotted, matches the actual firing angle ----------
+  // Its length is the RANGE gauge's aimRangeLen — a purely visual "where am
+  // I precisely aiming" control, never bullet travel distance (bullets
+  // always fly their own full lifetime regardless — see spawnBullet()).
+  // While AUTO AIM is genuinely locked onto something (and the player isn't
+  // actively dragging the RANGE slider right now), the guide instead snaps
+  // to that target's real distance so the reticle visibly sits on it.
   function drawAimLine() {
     if (!aimStickActive) return;
     const angle = getAimAngle();
     const bx = player.x + Math.cos(angle) * MUZZLE_DIST;
     const by = player.y + Math.sin(angle) * MUZZLE_DIST;
-    const ex = bx + Math.cos(angle) * AIM_LINE_LEN;
-    const ey = by + Math.sin(angle) * AIM_LINE_LEN;
+    let guideLen = aimRangeLen;
+    if (autoAimActive && autoAimLockedPoint && !rangeSliderActive) {
+      guideLen = Math.hypot(autoAimLockedPoint.x - bx, autoAimLockedPoint.y - by);
+    }
+    const ex = bx + Math.cos(angle) * guideLen;
+    const ey = by + Math.sin(angle) * guideLen;
 
     ctx.save();
     ctx.strokeStyle = autoAimActive ? 'rgba(255,90,80,0.6)' : 'rgba(255,255,255,0.55)';
@@ -2686,12 +3110,19 @@
     }
 
     // Barrels sit on the ground, above the background but below the
-    // characters (drawn next), same as an ordinary game object.
-    for (const b of barrels) if (b.alive) drawBarrel(b);
+    // characters (drawn next), same as an ordinary game object. Falling
+    // (not-yet-landed) barrels draw too, via their own in-air pose.
+    for (const b of barrels) if (b.alive || b.falling) drawBarrel(b);
+    for (let i = barrelLandings.length - 1; i >= 0; i--) {
+      const l = barrelLandings[i];
+      if (now - l.startAt >= BARREL_LANDING_MS) { barrelLandings.splice(i, 1); continue; }
+      drawBarrelLanding(l, now);
+    }
     for (const e of explosions) drawExplosion(e, now);
 
     // bullets
     for (const b of bullets) drawBullet(b);
+    drawFlashGrenade();
 
     // Claw projectiles draw alongside the player's own bullets.
     for (const p of clawProjectiles) drawClawProjectile(p);
@@ -2756,6 +3187,17 @@
     const stageFadeAlpha = getStageTransitionOverlayAlpha(now);
     if (stageFadeAlpha > 0) {
       ctx.fillStyle = `rgba(6, 8, 10, ${stageFadeAlpha})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // FLASH GRENADE screen flash — deliberately independent of the ambient
+    // stage-lighting drift above (never washes it out or gets washed out by
+    // it), brief (<=FLASH_SCREEN_FLASH_MS, within the requested 100-250ms
+    // band), always drawn last so it reads as the brightest, topmost thing
+    // on screen at the instant it fires.
+    if (flashScreenFlashRemainingMs > 0) {
+      const alpha = Math.min(1, flashScreenFlashRemainingMs / FLASH_SCREEN_FLASH_MS);
+      ctx.fillStyle = `rgba(255,255,255,${alpha})`;
       ctx.fillRect(0, 0, W, H);
     }
 
@@ -2840,6 +3282,7 @@
     if (boss.state === 'intro') { drawBossIntro(now); return; }
     if (boss.state === 'threshold') { drawBossThreshold(now); return; }
     if (boss.state === 'dying') { drawBossDying(now); return; }
+    if (boss.state === 'flashdown') { drawBossFlashDown(now); return; }
 
     const name = bossFrameName(now);
     window.__game.bossFrame = name; // debug/verification only
@@ -2921,12 +3364,13 @@
     }
 
     // The CINEMATIC POSE itself only appears once it starts descending.
-    if (elapsed >= descendStart && cinematicPoseImg.complete && cinematicPoseImg.naturalWidth > 0) {
+    const introCin = getCinematicImageInfo();
+    if (elapsed >= descendStart && introCin.img.complete && introCin.img.naturalWidth > 0) {
       ctx.drawImage(
-        cinematicPoseImg,
-        boss.x - CINEMATIC_DRAW_W / 2,
-        boss.y - CINEMATIC_DRAW_H / 2,
-        CINEMATIC_DRAW_W, CINEMATIC_DRAW_H
+        introCin.img,
+        boss.x - introCin.w / 2 + introCin.offX,
+        boss.y - introCin.h / 2 + introCin.offY,
+        introCin.w, introCin.h
       );
     }
 
@@ -2947,12 +3391,13 @@
   // impact flash, in place (boss.x/y don't move during this).
   function drawBossThreshold(now) {
     const elapsed = boss.cinematicElapsed;
-    if (cinematicPoseImg.complete && cinematicPoseImg.naturalWidth > 0) {
+    const thresholdCin = getCinematicImageInfo();
+    if (thresholdCin.img.complete && thresholdCin.img.naturalWidth > 0) {
       ctx.drawImage(
-        cinematicPoseImg,
-        boss.x - CINEMATIC_DRAW_W / 2,
-        boss.y - CINEMATIC_DRAW_H / 2,
-        CINEMATIC_DRAW_W, CINEMATIC_DRAW_H
+        thresholdCin.img,
+        boss.x - thresholdCin.w / 2 + thresholdCin.offX,
+        boss.y - thresholdCin.h / 2 + thresholdCin.offY,
+        thresholdCin.w, thresholdCin.h
       );
     }
     if (elapsed < 180) {
@@ -2967,18 +3412,34 @@
     }
   }
 
+  // FLASH DOWN: hold on the direction-based DOWN pose for the whole
+  // FLASH_DOWN_MS window — same image/anchor rule as drawBossThreshold(),
+  // no impact-flash ring (that belongs to the milestone reaction only).
+  function drawBossFlashDown(now) {
+    const flashDownCin = getCinematicImageInfo();
+    if (flashDownCin.img.complete && flashDownCin.img.naturalWidth > 0) {
+      ctx.drawImage(
+        flashDownCin.img,
+        boss.x - flashDownCin.w / 2 + flashDownCin.offX,
+        boss.y - flashDownCin.h / 2 + flashDownCin.offY,
+        flashDownCin.w, flashDownCin.h
+      );
+    }
+  }
+
   // Samples the CINEMATIC POSE image (as actually drawn on-screen, so
   // colors/silhouette match exactly) into a grid of small opaque cells —
   // built once per death via boss.dyingParticlesBuilt. Outer/edge cells get
   // an earlier dissolveAt than central ones, so the body visibly peels
   // apart from the outside in rather than dissolving uniformly.
   function buildDyingParticles() {
+    const dyingCin = getCinematicImageInfo();
     const off = document.createElement('canvas');
-    off.width = Math.max(1, Math.ceil(CINEMATIC_DRAW_W));
-    off.height = Math.max(1, Math.ceil(CINEMATIC_DRAW_H));
+    off.width = Math.max(1, Math.ceil(dyingCin.w));
+    off.height = Math.max(1, Math.ceil(dyingCin.h));
     const octx = off.getContext('2d');
-    if (cinematicPoseImg.complete && cinematicPoseImg.naturalWidth > 0) {
-      octx.drawImage(cinematicPoseImg, 0, 0, off.width, off.height);
+    if (dyingCin.img.complete && dyingCin.img.naturalWidth > 0) {
+      octx.drawImage(dyingCin.img, 0, 0, off.width, off.height);
     }
     let data = null;
     try { data = octx.getImageData(0, 0, off.width, off.height).data; } catch (e) { data = null; }
@@ -3037,14 +3498,15 @@
   // DYING_DURATION_MS instead of just fading transparent in place.
   function drawBossDying(now) {
     if (!boss.dyingParticlesBuilt) buildDyingParticles();
+    const dyingDrawCin = getCinematicImageInfo(); // same boss.downFacing as buildDyingParticles() used — stable for the whole sequence
     const frac = Math.min(1, boss.cinematicElapsed / DYING_DURATION_MS);
-    const drawX = boss.x - CINEMATIC_DRAW_W / 2;
-    const drawY = boss.y - CINEMATIC_DRAW_H / 2;
+    const drawX = boss.x - dyingDrawCin.w / 2 + dyingDrawCin.offX;
+    const drawY = boss.y - dyingDrawCin.h / 2 + dyingDrawCin.offY;
 
     ctx.save();
     ctx.globalAlpha = frac > 0.85 ? Math.max(0, (1 - frac) / 0.15) : 1;
-    if (cinematicPoseImg.complete && cinematicPoseImg.naturalWidth > 0) {
-      ctx.drawImage(cinematicPoseImg, drawX, drawY, CINEMATIC_DRAW_W, CINEMATIC_DRAW_H);
+    if (dyingDrawCin.img.complete && dyingDrawCin.img.naturalWidth > 0) {
+      ctx.drawImage(dyingDrawCin.img, drawX, drawY, dyingDrawCin.w, dyingDrawCin.h);
     }
     ctx.globalCompositeOperation = 'destination-out';
     ctx.globalAlpha = 1;
@@ -3130,6 +3592,7 @@
       ctx.restore();
     }
     drawDefenseRicochets(now);
+    drawWallSparks(now);
   }
 
   function loop(now) {
