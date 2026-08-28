@@ -132,7 +132,7 @@
     // render and vice versa — confirmed by visual comparison against the
     // correctly-labeled east_idle/west_idle pair). Rather than touch the
     // image files, the logical keys below simply load the other file.
-    walk_south_1: 'walk_south_1', walk_south_2: 'walk_south_2', walk_east: 'walk_west', walk_west: 'walk_east',
+    walk_south_1: 'walk_south_1', walk_south_2: 'walk_south_2', walk_south_3: 'walk_south_3', walk_east: 'walk_west', walk_west: 'walk_east',
   };
   const bossSprites = {};
   let bossSpritesReady = 0;
@@ -225,23 +225,22 @@
   }
 
   // ---------- DARK PHASE (GABRIEL's total-invulnerability shadow state) ----------
-  // A single dedicated image (not direction-based like the DOWN/CINEMATIC
-  // pair above) — see assets/boss/dark_phase_build_meta.json for the
-  // non-generative alpha-cleanup that removed the supplied image's white
-  // background/fringe (a naive hard alpha threshold had left a light halo
-  // around the silhouette's many jagged edges). Never used for normal
-  // IDLE/WALK/ATTACK/DEFENSE or mixed into the front/back DOWN system.
-  const darkPhaseImg = new Image();
-  darkPhaseImg.src = 'assets/boss/dark_phase.png';
-  const DARKPHASE_ASPECT = 1152 / 1728;
-  const DARKPHASE_BODY_FRAC = (1654 - 231) / 1728;
-  // Scaled from its own measured body-fill fraction relative to the front
-  // CINEMATIC image's (same method as CINEMATIC_BACK_SCALE above), so it
-  // reads at roughly the same on-screen body size as the normal boss
-  // sprite — this is a combat state, not a smaller dramatic cutscene pose.
-  const DARKPHASE_SCALE = CINEMATIC_SCALE * (CINEMATIC_FRONT_BODY_FRAC / DARKPHASE_BODY_FRAC);
-  const DARKPHASE_DRAW_H = BOSS_DRAW_H * DARKPHASE_SCALE;
-  const DARKPHASE_DRAW_W = DARKPHASE_DRAW_H * DARKPHASE_ASPECT;
+  // Reworked this batch: GABRIEL's body/silhouette is no longer drawn AT ALL
+  // during DARK PHASE (previously drew assets/boss/dark_phase.png — that
+  // asset and its build docs are left on disk, just no longer referenced,
+  // in case a future design wants it back). Per the updated spec, only a
+  // glowing red "eye" VFX is shown, anchored to a fixed point in the shared
+  // BOSS_CANVAS_W/H coordinate space (measured off south_idle.png's own
+  // single glowing eye) and mapped to screen space through boss.x/boss.y —
+  // see getDarkPhaseHeadScreenPos() below, the SAME anchor used both for
+  // drawing the eye and for the FLASH head-aim hit-test, so the two can
+  // never drift apart as GABRIEL moves.
+  const DARKPHASE_HEAD_CANVAS_X = 357; // measured: red-eye bbox center on the 700x920 boss canvas
+  const DARKPHASE_HEAD_CANVAS_Y = 206;
+  const DARKPHASE_HEAD_HIT_RADIUS = 55; // screen px — perpendicular tolerance for the FLASH aim-ray check, see isAimedAtDarkPhaseHead()
+  // DARK PHASE approach/attack/retreat AI speed/range constants are declared
+  // further below (next to BOSS_SPEED/BOSS_ATTACK_RANGE, which they derive
+  // from) — see DARKPHASE_APPROACH_SPEED etc.
 
   // ---------- Explosive barrel (game object, supplied image) ----------
   // The attached render used as-is (real alpha transparency already
@@ -589,8 +588,20 @@
   // the only way out is a successful FLASH GRENADE.
   const AUTO_AIM_INVULN_HITS = 4;
   const DARKPHASE_FADE_MS = 450; // within the requested 300-600ms band, both fade-in AND fade-out
-  const DARKPHASE_OVERLAY_ALPHA = 0.82; // dark, but never fully opaque — player/bullets/GABRIEL's red eyes must stay minimally visible
-  const DARKPHASE_ATTACK_INTERVAL_MS = 1400; // cadence between ARC CLAW SLASH casts while in DARK PHASE
+  // Drawn UNDER the player/bullets/claw attacks (see draw()) rather than as
+  // a final full-screen overlay on top of everything, so it can go this
+  // dark — near-total black — without also dimming the things that must
+  // stay clearly visible. Not literal 255 alpha (never an instant pure-
+  // black cut, and a hair of the background stays technically present).
+  const DARKPHASE_OVERLAY_ALPHA = 0.97;
+  // DARK PHASE approach/attack/retreat AI (see updateBossDarkPhase()) —
+  // GABRIEL physically walks toward the player (boss.x/y itself moves, not
+  // just a VFX), closes to DARKPHASE_ATTACK_RANGE, fires one ARC CLAW SLASH,
+  // then backs off for DARKPHASE_RETREAT_MS before approaching again.
+  const DARKPHASE_APPROACH_SPEED = BOSS_SPEED; // same creeping pace as normal CHASE
+  const DARKPHASE_RETREAT_SPEED = BOSS_SPEED * 0.8;
+  const DARKPHASE_ATTACK_RANGE = BOSS_ATTACK_RANGE; // distance at which GABRIEL stops closing and slashes
+  const DARKPHASE_RETREAT_MS = 900;
   const WALK_FRAME_PERIOD_MS = 260; // south 2-frame alternation period
   const NORTH_BOUNCE_AMPLITUDE = 4; // px, decorative only (no NORTH walk art)
   const SOUTH_WALK_SCALE = 1.10; // visual-only — SOUTH WALK reads a touch small next to the other directions
@@ -717,7 +728,8 @@
     weakPointConsecutiveHits: 0, // ANY valid weak-point damage hit (auto-aimed or manual) landed during the current DEFENSE
     autoAimHitStreak: 0, // ANY valid AUTO-AIM-assisted damage hit, body or weak point, regardless of state — see registerGlobalAutoAimHit()
     invulnerableUntil: 0, // legacy field — no longer ever set to a nonzero value (4-hit AUTO AIM now triggers DARK PHASE, not a timed window); left in place harmlessly
-    darkPhaseAttackTimer: 0, // dt-driven countdown to the next ARC CLAW SLASH while in DARK PHASE — see startBossDarkPhase()/updateBossDarkPhase()
+    darkPhaseAttackTimer: 0, // dt-driven sub-phase timer, meaning depends on darkPhaseSubState — see updateBossDarkPhase()
+    darkPhaseSubState: 'approach', // 'approach' | 'attacking' | 'retreat' — GABRIEL's own mini state machine while in DARK PHASE
     // Cinematic sequence state (intro / HP threshold / death) — see the
     // "Boss cinematic sequences" constants above and startBossThreshold(),
     // startBossDying(), updateBossIntro/Threshold/Dying(), drawBoss*().
@@ -875,17 +887,100 @@
     clawProjectiles.length = 0; // no lingering 3WAY BLADE/other attacks from before DARK PHASE
     arcClawSlashes.length = 0;
     boss.darkPhaseAttackTimer = 0;
+    boss.darkPhaseSubState = 'approach'; // always starts by closing in, never mid-slash/mid-retreat
     bossEnterState('darkphase', now);
   }
 
+  // DARK PHASE AI: a 3-phase loop, completely distinct from normal CHASE/
+  // ATTACK/DEFENSE — GABRIEL's own x/y genuinely move (not just a VFX),
+  // closing in on the player like a real approach, so the glowing eye (see
+  // drawBossDarkPhase()) visibly creeps closer over time rather than
+  // teleporting or attacking from a fixed spot.
+  //   approach  -> walk straight toward the player until within
+  //                DARKPHASE_ATTACK_RANGE, then fire one ARC CLAW SLASH
+  //   attacking -> hold position for the slash's own ARC_CLAW_LIFETIME_MS
+  //                (the existing attack fully owns its own hit timing —
+  //                see updateArcClawSlashes()) so GABRIEL doesn't immediately
+  //                start walking again mid-swing
+  //   retreat   -> back away for DARKPHASE_RETREAT_MS before approaching
+  //                again, so every slash reads as a genuine "close the gap,
+  //                strike, pull back" beat rather than a stationary turret
+  // No DEFENSE, no 3WAY BLADE, no normal ATTACK — ARC CLAW SLASH is the only
+  // attack this loop ever calls, forever, until FLASH GRENADE ends DARK
+  // PHASE (see startBossFlashDown() below).
   function updateBossDarkPhase(dt, now) {
-    boss.darkPhaseAttackTimer += dt * 1000;
-    if (boss.darkPhaseAttackTimer >= DARKPHASE_ATTACK_INTERVAL_MS) {
-      boss.darkPhaseAttackTimer = 0;
-      spawnArcClawSlash(now);
+    const dx = player.x - boss.x, dy = player.y - boss.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const towardX = dx / dist, towardY = dy / dist;
+
+    if (boss.darkPhaseSubState === 'retreat') {
+      boss.darkPhaseAttackTimer += dt * 1000;
+      boss.x -= towardX * DARKPHASE_RETREAT_SPEED * dt;
+      boss.y -= towardY * DARKPHASE_RETREAT_SPEED * dt;
+      boss.moving = true;
+      if (boss.darkPhaseAttackTimer >= DARKPHASE_RETREAT_MS) {
+        boss.darkPhaseAttackTimer = 0;
+        boss.darkPhaseSubState = 'approach';
+      }
+      return;
     }
-    // No movement, no DEFENSE, no 3WAY BLADE — ARC CLAW SLASH only, forever,
-    // until FLASH GRENADE ends DARK PHASE (see startBossFlashDown() below).
+    if (boss.darkPhaseSubState === 'attacking') {
+      boss.darkPhaseAttackTimer += dt * 1000;
+      boss.moving = false;
+      if (boss.darkPhaseAttackTimer >= ARC_CLAW_LIFETIME_MS) {
+        boss.darkPhaseAttackTimer = 0;
+        boss.darkPhaseSubState = 'retreat';
+      }
+      return;
+    }
+    // 'approach' (default)
+    if (dist <= DARKPHASE_ATTACK_RANGE) {
+      boss.darkPhaseSubState = 'attacking';
+      boss.darkPhaseAttackTimer = 0;
+      boss.moving = false;
+      // Face the player at the moment of the slash (matches the same rule
+      // normal CHASE->ATTACK uses) so the claw's origin offset — still
+      // derived from boss.dir, see getClawOrigin() — actually matches
+      // whatever direction GABRIEL just approached from.
+      boss.dir = angleToBucket(Math.atan2(dy, dx));
+      spawnArcClawSlash(now);
+      return;
+    }
+    boss.x += towardX * DARKPHASE_APPROACH_SPEED * dt;
+    boss.y += towardY * DARKPHASE_APPROACH_SPEED * dt;
+    boss.moving = true;
+  }
+
+  // Single source of truth for GABRIEL's DARK PHASE "head" — both the
+  // glowing eye VFX's screen position (drawBossDarkPhase()) and the FLASH
+  // head-aim hit-test (isAimedAtDarkPhaseHead()) call this, so the two can
+  // never drift apart as boss.x/boss.y move during the approach/retreat AI
+  // above. Same projection formula getWeakPointScreenPos() already uses:
+  // a fixed offset in the shared BOSS_CANVAS_W/H coordinate space, scaled
+  // and re-centered onto the boss's current on-screen position.
+  function getDarkPhaseHeadScreenPos() {
+    const scale = BOSS_DRAW_H / BOSS_CANVAS_H;
+    return {
+      x: boss.x + (DARKPHASE_HEAD_CANVAS_X - BOSS_CANVAS_W / 2) * scale,
+      y: boss.y + (DARKPHASE_HEAD_CANVAS_Y - BOSS_CANVAS_H / 2) * scale,
+    };
+  }
+
+  // FLASH's DARK PHASE aim-gate (PART 7-9): perpendicular distance from the
+  // player's CURRENT effective aim ray (the same angle/origin spawnBullet()
+  // itself fires along) to the head anchor above — not a fixed-distance tip
+  // check like AUTO AIM's own target search, since GABRIEL's distance
+  // varies continuously as it approaches/retreats. `along < 0` rejects a
+  // head that's behind the player (aiming the wrong way entirely).
+  function isAimedAtDarkPhaseHead() {
+    const head = getDarkPhaseHeadScreenPos();
+    const angle = getAimAngle();
+    const dirX = Math.cos(angle), dirY = Math.sin(angle);
+    const toHeadX = head.x - player.x, toHeadY = head.y - player.y;
+    const along = toHeadX * dirX + toHeadY * dirY;
+    if (along < 0) return false;
+    const perpX = toHeadX - dirX * along, perpY = toHeadY - dirY * along;
+    return Math.hypot(perpX, perpY) <= DARKPHASE_HEAD_HIT_RADIUS;
   }
 
   // FLASH GRENADE success: GABRIEL goes fully DOWN for FLASH_DOWN_MS — no
@@ -1137,6 +1232,11 @@
       return;
     }
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
+    // Brief hit-flash feedback (reuses the existing BOSS_HIT_TINT_MS/
+    // drawBossWithHitTint() machinery, already used by the DEFENSE-blocked
+    // and weak-point hit paths below) — gated on actual HP damage having
+    // just been applied above, not merely on a bullet touching the boss.
+    bossHitTintUntil = now + BOSS_HIT_TINT_MS;
     if (checkBossHpMilestones(now)) return;
     if (autoAimed) registerGlobalAutoAimHit(now);
     // FLASH DOWN must never be interrupted into DEFENSE by an ordinary body
@@ -2219,6 +2319,7 @@
     boss.attackType = 'blade';
     boss.lastAttackType = 'blade';
     boss.darkPhaseAttackTimer = 0;
+    boss.darkPhaseSubState = 'approach';
     darkPhaseOverlayAlpha = 0; // RESTART snaps the dark overlay off instantly — no lingering fade
 
     // Stage world/camera/EXIT (PART 21-29) — a RESTART or mode switch always
@@ -2711,8 +2812,15 @@
       setTimeout(() => flashButton.classList.remove('too-close'), 380);
       return;
     }
-    flashCooldownRemainingMs = FLASH_COOLDOWN_MS; // starts the instant a valid throw is accepted
-    flashGrenade = { startX: player.x, startY: player.y, endX: boss.x, endY: boss.y, elapsedMs: 0 };
+    flashCooldownRemainingMs = FLASH_COOLDOWN_MS; // starts the instant a valid throw is accepted — win or miss, see below
+    // DARK PHASE head-aim gate (PART 7-9): captured ONCE, right now at
+    // throw time (the moment of commitment — GABRIEL keeps moving during
+    // the grenade's short flight, so re-checking at detonation would judge
+    // a different position than the one the player actually aimed at).
+    // Outside DARK PHASE this is always true — FLASH's success has never
+    // depended on aim, and still doesn't.
+    const darkPhaseHeadHit = boss.state !== 'darkphase' || isAimedAtDarkPhaseHead();
+    flashGrenade = { startX: player.x, startY: player.y, endX: boss.x, endY: boss.y, elapsedMs: 0, darkPhaseHeadHit };
   }
   flashZone.addEventListener('touchstart', flashPress, { passive: false });
   flashZone.addEventListener('mousedown', flashPress);
@@ -2727,10 +2835,18 @@
     if (flashGrenade) {
       flashGrenade.elapsedMs += dt * 1000;
       if (flashGrenade.elapsedMs >= FLASH_THROW_MS) {
+        const headHit = flashGrenade.darkPhaseHeadHit;
         flashGrenade = null;
-        flashScreenFlashRemainingMs = FLASH_SCREEN_FLASH_MS;
+        flashScreenFlashRemainingMs = FLASH_SCREEN_FLASH_MS; // the grenade itself still detonates either way
         if (boss.spawned && !flashDisabledByCinematic()) {
-          startBossFlashDown(now);
+          // PART 7/8: during DARK PHASE, a throw that wasn't aimed at
+          // GABRIEL's head (captured at throw time — see flashPress())
+          // detonates but does nothing to GABRIEL — no DOWN, no DARK PHASE
+          // end. The 10s cooldown above already started regardless, so a
+          // missed head-shot is a genuinely wasted use, not a free retry.
+          if (!(boss.state === 'darkphase' && !headHit)) {
+            startBossFlashDown(now);
+          }
         }
       }
     }
@@ -2956,9 +3072,10 @@
     get flashScreenFlashRemainingMs() { return flashScreenFlashRemainingMs; },
     FLASH_DOWN_MS, FLASH_COOLDOWN_MS, FLASH_MIN_DISTANCE, FLASH_THROW_MS,
     // Debug/verification only — DARK PHASE.
-    startBossDarkPhase, registerGlobalAutoAimHit,
+    startBossDarkPhase, registerGlobalAutoAimHit, getDarkPhaseHeadScreenPos, isAimedAtDarkPhaseHead,
     get darkPhaseOverlayAlpha() { return darkPhaseOverlayAlpha; },
-    AUTO_AIM_INVULN_HITS, DARKPHASE_FADE_MS, DARKPHASE_OVERLAY_ALPHA, DARKPHASE_ATTACK_INTERVAL_MS,
+    AUTO_AIM_INVULN_HITS, DARKPHASE_FADE_MS, DARKPHASE_OVERLAY_ALPHA,
+    DARKPHASE_ATTACK_RANGE, DARKPHASE_RETREAT_MS, DARKPHASE_HEAD_HIT_RADIUS,
   };
 
   // ---------- Main loop ----------
@@ -3273,6 +3390,21 @@
     }
     for (const e of explosions) drawExplosion(e, now);
 
+    // DARK PHASE screen-darken: drawn HERE — under the bullets/claw attacks/
+    // player/boss below, not as a final overlay on top of everything — so it
+    // can go near-total-black (see DARKPHASE_OVERLAY_ALPHA) without also
+    // hiding the things that must stay clearly visible per spec: the
+    // player, their bullets, and GABRIEL's own glowing eye. Everything
+    // drawn ABOVE this point (background, barrels, barrel landings,
+    // explosions) gets buried under it; everything drawn BELOW stays at
+    // full brightness. Mutually exclusive with the ambient stage-lighting
+    // drift at the end of this function (see the `darkPhaseOverlayAlpha <=
+    // 0` guard there) so the two can never compete/flicker together.
+    if (darkPhaseOverlayAlpha > 0) {
+      ctx.fillStyle = `rgba(4, 4, 8, ${darkPhaseOverlayAlpha})`;
+      ctx.fillRect(0, cameraY, W, H);
+    }
+
     // bullets
     for (const b of bullets) drawBullet(b);
     drawFlashGrenade();
@@ -3305,17 +3437,13 @@
 
     ctx.restore(); // undo the camera translate — everything below is screen-space
 
-    // DARK PHASE overlay takes over from — never stacks with — the normal
-    // ambient stage lighting drift, so the two can never compete/flicker
-    // against each other (see updateDarkPhaseOverlay()). Not pure black:
-    // player/bullets/GABRIEL's own red eyes must stay minimally visible.
-    if (darkPhaseOverlayAlpha > 0) {
-      ctx.fillStyle = `rgba(4, 4, 8, ${darkPhaseOverlayAlpha})`;
-      ctx.fillRect(0, 0, W, H);
-    } else if (stageOn) {
-      // Ambient stage lighting: a slow, gentle brightness drift instead of a
-      // fixed darkening amount — screen-space and computed independently of
-      // the boss-intro FLASH below, so the two can never wash each other out.
+    // Ambient stage lighting: a slow, gentle brightness drift instead of a
+    // fixed darkening amount — screen-space and computed independently of
+    // the boss-intro FLASH below, so the two can never wash each other out.
+    // Suppressed entirely while DARK PHASE's own (much stronger, and drawn
+    // much earlier — see above) darken layer is active, so the two never
+    // compete/flicker together.
+    if (darkPhaseOverlayAlpha <= 0 && stageOn) {
       ctx.fillStyle = `rgba(0, 0, 0, ${getAmbientDarkenAlpha(now)})`;
       ctx.fillRect(0, 0, W, H);
     }
@@ -3376,6 +3504,14 @@
     if (player.dashing) {
       // All 4 cardinal directions have dedicated dash art now.
       img = dashSprites[player.dashDir];
+    } else if (player.moving) {
+      // Display-only change: ordinary MOVE STICK movement (not a DASH burst)
+      // now also shows the direction-matched DASH artwork as its walking
+      // pose, instead of the static AIM-pose sprite it used to reuse. Pure
+      // rendering — speed/distance/invulnerability/the double-tap DASH
+      // trigger itself are all untouched (see updateDash()/player.dashing
+      // above, which still takes priority when a real DASH is in progress).
+      img = dashSprites[player.baseDir];
     } else if (player.baseDir === 'down' && player.relaxed) {
       img = relaxedSprite.down;
     } else {
@@ -3424,8 +3560,13 @@
     const key = DIR_TO_BOSS_KEY[boss.dir]; // north | south | east | west
     if (key === 'south') {
       if (!boss.moving) return 'south_idle';
-      const frame = Math.floor(now / WALK_FRAME_PERIOD_MS) % 2;
-      return frame === 0 ? 'walk_south_1' : 'walk_south_2';
+      // 3-frame cycle (added this batch) — same WALK_FRAME_PERIOD_MS per
+      // frame as before, just one more step in the loop rather than a
+      // faster flicker, so the walk cadence itself is unchanged.
+      const frame = Math.floor(now / WALK_FRAME_PERIOD_MS) % 3;
+      if (frame === 0) return 'walk_south_1';
+      if (frame === 1) return 'walk_south_2';
+      return 'walk_south_3';
     }
     if (key === 'east') return boss.moving ? 'walk_east' : 'east_idle';
     if (key === 'west') return boss.moving ? 'walk_west' : 'west_idle';
@@ -3459,7 +3600,7 @@
     // the sprite's BOTTOM edge (feet) so the boss never visibly jumps or
     // grows from its center when the frame changes — only the top extends.
     let scale = 1;
-    if (name === 'walk_south_1' || name === 'walk_south_2' || name === 'south_idle') scale = SOUTH_WALK_SCALE;
+    if (name === 'walk_south_1' || name === 'walk_south_2' || name === 'walk_south_3' || name === 'south_idle') scale = SOUTH_WALK_SCALE;
     else if (name === 'preattack_south') scale = PRE_ATTACK_SCALE;
     else if (name === 'north_idle') scale = NORTH_IDLE_SCALE;
     else if (name === 'attack_north') scale = NORTH_ATTACK_SCALE;
@@ -3588,20 +3729,34 @@
     }
   }
 
-  // DARK PHASE: the dedicated almost-black silhouette, drawn centered on
-  // boss.x/y (plain center anchor, like the front CINEMATIC pose — no
-  // per-axis offset needed since there's no second facing to align
-  // against). The screen-darken overlay itself is drawn separately, once
-  // per frame, in draw() — see darkPhaseOverlayAlpha/updateDarkPhaseOverlay().
+  // DARK PHASE: GABRIEL's body is intentionally never drawn here — no
+  // silhouette, no outline of any color, nothing that could read as a
+  // white/gray halo. Only a soft glowing red "eye" VFX, anchored via
+  // getDarkPhaseHeadScreenPos() so it always sits exactly on top of
+  // boss.x/boss.y as the approach/retreat AI actually moves them (see
+  // updateBossDarkPhase()) — a real glowing point creeping through the
+  // dark, not a static effect. The screen-darken overlay itself is drawn
+  // separately, UNDER the player/bullets/this eye (see draw()), so it can
+  // go near-total-black without also hiding anything that must stay
+  // visible — see darkPhaseOverlayAlpha/updateDarkPhaseOverlay().
   function drawBossDarkPhase(now) {
-    if (darkPhaseImg.complete && darkPhaseImg.naturalWidth > 0) {
-      ctx.drawImage(
-        darkPhaseImg,
-        boss.x - DARKPHASE_DRAW_W / 2,
-        boss.y - DARKPHASE_DRAW_H / 2,
-        DARKPHASE_DRAW_W, DARKPHASE_DRAW_H
-      );
-    }
+    const pos = getDarkPhaseHeadScreenPos();
+    const pulse = 0.85 + Math.sin(now / 220) * 0.15; // gentle pulse, not a static dot
+    const outerR = 26 * pulse;
+    ctx.save();
+    const glow = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, outerR);
+    glow.addColorStop(0, 'rgba(255,70,45,0.95)');
+    glow.addColorStop(0.45, 'rgba(200,35,25,0.55)');
+    glow.addColorStop(1, 'rgba(160,20,20,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, outerR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,170,130,0.95)';
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, 5 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   // Samples the CINEMATIC POSE image (as actually drawn on-screen, so

@@ -1,0 +1,45 @@
+{
+  "purpose": "SOUTH WALK 3-frame animation (walk_south_1/2/3.png) + SOUTH IDLE (south_idle.png, frame 1 reused per explicit instruction).",
+  "sources": {
+    "frame1": { "file": "assets/boss/source/south_walk_frame1_source.png", "native_size": [1105, 1731], "used_for": ["walk_south_1.png", "south_idle.png"] },
+    "frame2": { "file": "assets/boss/source/south_walk_frame2_source.png", "native_size": [1125, 1714], "used_for": ["walk_south_2.png"] },
+    "frame3": { "file": "assets/boss/source/south_walk_frame3_source.png", "native_size": [1158, 1751], "used_for": ["walk_south_3.png"] }
+  },
+  "processing": "Non-generative only -- no AI redraw/regeneration. Two deterministic steps per source image: (1) white-background unblend, (2) landmark-based scale+anchor onto the existing shared 700x920 boss canvas.",
+  "step1_white_unblend": {
+    "problem": "Each source PNG already carried a real alpha channel, but it was reconstructed by flattening over a white background and taking 'distance from white' as alpha, WITHOUT un-premultiplying the RGB -- so edge/antialiased pixels kept their white-blended color. Verified by bucketing edge pixels (alpha in (3,250)) by alpha value: mean brightness rose monotonically from ~98 at alpha 200-250 up to ~230 at alpha 3-30, i.e. the more transparent a pixel was, the whiter its stored RGB was -- the signature of an unblended white-bg composite, and would show as a visible white/gray fringe once composited over any non-white game background.",
+    "formula": "For every pixel with alpha>0: true_color F = clip((RGB_stored - (1-alpha/255)*255) / (alpha/255), 0, 255); alpha itself is kept as-is (it was already a reasonable opacity matte, just paired with the wrong un-premultiplied RGB). Pixels with alpha==0 are zeroed (RGB=0) since they are fully transparent regardless. This is the standard, deterministic 'un-premultiply against a known background color' formula (assumes background = pure white, matching the source), not a synthesized/AI value.",
+    "verification": "Re-bucketed the same edge pixels by alpha after the correction: mean brightness became roughly flat across the mid/high alpha ranges (~50-90) instead of climbing toward white at low alpha; visually confirmed via composites over dark-navy and mid-gray test backgrounds (see wingzoom crop in the session) that wing-tip/feather edges show no white or gray halo."
+  },
+  "step2_landmark_scale_anchor": {
+    "reference": "The pre-existing walk_south_1.png/walk_south_2.png (both already living on the shared 700x920 canvas) were measured the same way: head_top_y found by scanning alpha>10 within columns x > 35% of image width (excludes the wing, which is entirely left-of-center in this pose) for the topmost row, head_center_x from the midpoint of that topmost row's opaque span, feet_bottom_y from the single lowest opaque row overall (a foot/claw tip). Existing values: walk_south_1 head_top_y=132 head_center_x=366.0 feet_bottom_y=899; walk_south_2 head_top_y=127 head_center_x=365.5 feet_bottom_y=899.",
+    "targets_derived_from_reference": {
+      "TARGET_BODY_SPAN_PX": 770.0,
+      "TARGET_CENTER_X": 365.0,
+      "TARGET_FEET_BOTTOM_Y": 899.5,
+      "note": "TARGET_BODY_SPAN_PX is the average of the two existing frames' own (feet_bottom_y - head_top_y), i.e. this batch matches the EXISTING SOUTH WALK images' own on-canvas body size, not an arbitrary new value -- per the explicit instruction to keep the pre-existing apparent size."
+    },
+    "per_new_image_measurement": {
+      "frame1": { "native_head_top_y": 159, "native_head_center_x": 577.5, "native_feet_bottom_y": 1729, "native_body_span": 1570 },
+      "frame2": { "native_head_top_y": 159, "native_head_center_x": 591.5, "native_feet_bottom_y": 1712, "native_body_span": 1553 },
+      "frame3": { "native_head_top_y": 179, "native_head_center_x": 598.5, "native_feet_bottom_y": 1749, "native_body_span": 1570 }
+    },
+    "scale_formula": "scale = TARGET_BODY_SPAN_PX / native_body_span (per-image, since the 3 sources are not pixel-identical in framing).",
+    "placement_formula": "After resizing by `scale`: paste_x = round(TARGET_CENTER_X - head_center_x*scale); paste_y = round(TARGET_FEET_BOTTOM_Y - feet_bottom_y*scale); pasted onto a fresh transparent 700x920 canvas.",
+    "applied_scale_and_offset": {
+      "frame1": { "scale": 0.49044585987261147, "paste_offset": [82, 52] },
+      "frame2": { "scale": 0.49581455247907275, "paste_offset": [72, 51] },
+      "frame3": { "scale": 0.49044585987261147, "paste_offset": [71, 42] }
+    },
+    "verification_on_final_canvas": {
+      "frame1": { "head_top_y": 130, "head_center_x": 365.0, "feet_bottom_y": 899 },
+      "frame2": { "head_top_y": 130, "head_center_x": 365.0, "feet_bottom_y": 898 },
+      "frame3": { "head_top_y": 128, "head_center_x": 365.0, "feet_bottom_y": 899 },
+      "note": "All three land within 2px of the TARGET values and of each other -- no per-frame jump in size, position, or foot anchor. (A 0.35-width head-detection threshold mis-measured frame3's re-verification by catching a raised wing-feather tip near that boundary at x~244; re-run with a >=0.40-width threshold, matching how the ORIGINAL placement math for that frame was computed, correctly reads head_center_x=365.0 -- confirmed visually as well, no side-to-side jump between frames.)"
+    }
+  },
+  "south_idle_reuse": "south_idle.png is a byte-identical copy of the final walk_south_1.png canvas (frame 1), per explicit instruction that SOUTH IDLE and SOUTH WALK FRAME 1 share the exact same image/scale/anchor -- guarantees zero size or position jump on any IDLE<->WALK transition.",
+  "in_game_scale": "All four files (south_idle, walk_south_1/2/3) continue to use the existing SOUTH_WALK_SCALE (1.10) render-time multiplier applied uniformly in drawBoss() -- unchanged from before this batch, and applied identically to all four so relative proportions are preserved.",
+  "animation_wiring": "bossFrameName() now cycles walk_south_1 -> walk_south_2 -> walk_south_3 -> walk_south_1... via `Math.floor(now / WALK_FRAME_PERIOD_MS) % 3` while boss.moving and facing south; WALK_FRAME_PERIOD_MS unchanged (natural walking cadence, not a fast flicker).",
+  "dark_phase_exclusion": "DARK PHASE never draws south_idle/walk_south_* (or any other normal battle sprite) -- see drawBossDarkPhase() in game.js, which only ever draws the dedicated dark_phase.png / red-eye VFX."
+}

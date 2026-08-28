@@ -1,6 +1,6 @@
-# Boss character asset manifest — all 24 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9 + batch 10 + batch 11)
+# Boss character asset manifest — all 27 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9 + batch 10 + batch 11 + batch 12)
 
-All 24 files below are byte-identical copies of the originally attached
+All 27 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
 these `source/` copies. The processed, game-ready frames built from them
 live in `assets/boss/*.png` (see `assets/boss/sprite_build_meta.json` for
@@ -395,6 +395,58 @@ Batch 11 — DARK PHASE silhouette (`dark_phase.png`):
   sprites (this is a combat state, not a smaller dramatic cutscene pose
   like the DOWN/CINEMATIC family). Drawn centered on boss.x/y, no per-axis
   offset needed (single image, no second facing to align against).
+- **Superseded by a later batch**: per an explicit later revision, GABRIEL's
+  body is no longer drawn AT ALL during DARK PHASE (only a canvas-VFX
+  glowing red eye — see Batch 12 notes and `game.js`'s `drawBossDarkPhase()`).
+  `dark_phase.png`/`dark_phase_build_meta.json`/`source/dark_phase_source.png`
+  are left on disk as-is (harmless, unreferenced) rather than deleted, in
+  case a future revision wants the silhouette pose back.
+
+Batch 12 — SOUTH WALK 3-frame animation + SOUTH IDLE (`walk_south_1/2/3.png`,
+`south_idle.png`):
+- Sources: 3 new attached renders (GABRIEL walking, south-facing), native
+  sizes 1105x1731 / 1125x1714 / 1158x1751. Raw uploads preserved byte-for-
+  byte at `assets/boss/source/south_walk_frame1/2/3_source.png` (verified
+  via md5, not a PIL re-save).
+- Frame 1 is used for BOTH `walk_south_1.png` AND `south_idle.png` (byte-
+  identical copies of the same processed canvas) per explicit instruction
+  that SOUTH IDLE and SOUTH WALK's first frame share the exact same image/
+  scale/anchor, so an IDLE<->WALK transition never jumps in size or position.
+- **Cleanup — white-background unblend, no AI redraw**: same class of issue
+  as the DARK PHASE image (Batch 11) but a different fix, since this
+  character has genuine bright silver/white wing content (a "reddish
+  pixels stay opaque" trick doesn't apply to a non-monochrome design).
+  Bucketing edge pixels (alpha in (3,250)) by alpha value showed mean
+  brightness climbing from ~98 (alpha 200-250) up to ~230 (alpha 3-30) — the
+  signature of a flatten-over-white-then-rethreshold pipeline that never
+  un-premultiplied the RGB. Fixed via the standard, deterministic "un-
+  premultiply against a known white background" formula: for every pixel
+  with alpha>0, true color `F = clip((RGB - (1-alpha/255)*255) / (alpha/255),
+  0, 255)`; alpha itself was already a reasonable matte and is kept as-is;
+  alpha==0 pixels are zeroed. Re-bucketing after the fix showed brightness
+  roughly flat (~50-90) across the mid/high alpha range instead of climbing
+  toward white — confirmed visually with zoomed composites over dark-navy
+  test backgrounds (no fringe on the many wing-feather tips) and again in
+  the actual in-game screenshots. Full method: `assets/boss/south_walk_build_meta.json`.
+- **Landmark-based scale/anchor matching, not raw pixel dimensions**: each
+  source's own head_top_y (topmost opaque pixel within columns >35% of its
+  width, which excludes the wing — entirely left-of-center in this pose),
+  head_center_x (midpoint of that topmost row), and feet_bottom_y (lowest
+  opaque row overall) were measured, then scaled/positioned onto the
+  EXISTING shared 700x920 boss canvas so the result matches the
+  already-shipped `walk_south_1.png`/`walk_south_2.png`'s own measured body
+  span (770px) and anchor (center_x=365, feet_bottom_y=899.5) — i.e. this
+  batch preserves the PRE-EXISTING on-screen SOUTH WALK size, not an
+  arbitrary new one. Verified on the final canvases: all 4 files land
+  within 2px of the target on every axis. Full per-image measurements/
+  scale/offset: `assets/boss/south_walk_build_meta.json`.
+- Animation: `bossFrameName()` now cycles walk_south_1 -> 2 -> 3 -> 1... via
+  `Math.floor(now / WALK_FRAME_PERIOD_MS) % 3` (same per-frame period as
+  the old 2-frame cycle, just one more step — the walking cadence itself is
+  unchanged).
+- DARK PHASE never draws south_idle/walk_south_* (or any other normal
+  battle sprite) — see `drawBossDarkPhase()`, which only ever draws the
+  glowing-eye VFX regardless of GABRIEL's underlying `boss.dir`/movement.
 
 Notes:
 - Verified visually (not assumed) that EAST images face screen-right with
