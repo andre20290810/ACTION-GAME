@@ -181,14 +181,31 @@
   const BARREL_HITBOX_RADIUS = 12; // scaled down to match the smaller draw size
   const BARREL_EXPLOSION_RADIUS = 300; // area-effect range, not tied to the sprite size (3x the previous 100)
 
-  // ---------- ARC CLAW SLASH (boss ranged attack, Canvas VFX — no image) ----------
-  // Deliberately no image asset at all: a thin silver-to-white crescent
-  // slash-mark, drawn as a filled canvas path (two bowed quadratic curves
-  // meeting at sharp points) rather than any sprite — a hard metal claw
-  // cutting through the air, never a glowing magic beam. See
-  // drawArcClawPose() for the actual shape.
-  const ARC_CLAW_DRAW_LENGTH = 70; // on-screen tip-to-tail length, px — ~60% of SPRITE_DRAW_H(116), within the 45-65% band
-  const ARC_CLAW_CRESCENT_BOW = 15; // px, how far the crescent bows away from its own straight long axis
+  // ---------- ARC CLAW SLASH (boss melee-range attack) ----------
+  // The claw IMAGE is the attack's actual body (real supplied art, no
+  // generated/inpainted content) — it travels along a curved Bezier path
+  // with its own rotation continuously re-aligned to the live tangent
+  // direction (see updateArcClawSlashes()/ARC_CLAW_BASE_TIP_ANGLE below).
+  // The thin silver-to-white crescent shape from the earlier Canvas-VFX-only
+  // version is kept too, but only as a faint auxiliary slash-trail mark
+  // behind the claw image — see drawArcClawImage() (main body) vs
+  // drawArcClawCrescentTrail() (auxiliary) in drawArcClawSlash().
+  const arcClawImg = new Image();
+  let arcClawImgReady = false;
+  arcClawImg.onload = () => { arcClawImgReady = true; };
+  arcClawImg.src = 'assets/boss/attacks/arc_claw_slash.png';
+  // Tip<->base axis of the cropped claw art, measured via PCA of its own
+  // opaque-pixel mask (long axis of the elongated claw+speed-line
+  // silhouette) — see assets/boss/source/MANIFEST.md batch 7 notes. Used so
+  // the sprite's own "pointing" direction lines up with the live tangent
+  // angle rather than just spinning in place.
+  const ARC_CLAW_BASE_TIP_ANGLE = 2.3594412320307216; // ~135.19deg, unmirrored
+  const ARC_CLAW_BASE_TIP_ANGLE_FLIPPED = Math.PI - ARC_CLAW_BASE_TIP_ANGLE; // ~44.81deg, mirrored
+  const ARC_CLAW_TIP_LOCAL = { x: 3, y: 1251 }; // tip pixel, cropped-image space
+  const ARC_CLAW_IMG_DIAG = 1742.6; // measured tip<->base pixel distance in the cropped source art
+  const ARC_CLAW_DRAW_LENGTH = 72; // on-screen tip-to-base length, px — ~62% of SPRITE_DRAW_H(116), within the 45-65% band
+  const ARC_CLAW_DRAW_SCALE = ARC_CLAW_DRAW_LENGTH / ARC_CLAW_IMG_DIAG;
+  const ARC_CLAW_CRESCENT_BOW = 15; // px, how far the auxiliary crescent trail bows away from its own straight axis
   const ARC_CLAW_LIFETIME_MS = 650; // start -> full wind-through -> finish
   const ARC_CLAW_TRAIL_LEN = 4; // afterimage frames kept
   // Start/end angular deviation from the straight boss->player line, each
@@ -489,17 +506,20 @@
   const WALK_FRAME_PERIOD_MS = 260; // south 2-frame alternation period
   const NORTH_BOUNCE_AMPLITUDE = 4; // px, decorative only (no NORTH walk art)
   const SOUTH_WALK_SCALE = 1.10; // visual-only — SOUTH WALK reads a touch small next to the other directions
-  const PRE_ATTACK_SCALE = 1.13; // visual-only — the reused older attack art reads a touch small for its telegraph
+  const PRE_ATTACK_SCALE = 1.10; // visual-only — matches SOUTH_ATTACK_SCALE so the telegraph reads the same size as the real release
   const NORTH_IDLE_SCALE = 1.10; // visual-only — NORTH IDLE reads a touch small next to the other directions
   const NORTH_ATTACK_SCALE = 1.10; // visual-only — matched to NORTH IDLE so the two read as the same size
-  // The new SOUTH ATTACK render's own body-height (measured head-top to
-  // feet-bottom, not raw canvas bbox — its wingspan is wide enough that
-  // fitting it on the shared 700x920 canvas without any clipping requires
-  // a smaller base scale than the ~873px convention every other frame
-  // uses) is boosted back up at render time, bottom-anchored exactly like
-  // the scales above, so it reads the same body size as every other
-  // direction instead of looking smaller mid-fight.
-  const SOUTH_ATTACK_SCALE = 1.1766;
+  // SOUTH ATTACK's own render-time scale — deliberately independent from
+  // CINEMATIC_SCALE (a completely different image/role; never share this
+  // constant with the cinematic pose). The source render's own body-height
+  // (measured head-top to feet-bottom, not raw canvas bbox — its wingspan/
+  // raised arm are wide enough that fitting it on the shared 700x920 canvas
+  // without any clipping already lands close to the other directions' own
+  // effective size) only needs a small boost here, tuned via Playwright
+  // screenshot comparison against SOUTH IDLE/WALK/CINEMATIC so SOUTH ATTACK
+  // reads as the SAME size as SOUTH IDLE/WALK — not larger — per the
+  // "fit the smaller side, don't enlarge everything else" instruction.
+  const SOUTH_ATTACK_SCALE = 1.10;
   // SOUTH/EAST/WEST attacks telegraph with a PRE_ATTACK pose before the
   // real ATTACK (blade release) frame; NORTH skips straight to ATTACK
   // (no dedicated PRE_ATTACK art for it) — see updateBoss()'s CHASE
@@ -587,6 +607,7 @@
   const OPPOSITE_COMPASS = { north: 'south', south: 'north', east: 'west', west: 'east' };
 
   const boss = {
+    name: 'GABRIEL', // official display name — internal field so every player-visible label (WARNING banner, debug/aria text) reads from one source
     x: 0, y: 0,
     spawned: false,
     state: 'inactive', // inactive | chase | preattack | attack | defense | guardbreak | recover | dead
@@ -1338,14 +1359,19 @@
       const pos = quadBezierPoint(s.p0, s.p1, s.p2, t);
       const tangentAngle = quadBezierTangentAngle(s.p0, s.p1, s.p2, t);
 
-      s.trail.push({ x: s.x, y: s.y, angle: s.angle });
+      // Each stored sample keeps its OWN position/rotation from when it was
+      // the live frame — angle for the claw image's draw rotation, and the
+      // raw tangentAngle too (the auxiliary crescent trail aligns to the
+      // pure travel direction, not the image's own tip-offset rotation).
+      s.trail.push({ x: s.x, y: s.y, angle: s.angle, tangentAngle: s.tangentAngle });
       if (s.trail.length > ARC_CLAW_TRAIL_LEN) s.trail.shift();
 
       s.x = pos.x; s.y = pos.y; s.tangentAngle = tangentAngle;
-      // The crescent is drawn procedurally (see drawArcClawPose()), so its
-      // rotation is simply the live travel direction — no image-orientation
-      // correction is needed here.
-      s.angle = tangentAngle;
+      // Re-align the claw image's own tip<->base axis to the live tangent
+      // direction, so it visibly points where it's travelling rather than
+      // just spinning around its own center.
+      const baseTip = s.mirrored ? ARC_CLAW_BASE_TIP_ANGLE_FLIPPED : ARC_CLAW_BASE_TIP_ANGLE;
+      s.angle = tangentAngle - baseTip;
 
       if (!s.hasHit && !isPlayerInvulnerable()) {
         // Oriented rectangle aligned to the live travel direction (never a
@@ -1366,20 +1392,35 @@
     }
   }
 
-  // A thin crescent slash-mark: two bowed quadratic curves meeting at sharp
-  // points at the tip (forward, local +X) and tail (backward, local -X) —
-  // bowed to one side (mirrored flips which side, matching the CW/CCW
-  // swing direction) so it reads as a real curved blade-cut, not a
-  // symmetric lens/eye shape. Silver-to-white gradient along its length
-  // (bright leading tip, dimmer trailing tail) — no glow/shadowBlur, no
-  // flashy color, just a hard metallic edge.
-  function drawArcClawPose(x, y, angle, mirrored, alpha) {
+  // The attack's actual body: the supplied claw image, rotated so its own
+  // tip<->base axis lines up with `angle` (already tangent-corrected by the
+  // caller — see ARC_CLAW_BASE_TIP_ANGLE in updateArcClawSlashes()).
+  function drawArcClawImage(x, y, angle, mirrored, alpha) {
+    if (!arcClawImgReady) return;
+    const drawW = arcClawImg.naturalWidth * ARC_CLAW_DRAW_SCALE;
+    const drawH = arcClawImg.naturalHeight * ARC_CLAW_DRAW_SCALE;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    if (mirrored) ctx.scale(-1, 1);
+    ctx.drawImage(arcClawImg, -ARC_CLAW_TIP_LOCAL.x * ARC_CLAW_DRAW_SCALE, -ARC_CLAW_TIP_LOCAL.y * ARC_CLAW_DRAW_SCALE, drawW, drawH);
+    ctx.restore();
+  }
+
+  // Auxiliary slash-trail mark only (NOT the attack body) — a thin bowed
+  // crescent, aligned to the pure travel direction (`tangentAngle`, not the
+  // image's own rotation), left fading behind the real claw image. Two
+  // bowed quadratic curves meeting at sharp points at the tip (forward,
+  // local +X) and tail (backward, local -X); mirrored flips which side it
+  // bows toward, matching the CW/CCW swing direction.
+  function drawArcClawCrescentTrail(x, y, tangentAngle, mirrored, alpha) {
     const half = ARC_CLAW_DRAW_LENGTH / 2;
     const bow = mirrored ? -ARC_CLAW_CRESCENT_BOW : ARC_CLAW_CRESCENT_BOW;
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.translate(x, y);
-    ctx.rotate(angle);
+    ctx.rotate(tangentAngle);
     const grad = ctx.createLinearGradient(-half, 0, half, 0);
     grad.addColorStop(0, 'rgba(150,155,165,0.15)');
     grad.addColorStop(0.55, 'rgba(215,220,228,0.75)');
@@ -1413,13 +1454,17 @@
     }
     // Afterimages: each keeps ITS OWN position/rotation from when it was
     // the live frame, so the stack of afterimages itself traces the arc —
-    // not the current pose copy-pasted backward.
+    // not the current pose copy-pasted backward. The faint crescent draws
+    // first (auxiliary trail mark), the claw image draws on top of it
+    // (the real attack body).
     const n = s.trail.length;
     for (let i = 0; i < n; i++) {
       const sample = s.trail[i];
-      drawArcClawPose(sample.x, sample.y, sample.angle, s.mirrored, 0.10 + 0.16 * (i / Math.max(1, n)));
+      const a = i / Math.max(1, n);
+      drawArcClawCrescentTrail(sample.x, sample.y, sample.tangentAngle, s.mirrored, 0.08 + 0.10 * a);
+      drawArcClawImage(sample.x, sample.y, sample.angle, s.mirrored, 0.18 + 0.24 * a);
     }
-    drawArcClawPose(s.x, s.y, s.angle, s.mirrored, 1);
+    drawArcClawImage(s.x, s.y, s.angle, s.mirrored, 1);
   }
 
   // ---------- Game mode / PAUSE ----------
@@ -3050,7 +3095,7 @@
       ctx.font = 'bold 20px sans-serif';
       ctx.fillText('WARNING', W / 2, barY + 44);
       ctx.font = 'bold 14px sans-serif';
-      ctx.fillText('BOSS DETECTED', W / 2, barY + 64);
+      ctx.fillText(`${boss.name} DETECTED`, W / 2, barY + 64);
       ctx.restore();
     }
   }

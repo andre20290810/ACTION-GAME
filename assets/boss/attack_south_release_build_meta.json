@@ -1,0 +1,33 @@
+{
+  "source": "e1c20d1b-image.png (2nd newly attached image, this batch)",
+  "source_canvas": [
+    1377,
+    2378
+  ],
+  "source_bbox": [
+    1,
+    5,
+    1373,
+    2374
+  ],
+  "body_landmarks_source": {
+    "head_top_y": 268,
+    "feet_bottom_y": 2374,
+    "center_x": 557.7
+  },
+  "scale": 0.378,
+  "paste_xy": [
+    139,
+    3
+  ],
+  "output_canvas": [
+    700,
+    920
+  ],
+  "anchor": [
+    350,
+    900
+  ],
+  "body_height_on_canvas": 796.068,
+  "note": "Scale chosen to fit the FULL image (wingtip to lowest claw, full bbox y 5-2374) within the shared 920px-tall canvas with zero clipping (binding constraint was canvas height, not width, since this pose is proportionally taller/more spread than earlier attack renders) -- verified paste_y + bbox_top*scale >= 0. This intentionally yields a smaller body_height_on_canvas (~796px) than the older 873px attack-frame convention; SOUTH_ATTACK_SCALE in game.js is tuned independently (not shared with CINEMATIC_SCALE) via Playwright screenshot comparison against SOUTH IDLE/WALK/CINEMATIC so SOUTH ATTACK reads as natural-sized rather than oversized, per this batch's explicit instruction to fit the smaller side rather than enlarging everything else."
+}

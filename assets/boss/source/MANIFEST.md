@@ -1,14 +1,16 @@
-# Boss character asset manifest — all 21 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8)
+# Boss character asset manifest — all 22 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9)
 
-All 20 files below are byte-identical copies of the originally attached
+All 22 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
 these `source/` copies. The processed, game-ready frames built from them
 live in `assets/boss/*.png` (see `assets/boss/sprite_build_meta.json` for
 batches 1-2's exact per-frame alignment measurements,
 `assets/boss/defense_dirs_build_meta.json` for batch 3's,
 `assets/boss/attack_ns_build_meta.json` for batch 5's,
-`assets/boss/attack_release_build_meta.json` for batch 6's, and the
-ARC CLAW SLASH notes below for batch 7's).
+`assets/boss/attack_release_build_meta.json` for batch 6's,
+`assets/boss/attack_south_v2_build_meta.json` for batch 8's (now
+superseded — see batch 9), `assets/boss/attack_south_release_build_meta.json`
+for batch 9's, and the ARC CLAW SLASH notes below for batch 7's).
 
 ## Batch 1 (5 images)
 
@@ -185,6 +187,13 @@ Batch 7 notes:
   ~135.19deg at zero canvas rotation, ~44.81deg after a horizontal mirror
   (used for the slash's counter-clockwise variant, since only one hand
   orientation exists in the source art).
+- Status: ACTIVE (this image IS the ARC CLAW SLASH attack body). Batch 8
+  temporarily switched the attack's rendering to a procedural Canvas-VFX-only
+  crescent and stopped referencing this file; batch 9 restored the
+  image-based rendering (per explicit user instruction that the claw image
+  itself must be the attack's real body, with the crescent kept only as an
+  auxiliary trail effect) using this exact same already-cropped file and the
+  PCA orientation constants above, unchanged. See batch 9 notes below.
 
 ## Batch 8 (1 image, reused for two roles)
 
@@ -198,21 +207,28 @@ Batch 8 notes:
   CINEMATIC POSE. Both game-ready outputs below are built from the same
   byte-identical source (verified by md5); the source copy is kept once, in
   `attack_south_v2_source.png`, rather than duplicated under two filenames.
-- **SOUTH ATTACK v2** → `assets/boss/attack_south_release.png` (replaces the
-  batch-6 SOUTH release art; the old batch-6 SOUTH release file is no longer
-  used in-game for either ATTACK or PRE_ATTACK — see below). Built onto the
+- **SOUTH ATTACK v2** → `assets/boss/attack_south_release.png` (replaced the
+  batch-6 SOUTH release art at the time). Built onto the
   shared 700x920 boss canvas, anchored at (350,900), scale 0.55, paste
   offset (25,2) — measured from body landmarks (head-top y=284, feet-bottom
   y=1633, center_x=592 on the 1176x1636 source), not raw bbox height, since
   the fully-spread wingtips inflate the raw bbox well past the actual body
   extent. Fitting the complete image with zero clipping at this scale
   produces a body height on canvas of ~742px, a bit under the shared 873px
-  convention; `SOUTH_ATTACK_SCALE = 1.1766` in `game.js` applies the same
+  convention; `SOUTH_ATTACK_SCALE = 1.1766` in `game.js` applied the same
   bottom-anchored render-time multiplier pattern already used by
   `SOUTH_WALK_SCALE`/`PRE_ATTACK_SCALE`/`NORTH_IDLE_SCALE` to restore the
   on-screen body size to match every other direction, with no jump when
   entering/leaving ATTACK. Full measurements in
   `assets/boss/attack_south_v2_build_meta.json`.
+  **Status: SUPERSEDED.** This same photograph is also what
+  `cinematic_pose.png` uses (see below), so SOUTH ATTACK and the CINEMATIC
+  POSE ended up visually reading as "the same picture" — the user flagged
+  this as SOUTH ATTACK appearing to show the CINEMATIC image. Batch 9
+  replaced `attack_south_release.png` with a genuinely different supplied
+  photograph dedicated to SOUTH ATTACK only; this batch-8 build is left on
+  disk (build meta + this note) purely as history, not deleted, per this
+  project's asset-retirement convention. See batch 9 below.
 - SOUTH's PRE_ATTACK phase was removed entirely per this batch's spec (SOUTH
   is now the only direction that still telegraphs, and it does so by
   reusing this same new release-moment image at its own scale/timing rather
@@ -232,14 +248,66 @@ Batch 8 notes:
   scale is used uniformly for every cinematic event (first appearance,
   30/60/90% HP thresholds, and death) — there was never any per-event
   scale variation in the code to begin with.
-- **Retired (image no longer used in-game): `assets/boss/attacks/
-  arc_claw_slash.png`** (batch 7) and its source copy. ARC CLAW SLASH's
-  rendering was reworked from an image sprite to a procedural Canvas VFX
-  crescent (two mirrored quadratic Bézier curves with a silver-to-white
+- **Retired at the time (later reinstated — see batch 9): `assets/boss/
+  attacks/arc_claw_slash.png`** (batch 7) and its source copy. ARC CLAW
+  SLASH's rendering was reworked from an image sprite to a procedural Canvas
+  VFX crescent (two mirrored quadratic Bézier curves with a silver-to-white
   gradient fill) per this batch's explicit "no new image generation — use
-  Canvas VFX" instruction. The files are left on disk (not deleted) per
-  this project's asset-retirement convention; only `game.js`'s rendering
-  code stopped referencing them.
+  Canvas VFX" instruction. The files were left on disk (not deleted) per
+  this project's asset-retirement convention, which is exactly why batch 9
+  could bring them straight back into active use with no reprocessing.
+
+## Batch 9 (1 image)
+
+| # | Role | Saved filename | Source dims | md5 |
+|---|------|-----------------|-------------|-----|
+| 22 | SOUTH ATTACK v3 (final) | `attack_south_release_source.png` | 1377x2378 RGBA | 7a8fee2727bbc6a0155cba2b055ccfca |
+
+Batch 9 notes:
+- Two images were attached this batch: the 1st (md5
+  `3d0102334214be0b98b7f830e9903f92`) is byte-identical to the EXISTING
+  batch-7 `arc_claw_slash_source.png` — i.e. the same claw art already on
+  disk, re-supplied to confirm/re-authorize its use as the ARC CLAW SLASH
+  attack body (see batch 7's "Status: ACTIVE" note above; no new file was
+  saved for it, no reprocessing needed). The 2nd (this row) is a genuinely
+  new photograph, used exclusively for SOUTH ATTACK.
+- **Root cause of the "SOUTH ATTACK shows the CINEMATIC POSE image" report:**
+  not a code-level asset mix-up — `attack_south_release.png` and
+  `cinematic_pose.png` were always two separate files loaded through two
+  separate `Image` objects/keys (`BOSS_FRAME_FILES.attack_south_release` vs
+  `cinematicPoseImg.src`), never cross-referenced anywhere in `game.js`.
+  The actual cause was a content choice in the previous batch: both roles
+  were built from the SAME single attached photograph (batch 8's
+  `attack_south_v2_source.png`, reused for both per that batch's own explicit
+  instruction), so the two frames depicted visually near-identical artwork —
+  reasonably read by the user as "the same picture showing up in both
+  places." This batch fixes it at the content level: SOUTH ATTACK now uses
+  its own dedicated photograph (this row), while `cinematic_pose.png` keeps
+  the batch-8 image untouched, unmodified, and exclusively for the
+  intro/milestone/death cinematic roles.
+- Real per-pixel alpha, opaque bbox spans nearly the entire 1377x2378 source
+  canvas (x:1-1373, y:5-2374). Body landmarks measured directly off the
+  alpha channel (head band restricted to x:430-640 to exclude the raised
+  claw arm and the wings): head_top_y=268, feet_bottom_y=2374 (the lowest
+  opaque pixel overall, a foot claw tip), center_x≈557.7 (head/torso
+  centroid, x:430-640 band, y:268-450).
+- Built onto the same shared 700x920 boss canvas, anchor (350,900): unlike
+  earlier attack batches, the BINDING constraint here was canvas HEIGHT, not
+  width — this pose's full bbox (wingtip to lowest claw, 2369px tall in the
+  source) is proportionally taller relative to its own body than earlier
+  renders, so fitting it with zero clipping required scale=0.378 rather than
+  a width-limited scale. paste_xy=(139,3). Resulting landmark (head-to-feet)
+  body height on canvas: ~796px — already close to SOUTH_WALK's own
+  effective on-screen size, which is why `SOUTH_ATTACK_SCALE` only needed a
+  modest independent value (1.10, matching `SOUTH_WALK_SCALE`, and NOT
+  shared with `CINEMATIC_SCALE`) to read as the same size as SOUTH IDLE/WALK
+  rather than the older ~873px attack-frame convention (confirmed via
+  Playwright screenshot: SOUTH IDLE / SOUTH WALK / SOUTH ATTACK / CINEMATIC
+  all crop to essentially the same on-screen footprint at the same anchor
+  point, with SOUTH ATTACK reading neither oversized nor undersized).
+  `preattack_south` (SOUTH's own telegraph pose) reuses this same file with
+  its own `PRE_ATTACK_SCALE`, likewise retuned to 1.10 to match. Full
+  measurements in `assets/boss/attack_south_release_build_meta.json`.
 
 Notes:
 - Verified visually (not assumed) that EAST images face screen-right with
