@@ -395,12 +395,43 @@ Batch 11 — DARK PHASE silhouette (`dark_phase.png`):
   sprites (this is a combat state, not a smaller dramatic cutscene pose
   like the DOWN/CINEMATIC family). Drawn centered on boss.x/y, no per-axis
   offset needed (single image, no second facing to align against).
-- **Superseded by a later batch**: per an explicit later revision, GABRIEL's
-  body is no longer drawn AT ALL during DARK PHASE (only a canvas-VFX
-  glowing red eye — see Batch 12 notes and `game.js`'s `drawBossDarkPhase()`).
-  `dark_phase.png`/`dark_phase_build_meta.json`/`source/dark_phase_source.png`
-  are left on disk as-is (harmless, unreferenced) rather than deleted, in
-  case a future revision wants the silhouette pose back.
+- **Superseded twice by later revisions**: GABRIEL's body is no longer
+  drawn AT ALL during DARK PHASE. A first revision (Batch 12) replaced it
+  with a Canvas-drawn radial-gradient eye VFX; a second, later revision
+  replaced THAT in turn with `dark_phase_eyes.png` — a crop EXTRACTED
+  directly from this same `dark_phase_source.png` (see the dedicated note
+  right below this one, and `assets/boss/dark_phase_eyes_build_meta.json`).
+  `dark_phase.png`/`dark_phase_build_meta.json` (the full silhouette-body
+  asset) are left on disk as-is (harmless, unreferenced) rather than
+  deleted, in case a future revision wants the silhouette pose back.
+  `source/dark_phase_source.png` itself is still very much in active use —
+  it's the direct source for `dark_phase_eyes.png` below.
+
+Follow-up to Batch 11 — DARK PHASE eye-only extraction (`dark_phase_eyes.png`,
+no new source image; reuses `dark_phase_source.png` above):
+- Per an explicit later revision, DARK PHASE's visible "glow" was changed
+  from a Canvas-drawn radial gradient (an invented design) to a crop
+  EXTRACTED directly from `dark_phase_source.png` — the same previously-
+  attached render, no new upload. Reuses the exact same redness
+  classification already verified for `dark_phase.png` (`redness = R -
+  max(G,B) > 15`), but instead of recoloring the remaining (non-glow)
+  pixels into an opaque black silhouette, EVERY non-glow pixel — the
+  original white background AND the black body/wings alike — is set fully
+  transparent. Result: 7303 glow pixels, bbox x:[554,648] y:[289,405] in
+  the 1152x1728 source canvas, cropped with a 20px margin to
+  `dark_phase_eyes.png` (135x157px, saved at native crop resolution, no
+  resize/stretch at save time). No white/gray halo is possible by
+  construction (every non-glow pixel is alpha=0, not partially blended).
+  Full method: `assets/boss/dark_phase_eyes_build_meta.json`.
+- In-game, the SAME anchor point (the crop's own bbox center, mapped
+  through `DARKPHASE_SCALE`'s body-accurate projection onto boss.x/boss.y)
+  drives BOTH where the glow is drawn and the FLASH head-aim hit-test, so
+  they can never drift apart — see `getDarkPhaseHeadScreenPos()` in
+  `game.js`. The DRAWN size is a separate, deliberate judgment call
+  (`DARKPHASE_EYES_DISPLAY_H=46px`, aspect-preserving) since the body-
+  accurate projection alone would render the crop at only ~10-12px tall —
+  correct anatomically, but too small to read as "glowing eyes in the
+  dark" during actual play.
 
 Batch 12 — SOUTH WALK 3-frame animation + SOUTH IDLE (`walk_south_1/2/3.png`,
 `south_idle.png`):
