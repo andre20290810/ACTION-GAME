@@ -802,7 +802,15 @@
     dyingParticles: [],
   };
 
+  // Temporary local-verification aid (see the investigation into DARK PHASE
+  // not triggering) — logs every boss.state transition through the single
+  // function they all flow through. Disabled by default; flip to true only
+  // for local debugging, never in a deployed build.
+  const DEBUG_BOSS_STATE_LOG = false;
   function bossEnterState(state, now) {
+    if (DEBUG_BOSS_STATE_LOG && state !== boss.state) {
+      console.log(`[BOSS] ${boss.state} -> ${state}`);
+    }
     boss.state = state;
     boss.stateEnteredAt = now;
     if (state === 'attack') {
@@ -1383,8 +1391,16 @@
     if (checkBossHpMilestones(now)) return;
     if (autoAimed) registerGlobalAutoAimHit(now);
     // FLASH DOWN must never be interrupted into DEFENSE by an ordinary body
-    // hit — it stays fully damageable for its whole duration instead.
-    if (boss.state !== 'flashdown') {
+    // hit — it stays fully damageable for its whole duration instead. DARK
+    // PHASE is the same: registerGlobalAutoAimHit() above may have JUST
+    // entered it on this very hit (the 4th auto-aimed one), and without
+    // this check the very next line would unconditionally stomp that back
+    // into 'defense' in the same synchronous call — DARK PHASE would enter
+    // and be overwritten within the same frame, before ever becoming
+    // visible. This was the actual bug behind "DARK PHASE never triggers":
+    // the state-machine transition fired correctly, but a later line in
+    // this same function silently reverted it every time.
+    if (boss.state !== 'flashdown' && boss.state !== 'darkphase') {
       boss.defenseDir = incomingFrom;
       bossEnterState('defense', now);
     }
@@ -1461,6 +1477,12 @@
     if (wp) weakPointFlashAt = wp;
     if (checkBossHpMilestones(now)) return; // death or a threshold cinematic took over
     if (autoAimed) registerGlobalAutoAimHit(now);
+    // DARK PHASE may have JUST been entered by the call above (this exact
+    // hit could simultaneously be the 4th auto-aimed hit overall AND
+    // partway through an independent weak-point-consecutive-hit streak) —
+    // if so, stop here: neither the forced-counter's enterAttackSequence()
+    // nor GUARD BREAK below may overwrite it in the same synchronous call.
+    if (boss.state === 'darkphase') return;
 
     boss.weakPointConsecutiveHits += 1;
     if (boss.weakPointConsecutiveHits >= WEAKPOINT_FORCED_COUNTER_HITS) {
