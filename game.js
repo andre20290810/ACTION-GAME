@@ -224,6 +224,25 @@
     };
   }
 
+  // ---------- DARK PHASE (GABRIEL's total-invulnerability shadow state) ----------
+  // A single dedicated image (not direction-based like the DOWN/CINEMATIC
+  // pair above) — see assets/boss/dark_phase_build_meta.json for the
+  // non-generative alpha-cleanup that removed the supplied image's white
+  // background/fringe (a naive hard alpha threshold had left a light halo
+  // around the silhouette's many jagged edges). Never used for normal
+  // IDLE/WALK/ATTACK/DEFENSE or mixed into the front/back DOWN system.
+  const darkPhaseImg = new Image();
+  darkPhaseImg.src = 'assets/boss/dark_phase.png';
+  const DARKPHASE_ASPECT = 1152 / 1728;
+  const DARKPHASE_BODY_FRAC = (1654 - 231) / 1728;
+  // Scaled from its own measured body-fill fraction relative to the front
+  // CINEMATIC image's (same method as CINEMATIC_BACK_SCALE above), so it
+  // reads at roughly the same on-screen body size as the normal boss
+  // sprite — this is a combat state, not a smaller dramatic cutscene pose.
+  const DARKPHASE_SCALE = CINEMATIC_SCALE * (CINEMATIC_FRONT_BODY_FRAC / DARKPHASE_BODY_FRAC);
+  const DARKPHASE_DRAW_H = BOSS_DRAW_H * DARKPHASE_SCALE;
+  const DARKPHASE_DRAW_W = DARKPHASE_DRAW_H * DARKPHASE_ASPECT;
+
   // ---------- Explosive barrel (game object, supplied image) ----------
   // The attached render used as-is (real alpha transparency already
   // present, no crop/regeneration applied) — see
@@ -561,13 +580,17 @@
   const KNOCKBACK_DISTANCE = 110; // px, pushed directly away from the boss
   const KNOCKBACK_SUPPRESS_MS = 280; // brief movement-input suppression, not a full stun
   // ANY 4 valid AUTO-AIM-assisted damage hits (body or weak point, in any
-  // boss state — distinct from GUARD BREAK's DEFENSE-only counter) grant
-  // the boss a total damage immunity window, specifically to interrupt
-  // sustained normal-fire spam rather than to punish/reward anything about
-  // DEFENSE specifically. Barrel explosions intentionally still bypass
-  // this, same as they already bypass DEFENSE — see applyExplosionDamageToBoss().
+  // boss state — distinct from GUARD BREAK's DEFENSE-only counter) send the
+  // boss into DARK PHASE — total damage immunity (this time including
+  // barrel explosions, unlike DEFENSE) with an ARC-CLAW-SLASH-only AI,
+  // specifically to interrupt sustained normal-fire spam rather than to
+  // punish/reward anything about DEFENSE specifically. DARK PHASE has NO
+  // timeout of its own — see startBossDarkPhase()/updateBossDarkPhase() —
+  // the only way out is a successful FLASH GRENADE.
   const AUTO_AIM_INVULN_HITS = 4;
-  const AUTO_AIM_INVULN_MS = 4000;
+  const DARKPHASE_FADE_MS = 450; // within the requested 300-600ms band, both fade-in AND fade-out
+  const DARKPHASE_OVERLAY_ALPHA = 0.82; // dark, but never fully opaque — player/bullets/GABRIEL's red eyes must stay minimally visible
+  const DARKPHASE_ATTACK_INTERVAL_MS = 1400; // cadence between ARC CLAW SLASH casts while in DARK PHASE
   const WALK_FRAME_PERIOD_MS = 260; // south 2-frame alternation period
   const NORTH_BOUNCE_AMPLITUDE = 4; // px, decorative only (no NORTH walk art)
   const SOUTH_WALK_SCALE = 1.10; // visual-only — SOUTH WALK reads a touch small next to the other directions
@@ -693,7 +716,8 @@
     defenseAimHits: 0, // valid AUTO-AIM-assisted hits landed during the current DEFENSE
     weakPointConsecutiveHits: 0, // ANY valid weak-point damage hit (auto-aimed or manual) landed during the current DEFENSE
     autoAimHitStreak: 0, // ANY valid AUTO-AIM-assisted damage hit, body or weak point, regardless of state — see registerGlobalAutoAimHit()
-    invulnerableUntil: 0, // set by registerGlobalAutoAimHit(); normal bullet/weak-point damage is 0 until this passes (barrel explosions still bypass it, same as they already bypass DEFENSE)
+    invulnerableUntil: 0, // legacy field — no longer ever set to a nonzero value (4-hit AUTO AIM now triggers DARK PHASE, not a timed window); left in place harmlessly
+    darkPhaseAttackTimer: 0, // dt-driven countdown to the next ARC CLAW SLASH while in DARK PHASE — see startBossDarkPhase()/updateBossDarkPhase()
     // Cinematic sequence state (intro / HP threshold / death) — see the
     // "Boss cinematic sequences" constants above and startBossThreshold(),
     // startBossDying(), updateBossIntro/Threshold/Dying(), drawBoss*().
@@ -839,17 +863,46 @@
     bossEnterState('dying', now);
   }
 
+  // Triggered by 4 valid AUTO-AIM-assisted hits (see registerGlobalAutoAimHit()
+  // above) — GABRIEL goes fully invulnerable (body/weak-point/AUTO-AIM/
+  // barrel-explosion damage all become 0 — see applyBodyHitToBoss()/
+  // applyExplosionDamageToBoss()) and switches to an ARC-CLAW-SLASH-only AI
+  // (see updateBossDarkPhase()). Deliberately NOT added to bossIsInCinematic()
+  // — DARK PHASE must stay a valid AUTO AIM target (it just takes 0 damage),
+  // and FLASH GRENADE must stay usable during it. Has NO timeout of its
+  // own — see startBossFlashDown() below for the only way out.
+  function startBossDarkPhase(now) {
+    clawProjectiles.length = 0; // no lingering 3WAY BLADE/other attacks from before DARK PHASE
+    arcClawSlashes.length = 0;
+    boss.darkPhaseAttackTimer = 0;
+    bossEnterState('darkphase', now);
+  }
+
+  function updateBossDarkPhase(dt, now) {
+    boss.darkPhaseAttackTimer += dt * 1000;
+    if (boss.darkPhaseAttackTimer >= DARKPHASE_ATTACK_INTERVAL_MS) {
+      boss.darkPhaseAttackTimer = 0;
+      spawnArcClawSlash(now);
+    }
+    // No movement, no DEFENSE, no 3WAY BLADE — ARC CLAW SLASH only, forever,
+    // until FLASH GRENADE ends DARK PHASE (see startBossFlashDown() below).
+  }
+
   // FLASH GRENADE success: GABRIEL goes fully DOWN for FLASH_DOWN_MS — no
   // movement/attack/DEFENSE, but (unlike intro/threshold/dying/dead) still
   // fully damageable, and still a valid AUTO AIM target. Uses the SAME
   // direction-based DOWN image rule as threshold/dying (captured once, at
   // entry). Deliberately NOT added to bossIsInCinematic() — that list means
-  // "untargetable", which flashdown must never be.
+  // "untargetable", which flashdown must never be. This is also how FLASH
+  // ends DARK PHASE: bossEnterState() below simply overwrites boss.state
+  // from 'darkphase' to 'flashdown' unconditionally, exactly the transition
+  // the DARK PHASE spec calls for (dark overlay fades out automatically —
+  // see updateDarkPhaseOverlay() — since it isn't 'darkphase' anymore).
   function startBossFlashDown(now) {
     boss.downFacing = DIR_TO_BOSS_KEY[boss.dir];
     clawProjectiles.length = 0; // no lingering attack hazards during the DOWN window
     arcClawSlashes.length = 0;
-    boss.invulnerableUntil = 0; // FLASH is an explicit counter-tool for the 4-hit AUTO AIM invulnerability window
+    boss.invulnerableUntil = 0; // legacy field, no longer ever set to a nonzero value — kept harmlessly in case anything else still reads it
     boss.autoAimHitStreak = 0;
     bossEnterState('flashdown', now);
   }
@@ -1016,7 +1069,18 @@
     boss.autoAimHitStreak += 1;
     if (boss.autoAimHitStreak >= AUTO_AIM_INVULN_HITS) {
       boss.autoAimHitStreak = 0;
-      boss.invulnerableUntil = now + AUTO_AIM_INVULN_MS;
+      // Never (re)trigger DARK PHASE out of FLASH DOWN or an existing DARK
+      // PHASE itself — FLASH DOWN is its own reward window and must run its
+      // full 5s regardless of further AUTO-AIM hits landed during it; DARK
+      // PHASE re-entry is simply redundant (already fully invulnerable).
+      // bossIsInCinematic() (intro/threshold/dying/dead) is checked directly
+      // here too, defensively — every real caller already gates on it before
+      // a hit can even land, but DARK PHASE's entry condition must NEVER
+      // fire once the death sequence (or any other cinematic) has begun, so
+      // this doesn't rely solely on that indirect protection.
+      if (boss.state !== 'flashdown' && boss.state !== 'darkphase' && !bossIsInCinematic()) {
+        startBossDarkPhase(now);
+      }
     }
   }
 
@@ -1038,13 +1102,12 @@
     // bossIsInCinematic() also covers intro/threshold/dying/dead: the boss
     // is untargetable throughout every cinematic sequence, not just death.
     if (!boss.spawned || bossIsInCinematic() || boss.state === 'guardbreak') return;
-    // 4-hit AUTO AIM invulnerability window: total damage immunity (not
-    // just DEFENSE-style blocking) — still shows the same realistic
+    // DARK PHASE: total damage immunity — still shows the same realistic
     // ricochet/spark feedback as an ordinary blocked hit, never a big blue
-    // barrier. Barrel explosions do NOT go through this function at all
-    // (see applyExplosionDamageToBoss()), so they still bypass it exactly
-    // like they already bypass DEFENSE.
-    if (now < boss.invulnerableUntil) {
+    // barrier. Unlike DEFENSE (which barrel explosions always bypass), DARK
+    // PHASE blocks EVEN barrel explosions — see applyExplosionDamageToBoss().
+    // Has no timeout of its own; only FLASH GRENADE ends it.
+    if (boss.state === 'darkphase') {
       spawnDefenseRicochet(now, bulletX, bulletY, bulletVx, bulletVy);
       return;
     }
@@ -1139,9 +1202,11 @@
   function applyWeakPointHitToBoss(now, autoAimed, bulletX, bulletY, bulletVx, bulletVy) {
     if (!boss.spawned || boss.state !== 'defense') return;
     if (now < boss.invulnerableUntil) {
-      // Same 4-hit AUTO AIM invulnerability window as applyBodyHitToBoss() —
-      // 0 damage, realistic ricochet feedback, no progress toward any
-      // counter while it's active.
+      // Legacy guard — boss.invulnerableUntil is never set to a nonzero
+      // value anymore (4-hit AUTO AIM now triggers DARK PHASE instead, and
+      // this function already can't run during DARK PHASE at all since the
+      // guard above requires boss.state === 'defense'); left in place
+      // harmlessly rather than risk touching more than necessary.
       const wp = getWeakPointScreenPos(boss.defenseDir);
       spawnDefenseRicochet(now, wp ? wp.x : bulletX, wp ? wp.y : bulletY, bulletVx, bulletVy);
       return;
@@ -1176,6 +1241,7 @@
     if (boss.state === 'threshold') { updateBossThreshold(dt, now); return; }
     if (boss.state === 'dying') { updateBossDying(dt, now); return; }
     if (boss.state === 'flashdown') { updateBossFlashDown(dt, now); return; }
+    if (boss.state === 'darkphase') { updateBossDarkPhase(dt, now); return; }
     if (window.__game.freezeBossAI) return; // debug/verification only
 
 
@@ -1700,6 +1766,25 @@
     return Math.max(0.12, Math.min(0.32, alpha));
   }
 
+  // DARK PHASE screen darken: a smooth dt-driven fade (never an instant cut)
+  // toward DARKPHASE_OVERLAY_ALPHA while boss.state==='darkphase', and back
+  // to 0 the instant it isn't (covers the flashdown transition that ends
+  // it). Takes over from — never stacks or competes with — the ambient
+  // stage-lighting drift above; see draw()'s if/else between the two.
+  // dt-driven (not an absolute deadline), so it automatically freezes
+  // exactly on PAUSE like every other timer in this file, and resumes
+  // exactly where it left off on RESUME.
+  let darkPhaseOverlayAlpha = 0;
+  function updateDarkPhaseOverlay(dt) {
+    const target = (boss.state === 'darkphase') ? DARKPHASE_OVERLAY_ALPHA : 0;
+    const rate = DARKPHASE_OVERLAY_ALPHA / (DARKPHASE_FADE_MS / 1000);
+    if (darkPhaseOverlayAlpha < target) {
+      darkPhaseOverlayAlpha = Math.min(target, darkPhaseOverlayAlpha + rate * dt);
+    } else if (darkPhaseOverlayAlpha > target) {
+      darkPhaseOverlayAlpha = Math.max(target, darkPhaseOverlayAlpha - rate * dt);
+    }
+  }
+
   // Intentionally draws nothing at all now — the EXIT hit-test zone itself
   // (exitWorldPos()/EXIT_ZONE_W/H, checked every frame in update() once
   // worldScrollUnlocked()) is completely unchanged and still ends the
@@ -2006,13 +2091,12 @@
     ctx.restore();
   }
 
-  // Deliberately checks neither DEFENSE nor boss.invulnerableUntil — barrel
-  // explosions have always bypassed DEFENSE outright, and the new 4-hit
-  // AUTO AIM invulnerability window (see registerGlobalAutoAimHit()) is
-  // specifically about interrupting normal bullet-fire spam, not about
-  // blocking every damage source, so it keeps the same bypass.
+  // Deliberately still checks neither DEFENSE nor the (now-legacy)
+  // boss.invulnerableUntil — barrel explosions have always bypassed DEFENSE
+  // outright. DARK PHASE is the one exception: total invulnerability, no
+  // damage source bypasses it, per spec.
   function applyExplosionDamageToBoss(amount, now) {
-    if (!boss.spawned || bossIsInCinematic()) return;
+    if (!boss.spawned || bossIsInCinematic() || boss.state === 'darkphase') return;
     boss.hp = Math.max(0, boss.hp - amount);
     checkBossHpMilestones(now);
   }
@@ -2134,6 +2218,8 @@
     boss.hp = BOSS_HP_MAX;
     boss.attackType = 'blade';
     boss.lastAttackType = 'blade';
+    boss.darkPhaseAttackTimer = 0;
+    darkPhaseOverlayAlpha = 0; // RESTART snaps the dark overlay off instantly — no lingering fade
 
     // Stage world/camera/EXIT (PART 21-29) — a RESTART or mode switch always
     // returns to the first/default stage with the world fully closed back up.
@@ -2147,7 +2233,7 @@
     barrelRestockPending = false;
     barrelRestockRemainingMs = 0;
     spawnBarrels(2 + Math.floor(Math.random() * 3)); // 2-4
-    resetRangeSlider();
+    hideRangeUI();
     resetFlashGrenade();
   }
 
@@ -2413,6 +2499,10 @@
   function aimStickReset() {
     aimStickTouchId = null;
     aimStickMouseDown = false;
+    // RANGE always hides + resets to default the instant the finger comes
+    // off AIM STICK — regardless of whether a double-tap lock below keeps
+    // the reticle itself showing.
+    hideRangeUI();
     if (performance.now() < aimDoubleTapLockUntil) {
       // A double-tap snap is still locked in — keep the reticle/aim line
       // showing the snapped angle instead of zeroing it on release.
@@ -2465,6 +2555,7 @@
     const t = e.changedTouches[0];
     aimStickTouchId = t.identifier;
     aimStickActive = true;
+    showRangeUI(); // AIM STICK engaged — RANGE becomes visible/operable
     const rect = aimStickZone.getBoundingClientRect();
     const distFromCenter = Math.hypot(t.clientX - (rect.left + rect.width / 2), t.clientY - (rect.top + rect.height / 2));
     if (tryAimDoubleTap(performance.now(), distFromCenter)) return; // snap already applied
@@ -2494,6 +2585,7 @@
   aimStickZone.addEventListener('mousedown', (e) => {
     aimStickMouseDown = true;
     aimStickActive = true;
+    showRangeUI(); // AIM STICK engaged — RANGE becomes visible/operable
     const rect = aimStickZone.getBoundingClientRect();
     const distFromCenter = Math.hypot(e.clientX - (rect.left + rect.width / 2), e.clientY - (rect.top + rect.height / 2));
     if (tryAimDoubleTap(performance.now(), distFromCenter)) return;
@@ -2608,10 +2700,15 @@
     if (!boss.spawned || flashDisabledByCinematic()) return;
     const dist = Math.hypot(boss.x - player.x, boss.y - player.y);
     if (dist < FLASH_MIN_DISTANCE) {
-      // Too close: brief button-darken feedback only — no throw, no
-      // cooldown, no screen flash, no DOWN.
+      // Too close: a clearly noticeable (but text-free) red-tinted
+      // button pulse — no throw, no cooldown, no screen flash, no DOWN.
+      // This is the common case right as cooldown clears (GABRIEL's own
+      // chase during the preceding few seconds often closes back within
+      // range), so the rejection needs to read as "rejected", not just
+      // "nothing happened" — a too-brief/too-subtle cue was easy to miss
+      // mid-combat and looked like a stuck/broken button.
       flashButton.classList.add('too-close');
-      setTimeout(() => flashButton.classList.remove('too-close'), 150);
+      setTimeout(() => flashButton.classList.remove('too-close'), 380);
       return;
     }
     flashCooldownRemainingMs = FLASH_COOLDOWN_MS; // starts the instant a valid throw is accepted
@@ -2695,31 +2792,80 @@
   // AIM_LINE_LEN's internal AUTO AIM target-search math above. spawnBullet()
   // never reads this — bullets always fly their existing full lifetime/
   // stage-bounds distance regardless of what RANGE is set to.
-  const AIM_RANGE_DEFAULT = AIM_LINE_LEN; // 240 — slider starts at today's existing guide length
+  const AIM_RANGE_DEFAULT = AIM_LINE_LEN; // 240 — matches today's existing guide length
   const AIM_RANGE_MIN = AIM_LINE_LEN * 0.40; // 96 — within the requested ~35-45% band
   const AIM_RANGE_MAX = AIM_LINE_LEN * 1.40; // 336 — within the requested ~130-150% band
+  const RANGE_DEFAULT_FRAC = (AIM_RANGE_DEFAULT - AIM_RANGE_MIN) / (AIM_RANGE_MAX - AIM_RANGE_MIN); // 0.6
   let aimRangeLen = AIM_RANGE_DEFAULT;
-  let rangeSliderActive = false; // true while the player is actively dragging #range-slider
+  let rangeSliderActive = false; // true while the player is actively dragging the RANGE thumb
   let autoAimLockedPoint = null; // {x,y} of whatever AUTO AIM is currently snapped onto, or null — see updateAutoAim()/performNearestAutoAimSnap()
 
-  const rangeSlider = document.getElementById('range-slider');
-  function applyRangeSliderValue() {
-    const t = Number(rangeSlider.value) / 100; // 0..1
-    aimRangeLen = AIM_RANGE_MIN + t * (AIM_RANGE_MAX - AIM_RANGE_MIN);
+  // Custom touch-driven vertical control (NOT a native <input type=range>
+  // relying on the browser's own touch-drag support — that turned out to be
+  // unreliable here because of the page-wide touchmove preventDefault()
+  // used to block scroll/zoom, which also suppresses a native slider's own
+  // default drag gesture). Tracked exactly like the AIM/MOVE sticks (own
+  // touch identifier), so it can be operated at the same time as AIM STICK
+  // with real multi-touch, and hidden/shown independently — see
+  // showRangeUI()/hideRangeUI(), wired into the AIM STICK handlers below.
+  const rangeZone = document.getElementById('range-zone');
+  const rangeTrack = document.getElementById('range-track');
+  const rangeThumb = document.getElementById('range-thumb');
+  let rangeTouchId = null;
+  let rangeMouseDown = false;
+
+  function applyRangeFrac(frac) {
+    const clamped = Math.max(0, Math.min(1, frac));
+    aimRangeLen = AIM_RANGE_MIN + clamped * (AIM_RANGE_MAX - AIM_RANGE_MIN);
+    rangeThumb.style.bottom = `${clamped * 100}%`;
   }
-  applyRangeSliderValue(); // slider's own default value (50) already matches AIM_RANGE_DEFAULT — see resetRangeSlider()
-  rangeSlider.addEventListener('input', () => {
+  applyRangeFrac(RANGE_DEFAULT_FRAC);
+
+  function handleRangeMove(clientY) {
+    const rect = rangeTrack.getBoundingClientRect();
+    // Physically higher on the track = larger RANGE, matching the visual
+    // "fill height" convention of a vertical gauge.
+    applyRangeFrac(1 - (clientY - rect.top) / rect.height);
     rangeSliderActive = true;
-    applyRangeSliderValue();
-  });
-  rangeSlider.addEventListener('pointerdown', () => { rangeSliderActive = true; });
-  rangeSlider.addEventListener('pointerup', () => { rangeSliderActive = false; });
-  rangeSlider.addEventListener('touchend', () => { rangeSliderActive = false; });
-  function resetRangeSlider() {
-    rangeSlider.value = '60'; // maps exactly to AIM_RANGE_DEFAULT (240)
-    rangeSliderActive = false;
-    applyRangeSliderValue();
   }
+
+  function showRangeUI() { rangeZone.classList.add('visible'); }
+  // Always both hides AND resets to default — RANGE must never sit at
+  // wherever it was last left once the player's finger comes off AIM STICK.
+  function hideRangeUI() {
+    rangeZone.classList.remove('visible');
+    rangeTouchId = null;
+    rangeMouseDown = false;
+    rangeSliderActive = false;
+    applyRangeFrac(RANGE_DEFAULT_FRAC);
+  }
+
+  rangeZone.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (rangeTouchId !== null) return;
+    const t = e.changedTouches[0];
+    rangeTouchId = t.identifier;
+    handleRangeMove(t.clientY);
+  }, { passive: false });
+  rangeZone.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      if (t.identifier === rangeTouchId) handleRangeMove(t.clientY);
+    }
+  }, { passive: false });
+  function rangeTouchEnd(e) {
+    for (const t of e.changedTouches) {
+      if (t.identifier === rangeTouchId) { rangeTouchId = null; rangeSliderActive = false; }
+    }
+  }
+  rangeZone.addEventListener('touchend', rangeTouchEnd, { passive: false });
+  rangeZone.addEventListener('touchcancel', rangeTouchEnd, { passive: false });
+  rangeZone.addEventListener('mousedown', (e) => {
+    rangeMouseDown = true;
+    handleRangeMove(e.clientY);
+  });
+  window.addEventListener('mousemove', (e) => { if (rangeMouseDown) handleRangeMove(e.clientY); });
+  window.addEventListener('mouseup', () => { if (rangeMouseDown) { rangeMouseDown = false; rangeSliderActive = false; } });
   // The replacement RIGHT/FIRE and LEFT/FIRE sprites each have their muzzle
   // flash at a fixed point on screen (measured directly from each asset),
   // noticeably higher and further out than the generic radial offset above.
@@ -2797,7 +2943,9 @@
     barrelLandings, spawnFallingBarrels, BARREL_FALL_MS, // debug/verification only
     wallSparks, // debug/verification only
     get aimRangeLen() { return aimRangeLen; },
-    AIM_RANGE_MIN, AIM_RANGE_MAX, AIM_RANGE_DEFAULT,
+    AIM_RANGE_MIN, AIM_RANGE_MAX, AIM_RANGE_DEFAULT, RANGE_DEFAULT_FRAC,
+    showRangeUI, hideRangeUI, // debug/verification only
+    get rangeZoneVisible() { return rangeZone.classList.contains('visible'); },
     get autoAimLockedPoint() { return autoAimLockedPoint; },
     get rangeSliderActive() { return rangeSliderActive; },
     set rangeSliderActive(v) { rangeSliderActive = v; }, // debug/verification only
@@ -2807,6 +2955,10 @@
     get flashGrenade() { return flashGrenade; },
     get flashScreenFlashRemainingMs() { return flashScreenFlashRemainingMs; },
     FLASH_DOWN_MS, FLASH_COOLDOWN_MS, FLASH_MIN_DISTANCE, FLASH_THROW_MS,
+    // Debug/verification only — DARK PHASE.
+    startBossDarkPhase, registerGlobalAutoAimHit,
+    get darkPhaseOverlayAlpha() { return darkPhaseOverlayAlpha; },
+    AUTO_AIM_INVULN_HITS, DARKPHASE_FADE_MS, DARKPHASE_OVERLAY_ALPHA, DARKPHASE_ATTACK_INTERVAL_MS,
   };
 
   // ---------- Main loop ----------
@@ -2814,6 +2966,7 @@
 
   function update(dt, now) {
     if (gameState.paused) return; // PAUSE freezes everything: no movement, AI, bullets, timers
+    updateDarkPhaseOverlay(dt); // always ticks whenever unpaused, regardless of stage-transition/intro state below
     updateStageTransition(now); // always ticks, even while frozen below
     if (stageTransition.active) {
       // Freezes player input/movement/barrels for the whole short fade
@@ -3152,10 +3305,17 @@
 
     ctx.restore(); // undo the camera translate — everything below is screen-space
 
-    // Ambient stage lighting: a slow, gentle brightness drift instead of a
-    // fixed darkening amount — screen-space and computed independently of
-    // the boss-intro FLASH below, so the two can never wash each other out.
-    if (stageOn) {
+    // DARK PHASE overlay takes over from — never stacks with — the normal
+    // ambient stage lighting drift, so the two can never compete/flicker
+    // against each other (see updateDarkPhaseOverlay()). Not pure black:
+    // player/bullets/GABRIEL's own red eyes must stay minimally visible.
+    if (darkPhaseOverlayAlpha > 0) {
+      ctx.fillStyle = `rgba(4, 4, 8, ${darkPhaseOverlayAlpha})`;
+      ctx.fillRect(0, 0, W, H);
+    } else if (stageOn) {
+      // Ambient stage lighting: a slow, gentle brightness drift instead of a
+      // fixed darkening amount — screen-space and computed independently of
+      // the boss-intro FLASH below, so the two can never wash each other out.
       ctx.fillStyle = `rgba(0, 0, 0, ${getAmbientDarkenAlpha(now)})`;
       ctx.fillRect(0, 0, W, H);
     }
@@ -3283,6 +3443,7 @@
     if (boss.state === 'threshold') { drawBossThreshold(now); return; }
     if (boss.state === 'dying') { drawBossDying(now); return; }
     if (boss.state === 'flashdown') { drawBossFlashDown(now); return; }
+    if (boss.state === 'darkphase') { drawBossDarkPhase(now); return; }
 
     const name = bossFrameName(now);
     window.__game.bossFrame = name; // debug/verification only
@@ -3423,6 +3584,22 @@
         boss.x - flashDownCin.w / 2 + flashDownCin.offX,
         boss.y - flashDownCin.h / 2 + flashDownCin.offY,
         flashDownCin.w, flashDownCin.h
+      );
+    }
+  }
+
+  // DARK PHASE: the dedicated almost-black silhouette, drawn centered on
+  // boss.x/y (plain center anchor, like the front CINEMATIC pose — no
+  // per-axis offset needed since there's no second facing to align
+  // against). The screen-darken overlay itself is drawn separately, once
+  // per frame, in draw() — see darkPhaseOverlayAlpha/updateDarkPhaseOverlay().
+  function drawBossDarkPhase(now) {
+    if (darkPhaseImg.complete && darkPhaseImg.naturalWidth > 0) {
+      ctx.drawImage(
+        darkPhaseImg,
+        boss.x - DARKPHASE_DRAW_W / 2,
+        boss.y - DARKPHASE_DRAW_H / 2,
+        DARKPHASE_DRAW_W, DARKPHASE_DRAW_H
       );
     }
   }

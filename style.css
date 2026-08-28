@@ -218,17 +218,34 @@ html, body {
 }
 
 /* ---------- RANGE gauge (aim-guide length only, NOT bullet distance) ----------
-   A small, modest vertical slider beside FIRE. Deliberately plain (native
-   <input type=range>, minimally themed) rather than an eye-catching custom
-   widget, per spec ("派手なUIにはしないでください"). */
+   Hidden by default; only shown while the AIM STICK is actively held (see
+   showRangeUI()/hideRangeUI() in game.js) — never a permanently-visible
+   independent control. A custom touch-driven vertical track/thumb (not a
+   native <input type=range>) so the WHOLE zone is grabbable, not just a
+   thin native track — touch handling is done directly in game.js so it
+   works the same way the AIM/MOVE sticks already do, unaffected by the
+   page-wide touchmove preventDefault() that made native slider dragging
+   unreliable. Deliberately plain/modest in appearance either way, per spec
+   ("派手なUIにはしないでください"). Uses opacity/visibility (not display)
+   so showing/hiding it never shifts FIRE/FLASH's position. */
 #range-zone {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
+  width: 64px; /* generous touch hit-area — wider than the visible track itself */
   height: 150px;
   justify-content: flex-end;
   pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease;
+  touch-action: none;
+}
+#range-zone.visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 #range-label {
   font-family: sans-serif;
@@ -238,41 +255,25 @@ html, body {
   color: rgba(220, 225, 230, 0.55);
   pointer-events: none;
 }
-#range-slider {
-  -webkit-appearance: slider-vertical;
-  appearance: slider-vertical;
-  width: 26px;
+#range-track {
+  position: relative;
+  width: 6px;
   height: 120px;
-  background: transparent;
-  pointer-events: auto;
-  touch-action: none;
-  margin: 0;
-}
-#range-slider::-webkit-slider-runnable-track {
-  width: 4px;
-  background: rgba(255, 255, 255, 0.18);
-  border-radius: 2px;
-}
-#range-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 18px;
-  height: 10px;
   border-radius: 3px;
-  background: rgba(200, 210, 220, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  margin-left: -7px;
-}
-#range-slider::-moz-range-track {
-  width: 4px;
   background: rgba(255, 255, 255, 0.18);
-  border-radius: 2px;
+  pointer-events: none;
 }
-#range-slider::-moz-range-thumb {
-  width: 18px;
-  height: 10px;
-  border-radius: 3px;
-  background: rgba(200, 210, 220, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.5);
+#range-thumb {
+  position: absolute;
+  left: 50%;
+  bottom: 60%; /* overwritten inline per-frame from aimRangeLen's current fraction */
+  width: 30px;
+  height: 16px;
+  border-radius: 4px;
+  background: rgba(200, 210, 220, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  transform: translate(-50%, 50%);
+  pointer-events: none;
 }
 
 /* ---------- FLASH GRENADE button ---------- */
@@ -315,7 +316,9 @@ html, body {
   border-color: rgba(255, 235, 170, 0.75);
 }
 #flash-button.too-close {
-  filter: brightness(0.55);
+  filter: brightness(0.5);
+  border-color: rgba(255, 90, 80, 0.85);
+  background: rgba(255, 60, 50, 0.14);
 }
 #flash-cooldown-ring {
   position: absolute;
@@ -355,7 +358,7 @@ html, body {
   #fire-zone { width: 16vw; height: 16vw; max-width: 128px; max-height: 128px; min-width: 92px; min-height: 92px; }
   #flash-zone { width: 12vw; height: 12vw; max-width: 72px; max-height: 72px; min-width: 52px; min-height: 52px; }
   #range-zone { height: 108px; }
-  #range-slider { height: 82px; }
+  #range-track { height: 82px; }
   #left-stick-col, #right-button-col { gap: 4px; }
   #right-side-row { gap: 6px; }
 }

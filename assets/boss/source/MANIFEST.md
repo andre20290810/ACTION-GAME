@@ -1,6 +1,6 @@
-# Boss character asset manifest — all 23 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9 + batch 10)
+# Boss character asset manifest — all 24 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9 + batch 10 + batch 11)
 
-All 23 files below are byte-identical copies of the originally attached
+All 24 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
 these `source/` copies. The processed, game-ready frames built from them
 live in `assets/boss/*.png` (see `assets/boss/sprite_build_meta.json` for
@@ -354,6 +354,47 @@ Batch 10 notes:
   front and back. Confirmed via Playwright screenshot: SOUTH/NORTH/EAST/
   WEST DOWN all crop to the same on-screen footprint at the same anchor.
   Full measurements in `assets/boss/cinematic_pose_back_build_meta.json`.
+
+Batch 11 — DARK PHASE silhouette (`dark_phase.png`):
+- Source: a single new attached render (black GABRIEL silhouette, glowing
+  red eyes, white background), canvas 1152x1728. Raw upload preserved
+  byte-for-byte at `assets/boss/source/dark_phase_source.png` (verified via
+  md5, not a PIL re-save, to avoid any recompression drift).
+- Used EXCLUSIVELY as GABRIEL's DARK PHASE combat sprite — never mixed
+  into IDLE/WALK/ATTACK/DEFENSE, and never mixed into the separate front/
+  back DOWN/CINEMATIC pair above.
+- **Cleanup — non-generative alpha reconstruction, no AI redraw**: the
+  supplied alpha channel was a hard binary 0/255 mask produced by a naive
+  white-threshold on a flattened white-background render, so many opaque
+  edge pixels kept a light/gray blended-toward-white RGB color, reading as
+  a visible white/gray fringe or halo once composited over anything but
+  white (0.36% of nominally-opaque pixels had brightness > 200,
+  concentrated along the wing/claw edges). Fixed with a deterministic
+  per-pixel formula (no manual retouching, no synthesized content):
+  redness = R - max(G,B); pixels with redness > 15 (the glowing eyes) kept
+  fully opaque with original RGB untouched. All other originally-opaque
+  pixels are treated as a black-foreground/white-background blend and
+  inverted: recovered alpha = clamp(255 - brightness, 0, 255), RGB forced
+  to (0,0,0) — mathematically the inverse of a black-on-white blend, so a
+  near-white fringe pixel correctly resolves to near-0 alpha instead of a
+  light gray rim, and a genuine antialiased edge grades smoothly to
+  transparent black instead of showing a white cutout line. Originally
+  fully-transparent pixels are zeroed regardless of stray RGB. Verified by
+  compositing over solid dark navy/magenta/mid-gray test backgrounds and
+  visually confirming zero white/gray fringe anywhere, including the many
+  small wing-feather/claw tips, with the red eye glow fully preserved.
+  Full method + verification notes: `assets/boss/dark_phase_build_meta.json`.
+- Body landmarks (alpha-channel scan of the cleaned image, head band
+  x:540-660 matching the red-eye bbox 557-646 with margin for
+  head_top_y/center_x; feet_bottom_y is the lowest opaque row overall):
+  head_top_y=231, feet_bottom_y=1654, center_x≈603.9.
+- **Size-matched to the front CINEMATIC image's own body-fill fraction**
+  (same method as `CINEMATIC_BACK_SCALE`): `DARKPHASE_SCALE = CINEMATIC_SCALE
+  * (CINEMATIC_FRONT_BODY_FRAC / DARKPHASE_BODY_FRAC)`, so DARK PHASE reads
+  at roughly the same on-screen body size as GABRIEL's normal battle
+  sprites (this is a combat state, not a smaller dramatic cutscene pose
+  like the DOWN/CINEMATIC family). Drawn centered on boss.x/y, no per-axis
+  offset needed (single image, no second facing to align against).
 
 Notes:
 - Verified visually (not assumed) that EAST images face screen-right with
