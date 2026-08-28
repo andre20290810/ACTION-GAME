@@ -1,0 +1,33 @@
+{
+  "source": "c9800273-image.png (new attached full-body render)",
+  "source_canvas": [
+    1176,
+    1636
+  ],
+  "source_bbox": [
+    1,
+    1,
+    1174,
+    1634
+  ],
+  "body_landmarks_source": {
+    "head_top_y": 284,
+    "feet_bottom_y": 1633,
+    "center_x": 592.0
+  },
+  "scale": 0.55,
+  "paste_xy": [
+    25,
+    2
+  ],
+  "output_canvas": [
+    700,
+    920
+  ],
+  "anchor": [
+    350,
+    900
+  ],
+  "body_height_on_canvas": 741.95,
+  "note": "Scaled/anchored via body landmarks (head-top to feet-bottom span, torso centerline), not raw bbox height, since the wingtip inflates the raw bbox well beyond the body extent. Body height on canvas (~756px) reads a bit smaller than the shared 873px convention used by other attack frames because fitting the FULL wingspan without any clipping required a smaller base scale; SOUTH_ATTACK_SCALE in game.js applies an additional bottom-anchored render-time multiplier (~1.155x) to bring the displayed body size back in line with the other directions, exactly like the existing SOUTH_WALK_SCALE/PRE_ATTACK_SCALE/NORTH_IDLE_SCALE pattern."
+}

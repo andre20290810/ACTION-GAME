@@ -56,14 +56,14 @@ html, body {
   }
 }
 
-/* Left column: DASH stacked directly above ACTION STICK, both flush to the
-   left edge. Right column: AIM STICK stacked directly above FIRE, both
-   flush to the right edge (AIM sits right above the button it fires from).
-   Each is a flex column so the gap between the two stacked zones is never
-   a guessed fixed pixel offset (that bug bit the old FIRE/DASH-row layout
-   once already — a sibling's real rendered size didn't match the assumed
-   max, and it overlapped ACTION STICK). Flexbox lays out real boxes next
-   to each other, so it can't happen. */
+/* Left column: AIM STICK stacked directly above MOVE (ACTION) STICK, both
+   flush to the left edge — aiming and moving now share one thumb column so
+   the right thumb is free to hammer FIRE without fighting for space. Right
+   column: FIRE alone. Each is a flex column so the gap between stacked
+   zones is never a guessed fixed pixel offset (that bug bit an earlier
+   layout once already — a sibling's real rendered size didn't match the
+   assumed max, and it overlapped a neighboring control). Flexbox lays out
+   real boxes next to each other, so it can't happen. */
 #left-stick-col {
   position: absolute;
   left: max(16px, env(safe-area-inset-left));
@@ -86,14 +86,17 @@ html, body {
   pointer-events: none;
 }
 
+/* MOVE (ACTION) STICK — enlarged to 105% of its previous footprint (both
+   the visible circle AND the actual touch/pointer hit area grow together,
+   not just the look of it): 38vw/220/140 -> 39.9vw/231/147. */
 #action-stick-zone {
   position: relative;
-  width: 38vw;
-  height: 38vw;
-  max-width: 220px;
-  max-height: 220px;
-  min-width: 140px;
-  min-height: 140px;
+  width: 39.9vw;
+  height: 39.9vw;
+  max-width: 231px;
+  max-height: 231px;
+  min-width: 147px;
+  min-height: 147px;
   pointer-events: auto;
   touch-action: none;
 }
@@ -132,19 +135,17 @@ html, body {
   touch-action: none;
 }
 
-/* Enlarged from the previous 34vw/190/130 — both the visible circle and
-   the touch area grow together here (unlike the other 3 controls, which
-   only shrink visually while keeping their old hit area) since the goal
-   this round is specifically to make AIM easier to use, not just smaller
-   on screen. Close to ACTION STICK's own footprint now. */
+/* Enlarged to 105% of its previous footprint, same as MOVE STICK above —
+   both the visible circle and the actual touch area grow together:
+   38vw/220/150 -> 39.9vw/231/158. */
 #aim-stick-zone {
   position: relative;
-  width: 38vw;
-  height: 38vw;
-  max-width: 220px;
-  max-height: 220px;
-  min-width: 150px;
-  min-height: 150px;
+  width: 39.9vw;
+  height: 39.9vw;
+  max-width: 231px;
+  max-height: 231px;
+  min-width: 158px;
+  min-height: 158px;
   pointer-events: auto;
   touch-action: none;
 }
@@ -205,82 +206,18 @@ html, body {
   background: rgba(255, 60, 40, 0.6);
 }
 
-#dash-zone {
-  position: relative;
-  /* Deliberately smaller than FIRE (allowed by spec); stacking above FIRE
-     instead of squeezing sideways past it means it no longer needs to
-     fight ACTION STICK for horizontal room, so it can be a bit larger
-     than the previous side-by-side layout without re-enlarging the UI
-     overall (still clearly smaller than FIRE). */
-  width: 20vw;
-  height: 20vw;
-  max-width: 100px;
-  max-height: 100px;
-  min-width: 68px;
-  min-height: 68px;
-  pointer-events: auto;
-  touch-action: none;
-}
-
-#dash-button {
-  position: absolute;
-  inset: var(--ui-visual-inset);
-  border-radius: 50%;
-  background: rgba(90, 200, 140, 0.32);
-  border: 2px solid rgba(130, 230, 170, 0.55);
-  color: #eaffee;
-  font-family: sans-serif;
-  font-weight: bold;
-  letter-spacing: 0.03em;
-  touch-action: none;
-  -webkit-tap-highlight-color: transparent;
-  outline: none;
-  padding: 0;
-  transition: opacity 0.15s ease;
-  /* Two stacked lines: "DASH" label + a live direction arrow — plain text
-     glyphs only (no color emoji), matching the military/SF UI style. */
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1px;
-  line-height: 1;
-}
-
-#dash-label {
-  font-size: clamp(10px, 2.3vw, 13px);
-}
-
-#dash-arrow {
-  font-size: clamp(13px, 3.2vw, 18px);
-  font-weight: 700;
-}
-
-#dash-button:active,
-#dash-button.active {
-  background: rgba(120, 230, 165, 0.6);
-}
-
-/* Dimmed only while the current DASH is actually running — there is no
-   added cooldown afterward, so this is the only "not ready" state left. */
-#dash-button.cooldown {
-  opacity: 0.4;
-}
-
-/* Stacking AIM above ACTION and DASH above FIRE means, in landscape
-   (screen height as low as ~390px), the two side columns' zone sizes
-   must shrink beyond just the visual inset, or the top zone in each
-   column would run off the top of the screen. Portrait has ample height
-   for the original sizes, so this only applies to landscape. */
+/* Stacking AIM above MOVE means, in landscape (screen height as low as
+   ~390px), the left column's zone sizes must shrink beyond just the
+   visual inset, or the top zone would run off the top of the screen.
+   Portrait has ample height for the original sizes, so this only applies
+   to landscape. Both are still 105% of their pre-existing landscape
+   footprint (168/148 -> 176.4/155.4), with the inter-stick gap trimmed a
+   touch to keep clear of the top-anchored PAUSE button. */
 @media (orientation: landscape) {
-  #action-stick-zone { width: 20vw; height: 20vw; max-width: 168px; max-height: 168px; min-width: 108px; min-height: 108px; }
-  /* Enlarged along with the portrait size above (AIM is now paired with
-     FIRE on the right column, not ACTION) — aim(148)+gap(8)+fire(128)=284,
-     comfortably inside a ~390px-tall landscape screen with PAUSE clearance. */
-  #aim-stick-zone { width: 19vw; height: 19vw; max-width: 148px; max-height: 148px; min-width: 106px; min-height: 106px; }
+  #action-stick-zone { width: 21vw; height: 21vw; max-width: 176.4px; max-height: 176.4px; min-width: 113.4px; min-height: 113.4px; }
+  #aim-stick-zone { width: 19.95vw; height: 19.95vw; max-width: 155.4px; max-height: 155.4px; min-width: 111.3px; min-height: 111.3px; }
   #fire-zone { width: 16vw; height: 16vw; max-width: 128px; max-height: 128px; min-width: 92px; min-height: 92px; }
-  #dash-zone { width: 11vw; height: 11vw; max-width: 82px; max-height: 82px; min-width: 58px; min-height: 58px; }
-  #left-stick-col, #right-button-col { gap: 8px; }
+  #left-stick-col, #right-button-col { gap: 4px; }
 }
 
 /* PAUSE now lives at the very top of the screen, clear of the Dynamic

@@ -1,4 +1,4 @@
-# Boss character asset manifest — all 20 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7)
+# Boss character asset manifest — all 21 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8)
 
 All 20 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
@@ -185,6 +185,61 @@ Batch 7 notes:
   ~135.19deg at zero canvas rotation, ~44.81deg after a horizontal mirror
   (used for the slash's counter-clockwise variant, since only one hand
   orientation exists in the source art).
+
+## Batch 8 (1 image, reused for two roles)
+
+| # | Role | Saved filename | Source dims | md5 |
+|---|------|-----------------|-------------|-----|
+| 21 | SOUTH ATTACK v2 (release) + CINEMATIC POSE v2 | `attack_south_v2_source.png` | 1176x1636 RGBA | ab5149a53f450865723103600718e217 |
+
+Batch 8 notes:
+- One newly attached image, explicitly reused by the user's instruction for
+  two separate roles: the new SOUTH ATTACK (blade-release) pose AND the new
+  CINEMATIC POSE. Both game-ready outputs below are built from the same
+  byte-identical source (verified by md5); the source copy is kept once, in
+  `attack_south_v2_source.png`, rather than duplicated under two filenames.
+- **SOUTH ATTACK v2** → `assets/boss/attack_south_release.png` (replaces the
+  batch-6 SOUTH release art; the old batch-6 SOUTH release file is no longer
+  used in-game for either ATTACK or PRE_ATTACK — see below). Built onto the
+  shared 700x920 boss canvas, anchored at (350,900), scale 0.55, paste
+  offset (25,2) — measured from body landmarks (head-top y=284, feet-bottom
+  y=1633, center_x=592 on the 1176x1636 source), not raw bbox height, since
+  the fully-spread wingtips inflate the raw bbox well past the actual body
+  extent. Fitting the complete image with zero clipping at this scale
+  produces a body height on canvas of ~742px, a bit under the shared 873px
+  convention; `SOUTH_ATTACK_SCALE = 1.1766` in `game.js` applies the same
+  bottom-anchored render-time multiplier pattern already used by
+  `SOUTH_WALK_SCALE`/`PRE_ATTACK_SCALE`/`NORTH_IDLE_SCALE` to restore the
+  on-screen body size to match every other direction, with no jump when
+  entering/leaving ATTACK. Full measurements in
+  `assets/boss/attack_south_v2_build_meta.json`.
+- SOUTH's PRE_ATTACK phase was removed entirely per this batch's spec (SOUTH
+  is now the only direction that still telegraphs, and it does so by
+  reusing this same new release-moment image at its own scale/timing rather
+  than a distinct wind-up pose — no separate PRE_ATTACK art exists for
+  SOUTH any more). EAST/WEST no longer telegraph at all (their PRE_ATTACK
+  phase and batch-6 wind-up art usage were removed from `game.js`
+  entirely — ATTACK fires immediately for both).
+- **CINEMATIC POSE v2** → `assets/boss/cinematic_pose.png` (replaces the
+  batch-4 image; the batch-4 file is no longer used in-game). Same
+  byte-identical copy, no cropping needed (matching the batch-4 precedent —
+  this source, too, already has real per-pixel alpha spanning nearly the
+  full canvas). `CINEMATIC_ASPECT` updated to this image's own 1176/1636
+  ratio; `CINEMATIC_SCALE` retuned from 0.77 to 0.90 of the normal boss's
+  own on-screen draw height (`BOSS_DRAW_H`), landing in the requested
+  85-95% band and confirmed via Playwright screenshot comparison against
+  the normal IDLE/ATTACK sprite at the same on-screen position. The same
+  scale is used uniformly for every cinematic event (first appearance,
+  30/60/90% HP thresholds, and death) — there was never any per-event
+  scale variation in the code to begin with.
+- **Retired (image no longer used in-game): `assets/boss/attacks/
+  arc_claw_slash.png`** (batch 7) and its source copy. ARC CLAW SLASH's
+  rendering was reworked from an image sprite to a procedural Canvas VFX
+  crescent (two mirrored quadratic Bézier curves with a silver-to-white
+  gradient fill) per this batch's explicit "no new image generation — use
+  Canvas VFX" instruction. The files are left on disk (not deleted) per
+  this project's asset-retirement convention; only `game.js`'s rendering
+  code stopped referencing them.
 
 Notes:
 - Verified visually (not assumed) that EAST images face screen-right with

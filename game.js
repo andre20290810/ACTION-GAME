@@ -112,19 +112,20 @@
   const BOSS_FRAME_FILES = {
     south_idle: 'south_idle', east_idle: 'east_idle', west_idle: 'west_idle', north_idle: 'north_idle',
     // NORTH has no PRE_ATTACK (per spec) — attack_north is its only attack
-    // frame, shown directly. SOUTH/EAST/WEST each go through a PRE_ATTACK
-    // telegraph before the actual blade-release ATTACK frame: the
-    // telegraph reuses OLDER attack renders from earlier rounds (the
-    // dedicated south one, and the generic one previously shared by east/
-    // west) rather than any new art, while attack_*_release are the 3
-    // brand-new dedicated release-moment renders added this round.
+    // frame, shown directly. SOUTH alone still goes through a PRE_ATTACK
+    // telegraph — EAST/WEST used to telegraph as well, but that PRE_ATTACK
+    // has been removed, so their old shared telegraph art (the plain
+    // `attack` file) is no longer loaded at all. SOUTH's own former
+    // telegraph art (the old dedicated `attack_south` render) is likewise
+    // retired from active use — no new dedicated wind-up art was supplied,
+    // so the telegraph simply reuses the new release-moment render itself,
+    // differentiated from the real release only by its own PRE_ATTACK_SCALE
+    // and timing.
     attack_north: 'attack_north',
     attack_south_release: 'attack_south_release',
     attack_west_release: 'attack_west_release',
     attack_east_release: 'attack_east_release',
-    preattack_south: 'attack_south',
-    preattack_east: 'attack',
-    preattack_west: 'attack',
+    preattack_south: 'attack_south_release',
     defense_south: 'defense', defense_north: 'defense_north', defense_east: 'defense_east', defense_west: 'defense_west',
     // The on-disk walk_east.png/walk_west.png pair has its content swapped
     // from its filename (walk_east.png is actually the left/west-facing
@@ -154,8 +155,13 @@
   // spread wide enough that doing so would clip them.
   const cinematicPoseImg = new Image();
   cinematicPoseImg.src = 'assets/boss/cinematic_pose.png';
-  const CINEMATIC_ASPECT = 1190 / 1317; // the source image's own W/H
-  const CINEMATIC_SCALE = 1.1 * 0.7; // 70% of the previous 1.1x — uniform across intro/threshold/death
+  const CINEMATIC_ASPECT = 1176 / 1636; // the source image's own W/H
+  // Drawn height as a fraction of BOSS_DRAW_H (the normal boss sprite's own
+  // on-screen height) — targeted within the requested ~85-95% band so the
+  // pose reads as slightly smaller than the normal sprite, never larger;
+  // the SAME single constant applies uniformly to intro/30%/60%/90%/death,
+  // there is no per-event variation.
+  const CINEMATIC_SCALE = 0.90;
   const CINEMATIC_DRAW_H = BOSS_DRAW_H * CINEMATIC_SCALE;
   const CINEMATIC_DRAW_W = CINEMATIC_DRAW_H * CINEMATIC_ASPECT;
 
@@ -175,36 +181,14 @@
   const BARREL_HITBOX_RADIUS = 12; // scaled down to match the smaller draw size
   const BARREL_EXPLOSION_RADIUS = 300; // area-effect range, not tied to the sprite size (3x the previous 100)
 
-  // ---------- ARC CLAW SLASH (boss ranged attack, supplied image) ----------
-  // The attached claw render used as-is — its background arrived already
-  // keyed out with real per-pixel alpha (soft anti-aliased edges, silver
-  // highlights/speed-lines intact, verified by compositing over both a
-  // solid green and solid black test background before adoption), so the
-  // only processing applied was a crop of the ~2px fully-transparent
-  // margin down to the opaque content's own bounding box — see
-  // assets/boss/source/arc_claw_slash_source.png for the untouched
-  // original and assets/boss/attacks/arc_claw_slash.png for the cropped
-  // game-ready file (crop box measured directly off the alpha channel:
-  // (2,3)-(1247,1336) of the original 1249x1337 canvas).
-  const arcClawImg = new Image();
-  let arcClawImgReady = false;
-  arcClawImg.onload = () => { arcClawImgReady = true; };
-  arcClawImg.src = 'assets/boss/attacks/arc_claw_slash.png';
-  // Measured directly on the cropped image via PCA of its opaque-pixel
-  // mask (the elongated claw+speed-line silhouette's own long axis) to
-  // find the claw-tip <-> wrist/base direction objectively rather than by
-  // eye. At zero canvas rotation, "base -> tip" points at ~135.19 deg; a
-  // horizontal mirror (used for the counter-clockwise slash variant, see
-  // pickArcClawGeometry()) reflects that to ~44.81 deg. These are used to
-  // work out how much extra ctx.rotate() is needed so the claw's own tip
-  // visually points exactly along the slash's current direction of travel
-  // (see updateArcClawSlashes()).
-  const ARC_CLAW_BASE_TIP_ANGLE = 2.3594412320307216; // ~135.19deg, unmirrored
-  const ARC_CLAW_BASE_TIP_ANGLE_FLIPPED = Math.PI - ARC_CLAW_BASE_TIP_ANGLE; // ~44.81deg, mirrored
-  const ARC_CLAW_TIP_LOCAL = { x: 3, y: 1251 }; // tip pixel, cropped-image space
-  const ARC_CLAW_IMG_DIAG = 1742.6; // measured tip<->base pixel distance in the cropped source art
-  const ARC_CLAW_DRAW_LENGTH = 72; // on-screen tip-to-base length, px — ~62% of SPRITE_DRAW_H(116), within the 45-65% band
-  const ARC_CLAW_DRAW_SCALE = ARC_CLAW_DRAW_LENGTH / ARC_CLAW_IMG_DIAG;
+  // ---------- ARC CLAW SLASH (boss ranged attack, Canvas VFX — no image) ----------
+  // Deliberately no image asset at all: a thin silver-to-white crescent
+  // slash-mark, drawn as a filled canvas path (two bowed quadratic curves
+  // meeting at sharp points) rather than any sprite — a hard metal claw
+  // cutting through the air, never a glowing magic beam. See
+  // drawArcClawPose() for the actual shape.
+  const ARC_CLAW_DRAW_LENGTH = 70; // on-screen tip-to-tail length, px — ~60% of SPRITE_DRAW_H(116), within the 45-65% band
+  const ARC_CLAW_CRESCENT_BOW = 15; // px, how far the crescent bows away from its own straight long axis
   const ARC_CLAW_LIFETIME_MS = 650; // start -> full wind-through -> finish
   const ARC_CLAW_TRAIL_LEN = 4; // afterimage frames kept
   // Start/end angular deviation from the straight boss->player line, each
@@ -254,7 +238,7 @@
   // Screen-space meaning is fixed regardless of internal representation:
   // up=true up, right=true right, down=true down, left=true left.
   const BASE_ANGLE = { right: 0, down: Math.PI / 2, left: Math.PI, up: -Math.PI / 2 };
-  const HALF_RANGE = Math.PI / 4; // +-45 degrees (90-degree total aim wedge)
+  const HALF_RANGE = Math.PI / 3; // +-60 degrees (120-degree total aim wedge)
 
   // ACTION STICK dead zone: fraction of the stick's radius that must be
   // crossed before any direction/movement registers at all. Kept small
@@ -494,10 +478,28 @@
   const WEAKPOINT_FORCED_COUNTER_HITS = 5;
   const KNOCKBACK_DISTANCE = 110; // px, pushed directly away from the boss
   const KNOCKBACK_SUPPRESS_MS = 280; // brief movement-input suppression, not a full stun
+  // ANY 4 valid AUTO-AIM-assisted damage hits (body or weak point, in any
+  // boss state — distinct from GUARD BREAK's DEFENSE-only counter) grant
+  // the boss a total damage immunity window, specifically to interrupt
+  // sustained normal-fire spam rather than to punish/reward anything about
+  // DEFENSE specifically. Barrel explosions intentionally still bypass
+  // this, same as they already bypass DEFENSE — see applyExplosionDamageToBoss().
+  const AUTO_AIM_INVULN_HITS = 4;
+  const AUTO_AIM_INVULN_MS = 4000;
   const WALK_FRAME_PERIOD_MS = 260; // south 2-frame alternation period
   const NORTH_BOUNCE_AMPLITUDE = 4; // px, decorative only (no NORTH walk art)
   const SOUTH_WALK_SCALE = 1.10; // visual-only — SOUTH WALK reads a touch small next to the other directions
   const PRE_ATTACK_SCALE = 1.13; // visual-only — the reused older attack art reads a touch small for its telegraph
+  const NORTH_IDLE_SCALE = 1.10; // visual-only — NORTH IDLE reads a touch small next to the other directions
+  const NORTH_ATTACK_SCALE = 1.10; // visual-only — matched to NORTH IDLE so the two read as the same size
+  // The new SOUTH ATTACK render's own body-height (measured head-top to
+  // feet-bottom, not raw canvas bbox — its wingspan is wide enough that
+  // fitting it on the shared 700x920 canvas without any clipping requires
+  // a smaller base scale than the ~873px convention every other frame
+  // uses) is boosted back up at render time, bottom-anchored exactly like
+  // the scales above, so it reads the same body size as every other
+  // direction instead of looking smaller mid-fight.
+  const SOUTH_ATTACK_SCALE = 1.1766;
   // SOUTH/EAST/WEST attacks telegraph with a PRE_ATTACK pose before the
   // real ATTACK (blade release) frame; NORTH skips straight to ATTACK
   // (no dedicated PRE_ATTACK art for it) — see updateBoss()'s CHASE
@@ -527,7 +529,9 @@
   // Death: brief hold on the cinematic pose, then a real (non-opacity-only)
   // particle dissolve — see buildDyingParticles()/drawBossDying().
   const DYING_DURATION_MS = 1600;
-  const DYING_CELL_SIZE = 10; // px, sampled at the cinematic sprite's on-screen size
+  // Fine sand/ash grain, not blocky squares — small enough that the sampling
+  // grid itself reads as smooth erosion rather than visible pixel chunks.
+  const DYING_CELL_SIZE = 3; // px, sampled at the cinematic sprite's on-screen size
   const PLAYER_HIT_RADIUS = 22;
 
   // Claw-projectile ranged attack, fired once per ATTACK cycle as a 3-way
@@ -601,6 +605,8 @@
     warningUntil: 0,
     defenseAimHits: 0, // valid AUTO-AIM-assisted hits landed during the current DEFENSE
     weakPointConsecutiveHits: 0, // ANY valid weak-point damage hit (auto-aimed or manual) landed during the current DEFENSE
+    autoAimHitStreak: 0, // ANY valid AUTO-AIM-assisted damage hit, body or weak point, regardless of state — see registerGlobalAutoAimHit()
+    invulnerableUntil: 0, // set by registerGlobalAutoAimHit(); normal bullet/weak-point damage is 0 until this passes (barrel explosions still bypass it, same as they already bypass DEFENSE)
     // Cinematic sequence state (intro / HP threshold / death) — see the
     // "Boss cinematic sequences" constants above and startBossThreshold(),
     // startBossDying(), updateBossIntro/Threshold/Dying(), drawBoss*().
@@ -657,17 +663,19 @@
   // Shared entry point for "boss.dir is already set toward the target,
   // now begin an attack" — used by CHASE->ATTACK and the weak-point
   // forced-counter (PART 9/10). NORTH has no PRE_ATTACK art, so it skips
-  // straight to ATTACK (self-contained windup, unchanged); SOUTH/EAST/WEST
-  // telegraph through PRE_ATTACK first. GUARD BREAK's own attack entry
-  // deliberately does NOT go through this — see its branch in updateBoss().
+  // straight to ATTACK (self-contained windup, unchanged); SOUTH telegraphs
+  // through PRE_ATTACK first. EAST/WEST used to telegraph too, but their
+  // PRE_ATTACK has been removed — they now go straight to ATTACK exactly
+  // like NORTH. GUARD BREAK's own attack entry deliberately does NOT go
+  // through this — see its branch in updateBoss().
   function enterAttackSequence(now) {
     boss.attackType = rollAttackType();
     boss.lastAttackType = boss.attackType;
-    if (DIR_TO_BOSS_KEY[boss.dir] === 'north') {
+    if (DIR_TO_BOSS_KEY[boss.dir] === 'south') {
+      bossEnterState('preattack', now);
+    } else {
       boss.attackFiresImmediately = false;
       bossEnterState('attack', now);
-    } else {
-      bossEnterState('preattack', now);
     }
   }
 
@@ -683,6 +691,8 @@
     boss.moving = false;
     boss.warningUntil = now + 1500;
     boss.defenseAimHits = 0;
+    boss.autoAimHitStreak = 0;
+    boss.invulnerableUntil = 0;
     boss.attackType = 'blade';
     boss.lastAttackType = 'blade';
     boss.phaseTriggered = { p30: false, p60: false, p90: false };
@@ -757,6 +767,13 @@
   let weakPointFlashUntil = 0;
   let weakPointFlashAt = { x: 0, y: 0 };
   let guardBreakFlashUntil = 0;
+  // A brief red hit-tint across the boss's whole sprite on a genuine
+  // weak-point (or its AUTO-AIM body-fallback) damage hit — separate from
+  // the AUTO AIM reticle's own red color and from the small local spark
+  // burst above, and drawn in drawBoss() via a source-atop tint rather than
+  // a flat color fill, so it reads as "hit tint", not a solid red silhouette.
+  const BOSS_HIT_TINT_MS = 90; // within the requested 50-120ms band
+  let bossHitTintUntil = 0;
 
   // DEFENSE block feedback: NOT a shield — a plain (non-AUTO-AIM) body hit
   // reads as the bullet striking hard armor/claw/blade and deflecting off,
@@ -831,6 +848,22 @@
     }
   }
 
+  // Separate from GUARD BREAK above (which only ever means something mid-
+  // DEFENSE): counts ANY valid AUTO-AIM-assisted damage hit — body or weak
+  // point, in ANY boss state — toward a total damage-immunity window, so a
+  // player who never stops holding FIRE while AUTO AIM is engaged still
+  // periodically gets shut out rather than melting the boss in one
+  // uninterrupted stream. Runs independently alongside GUARD BREAK/the
+  // weak-point forced counter — the same hit can legitimately count toward
+  // more than one of these at once, they aren't mutually exclusive.
+  function registerGlobalAutoAimHit(now) {
+    boss.autoAimHitStreak += 1;
+    if (boss.autoAimHitStreak >= AUTO_AIM_INVULN_HITS) {
+      boss.autoAimHitStreak = 0;
+      boss.invulnerableUntil = now + AUTO_AIM_INVULN_MS;
+    }
+  }
+
   // A shot landing on the body/wings/claws/mask while the boss is NOT
   // already defending applies normal damage once, then instantly forces
   // DEFENSE, facing the direction the shot came FROM (i.e. the opposite of
@@ -849,6 +882,16 @@
     // bossIsInCinematic() also covers intro/threshold/dying/dead: the boss
     // is untargetable throughout every cinematic sequence, not just death.
     if (!boss.spawned || bossIsInCinematic() || boss.state === 'guardbreak') return;
+    // 4-hit AUTO AIM invulnerability window: total damage immunity (not
+    // just DEFENSE-style blocking) — still shows the same realistic
+    // ricochet/spark feedback as an ordinary blocked hit, never a big blue
+    // barrier. Barrel explosions do NOT go through this function at all
+    // (see applyExplosionDamageToBoss()), so they still bypass it exactly
+    // like they already bypass DEFENSE.
+    if (now < boss.invulnerableUntil) {
+      spawnDefenseRicochet(now, bulletX, bulletY, bulletVx, bulletVy);
+      return;
+    }
     const incomingFrom = OPPOSITE_COMPASS[velocityToCompass(bulletVx, bulletVy)];
     if (boss.state === 'defense') {
       boss.defenseDir = incomingFrom;
@@ -857,7 +900,9 @@
         if (checkBossHpMilestones(now)) return; // death or a threshold cinematic took over
         weakPointFlashUntil = now + 220; // "valid hit" feedback — same as a real weak-point hit, not a ricochet
         weakPointFlashAt = { x: bulletX, y: bulletY };
+        bossHitTintUntil = now + BOSS_HIT_TINT_MS;
         registerDefenseAimHit(now);
+        registerGlobalAutoAimHit(now);
         return;
       }
       spawnDefenseRicochet(now, bulletX, bulletY, bulletVx, bulletVy);
@@ -865,6 +910,7 @@
     }
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
     if (checkBossHpMilestones(now)) return;
+    if (autoAimed) registerGlobalAutoAimHit(now);
     boss.defenseDir = incomingFrom;
     bossEnterState('defense', now);
   }
@@ -881,9 +927,27 @@
   // SLASH, ...): pushes the player along an explicit angle, clamped within
   // bounds, with a brief movement-input suppression — never any damage.
   function applyPlayerKnockbackAlongAngle(angle, distance, suppressMs, now) {
-    player.x += Math.cos(angle) * distance;
-    player.y += Math.sin(angle) * distance;
+    const fromX = player.x, fromY = player.y;
+    player.x = fromX + Math.cos(angle) * distance;
+    player.y = fromY + Math.sin(angle) * distance;
     clampPlayerToScreen();
+    let bestX = player.x, bestY = player.y;
+    let bestMoved = Math.hypot(bestX - fromX, bestY - fromY);
+    // If the player was already pinned near a wall/corner, clampPlayerToScreen()
+    // can cancel most or all of the primary push, silently turning the
+    // knockback into a no-op. Try both perpendicular directions from the
+    // ORIGINAL position too and keep whichever escapes furthest, so the
+    // player reliably gains real distance instead of just standing there.
+    if (bestMoved < distance * 0.6) {
+      for (const perp of [angle + Math.PI / 2, angle - Math.PI / 2]) {
+        player.x = fromX + Math.cos(perp) * distance;
+        player.y = fromY + Math.sin(perp) * distance;
+        clampPlayerToScreen();
+        const moved = Math.hypot(player.x - fromX, player.y - fromY);
+        if (moved > bestMoved) { bestMoved = moved; bestX = player.x; bestY = player.y; }
+      }
+      player.x = bestX; player.y = bestY;
+    }
     player.knockbackUntil = now + suppressMs;
   }
   function applyPlayerKnockback(now) {
@@ -903,13 +967,23 @@
     enterAttackSequence(now);
   }
 
-  function applyWeakPointHitToBoss(now, autoAimed) {
+  function applyWeakPointHitToBoss(now, autoAimed, bulletX, bulletY, bulletVx, bulletVy) {
     if (!boss.spawned || boss.state !== 'defense') return;
+    if (now < boss.invulnerableUntil) {
+      // Same 4-hit AUTO AIM invulnerability window as applyBodyHitToBoss() —
+      // 0 damage, realistic ricochet feedback, no progress toward any
+      // counter while it's active.
+      const wp = getWeakPointScreenPos(boss.defenseDir);
+      spawnDefenseRicochet(now, wp ? wp.x : bulletX, wp ? wp.y : bulletY, bulletVx, bulletVy);
+      return;
+    }
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
     weakPointFlashUntil = now + 220;
+    bossHitTintUntil = now + BOSS_HIT_TINT_MS;
     const wp = getWeakPointScreenPos(boss.defenseDir);
     if (wp) weakPointFlashAt = wp;
     if (checkBossHpMilestones(now)) return; // death or a threshold cinematic took over
+    if (autoAimed) registerGlobalAutoAimHit(now);
 
     boss.weakPointConsecutiveHits += 1;
     if (boss.weakPointConsecutiveHits >= WEAKPOINT_FORCED_COUNTER_HITS) {
@@ -1268,8 +1342,10 @@
       if (s.trail.length > ARC_CLAW_TRAIL_LEN) s.trail.shift();
 
       s.x = pos.x; s.y = pos.y; s.tangentAngle = tangentAngle;
-      const baseTip = s.mirrored ? ARC_CLAW_BASE_TIP_ANGLE_FLIPPED : ARC_CLAW_BASE_TIP_ANGLE;
-      s.angle = tangentAngle - baseTip;
+      // The crescent is drawn procedurally (see drawArcClawPose()), so its
+      // rotation is simply the live travel direction — no image-orientation
+      // correction is needed here.
+      s.angle = tangentAngle;
 
       if (!s.hasHit && !isPlayerInvulnerable()) {
         // Oriented rectangle aligned to the live travel direction (never a
@@ -1290,16 +1366,34 @@
     }
   }
 
+  // A thin crescent slash-mark: two bowed quadratic curves meeting at sharp
+  // points at the tip (forward, local +X) and tail (backward, local -X) —
+  // bowed to one side (mirrored flips which side, matching the CW/CCW
+  // swing direction) so it reads as a real curved blade-cut, not a
+  // symmetric lens/eye shape. Silver-to-white gradient along its length
+  // (bright leading tip, dimmer trailing tail) — no glow/shadowBlur, no
+  // flashy color, just a hard metallic edge.
   function drawArcClawPose(x, y, angle, mirrored, alpha) {
-    if (!arcClawImgReady) return;
-    const drawW = arcClawImg.naturalWidth * ARC_CLAW_DRAW_SCALE;
-    const drawH = arcClawImg.naturalHeight * ARC_CLAW_DRAW_SCALE;
+    const half = ARC_CLAW_DRAW_LENGTH / 2;
+    const bow = mirrored ? -ARC_CLAW_CRESCENT_BOW : ARC_CLAW_CRESCENT_BOW;
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.translate(x, y);
     ctx.rotate(angle);
-    if (mirrored) ctx.scale(-1, 1);
-    ctx.drawImage(arcClawImg, -ARC_CLAW_TIP_LOCAL.x * ARC_CLAW_DRAW_SCALE, -ARC_CLAW_TIP_LOCAL.y * ARC_CLAW_DRAW_SCALE, drawW, drawH);
+    const grad = ctx.createLinearGradient(-half, 0, half, 0);
+    grad.addColorStop(0, 'rgba(150,155,165,0.15)');
+    grad.addColorStop(0.55, 'rgba(215,220,228,0.75)');
+    grad.addColorStop(1, 'rgba(255,255,255,0.98)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(half, 0);
+    ctx.quadraticCurveTo(0, bow, -half, 0);
+    ctx.quadraticCurveTo(0, bow * 0.32, half, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(20,20,24,0.5)';
+    ctx.lineWidth = 0.75;
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -1411,20 +1505,12 @@
     return Math.max(0.12, Math.min(0.32, alpha));
   }
 
-  function drawExitZone(now) {
-    if (!worldScrollUnlocked()) return;
-    const e = exitWorldPos();
-    const pulse = 0.5 + 0.5 * Math.sin(now / 260);
-    ctx.save();
-    ctx.strokeStyle = `rgba(140, 230, 190, ${0.55 + 0.3 * pulse})`;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(e.x - EXIT_ZONE_W / 2, e.y - EXIT_ZONE_H / 2, EXIT_ZONE_W, EXIT_ZONE_H);
-    ctx.fillStyle = 'rgba(150, 235, 200, 0.9)';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('EXIT', e.x, e.y + 7);
-    ctx.restore();
-  }
+  // Intentionally draws nothing at all now — the EXIT hit-test zone itself
+  // (exitWorldPos()/EXIT_ZONE_W/H, checked every frame in update() once
+  // worldScrollUnlocked()) is completely unchanged and still ends the
+  // encounter exactly the same way; only the visible marker/label is gone,
+  // so reaching it is never telegraphed on-screen.
+  function drawExitZone(now) {}
 
   // ---------- Explosive barrels ----------
   // Stage prop / destructible object, not an enemy: shoot one and it
@@ -1639,6 +1725,11 @@
     ctx.restore();
   }
 
+  // Deliberately checks neither DEFENSE nor boss.invulnerableUntil — barrel
+  // explosions have always bypassed DEFENSE outright, and the new 4-hit
+  // AUTO AIM invulnerability window (see registerGlobalAutoAimHit()) is
+  // specifically about interrupting normal bullet-fire spam, not about
+  // blocking every damage source, so it keeps the same bypass.
   function applyExplosionDamageToBoss(amount, now) {
     if (!boss.spawned || bossIsInCinematic()) return;
     boss.hp = Math.max(0, boss.hp - amount);
@@ -1652,7 +1743,7 @@
   // way toward that point each frame (a gentle, releasable magnet, not a
   // hard lock), and only while the player is actively holding the AIM
   // STICK near it — never automatically without stick input. The pull is
-  // clamped through the exact same +-45 deg function as manual aim, so it
+  // clamped through the exact same ±60 deg function as manual aim, so it
   // can never point outside the current base-direction wedge.
   const AUTO_AIM_RADIUS = 46; // screen px, around the reticle tip
   const AUTO_AIM_SNAP_STRENGTH = 0.35; // fraction of remaining angle closed per frame
@@ -1785,7 +1876,6 @@
     fireButton.classList.remove('active');
     actionStickReset();
     aimStickReset();
-    dashButton.classList.remove('active');
   }
 
   const modeMenu = document.getElementById('mode-menu');
@@ -1932,7 +2022,7 @@
   const aimStickKnob = document.getElementById('aim-stick-knob');
   const aimStickSector = document.getElementById('aim-stick-sector');
 
-  // Colors the AIM STICK's own ±45deg allowed wedge (relative to the
+  // Colors the AIM STICK's own ±60deg allowed wedge (relative to the
   // player's CURRENT facing) as a translucent sector, so it's visually
   // obvious which angles are actually reachable before even touching the
   // stick. Recomputed only when baseDir changes (see forceSetBaseDir()),
@@ -2067,7 +2157,7 @@
     const center = BASE_ANGLE[player.baseDir];
     player.aimOffsetRaw = clampToHalfRange(rawAngle, center);
 
-    // Knob visually stops at the same +-45 deg wall as the raw input, so
+    // Knob visually stops at the same ±60 deg wall as the raw input, so
     // the limit is felt physically under the thumb; the reticle (drawn
     // from the AUTO-AIM-adjusted effective offset) is what shows any
     // target snap.
@@ -2182,51 +2272,9 @@
   fireZone.addEventListener('mousedown', fireStart);
   window.addEventListener('mouseup', fireEnd);
 
-  // ---------- DASH button ----------
-  // A separate DOM element from FIRE, so a distinct touch on it never
-  // collides with FIRE's own touch identifier — same independent-zone
-  // pattern already used for ACTION STICK / AIM STICK / FIRE.
-  const dashZone = document.getElementById('dash-zone');
-  const dashButton = document.getElementById('dash-button');
-  const dashArrowEl = document.getElementById('dash-arrow');
-
-  function dashPress(e) {
-    e.preventDefault();
-    dashButton.classList.add('active');
-    requestDash(performance.now());
-  }
-  function dashRelease(e) {
-    if (e) e.preventDefault();
-    dashButton.classList.remove('active');
-  }
-  // Listeners live on the zone (the actual touch hit area), not the smaller
-  // visual button inside it — see #dash-zone/#dash-button sizing in
-  // style.css. A tap anywhere in the zone still reaches this handler
-  // because the button is its descendant and the event bubbles.
-  dashZone.addEventListener('touchstart', dashPress, { passive: false });
-  dashZone.addEventListener('touchend', dashRelease, { passive: false });
-  dashZone.addEventListener('touchcancel', dashRelease, { passive: false });
-  dashZone.addEventListener('mousedown', dashPress);
-  window.addEventListener('mouseup', dashRelease);
-
-  // Plain text arrow glyphs only (no color emoji), matching the
-  // military/SF UI style. DASH's actual direction is always the player's
-  // current base facing (tryStartDash() reads player.baseDir directly), so
-  // showing player.baseDir here can never drift from where DASH will go.
-  const DASH_ARROW = { up: '↑', down: '↓', left: '←', right: '→' };
-  let lastDashArrowDir = null;
-
-  function updateDashButtonUI(now) {
-    // Dim only while the current DASH is actually running (no more added
-    // cooldown afterward — it's ready again the instant this clears).
-    dashButton.classList.toggle('cooldown', player.dashing);
-    // Only touch the DOM when the direction actually changes, not every
-    // frame, to avoid needless layout/text churn.
-    if (player.baseDir !== lastDashArrowDir) {
-      lastDashArrowDir = player.baseDir;
-      dashArrowEl.textContent = DASH_ARROW[player.baseDir];
-    }
-  }
+  // DASH no longer has a standalone button/DOM element at all — it is
+  // triggered exclusively by double-tapping a direction on the MOVE
+  // (ACTION) STICK itself (see tryMoveStickDoubleTapDash() below).
 
   // Prevent default touch scroll/zoom anywhere on the game UI
   document.addEventListener('touchmove', (e) => { e.preventDefault(); }, { passive: false });
@@ -2290,7 +2338,7 @@
     player, boss, playerHitCount: 0,
     applyBodyHitToBoss, applyWeakPointHitToBoss, applyExplosionDamageToBoss, bossEnterState,
     getWeakPointScreenPos, clawProjectiles, arcClawSlashes, spawnArcClawSlash,
-    gameState, barrels, explosions, spawnBarrels, startMode,
+    gameState, barrels, explosions, bullets, spawnBarrels, startMode,
     get autoAimActive() { return autoAimActive; },
     get autoAimTargetIsBoss() { return autoAimTargetIsBoss; },
     MUZZLE_DIST, AIM_LINE_LEN, AUTO_AIM_RADIUS,
@@ -2307,6 +2355,8 @@
     worldScrollUnlocked, exitWorldPos, beginStageTransition,
     get stageTransition() { return stageTransition; },
     getAmbientDarkenAlpha,
+    requestDash, // debug/verification only — drives the DASH chain directly, bypassing touch-gesture detection
+    HALF_RANGE, clampToHalfRange, BASE_ANGLE, keys,
   };
 
   // ---------- Main loop ----------
@@ -2351,10 +2401,13 @@
     player.moving = moving && !player.dashing;
 
     updateDash(now); // may override player.x for the duration of a DASH
-    // Brief movement suppression right after a weak-point forced-counter
-    // KNOCKBACK — deliberately short (KNOCKBACK_SUPPRESS_MS), not a full
-    // stun; facing/aim/fire are all still available during it.
-    if (!player.dashing && moving && now >= player.knockbackUntil) {
+    // Knockback lockout — deliberately short (a few hundred ms, not a full
+    // stun), but while it's active MOVE/AIM/FIRE are ALL suppressed, not
+    // just movement: a player who gets knocked back must not be able to
+    // keep the pressure on by simply re-aiming and firing again the instant
+    // the shove itself finishes resolving.
+    const knockbackLocked = now < player.knockbackUntil;
+    if (!player.dashing && moving && !knockbackLocked) {
       player.x += vx * player.speed * dt;
       player.y += vy * player.speed * dt;
     }
@@ -2377,8 +2430,9 @@
     }
 
     // Firing — direction comes from getAimAngle() (AIM STICK offset applied
-    // to the current base facing), never from movement
-    const wantsFire = fireHeld || keys.fire;
+    // to the current base facing), never from movement. Suppressed entirely
+    // during knockbackLocked, same as MOVE/AIM.
+    const wantsFire = !knockbackLocked && (fireHeld || keys.fire);
     if (wantsFire && now - lastFireTime >= FIRE_INTERVAL) {
       lastFireTime = now;
       spawnBullet();
@@ -2393,8 +2447,7 @@
     player.relaxed = player.baseDir === 'down' && !player.dashing &&
       (now - player.lastActivityAt) >= RELAXED_IDLE_DELAY_MS;
 
-    updateDashButtonUI(now);
-    updateAutoAim(now);
+    if (!knockbackLocked) updateAutoAim(now); // AIM is locked (frozen, not reset) for the same window as MOVE/FIRE
 
     // Update bullets — weak point is checked first (only matters while
     // boss.state === 'defense'), body hurtbox otherwise, then alive barrels.
@@ -2415,7 +2468,7 @@
           // can never register a weak-point hit while defending that way.
           const wp = getWeakPointScreenPos(boss.defenseDir);
           if (wp && Math.hypot(b.x - wp.x, b.y - wp.y) <= WEAKPOINT_HIT_RADIUS) {
-            applyWeakPointHitToBoss(now, b.autoAimedBoss);
+            applyWeakPointHitToBoss(now, b.autoAimedBoss, b.x, b.y, b.vx, b.vy);
             consumed = true;
           }
         }
@@ -2697,13 +2750,10 @@
   // ---------- Boss rendering ----------
   function bossFrameName(now) {
     if (boss.state === 'preattack') {
-      // SOUTH/EAST/WEST only — NORTH never enters this state (see
-      // updateBoss()'s CHASE->PRE_ATTACK/ATTACK branch).
-      const key = DIR_TO_BOSS_KEY[boss.dir];
-      if (key === 'south') return 'preattack_south';
-      if (key === 'east') return 'preattack_east';
-      if (key === 'west') return 'preattack_west';
-      return 'attack_north'; // unreachable in practice — safe fallback
+      // SOUTH only now — NORTH/EAST/WEST never enter this state (see
+      // updateBoss()'s CHASE->PRE_ATTACK/ATTACK branch); EAST/WEST's old
+      // telegraph was removed, so this is the one and only frame here.
+      return 'preattack_south';
     }
     if (boss.state === 'attack') {
       // boss.dir is set to face the player at the exact moment ATTACK
@@ -2760,13 +2810,41 @@
     // the sprite's BOTTOM edge (feet) so the boss never visibly jumps or
     // grows from its center when the frame changes — only the top extends.
     let scale = 1;
-    if (name === 'walk_south_1' || name === 'walk_south_2') scale = SOUTH_WALK_SCALE;
-    else if (name === 'preattack_south' || name === 'preattack_east' || name === 'preattack_west') scale = PRE_ATTACK_SCALE;
+    if (name === 'walk_south_1' || name === 'walk_south_2' || name === 'south_idle') scale = SOUTH_WALK_SCALE;
+    else if (name === 'preattack_south') scale = PRE_ATTACK_SCALE;
+    else if (name === 'north_idle') scale = NORTH_IDLE_SCALE;
+    else if (name === 'attack_north') scale = NORTH_ATTACK_SCALE;
+    else if (name === 'attack_south_release') scale = SOUTH_ATTACK_SCALE;
     if (img && img.complete && img.naturalWidth > 0) {
       const w = BOSS_DRAW_W * scale, h = BOSS_DRAW_H * scale;
       const bottomY = boss.y + BOSS_DRAW_H / 2 + bounce;
-      ctx.drawImage(img, boss.x - w / 2, bottomY - h, w, h);
+      const dx = boss.x - w / 2, dy = bottomY - h;
+      if (now < bossHitTintUntil) {
+        drawBossWithHitTint(img, dx, dy, w, h, (bossHitTintUntil - now) / BOSS_HIT_TINT_MS);
+      } else {
+        ctx.drawImage(img, dx, dy, w, h);
+      }
     }
+  }
+
+  // Brief red hit-tint (see BOSS_HIT_TINT_MS/bossHitTintUntil above) — tints
+  // ONLY the boss sprite's own opaque pixels, never a flat colored
+  // rectangle over the background, by compositing on a small offscreen
+  // canvas first (source-atop respects THAT canvas's own alpha, which at
+  // this point is exactly the sprite's silhouette) and drawing the result.
+  const bossTintCanvas = document.createElement('canvas');
+  const bossTintCtx = bossTintCanvas.getContext('2d');
+  function drawBossWithHitTint(img, dx, dy, w, h, tintT) {
+    const cw = Math.max(1, Math.ceil(w)), ch = Math.max(1, Math.ceil(h));
+    bossTintCanvas.width = cw;
+    bossTintCanvas.height = ch;
+    bossTintCtx.clearRect(0, 0, cw, ch);
+    bossTintCtx.drawImage(img, 0, 0, cw, ch);
+    bossTintCtx.globalCompositeOperation = 'source-atop';
+    bossTintCtx.fillStyle = `rgba(255,40,30,${0.3 + 0.45 * tintT})`;
+    bossTintCtx.fillRect(0, 0, cw, ch);
+    bossTintCtx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(bossTintCanvas, dx, dy, w, h);
   }
 
   // All timing here reads boss.cinematicElapsed (cached by updateBossIntro()
@@ -2889,14 +2967,18 @@
     const particles = cells.map((c) => {
       const distFrac = Math.hypot(c.gx - cx, c.gy - cy) / maxDist; // 0 center -> 1 edge
       const dissolveAt = Math.max(0, Math.min(0.85, (1 - distFrac) * 0.55 + Math.random() * 0.25));
-      const angle = Math.atan2(c.gy - cy, c.gx - cx) + (Math.random() - 0.5) * 0.6;
+      // Mostly upward/outward-ish drift (sand/ash caught in a rising
+      // draft), with plenty of per-grain sideways scatter rather than a
+      // strict radial-from-center burst.
+      const angle = -Math.PI / 2 + (Math.random() - 0.5) * 2.6;
       return {
         gx: c.gx, gy: c.gy,
         color: `rgba(${c.r},${c.g},${c.b},`,
         dissolveAt,
         angle,
-        speed: 30 + Math.random() * 70,
+        speed: 14 + Math.random() * 34,
         spin: (Math.random() - 0.5) * 4,
+        grain: 0.55 + Math.random() * 1.1, // fine sand-grain radius, px — independent of the sampling cell size
       };
     });
     boss.dyingParticles = particles;
@@ -2928,22 +3010,28 @@
     ctx.globalCompositeOperation = 'source-over';
     ctx.restore();
 
+    // Fine sand/ash grains, not squares — each one a tiny circle drifting
+    // gently up and sideways, shrinking slightly as it fades. Deliberately
+    // NOT a plain opacity fade in place: position genuinely drifts (dx/dy
+    // below) and the underlying sprite is actually punched out (above) as
+    // each grain releases.
     for (const p of boss.dyingParticles) {
       if (frac < p.dissolveAt) continue;
       const localT = Math.min(1, (frac - p.dissolveAt) / Math.max(0.05, 1 - p.dissolveAt));
       const driftSec = (frac - p.dissolveAt) * (DYING_DURATION_MS / 1000);
       const dx = Math.cos(p.angle) * p.speed * driftSec;
-      const dy = Math.sin(p.angle) * p.speed * driftSec - driftSec * 40; // drifts upward over time
+      const dy = Math.sin(p.angle) * p.speed * driftSec - driftSec * 22; // gentle upward drift, not a violent ejection
       const alpha = Math.max(0, 1 - localT);
       const px = drawX + p.gx * DYING_CELL_SIZE + DYING_CELL_SIZE / 2 + dx;
       const py = drawY + p.gy * DYING_CELL_SIZE + DYING_CELL_SIZE / 2 + dy;
+      const r = p.grain * (1 - localT * 0.5);
+      if (r <= 0.05) continue;
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.fillStyle = p.color + '1)';
-      ctx.translate(px, py);
-      ctx.rotate(p.spin * driftSec);
-      const size = (DYING_CELL_SIZE - 1) * (1 - localT * 0.4);
-      ctx.fillRect(-size / 2, -size / 2, size, size);
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, Math.PI * 2);
+      ctx.fill();
       ctx.restore();
     }
   }
@@ -2980,10 +3068,6 @@
       ctx.beginPath();
       ctx.arc(weakPointFlashAt.x, weakPointFlashAt.y, 14, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = 'rgba(255,230,120,0.95)';
-      ctx.font = 'bold 13px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('WEAK', weakPointFlashAt.x, weakPointFlashAt.y - 22);
       ctx.restore();
     }
     if (now < guardBreakFlashUntil) {
