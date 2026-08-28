@@ -259,7 +259,10 @@
   // reshaping, no redraw) — the crop's own aspect ratio is preserved
   // exactly, only its on-screen size changes, always centered on the SAME
   // anchor point drawBossDarkPhase()/isAimedAtDarkPhaseHead() both use.
-  const DARKPHASE_EYES_DISPLAY_H = 46;
+  // Halved again this batch (was 46) per explicit instruction that the
+  // glow was reading too large — same anchor, same aspect ratio, purely a
+  // smaller uniform resize.
+  const DARKPHASE_EYES_DISPLAY_H = 23;
   const DARKPHASE_EYES_DISPLAY_W = DARKPHASE_EYES_DISPLAY_H * ((DARKPHASE_EYES_CROP_X1 - DARKPHASE_EYES_CROP_X0) / (DARKPHASE_EYES_CROP_Y1 - DARKPHASE_EYES_CROP_Y0));
   // Body-fill fraction of the ORIGINAL dark_phase_source.png (measured
   // during the earlier batch that built dark_phase.png — see
@@ -334,6 +337,15 @@
   const ARC_CLAW_HIT_HALF_WIDTH = 16;
   const ARC_CLAW_KNOCKBACK_DISTANCE = 170; // ~1.5x player sprite height (116px), within the requested 1-2x band
   const ARC_CLAW_KNOCKBACK_SUPPRESS_MS = 240;
+
+  // ---------- CLAW STING (PART 8/10: reuses the SAME claw image/VFX above) ----------
+  // A straight, fast thrust toward a target LOCKED once at spawn time —
+  // clearly distinct from ARC CLAW SLASH's curved sweep, never re-aiming
+  // mid-flight (so the player can dodge simply by not being at the locked
+  // point anymore once it arrives). Shares arcClawSlashes' array/draw/hit
+  // machinery entirely — see spawnClawSting()/updateArcClawSlashes().
+  const CLAW_STING_LIFETIME_MS = 380; // quick stab — faster than ARC_CLAW_LIFETIME_MS's full arc
+  const CLAW_STING_OVERSHOOT = 1.3; // travels this far past the locked point along the same line, so it reads as a real thrust-through, not a stop-on-a-dime
 
   // ---------- Direction bucket mapping (ACTION STICK -> base facing) ----------
   // angle: 0 = right, positive = clockwise (down), atan2(dy, dx), dy-down positive
@@ -417,14 +429,34 @@
     // RELAXED IDLE (SOUTH only): tracks how long all inputs have been idle.
     lastActivityAt: performance.now(),
     relaxed: false,
+    // STEALTH (PART 13-21): a PLAYER-side status field, deliberately never
+    // a boss.state value — `now < player.stealthUntil` while active. Ending
+    // (the 5s timer running out) is just this timestamp being in the past;
+    // it never itself touches boss.state, so whatever GABRIEL was doing
+    // (darkphase, attack, teleport, ...) is left completely alone.
+    stealthUntil: -Infinity,
+    stealthStartedAt: -Infinity, // for the ~150ms fade-in/out — see getStealthVisualAlpha()
   };
 
-  // The single source of truth for firing/aim-line direction: always the
-  // current base facing's center angle plus the (clamped) aim offset. When
-  // aimOffset is 0 — the default, and what it resets to whenever the base
-  // facing changes or the AIM STICK is released — this is exactly the base
-  // direction's true angle, so an un-aimed shot always matches the sprite.
-  function getAimAngle() {
+  // PART 12: the ONE final-angle computation every aim/fire-direction
+  // consumer routes through — AIM STICK input (via player.aimOffset, itself
+  // already clamped through clampToHalfRange's shared ±HALF_RANGE logic),
+  // the dotted aim guide line (drawAimLine()), the RANGE endpoint (derived
+  // from this same angle), the FIRE-time bullet spawn angle/velocity
+  // (spawnBullet()), AUTO AIM's correction (folded into player.aimOffset by
+  // updateAutoAim() before this ever runs), player facing, and the FLASH
+  // DARK-PHASE-head aim-gate (isAimedAtDarkPhaseHead()). There is no
+  // separate portrait/landscape branch anywhere in this file — orientation
+  // only ever affects layout (CSS/resize()), never this angle math, so
+  // both orientations are guaranteed to derive their aim line and their
+  // fired bullet from the exact same number, always.
+  //
+  // Always the current base facing's center angle plus the (clamped) aim
+  // offset. When aimOffset is 0 — the default, and what it resets to
+  // whenever the base facing changes or the AIM STICK is released — this is
+  // exactly the base direction's true angle, so an un-aimed shot always
+  // matches the sprite.
+  function getFinalAimAngle() {
     return BASE_ANGLE[player.baseDir] + player.aimOffset;
   }
 
@@ -609,10 +641,20 @@
   const WEAKPOINT_FORCED_COUNTER_HITS = 5;
   const KNOCKBACK_DISTANCE = 110; // px, pushed directly away from the boss
   const KNOCKBACK_SUPPRESS_MS = 280; // brief movement-input suppression, not a full stun
+  // POINT-BLANK counter: a shot fired while the player is standing almost
+  // on top of GABRIEL (rushing in to farm the weak point/GUARD BREAK at
+  // zero risk) deals no damage at all — GABRIEL briefly can't be damaged
+  // and instead shoves the player back out to a normal fighting distance,
+  // reusing the same knockback + input-suppression machinery as the
+  // weak-point forced counter below. Scoped to ordinary combat states only
+  // (see the gate at the bullet/boss collision check) — DARK PHASE's own
+  // close-in AI must never be undermined by this.
+  const CLOSE_RANGE_SHOT_THRESHOLD = 70; // px, player<->boss distance at/under which a shot counts as point-blank
+  const CLOSE_RANGE_COUNTER_INVULN_MS = 300; // GABRIEL's own brief invulnerability after the counter fires
   // ANY 4 valid AUTO-AIM-assisted damage hits (body or weak point, in any
   // boss state — distinct from GUARD BREAK's DEFENSE-only counter) send the
   // boss into DARK PHASE — total damage immunity (this time including
-  // barrel explosions, unlike DEFENSE) with an ARC-CLAW-SLASH-only AI,
+  // barrel explosions, unlike DEFENSE) with a SLASH/STING-only AI,
   // specifically to interrupt sustained normal-fire spam rather than to
   // punish/reward anything about DEFENSE specifically. DARK PHASE has NO
   // timeout of its own — see startBossDarkPhase()/updateBossDarkPhase() —
@@ -700,14 +742,8 @@
   const DYING_CELL_SIZE = 3; // px, sampled at the cinematic sprite's on-screen size
   const PLAYER_HIT_RADIUS = 22;
 
-  // Claw-projectile ranged attack, fired once per ATTACK cycle as a 3-way
-  // volley (see spawnClawProjectile()).
-  const CLAW_PROJECTILE_SPEED = 340; // slower than the player's 620 bullets — dodgeable
-  const CLAW_PROJECTILE_HIT_RADIUS = 16; // a touch larger than before (14) for the longer blade, still tight relative to its visual length
-  const BLADE_SPREAD_ANGLE = 15 * Math.PI / 180; // +-15 degrees either side of the center blade
-
-  // Where each of the 3 blades spawns from — near the claws, not the torso
-  // center. NORTH/SOUTH use fixed points measured directly on their own
+  // Where the claw attacks (ARC CLAW SLASH / CLAW STING) spawn from — near
+  // the claws, not the torso center. NORTH/SOUTH use fixed points measured directly on their own
   // attack_{north,south}.png canvas (converted to a boss-relative screen
   // offset the same way the DEFENSE weak points are); EAST/WEST keep the
   // pre-existing generic radial offset toward the facing direction, since
@@ -749,6 +785,23 @@
   };
   const WEAKPOINT_HIT_RADIUS = 16; // screen px — generous for touch, still eye-only not head-wide
 
+  // ---------- WEAK-POINT-SPAM teleport countermeasure (PART 7) ----------
+  // Replaces the old "forced counter" response (knockback + immediate
+  // counterattack) to WEAKPOINT_FORCED_COUNTER_HITS consecutive weak-point
+  // hits: a brief full-screen blackout, GABRIEL vanishing, a teleport to a
+  // freshly-validated random stage coordinate, then a fade back in and a
+  // resume of normal combat from the new spot. Deliberately its OWN
+  // blackout/state machinery — entirely separate variables and its own
+  // boss.state ('teleport') — so it can never be confused with or corrupt
+  // DARK PHASE's own blackout (darkPhaseOverlayAlpha/state 'darkphase').
+  const TELEPORT_BLACKOUT_MS = 260; // screen fades to black, GABRIEL still at the old spot but no longer drawn
+  const TELEPORT_HOLD_MS = 220; // fully black — the actual reposition happens here
+  const TELEPORT_FADEIN_MS = 260; // fades back in at the new spot
+  const TELEPORT_TOTAL_MS = TELEPORT_BLACKOUT_MS + TELEPORT_HOLD_MS + TELEPORT_FADEIN_MS;
+  const TELEPORT_OVERLAY_ALPHA = 0.95; // near-total black, matches DARKPHASE_OVERLAY_ALPHA's read
+  const TELEPORT_MIN_DIST_FROM_PLAYER = CLOSE_RANGE_SHOT_THRESHOLD * 3; // guarantees the reappear point is never point-blank to the player
+  let teleportBlackoutAlpha = 0;
+
   const DIR_TO_BOSS_KEY = { up: 'north', down: 'south', left: 'west', right: 'east' };
   const OPPOSITE_COMPASS = { north: 'south', south: 'north', east: 'west', west: 'east' };
 
@@ -766,8 +819,9 @@
     attackHitApplied: false,
     attackProjectileSpawned: false,
     attackFiresImmediately: false, // true when ATTACK arrived via PRE_ATTACK/forced-counter (blade fires on entry, no extra windup)
-    attackType: 'blade', // 'blade' (existing 3-way volley + melee swing) | 'arcClaw' (ARC CLAW SLASH) — chosen in enterAttackSequence()
-    lastAttackType: 'blade', // tracks the previous attack so arcClaw can never fire twice in a row
+    attackType: 'blade', // 'blade' (existing melee swing) | 'arcClaw' (ARC CLAW SLASH) | 'clawSting' (CLAW STING) — chosen in enterAttackSequence()
+    lastAttackType: 'blade', // tracks the previous attack so neither special attack can fire twice in a row
+    darkPhaseArcAttackKind: 'slash', // 'slash' | 'sting' — which claw attack DARK PHASE's own 'arcclaw' sub-state fires, chosen fresh each time LUNGE ends
     chaseBackoffUntil: 0,
     deadAt: 0,
     warningUntil: 0,
@@ -775,6 +829,25 @@
     weakPointConsecutiveHits: 0, // ANY valid weak-point damage hit (auto-aimed or manual) landed during the current DEFENSE
     autoAimHitStreak: 0, // ANY valid AUTO-AIM-assisted damage hit, body or weak point, regardless of state — see registerGlobalAutoAimHit()
     invulnerableUntil: 0, // legacy field — no longer ever set to a nonzero value (4-hit AUTO AIM now triggers DARK PHASE, not a timed window); left in place harmlessly
+    closeRangeInvulnUntil: 0, // set by the POINT-BLANK counter — see triggerCloseRangeCounter()
+    teleportElapsed: 0, // dt-driven elapsed ms into the current 'teleport' state — see updateBossTeleport()
+    teleportDest: null, // {x,y} chosen once at trigger time, applied at the blackout's midpoint — see pickTeleportDestination()
+    // STEALTH tracking-suppression (PART 16-19): captured ONCE at STEALTH's
+    // activation, never updated again while it's active — see
+    // getBossTargetPos(), the single function every piece of GABRIEL AI
+    // (CHASE movement/facing, every DARK PHASE sub-state, both normal and
+    // DARK PHASE CLAW STING/ARC CLAW SLASH targeting) reads its "where is
+    // the player" belief from, instead of live player.x/y, whenever STEALTH
+    // is active.
+    lastKnownPlayerX: 0,
+    lastKnownPlayerY: 0,
+    // Set the instant the player fires while STEALTH is active (any fire —
+    // manual or AUTO-AIM-assisted, see the wantsFire block in update()),
+    // cleared again only by the next STEALTH activation. null = no reveal
+    // yet this STEALTH window, so getBossTargetPos() falls back to
+    // lastKnownPlayerX/Y above.
+    revealedShotX: null,
+    revealedShotY: null,
     darkPhaseAttackTimer: 0, // dt-driven sub-phase timer, meaning depends on darkPhaseSubState — see updateBossDarkPhase()
     darkPhaseSubState: 'stalk', // 'stalk'|'closein'|'pause'|'lunge'|'arcclaw'|'disengage' — see updateBossDarkPhase()
     darkPhaseSign: 1, // ±1, re-rolled each STALK/CLOSE IN/DISENGAGE entry — which side GABRIEL curves in/out from, so it never reads as a straight magnet-line
@@ -835,13 +908,18 @@
     }
   }
 
-  // Picks which attack this cycle will be. ARC CLAW SLASH is deliberately
-  // never allowed twice in a row (falls back to the existing blade attack
-  // instead) so the boss's attack pattern stays varied rather than
-  // repeating the newest, flashiest move every time.
+  // Picks which attack this cycle will be, for NORMAL combat (PART 11):
+  // melee ('blade' — the original swing, its own hitbox handled directly in
+  // the 'attack' state branch below) + ARC CLAW SLASH + CLAW STING. Neither
+  // special attack (SLASH/STING) is ever allowed to repeat itself back to
+  // back — it falls back to melee instead — so the pattern stays varied
+  // rather than repeating the newest, flashiest move every time; melee
+  // itself has no such restriction, same as before this batch.
   function rollAttackType() {
-    if (boss.lastAttackType === 'arcClaw') return 'blade';
-    return Math.random() < 0.5 ? 'arcClaw' : 'blade';
+    const r = Math.random();
+    const choice = r < 1 / 3 ? 'arcClaw' : (r < 2 / 3 ? 'clawSting' : 'blade');
+    if (choice !== 'blade' && choice === boss.lastAttackType) return 'blade';
+    return choice;
   }
 
   // Shared entry point for "boss.dir is already set toward the target,
@@ -929,8 +1007,7 @@
 
   function startBossDying(now) {
     boss.downFacing = DIR_TO_BOSS_KEY[boss.dir]; // same one-time capture as startBossThreshold()
-    clawProjectiles.length = 0; // no lingering attack hazards during the death cinematic
-    arcClawSlashes.length = 0;
+    arcClawSlashes.length = 0; // no lingering attack hazards during the death cinematic
     boss.dyingParticlesBuilt = false;
     boss.dyingParticles = [];
     bossEnterState('dying', now);
@@ -939,14 +1016,13 @@
   // Triggered by 4 valid AUTO-AIM-assisted hits (see registerGlobalAutoAimHit()
   // above) — GABRIEL goes fully invulnerable (body/weak-point/AUTO-AIM/
   // barrel-explosion damage all become 0 — see applyBodyHitToBoss()/
-  // applyExplosionDamageToBoss()) and switches to an ARC-CLAW-SLASH-only AI
+  // applyExplosionDamageToBoss()) and switches to a SLASH/STING-only AI
   // (see updateBossDarkPhase()). Deliberately NOT added to bossIsInCinematic()
   // — DARK PHASE must stay a valid AUTO AIM target (it just takes 0 damage),
   // and FLASH GRENADE must stay usable during it. Has NO timeout of its
   // own — see startBossFlashDown() below for the only way out.
   function startBossDarkPhase(now) {
-    clawProjectiles.length = 0; // no lingering 3WAY BLADE/other attacks from before DARK PHASE
-    arcClawSlashes.length = 0;
+    arcClawSlashes.length = 0; // no lingering attacks from before DARK PHASE began
     boss.darkPhaseAttackTimer = 0;
     boss.darkPhaseLungeElapsed = 0;
     boss.darkPhaseSign = Math.random() < 0.5 ? 1 : -1;
@@ -974,19 +1050,26 @@
   //               beat, with a temporary brightness boost (see
   //               drawBossDarkPhase()) — before the strike
   //   lunge    -> a short, fast, DIRECT burst (no curve) until within
-  //               DARKPHASE_ATTACK_RANGE, which is when ARC CLAW SLASH
-  //               actually fires — so the attack always fires from
-  //               genuinely close range, by construction
-  //   arcclaw  -> hold position for the slash's own ARC_CLAW_LIFETIME_MS
-  //               (the existing attack fully owns its own hit timing — see
-  //               updateArcClawSlashes())
+  //               DARKPHASE_ATTACK_RANGE, which is when SLASH or STING
+  //               actually fires (picked fresh each time, see
+  //               boss.darkPhaseArcAttackKind) — so the attack always fires
+  //               from genuinely close range, by construction
+  //   arcclaw  -> hold position for the chosen attack's own lifetime (SLASH:
+  //               ARC_CLAW_LIFETIME_MS, STING: CLAW_STING_LIFETIME_MS — the
+  //               existing attack fully owns its own hit timing either way,
+  //               see updateArcClawSlashes())
   //   disengage-> pull back at an angle (not a straight retreat) for a
   //               randomized duration, then loop back to STALK
-  // No DEFENSE, no 3WAY BLADE, no normal ATTACK — ARC CLAW SLASH is the only
-  // attack this loop ever calls, forever, until FLASH GRENADE ends DARK
-  // PHASE (see startBossFlashDown() below).
+  // No DEFENSE, no melee, no 3WAY BLADE (removed entirely, PART 9) — ARC
+  // CLAW SLASH and CLAW STING are the only attacks this loop ever calls,
+  // forever, until FLASH GRENADE ends DARK PHASE (see startBossFlashDown()
+  // below).
   function updateBossDarkPhaseStalk(dt, now) {
-    const dx = player.x - boss.x, dy = player.y - boss.y;
+    // STEALTH (PART 19): DARK PHASE's own AI is no exception — every
+    // sub-state here reads GABRIEL's current belief, not necessarily the
+    // player's live position, while STEALTH is active.
+    const targetPos = getBossTargetPos(now);
+    const dx = targetPos.x - boss.x, dy = targetPos.y - boss.y;
     const dist = Math.hypot(dx, dy) || 1;
     const perpAngle = Math.atan2(dy, dx) + boss.darkPhaseSign * (Math.PI / 2);
     let vx = Math.cos(perpAngle), vy = Math.sin(perpAngle);
@@ -1011,7 +1094,8 @@
   }
 
   function updateBossDarkPhaseCloseIn(dt, now) {
-    const dx = player.x - boss.x, dy = player.y - boss.y;
+    const targetPos = getBossTargetPos(now);
+    const dx = targetPos.x - boss.x, dy = targetPos.y - boss.y;
     const dist = Math.hypot(dx, dy) || 1;
     const toPlayerAngle = Math.atan2(dy, dx);
     // t=1 at CLOSE IN's own start (full curve), fading to 0 as it closes —
@@ -1040,19 +1124,27 @@
   }
 
   function updateBossDarkPhaseLunge(dt, now) {
-    const dx = player.x - boss.x, dy = player.y - boss.y;
+    const targetPos = getBossTargetPos(now);
+    const dx = targetPos.x - boss.x, dy = targetPos.y - boss.y;
     const dist = Math.hypot(dx, dy) || 1;
     boss.x += (dx / dist) * DARKPHASE_LUNGE_SPEED * dt;
     boss.y += (dy / dist) * DARKPHASE_LUNGE_SPEED * dt;
     boss.moving = true;
     if (dist <= DARKPHASE_ATTACK_RANGE) {
       // Only ever reached here, genuinely close — see the range check
-      // above — so ARC CLAW SLASH can never fire from far away.
+      // above — so neither SLASH nor STING can ever fire from far away.
+      // DARK PHASE's attack set is SLASH + STING only (PART 8/11) — picked
+      // fresh each time LUNGE ends, so it's never the same twice running.
       boss.dir = angleToBucket(Math.atan2(dy, dx));
       boss.darkPhaseSubState = 'arcclaw';
       boss.darkPhaseAttackTimer = 0;
       boss.moving = false;
-      spawnArcClawSlash(now);
+      boss.darkPhaseArcAttackKind = Math.random() < 0.5 ? 'slash' : 'sting';
+      if (boss.darkPhaseArcAttackKind === 'sting') {
+        spawnClawSting(now, getClawOrigin(), getBossTargetPos(now));
+      } else {
+        spawnArcClawSlash(now);
+      }
       return;
     }
     boss.darkPhaseLungeElapsed += dt * 1000;
@@ -1068,7 +1160,8 @@
   function updateBossDarkPhaseArcClaw(dt, now) {
     boss.moving = false;
     boss.darkPhaseAttackTimer += dt * 1000;
-    if (boss.darkPhaseAttackTimer >= ARC_CLAW_LIFETIME_MS) {
+    const lifetime = boss.darkPhaseArcAttackKind === 'sting' ? CLAW_STING_LIFETIME_MS : ARC_CLAW_LIFETIME_MS;
+    if (boss.darkPhaseAttackTimer >= lifetime) {
       boss.darkPhaseAttackTimer = 0;
       boss.darkPhaseSign = Math.random() < 0.5 ? 1 : -1; // re-rolled for the upcoming DISENGAGE angle
       boss.darkPhaseDisengageMs = DARKPHASE_DISENGAGE_MS_MIN + Math.random() * (DARKPHASE_DISENGAGE_MS_MAX - DARKPHASE_DISENGAGE_MS_MIN);
@@ -1077,7 +1170,8 @@
   }
 
   function updateBossDarkPhaseDisengage(dt, now) {
-    const dx = player.x - boss.x, dy = player.y - boss.y;
+    const targetPos = getBossTargetPos(now);
+    const dx = targetPos.x - boss.x, dy = targetPos.y - boss.y;
     const awayAngle = Math.atan2(-dy, -dx) + boss.darkPhaseSign * DARKPHASE_DISENGAGE_CURVE_RAD;
     boss.x += Math.cos(awayAngle) * DARKPHASE_DISENGAGE_SPEED * dt;
     boss.y += Math.sin(awayAngle) * DARKPHASE_DISENGAGE_SPEED * dt;
@@ -1125,7 +1219,7 @@
   // head that's behind the player (aiming the wrong way entirely).
   function isAimedAtDarkPhaseHead() {
     const head = getDarkPhaseHeadScreenPos();
-    const angle = getAimAngle();
+    const angle = getFinalAimAngle();
     const dirX = Math.cos(angle), dirY = Math.sin(angle);
     const toHeadX = head.x - player.x, toHeadY = head.y - player.y;
     const along = toHeadX * dirX + toHeadY * dirY;
@@ -1146,8 +1240,7 @@
   // see updateDarkPhaseOverlay() — since it isn't 'darkphase' anymore).
   function startBossFlashDown(now) {
     boss.downFacing = DIR_TO_BOSS_KEY[boss.dir];
-    clawProjectiles.length = 0; // no lingering attack hazards during the DOWN window
-    arcClawSlashes.length = 0;
+    arcClawSlashes.length = 0; // no lingering attack hazards during the DOWN window
     boss.invulnerableUntil = 0; // legacy field, no longer ever set to a nonzero value — kept harmlessly in case anything else still reads it
     boss.autoAimHitStreak = 0;
     bossEnterState('flashdown', now);
@@ -1250,47 +1343,6 @@
     }
   }
 
-  // ---------- Wall ricochet VFX (LEFT/RIGHT stage boundary only) ----------
-  // Deliberately small and metallic-reading — a handful of sparks and a
-  // short white/yellow tracer — never anything close to the barrel
-  // explosion's scale.
-  const wallSparks = [];
-  const WALL_SPARK_DURATION_MS = 160;
-  function spawnWallSpark(x, y, newVx, now) {
-    const bounceAngle = Math.atan2(0, newVx); // purely horizontal, matches the mirror-reflection bounce
-    const sparks = [];
-    for (let i = 0; i < 6; i++) {
-      const a = bounceAngle + (Math.random() - 0.5) * 2.0;
-      sparks.push({ angle: a, speed: 70 + Math.random() * 110, size: 0.9 + Math.random() * 1.2 });
-    }
-    wallSparks.push({ x, y, startAt: now, sparks });
-  }
-  function drawWallSparks(now) {
-    for (const s of wallSparks) {
-      const t = now - s.startAt;
-      if (t >= WALL_SPARK_DURATION_MS) continue;
-      const frac = t / WALL_SPARK_DURATION_MS;
-      const alpha = 1 - frac;
-      ctx.save();
-      ctx.translate(s.x, s.y);
-      for (const p of s.sparks) {
-        const d = p.speed * (t / 1000);
-        ctx.fillStyle = `rgba(255,240,190,${alpha})`;
-        ctx.beginPath();
-        ctx.arc(Math.cos(p.angle) * d, Math.sin(p.angle) * d, p.size, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.fillStyle = `rgba(255,255,240,${Math.max(0, alpha - 0.4) * 1.5})`;
-      ctx.beginPath();
-      ctx.arc(0, 0, 2.6 * (1 - frac * 0.5), 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-    for (let i = wallSparks.length - 1; i >= 0; i--) {
-      if (now - wallSparks[i].startAt > WALL_SPARK_DURATION_MS) wallSparks.splice(i, 1);
-    }
-  }
-
   // Shared by both damage paths below: registers one valid AUTO-AIM-assisted
   // hit landed while the boss is defending, and breaks the guard outright on
   // the DEFENSE_GUARD_BREAK_HITSth one — entering a brief stagger pause and
@@ -1341,7 +1393,7 @@
   // reticle was locked on, which for a direction with no weak point — e.g.
   // NORTH — is the only target DEFENSE ever offers) instead counts as a
   // genuine hit: full damage, and it counts toward GUARD BREAK.
-  function applyBodyHitToBoss(now, bulletX, bulletY, bulletVx, bulletVy, autoAimed, isRicochet) {
+  function applyBodyHitToBoss(now, bulletX, bulletY, bulletVx, bulletVy, autoAimed) {
     // GUARD BREAK's stagger pause is a brief (250ms), deliberately
     // untargetable beat between DEFENSE ending and ATTACK beginning — a hit
     // landing in that window must not re-trigger DEFENSE mid-transition.
@@ -1352,25 +1404,16 @@
     // ricochet/spark feedback as an ordinary blocked hit, never a big blue
     // barrier. Unlike DEFENSE (which barrel explosions always bypass), DARK
     // PHASE blocks EVEN barrel explosions — see applyExplosionDamageToBoss().
-    // Has no timeout of its own; only FLASH GRENADE ends it.
-    if (boss.state === 'darkphase') {
+    // Has no timeout of its own; only FLASH GRENADE ends it. TELEPORT (PART
+    // 7's own, entirely separate, total-immunity window) works the same way.
+    if (boss.state === 'darkphase' || boss.state === 'teleport') {
       spawnDefenseRicochet(now, bulletX, bulletY, bulletVx, bulletVy);
       return;
     }
     const incomingFrom = OPPOSITE_COMPASS[velocityToCompass(bulletVx, bulletVy)];
     if (boss.state === 'defense') {
-      const priorDefenseDir = boss.defenseDir; // captured before reassignment, for the ricochet-direction check below
       boss.defenseDir = incomingFrom;
-      // A wall-ricocheted bullet striking from a direction OTHER than the
-      // one just being defended bypasses the block entirely — a genuine
-      // flank/rear hit (per the wall-ricochet spec), dealing real damage
-      // regardless of auto-aim. This ADDS to, and never removes, the
-      // existing autoAimed-gated block/damage rule below: a non-ricocheted
-      // bullet's behavior is completely unchanged from before, and a
-      // ricocheted bullet that still lands from the SAME defended
-      // direction also falls through to that same existing rule.
-      const isFlankRicochet = isRicochet && incomingFrom !== priorDefenseDir;
-      if (autoAimed || isFlankRicochet) {
+      if (autoAimed) {
         boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
         if (checkBossHpMilestones(now)) return; // death or a threshold cinematic took over
         weakPointFlashUntil = now + 220; // "valid hit" feedback — same as a real weak-point hit, not a ricochet
@@ -1446,16 +1489,57 @@
     applyPlayerKnockbackAlongAngle(Math.atan2(dy, dx), KNOCKBACK_DISTANCE, KNOCKBACK_SUPPRESS_MS, now);
   }
 
+  // POINT-BLANK counter (PART 5): fires instead of any normal damage
+  // resolution when the bullet/boss collision check finds the PLAYER
+  // standing within CLOSE_RANGE_SHOT_THRESHOLD of GABRIEL — see the gate at
+  // the bullet-vs-boss check in update(). Reuses the exact same knockback +
+  // input-suppression primitive as the weak-point forced counter.
+  function triggerCloseRangeCounter(now) {
+    boss.closeRangeInvulnUntil = now + CLOSE_RANGE_COUNTER_INVULN_MS;
+    applyPlayerKnockback(now);
+  }
+
   // 5 consecutive valid weak-point hits (any aim mode) force DEFENSE open:
-  // the boss immediately counterattacks (through PRE_ATTACK for S/E/W, or
-  // straight into ATTACK for N, via the same enterAttackSequence() CHASE
-  // uses) and shoves the player away (0 damage) so the fight can't be
-  // trivially chain-stunned from the weak point forever.
+  // GABRIEL blacks out, vanishes, teleports to a fresh validated spot, and
+  // fades back in there to resume combat (PART 7) — fully invulnerable for
+  // the whole sequence (see updateBossTeleport()) — so the fight can't be
+  // trivially chain-stunned by camping the weak point forever.
   function triggerWeakPointForcedCounter(now) {
     boss.weakPointConsecutiveHits = 0;
-    applyPlayerKnockback(now);
-    boss.dir = angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x));
-    enterAttackSequence(now);
+    boss.teleportElapsed = 0;
+    boss.teleportDest = pickTeleportDestination();
+    bossEnterState('teleport', now);
+  }
+
+  // 'blackout' (fade to black, GABRIEL still logically at the old spot but
+  // never drawn) -> instantaneous reposition at the fully-black midpoint ->
+  // 'fadein' (fade back to normal at the new spot) -> resume CHASE. Runs on
+  // its own dt-driven elapsed counter (boss.teleportElapsed), same pattern
+  // as every other cinematic-style timer in this file, so it freezes
+  // correctly on PAUSE and never depends on `now - stateEnteredAt` (which
+  // would jump forward by the pause's real-world length on resume).
+  function updateBossTeleport(dt, now) {
+    boss.teleportElapsed += dt * 1000;
+    const e = boss.teleportElapsed;
+    if (e < TELEPORT_BLACKOUT_MS) {
+      teleportBlackoutAlpha = TELEPORT_OVERLAY_ALPHA * (e / TELEPORT_BLACKOUT_MS);
+    } else if (e < TELEPORT_BLACKOUT_MS + TELEPORT_HOLD_MS) {
+      teleportBlackoutAlpha = TELEPORT_OVERLAY_ALPHA;
+      if (boss.teleportDest) {
+        // Reposition exactly once, right as the screen reaches full black.
+        boss.x = boss.teleportDest.x;
+        boss.y = boss.teleportDest.y;
+        boss.teleportDest = null;
+      }
+    } else {
+      const fadeT = (e - TELEPORT_BLACKOUT_MS - TELEPORT_HOLD_MS) / TELEPORT_FADEIN_MS;
+      teleportBlackoutAlpha = TELEPORT_OVERLAY_ALPHA * Math.max(0, 1 - fadeT);
+    }
+    if (e >= TELEPORT_TOTAL_MS) {
+      teleportBlackoutAlpha = 0;
+      boss.dir = angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x));
+      bossEnterState('chase', now);
+    }
   }
 
   function applyWeakPointHitToBoss(now, autoAimed, bulletX, bulletY, bulletVx, bulletVy) {
@@ -1492,6 +1576,22 @@
     if (autoAimed) registerDefenseAimHit(now);
   }
 
+  // STEALTH (PART 16-19): the SINGLE point every piece of GABRIEL AI reads
+  // "where is the player" from. Outside STEALTH this is always the live
+  // position (zero behavior change to anything that existed before this
+  // batch). While STEALTH is active, it's whichever the player has last
+  // revealed by firing (boss.revealedShotX/Y), or — if they haven't fired
+  // at all yet this STEALTH window — the position captured at the moment
+  // STEALTH began (boss.lastKnownPlayerX/Y). Never re-reads live
+  // player.x/y while active, and never itself touches boss.state.
+  function getBossTargetPos(now) {
+    if (now < player.stealthUntil) {
+      if (boss.revealedShotX !== null) return { x: boss.revealedShotX, y: boss.revealedShotY };
+      return { x: boss.lastKnownPlayerX, y: boss.lastKnownPlayerY };
+    }
+    return { x: player.x, y: player.y };
+  }
+
   function updateBoss(dt, now) {
     if (gameState.mode !== 'boss') return; // TRAINING MODE never spawns a boss
     if (!boss.spawned) {
@@ -1507,12 +1607,17 @@
     if (boss.state === 'dying') { updateBossDying(dt, now); return; }
     if (boss.state === 'flashdown') { updateBossFlashDown(dt, now); return; }
     if (boss.state === 'darkphase') { updateBossDarkPhase(dt, now); return; }
+    if (boss.state === 'teleport') { updateBossTeleport(dt, now); return; }
     if (window.__game.freezeBossAI) return; // debug/verification only
 
 
 
-    const dx = player.x - boss.x;
-    const dy = player.y - boss.y;
+    // STEALTH (PART 16): CHASE's own distance/direction/facing all derive
+    // from GABRIEL's current BELIEF about the player's position, not
+    // necessarily their live one — see getBossTargetPos().
+    const targetPos = getBossTargetPos(now);
+    const dx = targetPos.x - boss.x;
+    const dy = targetPos.y - boss.y;
     const dist = Math.hypot(dx, dy) || 1;
     const toPlayerX = dx / dist, toPlayerY = dy / dist;
 
@@ -1564,18 +1669,22 @@
       // before) still do their own self-contained windup here.
       const fireAt = boss.attackFiresImmediately ? 0 : BOSS_ATTACK_WINDUP_MS;
       const isArcClaw = boss.attackType === 'arcClaw';
-      // ARC CLAW SLASH is a wholly separate attack (its own hitbox/damage/
-      // knockback, handled entirely inside updateArcClawSlashes()) — it
-      // replaces both the melee swing AND the 3-way blade for this cycle,
-      // it doesn't run alongside them, and it needs a longer active window
-      // to cover its own full sweep.
-      const activeMs = isArcClaw ? ARC_CLAW_LIFETIME_MS : BOSS_ATTACK_ACTIVE_MS;
+      const isClawSting = boss.attackType === 'clawSting';
+      // ARC CLAW SLASH and CLAW STING are both wholly separate attacks
+      // (their own hitbox/damage/knockback, handled entirely inside
+      // updateArcClawSlashes()) — either replaces the melee swing for this
+      // cycle, never runs alongside it, and needs its own active window to
+      // cover its full motion.
+      const activeMs = isArcClaw ? ARC_CLAW_LIFETIME_MS : (isClawSting ? CLAW_STING_LIFETIME_MS : BOSS_ATTACK_ACTIVE_MS);
       if (elapsed >= fireAt) {
         if (!boss.attackProjectileSpawned) {
           boss.attackProjectileSpawned = true;
-          if (isArcClaw) spawnArcClawSlash(now); else spawnClawProjectile(now);
+          if (isArcClaw) spawnArcClawSlash(now);
+          else if (isClawSting) spawnClawSting(now, getClawOrigin(), getBossTargetPos(now)); // STEALTH (PART 19): locks onto GABRIEL's current belief, not necessarily the live position
+          // else: plain melee — no projectile/VFX object to spawn, the
+          // swing hitbox check right below is the entire attack.
         }
-        if (!isArcClaw && elapsed < fireAt + activeMs && !boss.attackHitApplied) {
+        if (!isArcClaw && !isClawSting && elapsed < fireAt + activeMs && !boss.attackHitApplied) {
           const facing = BASE_ANGLE[boss.dir];
           const hx = boss.x + Math.cos(facing) * BOSS_ATTACK_REACH;
           const hy = boss.y + Math.sin(facing) * BOSS_ATTACK_REACH;
@@ -1675,87 +1784,15 @@
     }
   }
 
-  // ---------- Boss claw projectile (ranged ATTACK payload) ----------
-  // Fired once per ATTACK cycle, aimed at the player's position at the
-  // exact instant it spawns — no homing, trajectory is fixed forever after.
-  const clawProjectiles = [];
-
-  // Fires a 3-way volley (LEFT/CENTER/RIGHT blades): the center blade aims
-  // at the player's position at this exact instant, the outer two diverge
-  // by +-BLADE_SPREAD_ANGLE from that same center trajectory. All 3 are
-  // independent projectiles — their own x/y/vx/vy/angle/hitbox — with
-  // velocity fixed at spawn; nothing here re-aims them afterward (see
-  // updateClawProjectiles(), which only ever adds vx*dt/vy*dt).
-  function spawnClawProjectile(now) {
-    const origin = getClawOrigin();
-    const centerAngle = Math.atan2(player.y - origin.y, player.x - origin.x);
-    for (const spread of [-BLADE_SPREAD_ANGLE, 0, BLADE_SPREAD_ANGLE]) {
-      const angle = centerAngle + spread;
-      clawProjectiles.push({
-        x: origin.x, y: origin.y,
-        vx: Math.cos(angle) * CLAW_PROJECTILE_SPEED,
-        vy: Math.sin(angle) * CLAW_PROJECTILE_SPEED,
-        angle,
-      });
-    }
-  }
-
-  function updateClawProjectiles(dt, now) {
-    for (let i = clawProjectiles.length - 1; i >= 0; i--) {
-      const p = clawProjectiles[i];
-      p.x += p.vx * dt;
-      p.y += p.vy * dt;
-      if (p.x < -40 || p.x > W + 40 || p.y < cameraY - 40 || p.y > cameraY + H + 40) {
-        clawProjectiles.splice(i, 1);
-        continue;
-      }
-      if (!isPlayerInvulnerable() &&
-          Math.hypot(p.x - player.x, p.y - player.y) <= CLAW_PROJECTILE_HIT_RADIUS + PLAYER_HIT_RADIUS) {
-        clawProjectiles.splice(i, 1);
-        window.__game.playerHitCount++;
-        playerHitFlashUntil = now + 150;
-      }
-    }
-  }
-
-  // Canvas-drawn blade — slender, metallic silver-to-black, oriented along
-  // its travel direction, with a short trailing streak. No image asset.
-  // A long, thin, sharply-pointed claw-blade — not a bullet, not a short
-  // triangle: a pronounced tip, narrow shoulders just behind it, then a
-  // long thin tapering tail. Total tip-to-tail length ~62px, ~1.7x the
-  // previous 36px blade (within the requested 1.5-2x band); width is
-  // narrower than before (5.2px vs 8px) so it still reads as a thin spike
-  // despite being longer.
-  function drawClawProjectile(p) {
-    const tipX = 24, shoulderX = 4, shoulderHalfW = 2.6, tailX = -38, tailHalfW = 0.8;
-    ctx.save();
-    ctx.translate(p.x, p.y);
-    ctx.rotate(p.angle);
-    const grad = ctx.createLinearGradient(tailX, 0, tipX, 0);
-    grad.addColorStop(0, 'rgba(20,20,24,0)');
-    grad.addColorStop(0.5, 'rgba(110,113,122,0.75)');
-    grad.addColorStop(1, 'rgba(240,242,246,0.98)');
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(tipX, 0);
-    ctx.lineTo(shoulderX, -shoulderHalfW);
-    ctx.lineTo(tailX, -tailHalfW);
-    ctx.lineTo(tailX, tailHalfW);
-    ctx.lineTo(shoulderX, shoulderHalfW);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(10,10,12,0.75)';
-    ctx.lineWidth = 0.75;
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // ---------- ARC CLAW SLASH (separate attack type from the 3-way blade) ----------
-  // Managed as its own array/object shape (type-distinct from clawProjectiles
-  // above) so the two never share update/draw/hit logic: a giant claw is
-  // swept through a quadratic-Bezier arc near the boss, its own sprite
-  // rotation kept locked to the arc's live tangent direction the whole way,
-  // rather than flying in a straight line at a fixed angle.
+  // ---------- ARC CLAW SLASH / CLAW STING (both share one array/shape) ----------
+  // The 3WAY BLADE ranged volley that used to live here has been fully
+  // removed (PART 9) — GABRIEL's normal-combat attack set is now the
+  // existing melee swing (see the 'attack' state branch in updateBoss()) +
+  // ARC CLAW SLASH + CLAW STING + DEFENSE; DARK PHASE uses SLASH/STING only.
+  // Each entry carries a `kind: 'slash' | 'sting'` — SLASH sweeps through a
+  // quadratic-Bezier arc with its sprite rotation locked to the arc's live
+  // tangent; STING travels in a straight line toward a target locked once
+  // at spawn time (see spawnClawSting()) and never re-aims afterward.
   const arcClawSlashes = [];
 
   function quadBezierPoint(p0, p1, p2, t) {
@@ -1822,22 +1859,57 @@
 
   function spawnArcClawSlash(now) {
     const origin = getClawOrigin();
-    const geo = pickArcClawGeometry(origin, { x: player.x, y: player.y });
+    // STEALTH (PART 19): aims at GABRIEL's current belief, not necessarily
+    // the player's live position — see getBossTargetPos().
+    const geo = pickArcClawGeometry(origin, getBossTargetPos(now));
     arcClawSlashes.push({
+      kind: 'slash',
       p0: geo.p0, p1: geo.p1, p2: geo.p2, mirrored: geo.mirrored,
       startedAt: now, hasHit: false,
       x: geo.p0.x, y: geo.p0.y, angle: 0, tangentAngle: 0, trail: [],
     });
   }
 
+  // CLAW STING (PART 8/10): `target` is the point to lock onto — captured
+  // by the CALLER at the exact moment the attack fires (the player's
+  // current position for normal combat, GABRIEL's own lunge-end position
+  // for DARK PHASE), never read again afterward. Travels in a dead-straight
+  // line from `origin` to a point CLAW_STING_OVERSHOOT past that locked
+  // target, so it reads as a real thrust-through rather than stopping
+  // exactly on the spot — the sprite's rotation is fixed for the whole
+  // flight (a straight stab never re-aims), unlike SLASH's continuously
+  // recomputed tangent.
+  function spawnClawSting(now, origin, target) {
+    const dist = Math.hypot(target.x - origin.x, target.y - origin.y) || 1;
+    const angle = Math.atan2(target.y - origin.y, target.x - origin.x);
+    const endX = origin.x + Math.cos(angle) * dist * CLAW_STING_OVERSHOOT;
+    const endY = origin.y + Math.sin(angle) * dist * CLAW_STING_OVERSHOOT;
+    const mirrored = Math.cos(angle) < 0;
+    const baseTip = mirrored ? ARC_CLAW_BASE_TIP_ANGLE_FLIPPED : ARC_CLAW_BASE_TIP_ANGLE;
+    arcClawSlashes.push({
+      kind: 'sting',
+      p0: origin, p2: { x: endX, y: endY }, mirrored,
+      startedAt: now, hasHit: false,
+      x: origin.x, y: origin.y, angle: angle - baseTip, tangentAngle: angle, trail: [],
+    });
+  }
+
   function updateArcClawSlashes(now) {
     for (let i = arcClawSlashes.length - 1; i >= 0; i--) {
       const s = arcClawSlashes[i];
-      const u = (now - s.startedAt) / ARC_CLAW_LIFETIME_MS;
+      const isSting = s.kind === 'sting';
+      const lifetimeMs = isSting ? CLAW_STING_LIFETIME_MS : ARC_CLAW_LIFETIME_MS;
+      const u = (now - s.startedAt) / lifetimeMs;
       if (u >= 1) { arcClawSlashes.splice(i, 1); continue; }
       const t = arcClawEase(Math.max(0, u));
-      const pos = quadBezierPoint(s.p0, s.p1, s.p2, t);
-      const tangentAngle = quadBezierTangentAngle(s.p0, s.p1, s.p2, t);
+      // SLASH sweeps a quadratic-Bezier arc with a continuously recomputed
+      // tangent; STING travels a dead-straight line at the angle it was
+      // locked to at spawn time (s.tangentAngle never changes afterward —
+      // see spawnClawSting()), so it never re-aims mid-flight.
+      const pos = isSting
+        ? { x: s.p0.x + (s.p2.x - s.p0.x) * t, y: s.p0.y + (s.p2.y - s.p0.y) * t }
+        : quadBezierPoint(s.p0, s.p1, s.p2, t);
+      const tangentAngle = isSting ? s.tangentAngle : quadBezierTangentAngle(s.p0, s.p1, s.p2, t);
 
       // Each stored sample keeps its OWN position/rotation from when it was
       // the live frame — angle for the claw image's draw rotation, and the
@@ -1847,11 +1919,14 @@
       if (s.trail.length > ARC_CLAW_TRAIL_LEN) s.trail.shift();
 
       s.x = pos.x; s.y = pos.y; s.tangentAngle = tangentAngle;
-      // Re-align the claw image's own tip<->base axis to the live tangent
-      // direction, so it visibly points where it's travelling rather than
-      // just spinning around its own center.
-      const baseTip = s.mirrored ? ARC_CLAW_BASE_TIP_ANGLE_FLIPPED : ARC_CLAW_BASE_TIP_ANGLE;
-      s.angle = tangentAngle - baseTip;
+      if (!isSting) {
+        // Re-align the claw image's own tip<->base axis to the live tangent
+        // direction, so it visibly points where it's travelling rather than
+        // just spinning around its own center. STING's s.angle was already
+        // fixed once at spawn time and stays that way for its whole flight.
+        const baseTip = s.mirrored ? ARC_CLAW_BASE_TIP_ANGLE_FLIPPED : ARC_CLAW_BASE_TIP_ANGLE;
+        s.angle = tangentAngle - baseTip;
+      }
 
       if (!s.hasHit && !isPlayerInvulnerable()) {
         // Oriented rectangle aligned to the live travel direction (never a
@@ -1995,7 +2070,7 @@
       resetPlayerPosition();
       player.baseDir = 'down';
       player.aimOffsetRaw = 0; player.aimOffset = 0;
-      bullets.length = 0; clawProjectiles.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
+      bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
       barrels.length = 0;
       barrelLandings.length = 0;
       spawnBarrels(2 + Math.floor(Math.random() * 3));
@@ -2098,6 +2173,37 @@
     }
     // Fallback if 30 attempts all collided with something (very small screens)
     return { x: W / 2 + (Math.random() - 0.5) * W * 0.5, y: H * 0.5 };
+  }
+
+  // WEAK-POINT-SPAM teleport (PART 7): reuses pickBarrelSpot()'s own
+  // safe-coordinate method (stage margins, isNearUIZone, barrel clearance)
+  // so GABRIEL's teleport destination is validated exactly the same way a
+  // barrel's spawn point already is — inside the stage, never inside a
+  // wall/UI margin, never overlapping a barrel — plus its own larger
+  // player-clearance distance so the reappear point is never point-blank.
+  function pickTeleportDestination() {
+    const marginX = BOSS_DRAW_W * 0.6;
+    const marginTop = H * 0.22;
+    const marginBottom = H * 0.30;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const x = marginX + Math.random() * (W - marginX * 2);
+      const y = marginTop + Math.random() * (H - marginTop - marginBottom);
+      if (isNearUIZone(x, y)) continue;
+      if (Math.hypot(x - player.x, y - player.y) < TELEPORT_MIN_DIST_FROM_PLAYER) continue;
+      let tooCloseToBarrel = false;
+      for (const b of barrels) {
+        if ((b.alive || b.falling) && Math.hypot(x - b.x, y - b.y) < BARREL_DRAW_H * 2) { tooCloseToBarrel = true; break; }
+      }
+      if (tooCloseToBarrel) continue;
+      return { x, y };
+    }
+    // Fallback (all attempts collided, e.g. a very small screen): straight
+    // away from the player at the minimum safe distance, clamped on-stage.
+    const angle = Math.atan2(boss.y - player.y, boss.x - player.x) || -Math.PI / 2;
+    return {
+      x: Math.max(marginX, Math.min(W - marginX, player.x + Math.cos(angle) * TELEPORT_MIN_DIST_FROM_PLAYER)),
+      y: Math.max(marginTop, Math.min(H - marginBottom, player.y + Math.sin(angle) * TELEPORT_MIN_DIST_FROM_PLAYER)),
+    };
   }
 
   function spawnBarrels(count) {
@@ -2361,8 +2467,12 @@
   // outright. DARK PHASE is the one exception: total invulnerability, no
   // damage source bypasses it, per spec.
   function applyExplosionDamageToBoss(amount, now) {
-    if (!boss.spawned || bossIsInCinematic() || boss.state === 'darkphase') return;
+    if (!boss.spawned || bossIsInCinematic() || boss.state === 'darkphase' || boss.state === 'teleport') return;
+    if (boss.hp <= 0) return; // already at 0 — no further reduction possible, so no flash either
     boss.hp = Math.max(0, boss.hp - amount);
+    // PART 6: barrel explosions are an HP-reducing source too — the unified
+    // hit-flash must cover them exactly like every other damage path above.
+    bossHitTintUntil = now + BOSS_HIT_TINT_MS;
     checkBossHpMilestones(now);
   }
 
@@ -2382,8 +2492,10 @@
 
   function getAutoAimTargetPoint() {
     // No lock-on target at all during any cinematic (intro/threshold/dying)
-    // or once truly dead — bossIsInCinematic() covers all four.
-    if (boss.spawned && bossIsInCinematic()) return { primary: null, secondary: null };
+    // or once truly dead — bossIsInCinematic() covers all four. TELEPORT
+    // (PART 7) is the same: GABRIEL isn't visually present, so there's
+    // nothing for AUTO AIM to snap onto until it reappears.
+    if (boss.spawned && (bossIsInCinematic() || boss.state === 'teleport')) return { primary: null, secondary: null };
     // DEFENSE: the forehead weak point takes priority over the body — only
     // fall back to the body center if the weak point itself isn't in range
     // (or doesn't exist at all for the current defenseDir, e.g. NORTH).
@@ -2474,7 +2586,6 @@
     player.relaxed = false;
 
     bullets.length = 0;
-    clawProjectiles.length = 0;
     arcClawSlashes.length = 0;
     explosions.length = 0;
 
@@ -2487,6 +2598,15 @@
     boss.darkPhaseSubState = 'stalk';
     boss.darkPhaseLungeElapsed = 0;
     darkPhaseOverlayAlpha = 0; // RESTART snaps the dark overlay off instantly — no lingering fade
+    boss.closeRangeInvulnUntil = 0;
+    boss.teleportElapsed = 0;
+    boss.teleportDest = null;
+    teleportBlackoutAlpha = 0; // RESTART snaps the WEAK-POINT-SPAM teleport blackout off instantly too
+    boss.lastKnownPlayerX = 0;
+    boss.lastKnownPlayerY = 0;
+    boss.revealedShotX = null;
+    boss.revealedShotY = null;
+    resetStealth(); // RESTART/mode switch ends STEALTH and its cooldown outright — the only two things allowed to (PART 21)
 
     // Stage world/camera/EXIT (PART 21-29) — a RESTART or mode switch always
     // returns to the first/default stage with the world fully closed back up.
@@ -2533,6 +2653,19 @@
   const pauseZone = document.getElementById('pause-zone');
   pauseZone.addEventListener('touchstart', pausePress, { passive: false });
   pauseZone.addEventListener('mousedown', pausePress);
+
+  // Safety net for the RANGE-thumb-residue bug (PART 3): a touch can be
+  // interrupted (app backgrounded, OS gesture, incoming call) WITHOUT the
+  // specific zone's own touchend/touchcancel ever firing on it — in that
+  // case aimStickTouchId/rangeTouchId stay stuck non-null and RANGE (with
+  // its thumb) never receives its own hide call at all, no matter how
+  // robust hideRangeUI() itself is made. Releasing every held stick/button
+  // whenever the page loses visibility/focus guarantees that stuck state
+  // can never survive past the interruption.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) releaseAllHeldInputs();
+  });
+  window.addEventListener('blur', releaseAllHeldInputs);
 
   document.getElementById('mode-boss-btn').addEventListener('click', () => startMode('boss'));
   document.getElementById('mode-training-btn').addEventListener('click', () => startMode('training'));
@@ -2711,7 +2844,7 @@
     // or reticle, since this is a deliberate "snap to whatever is
     // actually closest to me" gesture, not a proximity-to-cursor magnet.
     const candidates = [];
-    if (boss.spawned && !bossIsInCinematic()) {
+    if (boss.spawned && !bossIsInCinematic() && boss.state !== 'teleport') {
       if (boss.state === 'defense') {
         const wp = getWeakPointScreenPos(boss.defenseDir);
         candidates.push({ x: wp ? wp.x : boss.x, y: wp ? wp.y : boss.y, isBoss: true });
@@ -3064,6 +3197,78 @@
     ctx.restore();
   }
 
+  // ---------- STEALTH (PART 13-21) ----------
+  // A player-side status only (player.stealthUntil) — deliberately never a
+  // boss.state value (see PART 21/22). Independent cooldown/timer from
+  // FLASH, same dt-driven pattern (freezes correctly on PAUSE, resumes
+  // exactly where it left off). Does not itself suppress or alter MOVE/AIM/
+  // FIRE/AUTO AIM/RANGE/FLASH/DASH in any way — only GABRIEL's own targeting
+  // (getBossTargetPos(), used throughout updateBoss()/DARK PHASE above)
+  // changes while it's active.
+  const stealthZone = document.getElementById('stealth-zone');
+  const stealthButton = document.getElementById('stealth-button');
+  const stealthRingProgress = document.getElementById('stealth-ring-progress');
+  const STEALTH_RING_R = 44;
+  const STEALTH_RING_CIRCUMFERENCE = 2 * Math.PI * STEALTH_RING_R;
+  stealthRingProgress.style.strokeDasharray = `${STEALTH_RING_CIRCUMFERENCE}`;
+
+  const STEALTH_DURATION_MS = 5000;
+  const STEALTH_COOLDOWN_MS = 10000; // counted from activation, independent of FLASH's own cooldown
+  let stealthCooldownRemainingMs = 0; // 0 = ready to use
+
+  function stealthPress(e) {
+    if (e) e.preventDefault();
+    if (gameState.paused) return;
+    if (stealthCooldownRemainingMs > 0) return; // cooldown active: nothing happens at all, not even feedback
+    if (performance.now() < player.stealthUntil) return; // already active
+    const now = performance.now();
+    stealthCooldownRemainingMs = STEALTH_COOLDOWN_MS; // starts the instant activation is accepted, per spec
+    player.stealthUntil = now + STEALTH_DURATION_MS;
+    player.stealthStartedAt = now;
+    // Captured ONCE here — see getBossTargetPos() — and never touched again
+    // until the NEXT activation (a fresh reveal-slate every time STEALTH
+    // starts, per PART 18's "次に発砲したら更新される" wording).
+    boss.lastKnownPlayerX = player.x;
+    boss.lastKnownPlayerY = player.y;
+    boss.revealedShotX = null;
+    boss.revealedShotY = null;
+  }
+  stealthZone.addEventListener('touchstart', stealthPress, { passive: false });
+  stealthZone.addEventListener('mousedown', stealthPress);
+
+  function updateStealth(dt, now) {
+    if (stealthCooldownRemainingMs > 0) {
+      stealthCooldownRemainingMs = Math.max(0, stealthCooldownRemainingMs - dt * 1000);
+    }
+    const readyFrac = 1 - stealthCooldownRemainingMs / STEALTH_COOLDOWN_MS;
+    stealthRingProgress.style.strokeDashoffset = `${STEALTH_RING_CIRCUMFERENCE * (1 - readyFrac)}`;
+    stealthButton.classList.toggle('ready', stealthCooldownRemainingMs <= 0);
+    stealthButton.classList.toggle('active-effect', now < player.stealthUntil);
+  }
+
+  function resetStealth() {
+    stealthCooldownRemainingMs = 0;
+    player.stealthUntil = -Infinity;
+    player.stealthStartedAt = -Infinity;
+    boss.revealedShotX = null;
+    boss.revealedShotY = null;
+    stealthButton.classList.remove('active-effect');
+  }
+
+  // Fade-in-then-hold-then-fade-out alpha multiplier for the green-tint
+  // compositing (see drawPlayer()'s STEALTH branch) — 0 = fully normal
+  // rendering, 1 = fully at STEALTH_ALPHA. ~150ms fade at both ends (within
+  // the requested 100-200ms band), per the addendum.
+  const STEALTH_FADE_MS = 150;
+  function getStealthEffectStrength(now) {
+    if (now >= player.stealthUntil) return 0;
+    const sinceStart = now - player.stealthStartedAt;
+    if (sinceStart < STEALTH_FADE_MS) return Math.max(0, sinceStart / STEALTH_FADE_MS);
+    const untilEnd = player.stealthUntil - now;
+    if (untilEnd < STEALTH_FADE_MS) return Math.max(0, untilEnd / STEALTH_FADE_MS);
+    return 1;
+  }
+
   // Prevent default touch scroll/zoom anywhere on the game UI
   document.addEventListener('touchmove', (e) => { e.preventDefault(); }, { passive: false });
   document.addEventListener('gesturestart', (e) => { e.preventDefault(); });
@@ -3118,11 +3323,28 @@
     rangeSliderActive = true;
   }
 
-  function showRangeUI() { rangeZone.classList.add('visible'); }
+  // Inline-style overrides below are a deliberate belt-and-suspenders on
+  // top of the .visible class toggle: relying on the class/CSS-transition
+  // alone left a window (confirmed via a stuck AIM-STICK touch id after an
+  // interrupted gesture — see the blur/visibilitychange handler further
+  // below) where the thumb could still be painted after RANGE was supposed
+  // to be gone. Setting opacity/visibility/pointer-events directly always
+  // wins over the stylesheet regardless of any in-flight transition or
+  // compositing state, so "hidden" is unconditionally true the instant
+  // hideRangeUI() runs, on every one of its constituent elements.
+  function showRangeUI() {
+    rangeZone.classList.add('visible');
+    rangeZone.style.opacity = '';
+    rangeZone.style.visibility = '';
+    rangeZone.style.pointerEvents = '';
+  }
   // Always both hides AND resets to default — RANGE must never sit at
   // wherever it was last left once the player's finger comes off AIM STICK.
   function hideRangeUI() {
     rangeZone.classList.remove('visible');
+    rangeZone.style.opacity = '0';
+    rangeZone.style.visibility = 'hidden';
+    rangeZone.style.pointerEvents = 'none';
     rangeTouchId = null;
     rangeMouseDown = false;
     rangeSliderActive = false;
@@ -3170,7 +3392,7 @@
   let lastFireTime = -Infinity;
 
   function spawnBullet() {
-    const angle = getAimAngle();
+    const angle = getFinalAimAngle();
     let bx, by;
     if (player.baseDir === 'right') {
       bx = player.x + RIGHT_FIRE_MUZZLE_DX;
@@ -3194,7 +3416,6 @@
       // never count toward DEFENSE's GUARD BREAK counter even if it happens
       // to also land on the boss.
       autoAimedBoss: autoAimActive && autoAimTargetIsBoss,
-      ricochetCount: 0, // bumped to 1 on a single left/right-wall bounce — see the wall-ricochet check in update()
     });
     // No canvas muzzle-flash circle — the FIRE sprites already carry their
     // own baked-in flash art; an extra orange dot on top was redundant.
@@ -3206,7 +3427,7 @@
   window.__game = {
     player, boss, playerHitCount: 0,
     applyBodyHitToBoss, applyWeakPointHitToBoss, applyExplosionDamageToBoss, bossEnterState,
-    getWeakPointScreenPos, clawProjectiles, arcClawSlashes, spawnArcClawSlash,
+    getWeakPointScreenPos, arcClawSlashes, spawnArcClawSlash,
     gameState, barrels, explosions, bullets, spawnBarrels, startMode,
     get autoAimActive() { return autoAimActive; },
     get autoAimTargetIsBoss() { return autoAimTargetIsBoss; },
@@ -3225,12 +3446,12 @@
     get stageTransition() { return stageTransition; },
     getAmbientDarkenAlpha,
     requestDash, // debug/verification only — drives the DASH chain directly, bypassing touch-gesture detection
-    HALF_RANGE, clampToHalfRange, BASE_ANGLE, keys,
+    HALF_RANGE, clampToHalfRange, BASE_ANGLE, keys, getFinalAimAngle,
+    getAimAngle: getFinalAimAngle, // back-compat alias for existing verification scripts — same function, PART 12's new name is getFinalAimAngle
     getCinematicImageInfo, CINEMATIC_SCALE, CINEMATIC_BACK_SCALE, DIR_TO_BOSS_KEY, // debug/verification only
     get barrelRestockPending() { return barrelRestockPending; },
     get barrelRestockRemainingMs() { return barrelRestockRemainingMs; },
     barrelLandings, spawnFallingBarrels, BARREL_FALL_MS, // debug/verification only
-    wallSparks, // debug/verification only
     get aimRangeLen() { return aimRangeLen; },
     AIM_RANGE_MIN, AIM_RANGE_MAX, AIM_RANGE_DEFAULT, RANGE_DEFAULT_FRAC,
     showRangeUI, hideRangeUI, // debug/verification only
@@ -3244,6 +3465,11 @@
     get flashGrenade() { return flashGrenade; },
     get flashScreenFlashRemainingMs() { return flashScreenFlashRemainingMs; },
     FLASH_DOWN_MS, FLASH_COOLDOWN_MS, FLASH_MIN_DISTANCE, FLASH_THROW_MS,
+    // Debug/verification only — STEALTH.
+    stealthPress, resetStealth, getBossTargetPos, getStealthEffectStrength,
+    STEALTH_DURATION_MS, STEALTH_COOLDOWN_MS,
+    get stealthCooldownRemainingMs() { return stealthCooldownRemainingMs; },
+    set stealthCooldownRemainingMs(v) { stealthCooldownRemainingMs = v; },
     // Debug/verification only — DARK PHASE.
     startBossDarkPhase, registerGlobalAutoAimHit, getDarkPhaseHeadScreenPos, isAimedAtDarkPhaseHead,
     get darkPhaseOverlayAlpha() { return darkPhaseOverlayAlpha; },
@@ -3325,13 +3551,22 @@
       cameraY = 0;
     }
 
-    // Firing — direction comes from getAimAngle() (AIM STICK offset applied
+    // Firing — direction comes from getFinalAimAngle() (AIM STICK offset applied
     // to the current base facing), never from movement. Suppressed entirely
     // during knockbackLocked, same as MOVE/AIM.
     const wantsFire = !knockbackLocked && (fireHeld || keys.fire);
     if (wantsFire && now - lastFireTime >= FIRE_INTERVAL) {
       lastFireTime = now;
       spawnBullet();
+      // STEALTH reveal (PART 17/18/20): firing — manual or AUTO-AIM-assisted,
+      // no distinction — reveals the player's CURRENT position to GABRIEL
+      // for the rest of this STEALTH window, without ending STEALTH itself
+      // or cancelling its timer. Overwritten by each subsequent shot; never
+      // updated by mere movement, so GABRIEL doesn't auto-follow afterward.
+      if (now < player.stealthUntil) {
+        boss.revealedShotX = player.x;
+        boss.revealedShotY = player.y;
+      }
     }
 
     // SOUTH RELAXED IDLE: any input activity resets the idle clock; it only
@@ -3351,34 +3586,52 @@
       const b = bullets[i];
       b.x += b.vx * dt;
       b.y += b.vy * dt;
-      // LEFT/RIGHT wall ricochet — mirror reflection (vx flips, vy
-      // unchanged), exactly once per bullet. Top/bottom never ricochet.
-      if (b.ricochetCount < 1 && (b.x <= 0 || b.x >= W)) {
-        b.x = b.x <= 0 ? 0 : W;
-        b.vx = -b.vx;
-        b.ricochetCount = 1;
-        spawnWallSpark(b.x, b.y, b.vx, now);
+      // LEFT/RIGHT wall contact: the bullet simply vanishes on the spot —
+      // no ricochet/bounce of any kind (the previous mirror-reflection
+      // system, its reflection-angle math, its post-bounce "flank" damage
+      // bypass, and its dedicated wall-spark VFX have all been removed).
+      if (b.x <= 0 || b.x >= W) {
+        bullets.splice(i, 1);
+        continue;
       }
       if (b.x < -20 || b.x > W + 20 || b.y < cameraY - 20 || b.y > cameraY + H + 20) {
         bullets.splice(i, 1);
         continue;
       }
       let consumed = false;
-      if (boss.spawned && boss.state !== 'dead') {
+      // TELEPORT (PART 7): GABRIEL isn't drawn and has no physical presence
+      // at all for the whole sequence — bullets simply pass through, same
+      // as if it weren't spawned.
+      if (boss.spawned && boss.state !== 'dead' && boss.state !== 'teleport') {
+        // Genuine physical hitbox overlap only — never inferred from "same
+        // direction as the sprite". getWeakPointScreenPos returns null for
+        // a direction with no visible eye (NORTH), so a bullet can never
+        // register a weak-point hit while defending that way.
+        let wpPos = null;
+        let weakPointHit = false;
         if (boss.state === 'defense') {
-          // Genuine physical hitbox overlap only — never inferred from
-          // "same direction as the sprite". getWeakPointScreenPos returns
-          // null for a direction with no visible eye (NORTH), so a bullet
-          // can never register a weak-point hit while defending that way.
-          const wp = getWeakPointScreenPos(boss.defenseDir);
-          if (wp && Math.hypot(b.x - wp.x, b.y - wp.y) <= WEAKPOINT_HIT_RADIUS) {
+          wpPos = getWeakPointScreenPos(boss.defenseDir);
+          weakPointHit = !!wpPos && Math.hypot(b.x - wpPos.x, b.y - wpPos.y) <= WEAKPOINT_HIT_RADIUS;
+        }
+        const bodyHit = !weakPointHit && Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS;
+        if (weakPointHit || bodyHit) {
+          // POINT-BLANK counter (PART 5): scoped away from DARK PHASE/FLASH
+          // DOWN/any cinematic — those are already fully invulnerable (or,
+          // for DARK PHASE, deliberately built around GABRIEL closing to
+          // melee range) and must never be affected by this.
+          const pointBlankGated = boss.state !== 'darkphase' && boss.state !== 'flashdown' && !bossIsInCinematic();
+          if (pointBlankGated && now < boss.closeRangeInvulnUntil) {
+            consumed = true; // still inside the counter's own brief invulnerability window
+          } else if (pointBlankGated && Math.hypot(player.x - boss.x, player.y - boss.y) <= CLOSE_RANGE_SHOT_THRESHOLD) {
+            triggerCloseRangeCounter(now);
+            consumed = true;
+          } else if (weakPointHit) {
             applyWeakPointHitToBoss(now, b.autoAimedBoss, b.x, b.y, b.vx, b.vy);
             consumed = true;
+          } else {
+            applyBodyHitToBoss(now, b.x, b.y, b.vx, b.vy, b.autoAimedBoss);
+            consumed = true;
           }
-        }
-        if (!consumed && Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS) {
-          applyBodyHitToBoss(now, b.x, b.y, b.vx, b.vy, b.autoAimedBoss, b.ricochetCount > 0);
-          consumed = true;
         }
       }
       if (!consumed) {
@@ -3396,8 +3649,8 @@
 
     updateBarrels(dt, now);
     updateFlashGrenade(dt, now);
+    updateStealth(dt, now);
     updateBoss(dt, now);
-    updateClawProjectiles(dt, now);
     updateArcClawSlashes(now);
   }
 
@@ -3480,7 +3733,7 @@
   // to that target's real distance so the reticle visibly sits on it.
   function drawAimLine() {
     if (!aimStickActive) return;
-    const angle = getAimAngle();
+    const angle = getFinalAimAngle();
     const bx = player.x + Math.cos(angle) * MUZZLE_DIST;
     const by = player.y + Math.sin(angle) * MUZZLE_DIST;
     let guideLen = aimRangeLen;
@@ -3585,18 +3838,20 @@
     for (const b of bullets) drawBullet(b);
     drawFlashGrenade();
 
-    // Claw projectiles draw alongside the player's own bullets.
-    for (const p of clawProjectiles) drawClawProjectile(p);
+    // ARC CLAW SLASH / CLAW STING draw alongside the player's own bullets.
     for (const s of arcClawSlashes) drawArcClawSlash(s);
 
     // Player and boss are painter-sorted by Y so whichever is visually
-    // "closer" (further down the screen) draws on top of the other.
-    if (boss.spawned && boss.y < player.y) {
+    // "closer" (further down the screen) draws on top of the other. TELEPORT
+    // (PART 7) never draws the boss at all — it has no visible presence for
+    // the whole sequence, covered by the blackout regardless.
+    const bossVisible = boss.spawned && boss.state !== 'teleport';
+    if (bossVisible && boss.y < player.y) {
       drawBoss(now);
       drawPlayer(now);
     } else {
       drawPlayer(now);
-      if (boss.spawned) drawBoss(now);
+      if (bossVisible) drawBoss(now);
     }
 
     // PART 1: the aim line/reticle draw last among game-world content —
@@ -3654,6 +3909,17 @@
       ctx.fillRect(0, 0, W, H);
     }
 
+    // WEAK-POINT-SPAM teleport blackout (PART 7) — deliberately a real,
+    // full-screen-space opaque cut drawn ON TOP of everything (player
+    // included), unlike DARK PHASE's own much lighter, under-the-action
+    // darken layer further up — its own separate variable/system
+    // (teleportBlackoutAlpha), never touching or driven by
+    // darkPhaseOverlayAlpha.
+    if (teleportBlackoutAlpha > 0) {
+      ctx.fillStyle = `rgba(2, 2, 4, ${teleportBlackoutAlpha})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+
     // FLASH GRENADE screen flash — deliberately independent of the ambient
     // stage-lighting drift above (never washes it out or gets washed out by
     // it), brief (<=FLASH_SCREEN_FLASH_MS, within the requested 100-250ms
@@ -3673,6 +3939,47 @@
     for (let i = explosions.length - 1; i >= 0; i--) {
       if (now - explosions[i].startAt > EXPLOSION_DURATION_MS) explosions.splice(i, 1);
     }
+  }
+
+  // ---------- STEALTH green-tint compositing (addendum) ----------
+  // No new image files, and the real sprite files on disk are never
+  // touched — this draws WHATEVER sprite drawPlayer() would normally show
+  // (movement/DASH/FIRE/idle, any of the 4 directions) through an offscreen
+  // canvas: (1) draw the sprite normally, (2) tint ONLY its own already-
+  // opaque pixels green via `source-atop` (a no-op everywhere the sprite
+  // itself is transparent, so the surrounding canvas/background is never
+  // touched), (3) draw that composited result onto the main canvas at a
+  // reduced globalAlpha. Both the tint strength and the alpha are blended
+  // by `strength` (0-1, from getStealthEffectStrength()) so STEALTH's
+  // ~150ms start/end fade reads as a smooth color+alpha shift, never a
+  // snap — see drawPlayer() below for where `strength` comes from.
+  const stealthCompositeCanvas = document.createElement('canvas');
+  const stealthCompositeCtx = stealthCompositeCanvas.getContext('2d');
+  const STEALTH_TINT_RGB = '60, 230, 140'; // "光学迷彩" green
+  const STEALTH_TINT_MAX_ALPHA = 0.6; // how strongly the tint mixes in at full strength — keeps the sprite's own detail (face/armor/silhouette) reading through, never a flat single-color icon
+  const STEALTH_ALPHA_ACTIVE = 0.52; // within the requested ~0.45-0.60 band
+
+  function drawPlayerWithStealthTint(img, dx, dy, w, h, strength) {
+    const cw = Math.max(1, Math.round(w));
+    const ch = Math.max(1, Math.round(h));
+    if (stealthCompositeCanvas.width !== cw || stealthCompositeCanvas.height !== ch) {
+      stealthCompositeCanvas.width = cw;
+      stealthCompositeCanvas.height = ch;
+    }
+    const sctx = stealthCompositeCtx;
+    sctx.clearRect(0, 0, cw, ch);
+    sctx.globalCompositeOperation = 'source-over';
+    sctx.drawImage(img, 0, 0, cw, ch);
+    sctx.globalCompositeOperation = 'source-atop';
+    sctx.fillStyle = `rgba(${STEALTH_TINT_RGB}, ${STEALTH_TINT_MAX_ALPHA * strength})`;
+    sctx.fillRect(0, 0, cw, ch);
+    sctx.globalCompositeOperation = 'source-over';
+
+    ctx.save();
+    // 1 at strength=0 (fully normal/opaque) -> STEALTH_ALPHA_ACTIVE at strength=1.
+    ctx.globalAlpha = 1 - (1 - STEALTH_ALPHA_ACTIVE) * strength;
+    ctx.drawImage(stealthCompositeCanvas, dx, dy, w, h);
+    ctx.restore();
   }
 
   function drawPlayer(now) {
@@ -3698,7 +4005,20 @@
       spriteAspect = img.naturalWidth / img.naturalHeight;
       const drawH = SPRITE_DRAW_H;
       const drawW = drawH * spriteAspect;
-      ctx.drawImage(img, player.x - drawW / 2, player.y - drawH / 2, drawW, drawH);
+      const dx = player.x - drawW / 2, dy = player.y - drawH / 2;
+      // STEALTH (PART 15 + addendum): whatever sprite was just picked above
+      // (idle/walk/DASH/FIRE, any direction) draws exactly as it always
+      // has — same scale/anchor/facing — only the pixels change, via the
+      // green-tint compositing path, whenever STEALTH's fade-in/hold/
+      // fade-out strength is above 0. Firing or DASHing during STEALTH
+      // never reverts to the plain draw call, since `img` above already
+      // picked the FIRE/DASH sprite and this only changes HOW it's drawn.
+      const stealthStrength = getStealthEffectStrength(now);
+      if (stealthStrength > 0) {
+        drawPlayerWithStealthTint(img, dx, dy, drawW, drawH, stealthStrength);
+      } else {
+        ctx.drawImage(img, dx, dy, drawW, drawH);
+      }
     } else {
       // fallback placeholder while sprites load
       ctx.fillStyle = '#888';
@@ -4097,7 +4417,6 @@
       ctx.restore();
     }
     drawDefenseRicochets(now);
-    drawWallSparks(now);
   }
 
   function loop(now) {

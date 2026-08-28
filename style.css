@@ -276,6 +276,90 @@ html, body {
   pointer-events: none;
 }
 
+/* ---------- STEALTH button (PART 13) ----------
+   Placed above FIRE, to the left of FLASH: #top-button-row holds STEALTH
+   then FLASH side by side, sitting above #fire-zone in the same
+   #right-button-col — geometrically guaranteed to never sit at/below
+   FIRE's top edge or at/right of FLASH's left edge, in either orientation.
+   Deliberately smaller than FLASH so adding it doesn't widen
+   #right-button-col's own footprint beyond FIRE's existing width (the
+   dimension that actually drives #right-side-row's total width) — verified
+   empirically (real getBoundingClientRect() checks) against AIM/MOVE/FIRE/
+   FLASH/RANGE in both portrait and landscape. */
+#top-button-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+#stealth-zone {
+  position: relative;
+  width: 15vw;
+  height: 15vw;
+  max-width: 70px;
+  max-height: 70px;
+  min-width: 48px;
+  min-height: 48px;
+  pointer-events: auto;
+  touch-action: none;
+}
+#stealth-button {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 2px solid rgba(120, 230, 160, 0.45);
+  color: #d8ffe6;
+  font-family: sans-serif;
+  font-weight: bold;
+  font-size: clamp(7px, 2.1vw, 10px);
+  letter-spacing: 0.03em;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: filter 120ms ease, background 120ms ease;
+}
+#stealth-button:active {
+  background: rgba(120, 230, 160, 0.18);
+}
+#stealth-button.ready {
+  background: rgba(120, 230, 160, 0.14);
+  border-color: rgba(150, 240, 180, 0.75);
+}
+#stealth-button.active-effect {
+  background: rgba(90, 220, 140, 0.3);
+  border-color: rgba(150, 255, 190, 0.9);
+}
+#stealth-cooldown-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.stealth-ring-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.12);
+  stroke-width: 5;
+}
+#stealth-ring-progress {
+  fill: none;
+  stroke: rgba(120, 230, 160, 0.9);
+  stroke-width: 5;
+  stroke-linecap: round;
+  transform-origin: 50% 50%;
+  transform: rotate(-90deg);
+}
+#stealth-label {
+  position: relative;
+  z-index: 1;
+}
+
 /* ---------- FLASH GRENADE button ---------- */
 #flash-zone {
   position: relative;
@@ -357,6 +441,8 @@ html, body {
   #aim-stick-zone { width: 19.95vw; height: 19.95vw; max-width: 155.4px; max-height: 155.4px; min-width: 111.3px; min-height: 111.3px; }
   #fire-zone { width: 16vw; height: 16vw; max-width: 128px; max-height: 128px; min-width: 92px; min-height: 92px; }
   #flash-zone { width: 12vw; height: 12vw; max-width: 72px; max-height: 72px; min-width: 52px; min-height: 52px; }
+  #stealth-zone { width: 9vw; height: 9vw; max-width: 54px; max-height: 54px; min-width: 40px; min-height: 40px; }
+  #top-button-row { gap: 4px; }
   #range-zone { height: 108px; }
   #range-track { height: 82px; }
   #left-stick-col, #right-button-col { gap: 4px; }
