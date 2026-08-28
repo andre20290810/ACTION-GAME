@@ -1,0 +1,157 @@
+{
+  "purpose": "NORTH 3-frame walk cycle (walk_north_1/2/3.png) + EAST 2-frame walk cycle (walk_east_1/2.png) -- first attachment round (WEST's own 2 frames arrive separately; see the west registration meta for those).",
+  "sources": {
+    "walk_north_1": {
+      "file": "user-attached image 1 (back view)",
+      "native_size": [
+        1009,
+        1791
+      ]
+    },
+    "walk_north_2": {
+      "file": "user-attached image 2 (back view)",
+      "native_size": [
+        979,
+        1808
+      ]
+    },
+    "walk_north_3": {
+      "file": "user-attached image 3 (back view)",
+      "native_size": [
+        1063,
+        1723
+      ]
+    },
+    "walk_east_1": {
+      "file": "user-attached image 4 (3/4 profile, face/mask visible facing screen-right, matches east_idle.png's orientation)",
+      "native_size": [
+        737,
+        1706
+      ]
+    },
+    "walk_east_2": {
+      "file": "user-attached image 5 (3/4 profile, same orientation as image 4, later walk-cycle stride)",
+      "native_size": [
+        735,
+        1691
+      ]
+    }
+  },
+  "processing": "Non-generative only -- no AI redraw/regeneration/reshaping. Two deterministic steps per source image, same method as the existing south_walk_build_meta.json: (1) white-background un-premultiply (alpha cleanup), (2) landmark-based scale+anchor onto the existing shared 700x920 boss canvas, referenced against the SAME-DIRECTION existing idle image (north_idle.png / east_idle.png) per explicit instruction.",
+  "step1_white_unblend": {
+    "problem": "Each source PNG already carried a real alpha channel, but (same signature as the earlier south_walk batch) it was reconstructed by flattening over a white background without un-premultiplying the RGB -- edge/antialiased pixels kept their white-blended color. Verified by bucketing edge pixels by alpha value: mean brightness rose from ~65-105 at alpha 200-250 up to ~215-221 at alpha 3-30 for both a north-facing and an east-facing sample image.",
+    "formula": "For every pixel with alpha>0: true_color = clip((RGB_stored - (1-alpha/255)*255) / (alpha/255), 0, 255); alpha itself is kept as-is. Pixels with alpha==0 are zeroed. Identical formula to south_walk_build_meta.json's step1.",
+    "verification": "Visually confirmed via composites over a dark near-black background (matching the actual in-game background tone) -- no white/gray halo on wing-feather or claw edges."
+  },
+  "step2_landmark_scale_anchor": {
+    "method": "For each new image: alpha-scan restricted to an x-band around the character's own head (chosen per-image to exclude the wing, which sits at a very different x-range in every pose) to find head_top_y and head_center_x (midpoint of that top row's opaque span, WITHIN the band only); feet_bottom_y is the image's own overall alpha-bbox max-y (the lowest claw/toe pixel). native_body_span = feet_bottom_y - head_top_y.",
+    "reference_targets": {
+      "north": {
+        "source": "north_idle.png (existing, on the shared 700x920 canvas)",
+        "head_top_y": 182,
+        "head_center_x": 337.0,
+        "feet_bottom_y": 900,
+        "target_body_span": 718
+      },
+      "east": {
+        "source": "east_idle.png (existing, on the shared 700x920 canvas)",
+        "head_top_y": 118,
+        "head_center_x": 344.0,
+        "feet_bottom_y": 900,
+        "target_body_span": 782
+      }
+    },
+    "note_targets": "feet_bottom_y=900 matches the anchor=[350,900] convention already documented in sprite_build_meta.json/south_walk_build_meta.json for every existing boss frame -- unchanged, not a new value.",
+    "scale_formula": "scale = target_body_span / native_body_span (per image).",
+    "placement_formula": "paste_x = round(target_head_center_x - native_head_center_x*scale); paste_y = round(target_feet_bottom_y - native_feet_bottom_y*scale); pasted onto a fresh transparent 700x920 canvas.",
+    "per_image": {
+      "walk_north_1": {
+        "native_head_top_y": 288,
+        "native_head_center_x": 459.0,
+        "native_feet_bottom_y": 1787,
+        "native_body_span": 1499,
+        "scale": 0.478986,
+        "paste_xy": [
+          117,
+          44
+        ]
+      },
+      "walk_north_2": {
+        "native_head_top_y": 314,
+        "native_head_center_x": 434.5,
+        "native_feet_bottom_y": 1803,
+        "native_body_span": 1489,
+        "scale": 0.482203,
+        "paste_xy": [
+          127,
+          31
+        ]
+      },
+      "walk_north_3": {
+        "native_head_top_y": 244,
+        "native_head_center_x": 480.5,
+        "native_feet_bottom_y": 1719,
+        "native_body_span": 1475,
+        "scale": 0.48678,
+        "paste_xy": [
+          103,
+          63
+        ]
+      },
+      "walk_east_1": {
+        "native_head_top_y": 180,
+        "native_head_center_x": 356.0,
+        "native_feet_bottom_y": 1703,
+        "native_body_span": 1523,
+        "scale": 0.51346,
+        "paste_xy": [
+          161,
+          26
+        ]
+      },
+      "walk_east_2": {
+        "native_head_top_y": 181,
+        "native_head_center_x": 355.5,
+        "native_feet_bottom_y": 1689,
+        "native_body_span": 1508,
+        "scale": 0.518568,
+        "paste_xy": [
+          160,
+          24
+        ]
+      }
+    },
+    "verification_on_final_canvas": {
+      "walk_north_1": {
+        "head_top_y": 182,
+        "head_center_x": 336.5,
+        "feet_bottom_y": 900
+      },
+      "walk_north_2": {
+        "head_top_y": 183,
+        "head_center_x": 336.5,
+        "feet_bottom_y": 900
+      },
+      "walk_north_3": {
+        "head_top_y": 182,
+        "head_center_x": 336.0,
+        "feet_bottom_y": 900
+      },
+      "walk_east_1": {
+        "head_top_y": 119,
+        "head_center_x": 343.5,
+        "feet_bottom_y": 900
+      },
+      "walk_east_2": {
+        "head_top_y": 118,
+        "head_center_x": 344.5,
+        "feet_bottom_y": 899
+      },
+      "note": "All 5 land within 1-2px of their direction's target -- no per-frame jump in size, position, or foot anchor, and no clipping against the 700x920 canvas edges (checked: none of the 5 touch x=0/699 or y=0/919)."
+    },
+    "wing_claw_exclusion": "Per explicit instruction, the wings and claws (which extend far beyond the body's own silhouette and vary in reach between poses) were deliberately excluded from the scale-matching landmarks -- only head-top-to-feet-bottom span and head-center-x (a proxy for the torso's own horizontal position) were used, exactly as for every prior boss sprite batch."
+  },
+  "animation_wiring": "NOT YET WIRED into bossFrameName()/updateBoss() -- deferred until the WEST pair (walk_west_1/2) arrives in the second attachment round, so all three new directions' walk cycles are wired and tested together in one pass, per explicit instruction.",
+  "in_game_scale": "No per-frame draw()-time scale multiplier applied yet (unlike SOUTH_WALK_SCALE/NORTH_IDLE_SCALE/etc.) -- decided at wiring time once the full north/east/west cycle is in place and can be screenshot-compared against the existing idle/attack/defense renders together.",
+  "dark_phase_exclusion": "Will follow the existing pattern once wired: DARK PHASE never draws any normal battle sprite, north/east/west walk frames included -- see drawBossDarkPhase()."
+}

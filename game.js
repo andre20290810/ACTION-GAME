@@ -127,12 +127,15 @@
     attack_east_release: 'attack_east_release',
     preattack_south: 'attack_south_release',
     defense_south: 'defense', defense_north: 'defense_north', defense_east: 'defense_east', defense_west: 'defense_west',
-    // The on-disk walk_east.png/walk_west.png pair has its content swapped
-    // from its filename (walk_east.png is actually the left/west-facing
-    // render and vice versa — confirmed by visual comparison against the
-    // correctly-labeled east_idle/west_idle pair). Rather than touch the
-    // image files, the logical keys below simply load the other file.
-    walk_south_1: 'walk_south_1', walk_south_2: 'walk_south_2', walk_south_3: 'walk_south_3', walk_east: 'walk_west', walk_west: 'walk_east',
+    walk_south_1: 'walk_south_1', walk_south_2: 'walk_south_2', walk_south_3: 'walk_south_3',
+    // NORTH (3-frame) / EAST (2-frame) / WEST (2-frame) walk cycles —
+    // fully wired in bossFrameName() below. Supersedes the old single-frame
+    // walk_east.png/walk_west.png pair (which had its content swapped from
+    // its filename — walk_east.png was actually the west-facing render and
+    // vice versa); that pair is no longer loaded or referenced anywhere.
+    walk_north_1: 'walk_north_1', walk_north_2: 'walk_north_2', walk_north_3: 'walk_north_3',
+    walk_east_1: 'walk_east_1', walk_east_2: 'walk_east_2',
+    walk_west_1: 'walk_west_1', walk_west_2: 'walk_west_2',
   };
   const bossSprites = {};
   let bossSpritesReady = 0;
@@ -3130,6 +3133,19 @@
   }
   flashZone.addEventListener('touchstart', flashPress, { passive: false });
   flashZone.addEventListener('mousedown', flashPress);
+  // Pointer Events hardening (this batch): investigated the reported
+  // "FLASH only fires while AIM STICK is held" real-device symptom
+  // extensively — flashPress() itself has never had any AIM-state check,
+  // and real-coordinate taps (elementFromPoint-verified hit-testing, both
+  // orientations, AIM held/not held, MOVE held, DARK PHASE active) all
+  // fire correctly in this environment; the only failures reproduced
+  // traced to unrelated test-setup coordinates, not game logic. Adding a
+  // `pointerdown` listener alongside touchstart/mousedown is defense in
+  // depth against any real-hardware touch/pointer event-model quirk
+  // synthetic testing can't fully replicate — safe to double-register
+  // since flashPress() is idempotent (a second call just sees the
+  // cooldown already started and returns immediately).
+  flashZone.addEventListener('pointerdown', flashPress);
 
   function updateFlashGrenade(dt, now) {
     if (flashCooldownRemainingMs > 0) {
@@ -3941,30 +3957,65 @@
     }
   }
 
-  // ---------- STEALTH green-tint compositing (addendum) ----------
+  // ---------- STEALTH green-tint compositing ----------
   // No new image files, and the real sprite files on disk are never
   // touched — this draws WHATEVER sprite drawPlayer() would normally show
   // (movement/DASH/FIRE/idle, any of the 4 directions) through an offscreen
   // canvas: (1) draw the sprite normally, (2) tint ONLY its own already-
-  // opaque pixels green via `source-atop` (a no-op everywhere the sprite
-  // itself is transparent, so the surrounding canvas/background is never
-  // touched), (3) draw that composited result onto the main canvas at a
+  // opaque pixels a bright fluorescent green via `source-atop` (a no-op
+  // everywhere the sprite itself is transparent, so the surrounding
+  // canvas/background is never touched), (3) add a fine per-pixel noise
+  // texture — also confined to the sprite's own opaque pixels via the same
+  // source-atop trick — regenerated every STEALTH_NOISE_PERIOD_MS so it
+  // reads as "the cloaking surface is faintly glitching", not a smooth
+  // color, (4) draw that composited result onto the main canvas at a
   // reduced globalAlpha. Both the tint strength and the alpha are blended
   // by `strength` (0-1, from getStealthEffectStrength()) so STEALTH's
   // ~150ms start/end fade reads as a smooth color+alpha shift, never a
   // snap — see drawPlayer() below for where `strength` comes from.
   const stealthCompositeCanvas = document.createElement('canvas');
   const stealthCompositeCtx = stealthCompositeCanvas.getContext('2d');
-  const STEALTH_TINT_RGB = '60, 230, 140'; // "光学迷彩" green
-  const STEALTH_TINT_MAX_ALPHA = 0.6; // how strongly the tint mixes in at full strength — keeps the sprite's own detail (face/armor/silhouette) reading through, never a flat single-color icon
-  const STEALTH_ALPHA_ACTIVE = 0.52; // within the requested ~0.45-0.60 band
+  const STEALTH_TINT_RGB = '55, 255, 145'; // bright neon/fluorescent green ("光学迷彩"), not a dark/muted green
+  const STEALTH_TINT_MAX_ALPHA = 0.72; // strong enough to read as vivid neon at full strength, still sheer enough that armor/face detail shows through (never a flat single-color silhouette)
+  const STEALTH_ALPHA_ACTIVE = 0.30; // requested ~30% opacity — sheer enough to still self-locate, clearly more transparent than before
+  const STEALTH_NOISE_PERIOD_MS = 90; // how often the noise speckle pattern re-rolls — a short period, not a per-frame flicker
+  const STEALTH_NOISE_COUNT = 16; // small grain count per refresh, kept light on CPU/GPU
+  let stealthNoiseAt = -Infinity;
+  let stealthNoiseSpecks = [];
 
-  function drawPlayerWithStealthTint(img, dx, dy, w, h, strength) {
+  function rollStealthNoise(cw, ch) {
+    const specks = [];
+    for (let i = 0; i < STEALTH_NOISE_COUNT; i++) {
+      const bright = Math.random() < 0.55;
+      specks.push({
+        x: Math.random() * cw,
+        y: Math.random() * ch,
+        size: 1 + Math.random() * 1.4, // 1-2.4px — fine grain, never blocky
+        bright,
+        alpha: bright ? 0.22 + Math.random() * 0.30 : 0.18 + Math.random() * 0.24,
+      });
+    }
+    // A single short horizontal scanline glitch, only some rolls — a subtle
+    // flicker accent, not a constant strobing bar.
+    if (Math.random() < 0.4) {
+      const ly = Math.random() * ch;
+      const lw = ch > 0 ? (cw * (0.2 + Math.random() * 0.35)) : 0;
+      const lx = Math.random() * Math.max(1, cw - lw);
+      specks.push({ scanline: true, x: lx, y: ly, w: lw, alpha: 0.14 + Math.random() * 0.16 });
+    }
+    return specks;
+  }
+
+  function drawPlayerWithStealthTint(img, dx, dy, w, h, strength, now) {
     const cw = Math.max(1, Math.round(w));
     const ch = Math.max(1, Math.round(h));
     if (stealthCompositeCanvas.width !== cw || stealthCompositeCanvas.height !== ch) {
       stealthCompositeCanvas.width = cw;
       stealthCompositeCanvas.height = ch;
+    }
+    if (now - stealthNoiseAt >= STEALTH_NOISE_PERIOD_MS) {
+      stealthNoiseAt = now;
+      stealthNoiseSpecks = rollStealthNoise(cw, ch);
     }
     const sctx = stealthCompositeCtx;
     sctx.clearRect(0, 0, cw, ch);
@@ -3973,6 +4024,21 @@
     sctx.globalCompositeOperation = 'source-atop';
     sctx.fillStyle = `rgba(${STEALTH_TINT_RGB}, ${STEALTH_TINT_MAX_ALPHA * strength})`;
     sctx.fillRect(0, 0, cw, ch);
+    // Fine noise texture (source-atop keeps it confined to the sprite's own
+    // opaque pixels — it can never bleed onto the background), scaled by
+    // the same fade `strength` so it never appears before/after the color
+    // tint itself does.
+    for (const s of stealthNoiseSpecks) {
+      const a = s.alpha * strength;
+      if (a <= 0) continue;
+      if (s.scanline) {
+        sctx.fillStyle = `rgba(230,255,235,${a})`;
+        sctx.fillRect(s.x, s.y, s.w, 1);
+      } else {
+        sctx.fillStyle = s.bright ? `rgba(225,255,235,${a})` : `rgba(0,15,8,${a})`;
+        sctx.fillRect(s.x, s.y, s.size, s.size);
+      }
+    }
     sctx.globalCompositeOperation = 'source-over';
 
     ctx.save();
@@ -4015,7 +4081,7 @@
       // picked the FIRE/DASH sprite and this only changes HOW it's drawn.
       const stealthStrength = getStealthEffectStrength(now);
       if (stealthStrength > 0) {
-        drawPlayerWithStealthTint(img, dx, dy, drawW, drawH, stealthStrength);
+        drawPlayerWithStealthTint(img, dx, dy, drawW, drawH, stealthStrength, now);
       } else {
         ctx.drawImage(img, dx, dy, drawW, drawH);
       }
@@ -4056,19 +4122,34 @@
     const key = DIR_TO_BOSS_KEY[boss.dir]; // north | south | east | west
     if (key === 'south') {
       if (!boss.moving) return 'south_idle';
-      // 3-frame cycle (added this batch) — same WALK_FRAME_PERIOD_MS per
-      // frame as before, just one more step in the loop rather than a
-      // faster flicker, so the walk cadence itself is unchanged.
+      // 3-frame cycle — same WALK_FRAME_PERIOD_MS per frame throughout.
       const frame = Math.floor(now / WALK_FRAME_PERIOD_MS) % 3;
       if (frame === 0) return 'walk_south_1';
       if (frame === 1) return 'walk_south_2';
       return 'walk_south_3';
     }
-    if (key === 'east') return boss.moving ? 'walk_east' : 'east_idle';
-    if (key === 'west') return boss.moving ? 'walk_west' : 'west_idle';
-    // NORTH has no dedicated walk art — reuse the back-facing idle frame
-    // per spec (no new pose may be generated); a tiny vertical bounce
-    // stands in for a walk cycle, canvas-side only.
+    if (key === 'north') {
+      if (!boss.moving) return 'north_idle';
+      // 3-frame cycle, same cadence as SOUTH's (WALK_FRAME_PERIOD_MS/frame)
+      // per explicit instruction to keep all directions' walk pace uniform.
+      // The small NORTH_BOUNCE_AMPLITUDE draw-time bounce (see drawBoss())
+      // still layers on top of whichever of these three frames is picked —
+      // an independent, purely-visual accent, not a replacement for having
+      // real walk art.
+      const frame = Math.floor(now / WALK_FRAME_PERIOD_MS) % 3;
+      if (frame === 0) return 'walk_north_1';
+      if (frame === 1) return 'walk_north_2';
+      return 'walk_north_3';
+    }
+    if (key === 'east') {
+      if (!boss.moving) return 'east_idle';
+      // 2-frame alternation, same WALK_FRAME_PERIOD_MS cadence as SOUTH/NORTH.
+      return (Math.floor(now / WALK_FRAME_PERIOD_MS) % 2 === 0) ? 'walk_east_1' : 'walk_east_2';
+    }
+    if (key === 'west') {
+      if (!boss.moving) return 'west_idle';
+      return (Math.floor(now / WALK_FRAME_PERIOD_MS) % 2 === 0) ? 'walk_west_1' : 'walk_west_2';
+    }
     return 'north_idle';
   }
 
@@ -4098,7 +4179,12 @@
     let scale = 1;
     if (name === 'walk_south_1' || name === 'walk_south_2' || name === 'walk_south_3' || name === 'south_idle') scale = SOUTH_WALK_SCALE;
     else if (name === 'preattack_south') scale = PRE_ATTACK_SCALE;
-    else if (name === 'north_idle') scale = NORTH_IDLE_SCALE;
+    // NORTH_IDLE_SCALE applies uniformly to north_idle AND the 3 new walk
+    // frames (same reasoning as SOUTH_WALK_SCALE covering all 4 south
+    // frames above) — the walk frames were scale-matched to north_idle's
+    // OWN canvas measurements during processing, so without this shared
+    // multiplier they'd visibly shrink 10% the instant NORTH starts moving.
+    else if (name === 'north_idle' || name === 'walk_north_1' || name === 'walk_north_2' || name === 'walk_north_3') scale = NORTH_IDLE_SCALE;
     else if (name === 'attack_north') scale = NORTH_ATTACK_SCALE;
     else if (name === 'attack_south_release') scale = SOUTH_ATTACK_SCALE;
     if (img && img.complete && img.naturalWidth > 0) {

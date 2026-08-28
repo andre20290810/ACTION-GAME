@@ -1,0 +1,67 @@
+{
+  "purpose": "WEST 2-frame walk cycle (walk_west_1/2.png) -- second attachment round, completing the NORTH(3)/EAST(2)/WEST(2) walk-cycle set alongside north_east_walk_build_meta.json.",
+  "sources": {
+    "walk_west_1": {
+      "file": "user-attached image (3/4 profile, face/mask visible facing screen-left, matches west_idle.png's orientation)",
+      "native_size": [
+        1040,
+        1793
+      ]
+    },
+    "walk_west_2": {
+      "file": "user-attached image (same orientation, later walk-cycle stride)",
+      "native_size": [
+        800,
+        1827
+      ]
+    }
+  },
+  "processing": "Identical non-generative pipeline to north_east_walk_build_meta.json: (1) white-background un-premultiply (alpha cleanup) -- same fringe signature confirmed (mean brightness ~72-73 at alpha 200-250 climbing to ~219-220 at alpha 3-30), (2) landmark-based scale+anchor onto the shared 700x920 canvas, referenced against west_idle.png.",
+  "reference_target": {
+    "source": "west_idle.png (existing, on the shared 700x920 canvas)",
+    "head_top_y": 59,
+    "head_center_x": 380.0,
+    "feet_bottom_y": 900,
+    "target_body_span": 841
+  },
+  "per_image": {
+    "walk_west_1": {
+      "native_head_top_y": 109,
+      "native_head_center_x": 498.0,
+      "native_feet_bottom_y": 1791,
+      "native_body_span": 1682,
+      "scale": 0.5,
+      "paste_xy": [
+        131,
+        4
+      ]
+    },
+    "walk_west_2": {
+      "native_head_top_y": 109,
+      "native_head_center_x": 389.0,
+      "native_feet_bottom_y": 1825,
+      "native_body_span": 1716,
+      "scale": 0.490093,
+      "paste_xy": [
+        189,
+        6
+      ]
+    }
+  },
+  "verification_on_final_canvas": {
+    "walk_west_1": {
+      "head_top_y": 58,
+      "head_center_x": 380.0,
+      "feet_bottom_y": 898
+    },
+    "walk_west_2": {
+      "head_top_y": 59,
+      "head_center_x": 379.5,
+      "feet_bottom_y": 899
+    },
+    "note": "Both land within 1-2px of target; no clipping against the 700x920 canvas edges."
+  },
+  "wing_claw_exclusion": "Same as north/east: the head-scan x-band was restricted to exclude the wing (screen-right side for these west-facing poses), and scale was derived purely from head-top-to-feet-bottom span, never from the wing-tip/claw-tip extent.",
+  "cross_direction_consistency": "All 7 new frames (north x3, east x2, west x2) plus their 3 direction-matched idle references were composited side-by-side on a shared baseline (y=900) for visual confirmation -- consistent apparent body height/width across all directions, no direction reading larger or smaller than another.",
+  "animation_wiring": "Wired this batch -- see bossFrameName() in game.js: NORTH cycles walk_north_1->2->3 (matching WALK_FRAME_PERIOD_MS, same cadence as the existing SOUTH cycle), EAST/WEST alternate walk_east_1<->2 / walk_west_1<->2. Idle/attack/defense frames for all directions are unchanged. DARK PHASE continues to never draw any of these."
+}
