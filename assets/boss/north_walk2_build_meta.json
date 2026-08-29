@@ -1,0 +1,116 @@
+{
+  "walk_north_1": {
+    "source": "38602d48-image.png",
+    "source_canvas": [
+      1094,
+      1813
+    ],
+    "source_full_bbox": [
+      2,
+      5,
+      1089,
+      1810
+    ],
+    "head_top_y": 269,
+    "head_center_x": 526.0,
+    "feet_bottom_y": 1810,
+    "native_body_span": 1541,
+    "reference": "north_idle.png (existing)",
+    "target_head_top_y": 182,
+    "target_head_center_x": 337.0,
+    "target_feet_bottom_y": 900,
+    "target_body_span": 718,
+    "scale": 0.46593121349772876,
+    "paste_xy": [
+      92,
+      57
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "horizontal_clamp_applied": false,
+    "rendered_bbox": [
+      94,
+      64,
+      597,
+      899
+    ]
+  },
+  "walk_north_2": {
+    "source": "3aba6fb9-image.png",
+    "source_canvas": [
+      1045,
+      1757
+    ],
+    "source_full_bbox": [
+      2,
+      3,
+      1041,
+      1754
+    ],
+    "head_top_y": 235,
+    "head_center_x": 439.0,
+    "feet_bottom_y": 1754,
+    "native_body_span": 1519,
+    "reference": "north_idle.png (existing)",
+    "target_head_top_y": 182,
+    "target_head_center_x": 337.0,
+    "target_feet_bottom_y": 900,
+    "target_body_span": 718,
+    "scale": 0.4726793943383805,
+    "paste_xy": [
+      129,
+      71
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "horizontal_clamp_applied": false,
+    "rendered_bbox": [
+      131,
+      76,
+      619,
+      898
+    ]
+  },
+  "walk_north_3": {
+    "source": "e71ef4bb-image.png",
+    "source_canvas": [
+      1085,
+      1783
+    ],
+    "source_full_bbox": [
+      1,
+      4,
+      1081,
+      1779
+    ],
+    "head_top_y": 266,
+    "head_center_x": 504.0,
+    "feet_bottom_y": 1779,
+    "native_body_span": 1513,
+    "reference": "north_idle.png (existing)",
+    "target_head_top_y": 182,
+    "target_head_center_x": 337.0,
+    "target_feet_bottom_y": 900,
+    "target_body_span": 718,
+    "scale": 0.47455386649041637,
+    "paste_xy": [
+      98,
+      56
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "horizontal_clamp_applied": false,
+    "rendered_bbox": [
+      99,
+      63,
+      610,
+      899
+    ]
+  }
+}

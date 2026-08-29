@@ -1,0 +1,130 @@
+{
+  "walk_south_3": {
+    "source": "1c22c0bb-image.png",
+    "source_canvas": [
+      538,
+      1280
+    ],
+    "source_bbox": [
+      2,
+      2,
+      535,
+      1276
+    ],
+    "source_center_x": 268.5,
+    "source_foot_y": 1276,
+    "scale": 0.26177394034536894,
+    "paste_xy": [
+      116,
+      2
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 186.75,
+    "unclamped_paste_x": 116,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5,
+    "rendered_bbox_cx": 186.0,
+    "rendered_foot_y": 335,
+    "rendered_height": 332
+  },
+  "dash_north": {
+    "source": "98665cea-image.png",
+    "source_canvas": [
+      463,
+      1280
+    ],
+    "source_bbox": [
+      3,
+      2,
+      461,
+      1276
+    ],
+    "source_center_x": 232.0,
+    "source_foot_y": 1276,
+    "scale": 0.26177394034536894,
+    "paste_xy": [
+      142,
+      2
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 203.0,
+    "unclamped_paste_x": 142,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5,
+    "rendered_bbox_cx": 202.0,
+    "rendered_foot_y": 335,
+    "rendered_height": 332
+  },
+  "right_aim": {
+    "source": "472f88bd-image.png",
+    "source_canvas": [
+      1408,
+      1408
+    ],
+    "source_bbox": [
+      436,
+      50,
+      1338,
+      1380
+    ],
+    "source_center_x": 887.0,
+    "source_foot_y": 1380,
+    "scale": 0.2507518796992481,
+    "paste_xy": [
+      13,
+      -10
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 235.0,
+    "unclamped_paste_x": 13,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5,
+    "rendered_bbox_cx": 235.0,
+    "rendered_foot_y": 336,
+    "rendered_height": 334
+  },
+  "right_fire": {
+    "source": "90617c8d-image.png",
+    "source_canvas": [
+      1408,
+      1408
+    ],
+    "source_bbox": [
+      436,
+      46,
+      1407,
+      1385
+    ],
+    "source_center_x": 921.5,
+    "source_foot_y": 1385,
+    "scale": 0.24906646751306946,
+    "paste_xy": [
+      11,
+      -9
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 241.0,
+    "unclamped_paste_x": 11,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5,
+    "rendered_bbox_cx": 240.5,
+    "rendered_foot_y": 336,
+    "rendered_height": 334
+  }
+}

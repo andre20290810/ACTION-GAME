@@ -1,0 +1,115 @@
+{
+  "south": {
+    "source": "603fffd8-image.png",
+    "native_crop_size": [
+      746,
+      1285
+    ],
+    "full_bbox_in_source": [
+      1,
+      1,
+      746,
+      1285
+    ],
+    "eye_centroid_in_source": [
+      362.3878780575973,
+      603.7164116158573
+    ],
+    "eye_offset_in_crop": [
+      361.3878780575973,
+      602.7164116158573
+    ],
+    "scale": 0.0178988326848249,
+    "display_w": 13.352529182879376,
+    "display_h": 23.0,
+    "eye_offset_scaled": [
+      6.468421163676838,
+      10.787920207910286
+    ],
+    "target_display_h": 23
+  },
+  "east": {
+    "source": "d4496809-image.png",
+    "native_crop_size": [
+      771,
+      1277
+    ],
+    "full_bbox_in_source": [
+      1,
+      2,
+      771,
+      1278
+    ],
+    "eye_centroid_in_source": [
+      689.4386799936539,
+      596.6625416468348
+    ],
+    "eye_offset_in_crop": [
+      688.4386799936539,
+      594.6625416468348
+    ],
+    "scale": 0.018010963194988253,
+    "display_w": 13.886452623335943,
+    "display_h": 23.0,
+    "eye_offset_scaled": [
+      12.399443727371995,
+      10.71044515103931
+    ],
+    "target_display_h": 23
+  },
+  "west": {
+    "source": "18a46fc6-image.png",
+    "native_crop_size": [
+      771,
+      1281
+    ],
+    "full_bbox_in_source": [
+      2,
+      2,
+      772,
+      1282
+    ],
+    "eye_centroid_in_source": [
+      83.5681997787261,
+      600.6518097044412
+    ],
+    "eye_offset_in_crop": [
+      81.5681997787261,
+      598.6518097044412
+    ],
+    "scale": 0.01795472287275566,
+    "display_w": 13.843091334894613,
+    "display_h": 23.0,
+    "eye_offset_scaled": [
+      1.4645344222565966,
+      10.748627340516899
+    ],
+    "target_display_h": 23
+  },
+  "north": {
+    "source": "8747b1a9-image.png",
+    "note": "Back-of-head view — no red eye visible in this photo (unlike south/east/west's front/side views), so there is no eye centroid to measure. The anchor below is a head-center point instead: horizontally centered (the shape is bilaterally symmetric from behind) and vertically at the SAME ~46.7% fraction of head height used as the eye's height fraction on the other three directions (south 46.9%, east 46.6%, west 46.7%), so DARK PHASE's on-screen anchor sits at a consistent head-height as the boss rotates through all 4 directions, without inventing a red-eye position that doesn't exist in this image.",
+    "native_crop_size": [
+      789,
+      1276
+    ],
+    "full_bbox_in_source": [
+      1,
+      2,
+      789,
+      1277
+    ],
+    "anchor_offset_in_crop": [
+      394.5,
+      596.32584
+    ],
+    "scale": 0.018025078369905956,
+    "display_w": 14.2217868338558,
+    "display_h": 23.0,
+    "anchor_offset_scaled": [
+      7.1108934169279,
+      10.74882
+    ],
+    "target_display_h": 23
+  }
+}

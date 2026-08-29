@@ -7,21 +7,25 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<canvas id="game"></canvas>
 
-<div id="controls">
+<!-- PLAY AREA: the game viewport only. Canvas coordinates (W/H in game.js)
+     are derived from THIS element's own rendered size, never from
+     window.innerWidth/innerHeight — CONTROL AREA below is a separate
+     sibling in normal document flow, so its height can never shift where
+     the player/GABRIEL/bullets/etc. are positioned in-game. -->
+<div id="play-area">
+  <canvas id="game"></canvas>
   <div id="pause-zone">
     <button id="pause-button" aria-label="PAUSE">PAUSE</button>
   </div>
+</div>
 
-  <div id="left-stick-col">
-    <div id="aim-stick-zone">
-      <div id="aim-stick-base">
-        <div id="aim-stick-sector"></div>
-        <div id="aim-stick-knob"></div>
-      </div>
-    </div>
-
+<!-- CONTROL AREA: every touch control lives here, in normal document flow
+     below PLAY AREA — never an absolute/fixed overlay on top of the game
+     view. Three horizontal groups: MOVE (left), AIM+RANGE (center), FIRE
+     cluster (right). -->
+<div id="control-area">
+  <div id="control-left">
     <div id="action-stick-zone">
       <div id="action-stick-base">
         <div id="action-stick-knob"></div>
@@ -29,34 +33,43 @@
     </div>
   </div>
 
-  <div id="right-side-row">
+  <div id="control-center">
+    <div id="aim-stick-zone">
+      <div id="aim-stick-base">
+        <div id="aim-stick-sector"></div>
+        <div id="aim-stick-knob"></div>
+      </div>
+    </div>
     <div id="range-zone" aria-label="RANGE">
       <div id="range-label">RANGE</div>
       <div id="range-track">
         <div id="range-thumb"></div>
       </div>
     </div>
+  </div>
 
-    <div id="right-button-col">
-      <div id="top-button-row">
-        <div id="stealth-zone">
-          <button id="stealth-button" aria-label="STEALTH">
-            <svg id="stealth-cooldown-ring" viewBox="0 0 100 100" aria-hidden="true">
-              <circle class="stealth-ring-bg" cx="50" cy="50" r="44"></circle>
-              <circle id="stealth-ring-progress" cx="50" cy="50" r="44"></circle>
-            </svg>
-            <span id="stealth-label">STEALTH</span>
-          </button>
-        </div>
-        <div id="flash-zone">
-          <button id="flash-button" aria-label="FLASH">
-            <svg id="flash-cooldown-ring" viewBox="0 0 100 100" aria-hidden="true">
-              <circle class="flash-ring-bg" cx="50" cy="50" r="44"></circle>
-              <circle id="flash-ring-progress" cx="50" cy="50" r="44"></circle>
-            </svg>
-            <span id="flash-label">FLASH</span>
-          </button>
-        </div>
+  <div id="control-right">
+    <div id="fire-cluster">
+      <div id="stealth-zone">
+        <button id="stealth-button" aria-label="STEALTH">
+          <svg id="stealth-cooldown-ring" viewBox="0 0 100 100" aria-hidden="true">
+            <circle class="stealth-ring-bg" cx="50" cy="50" r="44"></circle>
+            <circle id="stealth-ring-progress" cx="50" cy="50" r="44"></circle>
+          </svg>
+          <span id="stealth-label">STEALTH</span>
+        </button>
+      </div>
+      <div id="flash-zone">
+        <button id="flash-button" aria-label="FLASH">
+          <svg id="flash-cooldown-ring" viewBox="0 0 100 100" aria-hidden="true">
+            <circle class="flash-ring-bg" cx="50" cy="50" r="44"></circle>
+            <circle id="flash-ring-progress" cx="50" cy="50" r="44"></circle>
+          </svg>
+          <span id="flash-label">FLASH</span>
+        </button>
+      </div>
+      <div id="dash-zone">
+        <button id="dash-button" aria-label="DASH">DASH</button>
       </div>
       <div id="fire-zone">
         <button id="fire-button" aria-label="FIRE">FIRE</button>

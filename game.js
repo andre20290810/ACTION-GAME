@@ -4,6 +4,14 @@
   // ---------- Canvas setup ----------
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
+  // PLAY AREA / CONTROL AREA split (UI relayout): the game's own coordinate
+  // space (W/H below) is derived from #play-area's own rendered size, NEVER
+  // from window.innerWidth/innerHeight — #control-area is a separate
+  // sibling in normal document flow below it, so its height can never
+  // shift where the player/GABRIEL/bullets/camera/etc. are positioned.
+  // game coordinates are therefore independent of page coordinates, and of
+  // however tall the control panel happens to be at any breakpoint.
+  const playArea = document.getElementById('play-area');
 
   let W = 0, H = 0;
   // Extra walkable WORLD space that opens up above the original screen once
@@ -16,8 +24,9 @@
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    W = window.innerWidth;
-    H = window.innerHeight;
+    const rect = playArea.getBoundingClientRect();
+    W = rect.width;
+    H = rect.height;
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
     canvas.style.width = W + 'px';
@@ -98,16 +107,19 @@
   const relaxedSprite = { down: new Image() };
   relaxedSprite.down.src = 'assets/alexandre/down_relaxed.png';
 
-  // NORTH/WEST/EAST ordinary-walk 3-frame cycles (photo-sourced, aligned onto
-  // the same shared 384x340 canvas/foot-baseline/center convention as every
-  // other player frame — see assets/alexandre/walk_north_west_build_meta.json
-  // and walk_east_build_meta.json for the exact per-frame crop/scale/anchor
-  // measurements). SOUTH ('down') is intentionally not part of this set and
-  // keeps reusing dashSprites.down exactly as before.
+  // NORTH/WEST/EAST/SOUTH ordinary-walk 3-frame cycles (photo-sourced,
+  // aligned onto the same shared 384x340 canvas/foot-baseline/center
+  // convention as every other player frame — see
+  // assets/alexandre/walk_north_west_build_meta.json, walk_east_build_meta.json
+  // and batch2_build_meta.json for the exact per-frame crop/scale/anchor
+  // measurements). SOUTH's 3rd frame arrived in the 2nd image batch,
+  // completing its own cycle — DASH still uses its own dedicated
+  // dash_south.png, unaffected.
   const walkSprites = {
     up: [new Image(), new Image(), new Image()],
     left: [new Image(), new Image(), new Image()],
     right: [new Image(), new Image(), new Image()],
+    down: [new Image(), new Image(), new Image()],
   };
   walkSprites.up[0].src = 'assets/alexandre/walk_north_1.png';
   walkSprites.up[1].src = 'assets/alexandre/walk_north_2.png';
@@ -118,6 +130,9 @@
   walkSprites.right[0].src = 'assets/alexandre/walk_east_1.png';
   walkSprites.right[1].src = 'assets/alexandre/walk_east_2.png';
   walkSprites.right[2].src = 'assets/alexandre/walk_east_3.png';
+  walkSprites.down[0].src = 'assets/alexandre/walk_south_1.png';
+  walkSprites.down[1].src = 'assets/alexandre/walk_south_2.png';
+  walkSprites.down[2].src = 'assets/alexandre/walk_south_3.png';
   const PLAYER_WALK_FRAME_PERIOD_MS = 260; // same cadence as boss WALK_FRAME_PERIOD_MS
 
   // ---------- Boss sprite loading ----------
@@ -250,45 +265,63 @@
   }
 
   // ---------- DARK PHASE (GABRIEL's total-invulnerability shadow state) ----------
-  // The visible "red eye glow" is EXTRACTED directly from the previously-
-  // attached DARK PHASE GABRIEL render (assets/boss/source/dark_phase_source.png,
-  // kept unmodified) — never a Canvas-drawn design. Every pixel classified
-  // as glow (redness = R - max(G,B) > 15, the exact same threshold already
-  // verified when building the retired assets/boss/dark_phase.png) keeps
-  // its original RGB at full opacity; every other pixel (the original white
-  // background AND the black body/wings alike) is fully transparent — see
-  // assets/boss/dark_phase_eyes_build_meta.json for the full method. GABRIEL's
-  // body itself is never drawn during DARK PHASE at all.
-  const darkPhaseEyesImg = new Image();
-  darkPhaseEyesImg.src = 'assets/boss/dark_phase_eyes.png';
-  // The crop's own bounding box within the ORIGINAL 1152x1728 source canvas
-  // (see dark_phase_eyes_build_meta.json) — used to position the crop
-  // exactly where it would sit on GABRIEL's full body if that were drawn at
-  // DARKPHASE_SCALE (declared below, next to BOSS_SPEED), so the glow reads
-  // at a plausible head-height/size rather than an arbitrary one.
+  // The shared on-screen anchor point every direction's head image is drawn
+  // around (see getDarkPhaseHeadScreenPos()/isAimedAtDarkPhaseHead() below)
+  // is fixed independently of which image is actually showing — it was
+  // originally derived from the bbox center of a red-eye-glow crop taken out
+  // of the very first (single-direction) DARK PHASE render
+  // (assets/boss/source/dark_phase_source.png), in that render's own
+  // 1152x1728 canvas space. That crop is no longer drawn for any direction
+  // (NORTH's own head photo arrived in this batch, completing all 4), but
+  // the anchor point itself is kept byte-for-byte identical so the FLASH
+  // head-aim hit-test's existing behavior/tuning never changes.
   const DARKPHASE_EYES_SOURCE_W = 1152, DARKPHASE_EYES_SOURCE_H = 1728;
   const DARKPHASE_EYES_CROP_X0 = 534, DARKPHASE_EYES_CROP_Y0 = 269;
   const DARKPHASE_EYES_CROP_X1 = 669, DARKPHASE_EYES_CROP_Y1 = 426;
   // Single anchor point (the crop's own bbox center, in source-canvas
-  // coordinates) used for BOTH drawing the glow AND the FLASH head-aim
+  // coordinates) used for BOTH drawing the head art AND the FLASH head-aim
   // hit-test — see getDarkPhaseHeadScreenPos()/isAimedAtDarkPhaseHead()
   // below, so the two can never drift apart as GABRIEL moves.
   const DARKPHASE_HEAD_CANVAS_X = (DARKPHASE_EYES_CROP_X0 + DARKPHASE_EYES_CROP_X1) / 2;
   const DARKPHASE_HEAD_CANVAS_Y = (DARKPHASE_EYES_CROP_Y0 + DARKPHASE_EYES_CROP_Y1) / 2;
   const DARKPHASE_HEAD_HIT_RADIUS = 55; // screen px — perpendicular tolerance for the FLASH aim-ray check, see isAimedAtDarkPhaseHead()
-  // Drawn display size: deliberately larger than what DARKPHASE_SCALE's
-  // body-accurate projection alone would give (that math places a real
-  // human head/visor at only ~10-12px tall on a phone screen — anatomically
-  // correct, but too small to read as "a glowing eye in the dark" during
-  // actual play). A uniform resize is explicitly allowed processing (no
-  // reshaping, no redraw) — the crop's own aspect ratio is preserved
-  // exactly, only its on-screen size changes, always centered on the SAME
-  // anchor point drawBossDarkPhase()/isAimedAtDarkPhaseHead() both use.
-  // Halved again this batch (was 46) per explicit instruction that the
-  // glow was reading too large — same anchor, same aspect ratio, purely a
-  // smaller uniform resize.
-  const DARKPHASE_EYES_DISPLAY_H = 23;
-  const DARKPHASE_EYES_DISPLAY_W = DARKPHASE_EYES_DISPLAY_H * ((DARKPHASE_EYES_CROP_X1 - DARKPHASE_EYES_CROP_X0) / (DARKPHASE_EYES_CROP_Y1 - DARKPHASE_EYES_CROP_Y0));
+
+  // Direction-aware DARK PHASE heads: all 4 directions now have their own
+  // real head render. Each source is alpha-cropped tightly to its own bbox
+  // (no rescale/reshape baked into the file — see
+  // assets/boss/darkphase_heads_build_meta.json for the exact per-image
+  // measurements). south/east/west each record their big red eye's own
+  // centroid (found via connected-component analysis to isolate it from the
+  // smaller side eyes) as their "eye offset"; north's photo is a back-of-
+  // head view with no visible eye, so its offset is a head-center point
+  // instead (horizontally centered, vertically at the same ~46.7% head-
+  // height fraction the other three directions' eyes sit at) — see the
+  // "north" entry's own note in darkphase_heads_build_meta.json. Either way,
+  // this per-image offset is where drawing aligns the SHARED anchor point
+  // above, so all 4 directions read as the same rotating head regardless of
+  // which one is showing.
+  const darkPhaseHeadImgs = { south: new Image(), east: new Image(), west: new Image(), north: new Image() };
+  darkPhaseHeadImgs.south.src = 'assets/boss/darkphase_head_south.png';
+  darkPhaseHeadImgs.east.src = 'assets/boss/darkphase_head_east.png';
+  darkPhaseHeadImgs.west.src = 'assets/boss/darkphase_head_west.png';
+  darkPhaseHeadImgs.north.src = 'assets/boss/darkphase_head_north.png';
+  // Every direction is displayed at the same ~23px-tall footprint so no
+  // single direction suddenly reads as bigger/smaller than the others.
+  const DARKPHASE_HEAD_DISPLAY_H = 23;
+  const DARKPHASE_HEAD_METRICS = {
+    south: { nativeW: 746, nativeH: 1285, eyeOffsetX: 361.4, eyeOffsetY: 602.7 },
+    east: { nativeW: 771, nativeH: 1277, eyeOffsetX: 688.4, eyeOffsetY: 594.7 },
+    west: { nativeW: 771, nativeH: 1281, eyeOffsetX: 81.6, eyeOffsetY: 598.7 },
+    north: { nativeW: 789, nativeH: 1276, eyeOffsetX: 394.5, eyeOffsetY: 596.3 },
+  };
+  Object.keys(DARKPHASE_HEAD_METRICS).forEach((key) => {
+    const m = DARKPHASE_HEAD_METRICS[key];
+    m.scale = DARKPHASE_HEAD_DISPLAY_H / m.nativeH;
+    m.displayW = m.nativeW * m.scale;
+    m.displayH = DARKPHASE_HEAD_DISPLAY_H;
+    m.eyeOffsetScaledX = m.eyeOffsetX * m.scale;
+    m.eyeOffsetScaledY = m.eyeOffsetY * m.scale;
+  });
   // Body-fill fraction of the ORIGINAL dark_phase_source.png (measured
   // during the earlier batch that built dark_phase.png — see
   // dark_phase_build_meta.json's body_landmarks), reused here so the eye
@@ -406,7 +439,11 @@
   // Screen-space meaning is fixed regardless of internal representation:
   // up=true up, right=true right, down=true down, left=true left.
   const BASE_ANGLE = { right: 0, down: Math.PI / 2, left: Math.PI, up: -Math.PI / 2 };
-  const HALF_RANGE = Math.PI / 3; // +-60 degrees (120-degree total aim wedge)
+  // No longer enforced anywhere in the AIM pipeline (PART 9 removed the old
+  // +-60deg wedge — AIM STICK now reaches the full 360deg circle). Left
+  // defined, unused, only so any external script still referencing
+  // window.__game.HALF_RANGE/clampToHalfRange doesn't hard-crash.
+  const HALF_RANGE = Math.PI / 3;
 
   // ACTION STICK dead zone: fraction of the stick's radius that must be
   // crossed before any direction/movement registers at all. Kept small
@@ -417,6 +454,7 @@
   // Returns (angle - center) clamped to +-HALF_RANGE, preserving whichever
   // side of center it's already on (nearest-valid-angle correction). The
   // result is an offset relative to `center`, not an absolute angle.
+  // UNUSED by the AIM pipeline since PART 9 — see HALF_RANGE above.
   function clampToHalfRange(angle, center) {
     const TWO_PI = Math.PI * 2;
     let diff = angle - center;
@@ -431,9 +469,16 @@
     x: 0,
     y: 0,
     speed: 240, // px/sec
-    baseDir: 'down',   // discrete sprite bucket, set only by ACTION STICK
-    aimOffsetRaw: 0,   // radians relative to BASE_ANGLE[baseDir], within +-HALF_RANGE — raw AIM STICK input
-    aimOffset: 0,      // effective offset actually used to fire/draw — aimOffsetRaw, lightly pulled toward a nearby AUTO AIM target
+    baseDir: 'down',   // discrete sprite bucket — driven by AIM STICK while it's engaged, by MOVE STICK otherwise (see update())
+    // aimOffsetRaw/aimOffset: ABSOLUTE angles (radians, atan2 convention),
+    // not offsets relative to baseDir — PART 9 removed the old +-60deg
+    // wedge entirely, so AIM STICK can point anywhere in the full circle.
+    // Only meaningful while aiming (aimStickActive or the double-tap lock
+    // is active) — getFinalAimAngle() ignores them otherwise. aimOffsetRaw
+    // is the raw stick angle; aimOffset is that same angle after AUTO AIM's
+    // gentle blend toward a nearby target (see updateAutoAim()).
+    aimOffsetRaw: 0,
+    aimOffset: 0,
     moving: false,
     // DASH: one of the 4 cardinal directions, always the direction the
     // player is currently facing (baseDir) at the moment DASH is pressed —
@@ -441,15 +486,11 @@
     // needed for south/north anymore.
     dashing: false,
     dashDir: 'right', // 'right' | 'left' | 'up' | 'down' — SPRITE selection only (nearest cardinal)
-    dashAngle: 0, // radians — the REAL movement direction (can be diagonal via MOVE STICK double-tap)
-    bufferedDashAngle: null, // angle to use for an auto-chained 2nd dash, if it was requested with one
+    dashAngle: 0, // radians — the REAL movement direction (MOVE STICK vector if held, else current facing — see dashButtonPress())
     dashStartAt: -Infinity,
     dashFromX: 0,
     dashFromY: 0,
     dashDistance: 0,
-    dashBuffered: false, // a DASH press received near the end of the current DASH
-    dashChainCount: 0, // dashes used in the current chain (max DASH_CHAIN_MAX)
-    facingLockUntil: 0, // briefly holds baseDir after a completed 2-dash chain reversal
     knockbackUntil: 0, // brief movement-input suppression after a forced-counter KNOCKBACK
     // RELAXED IDLE (SOUTH only): tracks how long all inputs have been idle.
     lastActivityAt: performance.now(),
@@ -463,26 +504,29 @@
     stealthStartedAt: -Infinity, // for the ~150ms fade-in/out — see getStealthVisualAlpha()
   };
 
-  // PART 12: the ONE final-angle computation every aim/fire-direction
-  // consumer routes through — AIM STICK input (via player.aimOffset, itself
-  // already clamped through clampToHalfRange's shared ±HALF_RANGE logic),
-  // the dotted aim guide line (drawAimLine()), the RANGE endpoint (derived
-  // from this same angle), the FIRE-time bullet spawn angle/velocity
-  // (spawnBullet()), AUTO AIM's correction (folded into player.aimOffset by
-  // updateAutoAim() before this ever runs), player facing, and the FLASH
-  // DARK-PHASE-head aim-gate (isAimedAtDarkPhaseHead()). There is no
-  // separate portrait/landscape branch anywhere in this file — orientation
-  // only ever affects layout (CSS/resize()), never this angle math, so
-  // both orientations are guaranteed to derive their aim line and their
-  // fired bullet from the exact same number, always.
+  // PART 12/14: the ONE final-angle computation every aim/fire-direction
+  // consumer routes through — the dotted aim guide line (drawAimLine()),
+  // the RANGE endpoint (derived from this same angle), the FIRE-time bullet
+  // spawn angle/velocity (spawnBullet()), AUTO AIM's correction (folded
+  // into player.aimOffset by updateAutoAim() before this ever runs), and
+  // the FLASH DARK-PHASE-head aim-gate (isAimedAtDarkPhaseHead()). There is
+  // no separate portrait/landscape branch anywhere in this file —
+  // orientation only ever affects layout (CSS/resize()), never this angle
+  // math, so both orientations are guaranteed to derive their aim line and
+  // their fired bullet from the exact same number, always.
   //
-  // Always the current base facing's center angle plus the (clamped) aim
-  // offset. When aimOffset is 0 — the default, and what it resets to
-  // whenever the base facing changes or the AIM STICK is released — this is
-  // exactly the base direction's true angle, so an un-aimed shot always
-  // matches the sprite.
+  // PART 9/10: while the AIM STICK is actively engaged (dragging, or a
+  // double-tap snap still locked in), this is player.aimOffset — a full
+  // 360deg ABSOLUTE angle, no longer clamped to any wedge around baseDir.
+  // baseDir itself is kept in sync with this same angle the whole time (see
+  // handleAimStickMove()/performNearestAutoAimSnap()), so an un-aimed shot
+  // (AIM STICK not held) still exactly matches whatever the player is
+  // currently facing — it just falls back to that facing's own true angle.
   function getFinalAimAngle() {
-    return BASE_ANGLE[player.baseDir] + player.aimOffset;
+    if (aimStickActive || performance.now() < aimDoubleTapLockUntil) {
+      return player.aimOffset;
+    }
+    return BASE_ANGLE[player.baseDir];
   }
 
   function resetPlayerPosition() {
@@ -491,16 +535,13 @@
   }
   resetPlayerPosition();
 
-  // Unconditionally applies a new base facing (used by the DASH-chain
-  // reversal, which must force the flip even though the requested direction
-  // may momentarily equal whatever the stick already reports). Snaps aim
-  // back to its center immediately rather than carrying over an offset
-  // computed for the old direction — same as the guarded setBaseDir below.
+  // Unconditionally applies a new base facing. PART 9/10: AIM STICK is now
+  // an independent 360deg control, so changing baseDir (via MOVE STICK, the
+  // only remaining caller of setBaseDir()) no longer touches the AIM
+  // STICK's own angle/knob at all — those are only ever set by the AIM
+  // STICK's own handlers below.
   function forceSetBaseDir(dir) {
     player.baseDir = dir;
-    player.aimOffsetRaw = 0;
-    player.aimOffset = 0;
-    aimStickKnob.style.transform = 'translate(0px, 0px)';
     updateAimSectorOverlay();
   }
 
@@ -520,28 +561,26 @@
     player.y = Math.max(topY, Math.min(H - halfH, player.y));
   }
 
-  // ---------- DASH (4 directions, max 2 chained) ----------
+  // ---------- DASH (4 directions, button-triggered, re-triggerable) ----------
   const DASH_DURATION_MS = 800;
   const DASH_DISTANCE_FRAC = 0.20; // 20% of screen width — within the 15-25% target
   const RELAXED_IDLE_DELAY_MS = 400;
-  const DASH_CHAIN_MAX = 2; // at most 2 dashes per chain — a 3rd request is refused
-  const FACING_LOCK_MS = 200; // briefly holds the post-chain reversed facing against stick input
-  const OPPOSITE_DIR = { up: 'down', down: 'up', left: 'right', right: 'left' };
 
-  // angleOverride (radians) lets a MOVE STICK double-tap dash in the exact
-  // diagonal direction it was pressed, while player.dashDir (nearest
+  // angleOverride (radians) lets the DASH button dash along the exact MOVE
+  // STICK vector (which may be diagonal) while player.dashDir (nearest
   // cardinal, via angleToBucket — the same 4-way split used everywhere
   // else) still picks which of the 4 existing DASH sprites to show, since
-  // no diagonal dash art exists. Omitting it (the DASH button / old
-  // move-stick flow) keeps the previous cardinal-only behavior exactly.
+  // no diagonal dash art exists. Omitting it falls back to the player's
+  // current facing. Always (re)starts the dash from wherever the player
+  // currently is — see dashButtonPress()'s DASH_RETRIGGER_INTERVAL_MS gate,
+  // which is what actually limits how often this can be called, not this
+  // function itself (so window.__game.requestDash() keeps working for
+  // direct verification without also having to fake button-press timing).
   function tryStartDash(now, angleOverride) {
-    if (player.dashing) return;
-    if (player.dashChainCount >= DASH_CHAIN_MAX) return; // chain already used up
     const angle = (angleOverride === undefined || angleOverride === null) ? BASE_ANGLE[player.baseDir] : angleOverride;
     player.dashing = true;
     player.dashAngle = angle;
     player.dashDir = angleToBucket(angle);
-    player.dashChainCount += 1;
     player.dashStartAt = now;
     player.dashFromX = player.x;
     player.dashFromY = player.y;
@@ -552,28 +591,9 @@
     player.lastActivityAt = now;
   }
 
-  // No extra cooldown after DASH — the next DASH is available the instant
-  // the current one ends (as long as the chain hasn't already used its 2
-  // dashes). A press can't multi-trigger the same DASH (it's just ignored
-  // while player.dashing), but ANY press received at any point while DASH 1
-  // is running is remembered and fired the instant it ends — a fast
-  // "tap-tap" always chains, with no visible pause between the two —
-  // unless the chain is already at DASH_CHAIN_MAX, in which case a 3rd
-  // request (buffered or not) is simply dropped.
+  // debug/verification only — see tryStartDash()'s comment above.
   function requestDash(now, angleOverride) {
-    if (!player.dashing) {
-      tryStartDash(now, angleOverride);
-      return;
-    }
-    if (player.dashChainCount >= DASH_CHAIN_MAX) return;
-    // A 2nd press is accepted as buffered at ANY point during the 1st
-    // DASH's run — not just its final DASH_INPUT_BUFFER_MS — so two fast
-    // taps ("tap-tap") always chain, including a 2nd tap landing right at
-    // the start of the 1st DASH. It still only fires the instant DASH 1
-    // actually ends (see updateDash()), so there's never a visible pause
-    // and never more than DASH_CHAIN_MAX dashes in the chain.
-    player.dashBuffered = true;
-    player.bufferedDashAngle = (angleOverride === undefined) ? null : angleOverride;
+    tryStartDash(now, angleOverride);
   }
 
   // Fast burst then a short settle, not a constant 0.8s slide: full travel
@@ -591,34 +611,11 @@
     const elapsed = now - player.dashStartAt;
     if (elapsed >= DASH_DURATION_MS) {
       player.dashing = false;
-      const finishedDir = player.dashDir;
-      const canChain = player.dashChainCount < DASH_CHAIN_MAX;
-      const buffered = player.dashBuffered && canChain;
-      player.dashBuffered = false;
-      const bufferedAngle = player.bufferedDashAngle;
-      player.bufferedDashAngle = null;
-      if (buffered) {
-        tryStartDash(now, bufferedAngle); // chain immediately, no cooldown gap
-        return;
-      }
-      // The chain ends here — either only 1 dash was used, or the 2nd just
-      // finished with nothing buffered. A completed 2-dash chain reverses
-      // facing to the opposite direction and shows that direction's normal
-      // pose (never left standing in the DASH pose); a lone single dash
-      // keeps facing the dash direction, unchanged from before chaining
-      // existed. The reversed facing is held briefly (FACING_LOCK_MS)
-      // against the ACTION STICK so it's actually visible for a moment
-      // even if the stick is still held in the original direction.
-      if (player.dashChainCount >= DASH_CHAIN_MAX) {
-        forceSetBaseDir(OPPOSITE_DIR[finishedDir]);
-        player.facingLockUntil = now + FACING_LOCK_MS;
-      }
-      player.dashChainCount = 0;
       return;
     }
     // Real movement always follows the exact dashAngle (which may be a
-    // diagonal from a MOVE STICK double-tap) — dashDir only ever affects
-    // which sprite is drawn, never the actual travel vector.
+    // diagonal from the MOVE STICK) — dashDir only ever affects which
+    // sprite is drawn, never the actual travel vector.
     const progress = dashTravelProgress(elapsed / DASH_DURATION_MS);
     player.x = player.dashFromX + Math.cos(player.dashAngle) * player.dashDistance * progress;
     player.y = player.dashFromY + Math.sin(player.dashAngle) * player.dashDistance * progress;
@@ -2507,9 +2504,9 @@
   // object's target point, the effective aim is pulled a fraction of the
   // way toward that point each frame (a gentle, releasable magnet, not a
   // hard lock), and only while the player is actively holding the AIM
-  // STICK near it — never automatically without stick input. The pull is
-  // clamped through the exact same ±60 deg function as manual aim, so it
-  // can never point outside the current base-direction wedge.
+  // STICK near it — never automatically without stick input. PART 9: the
+  // pull is a free 360deg blend now (shortest angular path), no longer
+  // clamped into any wedge around baseDir.
   const AUTO_AIM_RADIUS = 46; // screen px, around the reticle tip
   const AUTO_AIM_SNAP_STRENGTH = 0.35; // fraction of remaining angle closed per frame
   let autoAimActive = false;
@@ -2552,8 +2549,7 @@
       return;
     }
 
-    const center = BASE_ANGLE[player.baseDir];
-    const rawAngle = center + player.aimOffsetRaw;
+    const rawAngle = player.aimOffsetRaw; // absolute — see the player.aimOffsetRaw field comment
     const mx = player.x + Math.cos(rawAngle) * MUZZLE_DIST;
     const my = player.y + Math.sin(rawAngle) * MUZZLE_DIST;
     const tipX = mx + Math.cos(rawAngle) * AIM_LINE_LEN;
@@ -2582,8 +2578,12 @@
 
     if (best) {
       const desiredAngle = Math.atan2(best.y - my, best.x - mx);
-      const desiredOffset = clampToHalfRange(desiredAngle, center);
-      player.aimOffset += (desiredOffset - player.aimOffset) * AUTO_AIM_SNAP_STRENGTH;
+      // Shortest angular path from the current effective aim to the
+      // target's true bearing — no wedge clamp anymore (PART 9).
+      const TWO_PI = Math.PI * 2;
+      let diff = desiredAngle - player.aimOffset;
+      diff = ((diff + Math.PI) % TWO_PI + TWO_PI) % TWO_PI - Math.PI;
+      player.aimOffset += diff * AUTO_AIM_SNAP_STRENGTH;
       autoAimActive = true;
       autoAimTargetIsBoss = bestIsBoss;
       autoAimLockedPoint = best;
@@ -2602,10 +2602,6 @@
     player.aimOffsetRaw = 0;
     player.aimOffset = 0;
     player.dashing = false;
-    player.dashBuffered = false;
-    player.bufferedDashAngle = null;
-    player.dashChainCount = 0;
-    player.facingLockUntil = 0;
     player.knockbackUntil = 0;
     player.lastActivityAt = performance.now();
     player.relaxed = false;
@@ -2661,6 +2657,7 @@
     // the game resumes.
     fireHeld = false;
     fireButton.classList.remove('active');
+    dashButton.classList.remove('active');
     actionStickReset();
     aimStickReset();
   }
@@ -2734,67 +2731,15 @@
     actionStickKnob.style.transform = `translate(${nx * maxR * 0.7}px, ${ny * maxR * 0.7}px)`;
   }
 
-  // MOVE STICK double-tap DASH: pressing a clear direction on the stick
-  // twice quickly triggers a DASH that way, on top of the DASH button
-  // (kept as a fallback/alternate input, not replaced). Guards against
-  // firing during ordinary play: (1) TIME — the two presses must land
-  // within MOVE_DASH_DOUBLE_TAP_WINDOW_MS of each other; (2) POSITION/
-  // MAGNITUDE — a press near the stick's center never counts (it also
-  // resets the streak, so a deliberate re-center doesn't leave a stale
-  // half-double-tap waiting to misfire on the next real press); (3)
-  // VECTOR SIMILARITY — the two presses' angles must be within
-  // MOVE_DASH_ANGLE_TOLERANCE of each other, so pressing e.g. up then
-  // right in quick succession is just two separate moves, not a dash.
-  const MOVE_DASH_DOUBLE_TAP_WINDOW_MS = 320;
-  const MOVE_DASH_MIN_MAGNITUDE_FRAC = 0.55; // fraction of the stick's radius
-  const MOVE_DASH_ANGLE_TOLERANCE = 40 * Math.PI / 180;
-  let lastMoveTapAt = -Infinity;
-  let lastMoveTapAngle = null;
-
-  function angleDelta(a, b) {
-    let d = a - b;
-    d = ((d + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-    return Math.abs(d);
-  }
-
-  function tryMoveStickDoubleTapDash(now, dx, dy, maxR) {
-    const dist = Math.hypot(dx, dy);
-    if (dist < maxR * MOVE_DASH_MIN_MAGNITUDE_FRAC) {
-      lastMoveTapAt = -Infinity;
-      lastMoveTapAngle = null;
-      return;
-    }
-    const angle = Math.atan2(dy, dx);
-    if (
-      lastMoveTapAngle !== null &&
-      (now - lastMoveTapAt) <= MOVE_DASH_DOUBLE_TAP_WINDOW_MS &&
-      angleDelta(angle, lastMoveTapAngle) <= MOVE_DASH_ANGLE_TOLERANCE
-    ) {
-      // Face the dash's nearest cardinal immediately (for the sprite and
-      // for whatever direction the player ends up in afterward); the
-      // actual dash travel still uses the full-precision diagonal angle.
-      setBaseDir(angleToBucket(angle));
-      requestDash(now, angle);
-      lastMoveTapAt = -Infinity;
-      lastMoveTapAngle = null; // consumed — a 3rd tap starts a fresh pair, not an immediate re-trigger
-      return;
-    }
-    lastMoveTapAt = now;
-    lastMoveTapAngle = angle;
-  }
-
+  // PART 16: the MOVE STICK double-tap DASH gesture has been removed
+  // entirely — DASH is triggered exclusively by the dedicated DASH button
+  // now (see dashButtonPress() below). Ordinary MOVE STICK input can never
+  // accidentally trigger a DASH anymore.
   actionStickZone.addEventListener('touchstart', (e) => {
     e.preventDefault();
     if (actionStickTouchId !== null) return;
     const t = e.changedTouches[0];
     actionStickTouchId = t.identifier;
-    const rect = actionStickZone.getBoundingClientRect();
-    tryMoveStickDoubleTapDash(
-      performance.now(),
-      t.clientX - (rect.left + rect.width / 2),
-      t.clientY - (rect.top + rect.height / 2),
-      rect.width / 2
-    );
     handleActionStickMove(t.clientX, t.clientY);
   }, { passive: false });
 
@@ -2822,24 +2767,15 @@
   const aimStickKnob = document.getElementById('aim-stick-knob');
   const aimStickSector = document.getElementById('aim-stick-sector');
 
-  // Colors the AIM STICK's own ±60deg allowed wedge (relative to the
-  // player's CURRENT facing) as a translucent sector, so it's visually
-  // obvious which angles are actually reachable before even touching the
-  // stick. Recomputed only when baseDir changes (see forceSetBaseDir()),
-  // not every frame. CSS conic-gradient's 0deg points up and increases
-  // clockwise, while BASE_ANGLE's 0 points right and increases clockwise
-  // too (atan2 convention) — so a game-angle of G maps to conic-angle
-  // G+90; the highlighted arc is exactly the same ±HALF_RANGE band
-  // clampToHalfRange() already enforces for real aim input.
+  // PART 9: AIM STICK reaches the full 360deg circle now — there is no
+  // wedge restriction left to visualize, so this just paints the whole
+  // circle as reachable (kept as a function, and still called wherever
+  // baseDir changes, so nothing else needs to know the restriction is
+  // gone).
   function updateAimSectorOverlay() {
-    const gameDeg = BASE_ANGLE[player.baseDir] * 180 / Math.PI;
-    const conicCenter = gameDeg + 90;
-    const halfDeg = HALF_RANGE * 180 / Math.PI;
-    const from = conicCenter - halfDeg;
-    aimStickSector.style.background =
-      `conic-gradient(from ${from}deg at 50% 50%, rgba(120,190,255,0.4) 0deg ${halfDeg * 2}deg, transparent ${halfDeg * 2}deg 360deg)`;
+    aimStickSector.style.background = 'rgba(120,190,255,0.12)';
   }
-  updateAimSectorOverlay(); // initial paint for the default baseDir
+  updateAimSectorOverlay(); // initial paint
 
   let aimStickTouchId = null;
   let aimStickMouseDown = false;
@@ -2891,19 +2827,17 @@
   function performNearestAutoAimSnap(now) {
     const target = getNearestAutoAimCandidate();
     if (!target) return;
-    const center = BASE_ANGLE[player.baseDir];
     const angle = Math.atan2(target.y - player.y, target.x - player.x);
-    const offset = clampToHalfRange(angle, center);
-    player.aimOffsetRaw = offset;
-    player.aimOffset = offset;
+    player.aimOffsetRaw = angle; // absolute — PART 9, no wedge clamp
+    player.aimOffset = angle;
+    player.baseDir = angleToBucket(angle); // PART 10: facing follows the snap too
     aimDoubleTapLockUntil = now + AIM_DOUBLE_TAP_LOCK_MS;
     aimDoubleTapTargetIsBoss = target.isBoss;
     aimDoubleTapTargetPoint = { x: target.x, y: target.y };
     aimStickActive = true;
     const rect = aimStickZone.getBoundingClientRect();
     const maxR = rect.width / 2;
-    const finalAngle = center + offset;
-    aimStickKnob.style.transform = `translate(${Math.cos(finalAngle) * maxR * 0.7}px, ${Math.sin(finalAngle) * maxR * 0.7}px)`;
+    aimStickKnob.style.transform = `translate(${Math.cos(angle) * maxR * 0.7}px, ${Math.sin(angle) * maxR * 0.7}px)`;
   }
 
   // Returns true if this press completed a double-tap (and already
@@ -2935,8 +2869,11 @@
       return;
     }
     aimStickActive = false;
-    // Releasing the stick always drops the aim back to the base direction's
-    // center — an un-aimed shot must never fire along a stale angle.
+    // getFinalAimAngle() stops reading aimOffset/aimOffsetRaw entirely the
+    // instant aimStickActive goes false (falls back to BASE_ANGLE[baseDir]
+    // instead) — an un-aimed shot can never fire along a stale angle. These
+    // are reset to 0 purely as inert bookkeeping, not because 0 has any
+    // special meaning while not aiming.
     player.aimOffsetRaw = 0;
     player.aimOffset = 0;
     aimStickKnob.style.transform = 'translate(0px, 0px)';
@@ -2954,23 +2891,21 @@
 
     if (dist < AIM_DEADZONE_PX) {
       // Too close to center to have a reliable direction — keep the last
-      // aim offset and just show the knob near center.
+      // aim angle/facing and just show the knob near center.
       aimStickKnob.style.transform = `translate(${dx * 0.5}px, ${dy * 0.5}px)`;
       return;
     }
 
+    // PART 9: the raw stick angle IS the aim angle now — full 360deg, no
+    // wedge clamp relative to baseDir. PART 10: facing follows it directly.
     const rawAngle = Math.atan2(dy, dx);
-    const center = BASE_ANGLE[player.baseDir];
-    player.aimOffsetRaw = clampToHalfRange(rawAngle, center);
+    player.aimOffsetRaw = rawAngle;
+    player.baseDir = angleToBucket(rawAngle);
+    updateAimSectorOverlay();
 
-    // Knob visually stops at the same ±60 deg wall as the raw input, so
-    // the limit is felt physically under the thumb; the reticle (drawn
-    // from the AUTO-AIM-adjusted effective offset) is what shows any
-    // target snap.
-    const clampedAngle = center + player.aimOffsetRaw;
     const clamped = Math.min(dist, maxR);
-    const nx = (Math.cos(clampedAngle) * clamped) / maxR;
-    const ny = (Math.sin(clampedAngle) * clamped) / maxR;
+    const nx = (Math.cos(rawAngle) * clamped) / maxR;
+    const ny = (Math.sin(rawAngle) * clamped) / maxR;
     aimStickKnob.style.transform = `translate(${nx * maxR * 0.7}px, ${ny * maxR * 0.7}px)`;
   }
 
@@ -3080,9 +3015,44 @@
   fireZone.addEventListener('mousedown', fireStart);
   window.addEventListener('mouseup', fireEnd);
 
-  // DASH no longer has a standalone button/DOM element at all — it is
-  // triggered exclusively by double-tapping a direction on the MOVE
-  // (ACTION) STICK itself (see tryMoveStickDoubleTapDash() below).
+  // ---------- DASH button (PART 17-21) ----------
+  // A dedicated button — the MOVE STICK double-tap gesture is gone (PART
+  // 16). Direction: the current MOVE STICK vector if one is held (allows
+  // diagonals), else the player's current facing (PART 18). Re-triggerable
+  // every DASH_RETRIGGER_INTERVAL_MS, even while a DASH from a previous
+  // press is still travelling — each press just restarts the same single
+  // dash displacement from wherever the player currently is (PART 19/20).
+  // Never starts a NEW dash while FIRE is being held (PART 21) — an
+  // already-in-progress dash is unaffected by FIRE, only a fresh trigger.
+  const dashZone = document.getElementById('dash-zone');
+  const dashButton = document.getElementById('dash-button');
+  const DASH_RETRIGGER_INTERVAL_MS = 200;
+  let lastDashTriggerAt = -Infinity;
+
+  function dashButtonPress(e) {
+    e.preventDefault();
+    dashButton.classList.add('active');
+    const now = performance.now();
+    const knockbackLockedNow = now < player.knockbackUntil;
+    const firingNow = !knockbackLockedNow && (fireHeld || keys.fire);
+    if (firingNow) return; // PART 21
+    if (now - lastDashTriggerAt < DASH_RETRIGGER_INTERVAL_MS) return; // PART 19/20
+    lastDashTriggerAt = now;
+    const kb = getKeyboardVec();
+    const vx = actionStickVec.x + kb.x, vy = actionStickVec.y + kb.y;
+    const mag = Math.hypot(vx, vy);
+    const angle = (mag > ACTION_STICK_DEADZONE) ? Math.atan2(vy, vx) : BASE_ANGLE[player.baseDir];
+    tryStartDash(now, angle);
+  }
+  function dashButtonRelease(e) {
+    if (e) e.preventDefault();
+    dashButton.classList.remove('active');
+  }
+  dashZone.addEventListener('touchstart', dashButtonPress, { passive: false });
+  dashZone.addEventListener('touchend', dashButtonRelease, { passive: false });
+  dashZone.addEventListener('touchcancel', dashButtonRelease, { passive: false });
+  dashZone.addEventListener('mousedown', dashButtonPress);
+  window.addEventListener('mouseup', dashButtonRelease);
 
   // ---------- FLASH GRENADE ----------
   // A short toss (Canvas-drawn arc object, no image asset) that, once it
@@ -3307,8 +3277,16 @@
     return 1;
   }
 
-  // Prevent default touch scroll/zoom anywhere on the game UI
-  document.addEventListener('touchmove', (e) => { e.preventDefault(); }, { passive: false });
+  // UI relayout: the page itself is now allowed to scroll vertically when
+  // PLAY AREA + CONTROL AREA don't both fit the viewport (see html/body's
+  // touch-action:pan-y in style.css), so a blanket document-wide
+  // touchmove-preventDefault would defeat that. Each individual stick/
+  // button zone already calls preventDefault() in its own touchstart/
+  // touchmove handler AND carries touch-action:none in CSS, which is
+  // sufficient on its own to stop a drag on THAT control from also
+  // panning the page — no global handler needed. Pinch-zoom is still
+  // blocked (the viewport meta tag's user-scalable=no already prevents
+  // it; this is just defense in depth for browsers that ignore that).
   document.addEventListener('gesturestart', (e) => { e.preventDefault(); });
 
   // ---------- Bullets ----------
@@ -3550,23 +3528,35 @@
     const mag = Math.hypot(vx, vy);
     if (mag > 1) { vx /= mag; vy /= mag; }
 
-    const moving = mag > ACTION_STICK_DEADZONE;
-    // The reversed facing from a just-completed 2-dash chain is held for a
-    // brief window (FACING_LOCK_MS) even if the stick is still pushed the
-    // original way, so the reversal is actually visible — see updateDash().
-    if (moving && now >= player.facingLockUntil) {
-      const moveAngle = Math.atan2(vy, vx);
-      setBaseDir(stickAngleToBucket(moveAngle, player.baseDir));
-    }
-    player.moving = moving && !player.dashing;
-
-    updateDash(now); // may override player.x for the duration of a DASH
     // Knockback lockout — deliberately short (a few hundred ms, not a full
     // stun), but while it's active MOVE/AIM/FIRE are ALL suppressed, not
     // just movement: a player who gets knocked back must not be able to
     // keep the pressure on by simply re-aiming and firing again the instant
     // the shove itself finishes resolving.
     const knockbackLocked = now < player.knockbackUntil;
+    // PART 7/8/25: holding FIRE forces an immediate, full stop — no
+    // translation, no walk animation — regardless of MOVE STICK input,
+    // computed up front so both facing and the actual movement/animation
+    // gating below agree on it. Does not touch an already-in-progress DASH
+    // (a self-contained burst — see PART 21, which instead stops a NEW dash
+    // from starting while this is true).
+    const isFiringHeld = !knockbackLocked && (fireHeld || keys.fire);
+
+    const moveStickPushed = mag > ACTION_STICK_DEADZONE;
+    // PART 9/10: facing follows the AIM STICK whenever it's actively
+    // engaged (dragging, or a double-tap snap still locked in) — see
+    // handleAimStickMove()/performNearestAutoAimSnap(), which update
+    // player.baseDir directly. MOVE STICK only drives facing the rest of
+    // the time, exactly as before.
+    const aimEngaged = aimStickActive || now < aimDoubleTapLockUntil;
+    if (!aimEngaged && moveStickPushed) {
+      const moveAngle = Math.atan2(vy, vx);
+      setBaseDir(stickAngleToBucket(moveAngle, player.baseDir));
+    }
+    const moving = moveStickPushed && !player.dashing && !isFiringHeld;
+    player.moving = moving;
+
+    updateDash(now); // may override player.x for the duration of a DASH
     if (!player.dashing && moving && !knockbackLocked) {
       player.x += vx * player.speed * dt;
       player.y += vy * player.speed * dt;
@@ -3589,10 +3579,11 @@
       cameraY = 0;
     }
 
-    // Firing — direction comes from getFinalAimAngle() (AIM STICK offset applied
-    // to the current base facing), never from movement. Suppressed entirely
-    // during knockbackLocked, same as MOVE/AIM.
-    const wantsFire = !knockbackLocked && (fireHeld || keys.fire);
+    // Firing — direction comes from getFinalAimAngle() (the AIM STICK's own
+    // absolute angle while aiming, else the current base facing), never
+    // from movement. Suppressed entirely during knockbackLocked, same as
+    // MOVE/AIM.
+    const wantsFire = isFiringHeld;
     if (wantsFire && now - lastFireTime >= FIRE_INTERVAL) {
       lastFireTime = now;
       spawnBullet();
@@ -4077,12 +4068,10 @@
       img = dashSprites[player.dashDir];
     } else if (player.moving) {
       // Display-only change: ordinary MOVE STICK movement (not a DASH burst)
-      // now shows a genuine 3-frame walk cycle for NORTH/WEST/EAST
-      // (player.baseDir 'up'/'left'/'right'), instead of reusing the static
-      // DASH-pose sprite. SOUTH ('down') is untouched and keeps reusing the
-      // DASH artwork exactly as before — this request only covers the other
-      // three directions. Pure rendering — speed/distance/invulnerability/
-      // the double-tap DASH trigger itself are all untouched (see
+      // now shows a genuine 3-frame walk cycle for all 4 directions
+      // (SOUTH's own 3rd frame completed the set in the 2nd image batch),
+      // instead of reusing the static DASH-pose sprite. Pure rendering —
+      // speed/distance/invulnerability/DASH itself are all untouched (see
       // updateDash()/player.dashing above, which still takes priority when a
       // real DASH is in progress).
       const walkSet = walkSprites[player.baseDir];
@@ -4345,28 +4334,36 @@
 
   // DARK PHASE: GABRIEL's body is intentionally never drawn here — no
   // silhouette, no outline of any color, nothing that could read as a
-  // white/gray halo. Only the extracted eye-glow image (see
-  // assets/boss/dark_phase_eyes_build_meta.json — cropped straight out of
-  // the previously-attached DARK PHASE render, not a Canvas-drawn design),
+  // white/gray halo. Only the direction-appropriate head image (see
+  // assets/boss/darkphase_heads_build_meta.json — each one alpha-cropped
+  // straight out of its own attached photo, never a Canvas-drawn design),
   // positioned via getDarkPhaseHeadScreenPos()'s same scale/anchor so it
   // always sits exactly on top of boss.x/boss.y as the STALK/CLOSE IN/
   // PAUSE/LUNGE/DISENGAGE AI actually moves them (see updateBossDarkPhase()
-  // and its per-substate helpers) — a real glowing point creeping through
-  // the dark, not a static effect. During the brief PAUSE telegraph beat
-  // right before LUNGE, the SAME image is drawn through a temporary
-  // brightness filter — a pixel-value rescale, never a new shape or an
-  // added light source. The screen-darken overlay itself is drawn
-  // separately, UNDER the player/bullets/this eye (see draw()), so it can
-  // go near-total-black without also hiding anything that must stay
-  // visible — see darkPhaseOverlayAlpha/updateDarkPhaseOverlay().
+  // and its per-substate helpers) — a real head creeping through the dark,
+  // not a static effect. During the brief PAUSE telegraph beat right before
+  // LUNGE, the SAME image is drawn through a temporary brightness filter —
+  // a pixel-value rescale, never a new shape or an added light source. The
+  // screen-darken overlay itself is drawn separately, UNDER the
+  // player/bullets/this head (see draw()), so it can go near-total-black
+  // without also hiding anything that must stay visible — see
+  // darkPhaseOverlayAlpha/updateDarkPhaseOverlay().
   function drawBossDarkPhase(now) {
-    if (!(darkPhaseEyesImg.complete && darkPhaseEyesImg.naturalWidth > 0)) return;
-    const anchor = getDarkPhaseHeadScreenPos();
-    const drawX = anchor.x - DARKPHASE_EYES_DISPLAY_W / 2;
-    const drawY = anchor.y - DARKPHASE_EYES_DISPLAY_H / 2;
+    const anchor = getDarkPhaseHeadScreenPos(); // same single anchor point for every direction — never moves independently of this
+    const dirKey = DIR_TO_BOSS_KEY[boss.dir]; // 'north' | 'south' | 'east' | 'west'
+    const img = darkPhaseHeadImgs[dirKey];
+    const m = DARKPHASE_HEAD_METRICS[dirKey];
+    if (!img || !m || !img.complete || img.naturalWidth <= 0) return;
     ctx.save();
     if (boss.darkPhaseSubState === 'pause') ctx.filter = 'brightness(1.45)';
-    ctx.drawImage(darkPhaseEyesImg, drawX, drawY, DARKPHASE_EYES_DISPLAY_W, DARKPHASE_EYES_DISPLAY_H);
+    // Anchor on the image's OWN eye/head-center offset (not its bbox
+    // center), so the visible eye (or, for north's eyeless back-of-head
+    // photo, its equivalent head-center point) lands exactly on the same
+    // point isAimedAtDarkPhaseHead() checks against, whichever direction is
+    // showing.
+    const drawX = anchor.x - m.eyeOffsetScaledX;
+    const drawY = anchor.y - m.eyeOffsetScaledY;
+    ctx.drawImage(img, drawX, drawY, m.displayW, m.displayH);
     ctx.restore();
   }
 
