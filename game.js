@@ -98,6 +98,28 @@
   const relaxedSprite = { down: new Image() };
   relaxedSprite.down.src = 'assets/alexandre/down_relaxed.png';
 
+  // NORTH/WEST/EAST ordinary-walk 3-frame cycles (photo-sourced, aligned onto
+  // the same shared 384x340 canvas/foot-baseline/center convention as every
+  // other player frame — see assets/alexandre/walk_north_west_build_meta.json
+  // and walk_east_build_meta.json for the exact per-frame crop/scale/anchor
+  // measurements). SOUTH ('down') is intentionally not part of this set and
+  // keeps reusing dashSprites.down exactly as before.
+  const walkSprites = {
+    up: [new Image(), new Image(), new Image()],
+    left: [new Image(), new Image(), new Image()],
+    right: [new Image(), new Image(), new Image()],
+  };
+  walkSprites.up[0].src = 'assets/alexandre/walk_north_1.png';
+  walkSprites.up[1].src = 'assets/alexandre/walk_north_2.png';
+  walkSprites.up[2].src = 'assets/alexandre/walk_north_3.png';
+  walkSprites.left[0].src = 'assets/alexandre/walk_west_1.png';
+  walkSprites.left[1].src = 'assets/alexandre/walk_west_2.png';
+  walkSprites.left[2].src = 'assets/alexandre/walk_west_3.png';
+  walkSprites.right[0].src = 'assets/alexandre/walk_east_1.png';
+  walkSprites.right[1].src = 'assets/alexandre/walk_east_2.png';
+  walkSprites.right[2].src = 'assets/alexandre/walk_east_3.png';
+  const PLAYER_WALK_FRAME_PERIOD_MS = 260; // same cadence as boss WALK_FRAME_PERIOD_MS
+
   // ---------- Boss sprite loading ----------
   // 13 pre-aligned frames (built offline via alpha-crop + uniform rescale +
   // foot-baseline/center-of-mass anchoring onto one shared 700x920 canvas —
@@ -4055,18 +4077,28 @@
       img = dashSprites[player.dashDir];
     } else if (player.moving) {
       // Display-only change: ordinary MOVE STICK movement (not a DASH burst)
-      // now also shows the direction-matched DASH artwork as its walking
-      // pose, instead of the static AIM-pose sprite it used to reuse. Pure
-      // rendering — speed/distance/invulnerability/the double-tap DASH
-      // trigger itself are all untouched (see updateDash()/player.dashing
-      // above, which still takes priority when a real DASH is in progress).
-      img = dashSprites[player.baseDir];
+      // now shows a genuine 3-frame walk cycle for NORTH/WEST/EAST
+      // (player.baseDir 'up'/'left'/'right'), instead of reusing the static
+      // DASH-pose sprite. SOUTH ('down') is untouched and keeps reusing the
+      // DASH artwork exactly as before — this request only covers the other
+      // three directions. Pure rendering — speed/distance/invulnerability/
+      // the double-tap DASH trigger itself are all untouched (see
+      // updateDash()/player.dashing above, which still takes priority when a
+      // real DASH is in progress).
+      const walkSet = walkSprites[player.baseDir];
+      if (walkSet) {
+        const frame = Math.floor(now / PLAYER_WALK_FRAME_PERIOD_MS) % 3;
+        img = walkSet[frame];
+      } else {
+        img = dashSprites[player.baseDir];
+      }
     } else if (player.baseDir === 'down' && player.relaxed) {
       img = relaxedSprite.down;
     } else {
       const pose = currentPose(now);
       img = sprites[pose] && sprites[pose][player.baseDir];
     }
+    window.__game.playerFrame = img ? img.src.slice(img.src.lastIndexOf('/') + 1).replace('.png', '') : null; // debug/verification only
     if (img && img.complete && img.naturalWidth > 0) {
       spriteAspect = img.naturalWidth / img.naturalHeight;
       const drawH = SPRITE_DRAW_H;

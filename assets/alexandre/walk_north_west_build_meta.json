@@ -1,0 +1,176 @@
+{
+  "walk_north_1": {
+    "source": "1fab3a14-image.png",
+    "source_canvas": [
+      518,
+      1280
+    ],
+    "source_bbox": [
+      2,
+      6,
+      516,
+      1277
+    ],
+    "source_center_x": 259.0,
+    "source_foot_y": 1277,
+    "scale": 0.26239181746656176,
+    "paste_xy": [
+      135,
+      1
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 203.0,
+    "unclamped_paste_x": 135,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5
+  },
+  "walk_north_2": {
+    "source": "504db984-image.png",
+    "source_canvas": [
+      491,
+      1280
+    ],
+    "source_bbox": [
+      1,
+      5,
+      488,
+      1276
+    ],
+    "source_center_x": 244.5,
+    "source_foot_y": 1276,
+    "scale": 0.26239181746656176,
+    "paste_xy": [
+      139,
+      1
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 203.0,
+    "unclamped_paste_x": 139,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5
+  },
+  "walk_north_3": {
+    "source": "2a5d60cb-image.png",
+    "source_canvas": [
+      535,
+      1280
+    ],
+    "source_bbox": [
+      2,
+      4,
+      531,
+      1277
+    ],
+    "source_center_x": 266.5,
+    "source_foot_y": 1277,
+    "scale": 0.2619795758051846,
+    "paste_xy": [
+      133,
+      1
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 203.0,
+    "unclamped_paste_x": 133,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5
+  },
+  "walk_west_1": {
+    "source": "6ce42664-image.png",
+    "source_canvas": [
+      1206,
+      1206
+    ],
+    "source_bbox": [
+      108,
+      59,
+      904,
+      1164
+    ],
+    "source_center_x": 506.0,
+    "source_foot_y": 1164,
+    "scale": 0.3018099547511312,
+    "paste_xy": [
+      0,
+      -15
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 147.75,
+    "unclamped_paste_x": -5,
+    "horizontal_clamp_applied": true,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5
+  },
+  "walk_west_2": {
+    "source": "c7494b1a-image.png",
+    "source_canvas": [
+      1206,
+      1206
+    ],
+    "source_bbox": [
+      106,
+      47,
+      861,
+      1147
+    ],
+    "source_center_x": 483.5,
+    "source_foot_y": 1147,
+    "scale": 0.30318181818181816,
+    "paste_xy": [
+      1,
+      -12
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 147.75,
+    "unclamped_paste_x": 1,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5
+  },
+  "walk_west_3": {
+    "source": "4478c2fd-image.png",
+    "source_canvas": [
+      1206,
+      1206
+    ],
+    "source_bbox": [
+      118,
+      58,
+      858,
+      1164
+    ],
+    "source_center_x": 488.0,
+    "source_foot_y": 1164,
+    "scale": 0.3015370705244123,
+    "paste_xy": [
+      1,
+      -15
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 147.75,
+    "unclamped_paste_x": 1,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5
+  }
+}

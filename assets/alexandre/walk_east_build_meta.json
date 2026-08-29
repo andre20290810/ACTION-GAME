@@ -1,0 +1,98 @@
+{
+  "walk_east_1": {
+    "source": "1b4ec40d-image.png",
+    "source_canvas": [
+      1206,
+      1206
+    ],
+    "source_bbox": [
+      328,
+      62,
+      1131,
+      1160
+    ],
+    "source_center_x": 729.5,
+    "source_foot_y": 1160,
+    "scale": 0.30373406193078323,
+    "paste_xy": [
+      16,
+      -16
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 238.0,
+    "unclamped_paste_x": 16,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5,
+    "rendered_bbox_cx": 237.0,
+    "rendered_foot_y": 335,
+    "rendered_height": 332
+  },
+  "walk_east_2": {
+    "source": "11b4046c-image.png",
+    "source_canvas": [
+      1206,
+      1206
+    ],
+    "source_bbox": [
+      408,
+      40,
+      1144,
+      1136
+    ],
+    "source_center_x": 776.0,
+    "source_foot_y": 1136,
+    "scale": 0.30428832116788324,
+    "paste_xy": [
+      2,
+      -10
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 238.0,
+    "unclamped_paste_x": 2,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5,
+    "rendered_bbox_cx": 238.0,
+    "rendered_foot_y": 335,
+    "rendered_height": 333
+  },
+  "walk_east_3": {
+    "source": "0f9d0986-image.png",
+    "source_canvas": [
+      1206,
+      1206
+    ],
+    "source_bbox": [
+      387,
+      56,
+      1139,
+      1156
+    ],
+    "source_center_x": 763.0,
+    "source_foot_y": 1156,
+    "scale": 0.30318181818181816,
+    "paste_xy": [
+      7,
+      -14
+    ],
+    "target_foot_y": 336,
+    "target_center_x": 238.0,
+    "unclamped_paste_x": 7,
+    "horizontal_clamp_applied": false,
+    "output_canvas": [
+      384,
+      340
+    ],
+    "target_height_ref": 333.5,
+    "rendered_bbox_cx": 238.0,
+    "rendered_foot_y": 336,
+    "rendered_height": 333
+  }
+}
