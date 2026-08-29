@@ -1,0 +1,36 @@
+{
+  "purpose": "SOUTH WALK REPLACEMENT AND FRAME-COUNT REDUCTION: the previous 3-frame ping-pong south walk (walk_south_1/2/3.png, added the immediately preceding batch) is replaced with a NEW 2-frame south walk (walk_south_1/2.png only). walk_south_3.png is left on disk but is no longer referenced anywhere -- south_idle/south_attack/south_defense are explicitly NOT touched.",
+  "sources": {
+    "frame1": { "file": "assets/boss/source/south_walk3_frame1_raw.png", "native_size": [1127, 1746], "used_for": ["walk_south_1.png"] },
+    "frame2": { "file": "assets/boss/source/south_walk3_frame2_raw.png", "native_size": [1199, 1757], "used_for": ["walk_south_2.png"] }
+  },
+  "processing": "Non-generative only -- no AI redraw/regeneration/mirroring. Neither source carried the white-background fringe bug (edge-pixel brightness rises with alpha, the expected pattern for a dark subject faded against transparency, not a white-composite artifact), so no un-premultiply step was needed. One deterministic step: landmark-based scale+anchor onto the existing shared 700x920 boss canvas, reusing the same target constants as the immediately preceding south-walk batch so this replacement keeps the identical on-canvas size.",
+  "landmark_method": "head_top_y/head_center_x found by scanning alpha>10 within columns x >= 35-40% of native image width (excludes the wing, left-of-center in this pose) for the topmost contiguous opaque row and that row's horizontal center; verified visually per-frame. feet_bottom_y is the single lowest opaque row overall.",
+  "targets_reused_from_previous_batch": {
+    "TARGET_BODY_SPAN_PX": 770.0,
+    "TARGET_CENTER_X": 365.0,
+    "TARGET_FEET_BOTTOM_Y": 899.5,
+    "note": "Re-measured on the immediately-preceding batch's shipped walk_south_1/2.png before overwriting them: both land at head_top_y~129-130, center_x~364.5-365, feet_bottom_y~898-899, confirming these are still the live target -- unchanged from south_walk_build_meta.json / south_walk2_build_meta.json."
+  },
+  "per_new_image_measurement": {
+    "frame1": { "native_head_top_y": 153, "native_head_center_x": 568.0, "native_feet_bottom_y": 1742, "native_body_span": 1589 },
+    "frame2": { "native_head_top_y": 201, "native_head_center_x": 737.5, "native_feet_bottom_y": 1752, "native_body_span": 1551 }
+  },
+  "scale_formula": "scale = TARGET_BODY_SPAN_PX / native_body_span (per-image).",
+  "placement_formula": "paste_x = round(TARGET_CENTER_X - head_center_x*scale); paste_y = round(TARGET_FEET_BOTTOM_Y - feet_bottom_y*scale); pasted onto a fresh transparent 700x920 canvas.",
+  "applied_scale_and_offset": {
+    "frame1": { "scale": 0.4845814977973568, "paste_offset": [90, 55], "clip_left_px": 0 },
+    "frame2": { "scale": 0.49645390070921985, "paste_offset_before_clip": [-1, 30], "clip_left_px": 1, "final_paste_offset": [0, 30] }
+  },
+  "clip_note": "frame2's placement math wanted paste_x=-1 (1px left of the canvas edge) -- the final canvas bbox starts at x=0, i.e. essentially no visible clip (a sub-pixel wing-feather sliver at most).",
+  "verification_on_final_canvas": {
+    "method": "Re-measured head_top_y/head_center_x on the FINAL 700x920 canvas (x>=245px column exclusion) and feet_bottom_y as the overall lowest opaque row.",
+    "frame1": { "head_top_y": 129, "head_center_x": 364.5, "feet_bottom_y": 899 },
+    "frame2": { "head_top_y": 130, "head_center_x": 364.5, "feet_bottom_y": 899 },
+    "note": "Both land within 1px of TARGET_CENTER_X/TARGET_FEET_BOTTOM_Y and within 1px of each other on every axis -- no size/anchor jump between the two frames."
+  },
+  "in_game_scale": "walk_south_1/2 continue to use the existing SOUTH_WALK_SCALE (1.10) render-time multiplier applied uniformly in drawBoss() -- unchanged, not touched by this batch.",
+  "animation_wiring": "bossFrameName()'s SOUTH branch is rewritten from the previous batch's period-4 ping-pong ([1,2,3,2]) to a plain 2-frame alternation (1 -> 2 -> 1 -> 2 ...) via `Math.floor(now / SOUTH_WALK_FRAME_PERIOD_MS) % 2`, using a NEW dedicated constant SOUTH_WALK_FRAME_PERIOD_MS = WALK_FRAME_PERIOD_MS * 1.5 (south walk now switches ~50% slower than the 3-frame directions, since 2 frames at the normal cadence would read as a fast, unnatural flicker). WALK_FRAME_PERIOD_MS itself (used by NORTH/EAST/WEST) is unchanged.",
+  "walk_south_3_disposition": "assets/boss/walk_south_3.png is left on disk untouched but is no longer loaded/referenced by game.js -- removed from BOSS_FRAME_FILES. Not deleted, per instruction not to take destructive action beyond what was asked.",
+  "not_touched": "south_idle.png, attack_south_release.png, preattack_south, defense_* are unmodified by this batch."
+}

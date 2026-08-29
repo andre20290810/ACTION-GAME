@@ -1,4 +1,4 @@
-# Boss character asset manifest — all 27 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9 + batch 10 + batch 11 + batch 12)
+# Boss character asset manifest — all 27 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9 + batch 10 + batch 11 + batch 12) plus batch 13/14/15's replacement/addition images (tracked in their own build-meta JSON files, listed inline below)
 
 All 27 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
@@ -539,3 +539,104 @@ ATTACK release-frame REPLACEMENT (`attack_east_release.png`,
 - Attack timing/hitbox/damage/range/duration/cooldown/AI/direction logic
   in `game.js` is unchanged — only the two image files were replaced,
   under their existing filenames.
+
+Batch 14 — NORTH WALK 3-frame REPLACEMENT (`walk_north_1/2/3.png`) + SOUTH
+WALK REPLACEMENT AND FRAME-COUNT REDUCTION (`walk_south_1/2.png`, 2 frames
+instead of 3), STRAIGHT CLAW attack explicitly deferred to a later batch:
+
+- NORTH WALK: 3 new source images (`assets/boss/source/north_walk2_frame1/2/3_raw.png`,
+  1120-1199 x 1823-1926) replace `walk_north_1/2/3.png` one-for-one. All 3
+  carried the same white-background-composite alpha bug seen in earlier
+  batches (brightness climbing toward white as alpha drops); fixed with the
+  same deterministic un-premultiply-against-white formula, confirmed flat
+  brightness across mid/high alpha and no visible fringe on a dark-bg
+  composite afterward. `north_idle.png`/`attack_north.png`/`defense_north.png`
+  are explicitly NOT touched.
+- NORTH landmark-matched (head_top_y/head_center_x/feet_bottom_y, wing
+  excluded via column range) to the CURRENTLY SHIPPED walk_north_1/2/3's own
+  measured size (re-verified directly on those files, which itself matched
+  the older north_walk2_build_meta.json's target within 1-2px) — same target
+  constants reused (body span 718, center_x=337, feet_bottom_y=900).
+  Verified within 1px of target and of each other across all 3 frames. One
+  frame needed a 4px top crop (wing-tip only) to fit the canvas. Full
+  measurements: `assets/boss/north_walk3_build_meta.json`.
+- NORTH animation is UNCHANGED — still plain 1 -> 2 -> 3 -> 1 wrap via
+  `WALK_FRAME_PERIOD_MS` (unchanged value); only the 3 images were replaced.
+- SOUTH WALK: 2 new source images (`assets/boss/source/south_walk3_frame1/2_raw.png`,
+  1127-1199 x 1746-1757, genuine straight alpha, no fringe fix needed)
+  replace the previous batch's 3-frame `walk_south_1/2/3.png` with a
+  2-frame `walk_south_1/2.png`. `walk_south_3.png` is left on disk but is
+  no longer referenced anywhere (removed from `BOSS_FRAME_FILES`) — not
+  deleted, since deletion wasn't requested. `south_idle.png`/`south_attack*`/
+  `defense_*` are explicitly NOT touched.
+- SOUTH landmark-matched to the immediately-preceding south-walk batch's own
+  target (body span 770, center_x=365, feet_bottom_y=899.5), re-verified on
+  those shipped files before overwriting them. Verified within 1px of
+  target and of each other across both frames. Full measurements:
+  `assets/boss/south_walk3_build_meta.json`.
+- SOUTH animation changed from the previous batch's period-4 ping-pong
+  ([1,2,3,2]) to a plain 2-frame alternation (1 -> 2 -> 1 -> 2 ...), and now
+  runs on a NEW dedicated constant `SOUTH_WALK_FRAME_PERIOD_MS =
+  WALK_FRAME_PERIOD_MS * 1.5` (~50% slower than NORTH/EAST/WEST) so
+  alternating only 2 frames doesn't read as an unnaturally fast flicker.
+  `WALK_FRAME_PERIOD_MS` itself (NORTH/EAST/WEST) is unchanged.
+- STRAIGHT CLAW attack images/logic are explicitly deferred to the next
+  batch, per instruction — nothing attack-related beyond the already-shipped
+  EAST/WEST release frames was touched here.
+- This batch was intentionally left UNCOMMITTED in the working tree per
+  explicit instruction (more images/logic — the STRAIGHT CLAW attack — are
+  coming in a follow-up batch before commit/push).
+
+Batch 15 — GABRIEL STRAIGHT CLAW counterattack: 2 new dedicated images
+(`assets/boss/straight_claw_windup.png`, `straight_claw_release.png`),
+committed together with batch 14's previously-uncommitted north/south walk
+work plus this same turn's STEALTH visual and 2-area stage changes:
+
+- 2 new source images (`assets/boss/source/straight_claw_windup_raw.png`,
+  1151x2051; `assets/boss/source/straight_claw_release_raw.png`, 1260x2020)
+  processed into a single non-directional windup/release pose pair, used
+  regardless of GABRIEL's facing when the counter triggers (only 2 images
+  were supplied, not a per-direction set) — the attack's actual direction is
+  computed independently from GABRIEL's position to the player's locked
+  position at release, decoupled from which way this sprite visually faces.
+- `straight_claw_windup_raw.png` carried no white-fringe issue (edge
+  brightness roughly flat across the alpha range) and was used as-is.
+  `straight_claw_release_raw.png` carried the same white-background-composite
+  alpha bug seen in earlier batches (brightness climbing from ~97 at high
+  alpha to ~220 at low alpha); fixed with the same deterministic
+  un-premultiply-against-white formula used throughout this project,
+  confirmed flat afterward with no residual fringe on a dark-bg composite.
+  The unblended intermediate was not persisted separately, matching this
+  project's established convention.
+- Neither image's silhouette matches the simple "wing entirely on one side"
+  shape used for walk/idle art — both have an elaborate crest/wing structure
+  that also reaches upward near the head, so the automated single-column-
+  threshold head-detection method used elsewhere was unreliable here (it
+  kept latching onto a feather/crest tip instead of the actual helmet dome).
+  The helmet dome's topmost point was instead located by manual visual
+  inspection for both images, then verified by directly transforming each
+  image's own chosen landmark point through its own computed scale+offset
+  (not a generic re-scan) and confirming the result lands on the dome.
+- Reused the existing front-facing GABRIEL body-size target (body span
+  770.0, center_x 365.0, feet_bottom_y 899.5 — the same reference used for
+  south_walk/south_idle), since both new images are front-facing full-body
+  poses. Both landed within 0.5px of this target and of each other on
+  computed head_top_y/center_x, and both shipped at feet_bottom_y=899
+  (target 899.5) — confirming no size/position jump between windup and
+  release. release's placement math wanted to place its own top ~138px
+  above the canvas (its wing/crest extends further above the head relative
+  to body height than windup's does); rather than shrinking the body to fit
+  the wing, the resized image's top 138px was cropped instead (verified by
+  direct coordinate transform that head/body/limbs/claw all stay
+  comfortably below the crop line) — only the very top of the flared wing
+  crest is trimmed. Full measurements: `assets/boss/straight_claw_build_meta.json`.
+- No AI generation/regeneration/completion/alternate-pose-generation/
+  mirror-substitution/cross-direction-generation was used anywhere in this
+  batch — only crop/resize/transparent-padding/alpha-cleanup/edge-cleanup/
+  source-rect-adjustment/scale-adjustment/anchor-adjustment, applied to the
+  2 attached source images themselves.
+- Existing attacks (normal CLAW, ARC CLAW SLASH, DARK PHASE attack,
+  DEFENSE) are unmodified — STRAIGHT CLAW is a fully separate, additional
+  boss state (`boss.state === 'straightclaw'`) with its own dedicated
+  timing/hitbox/knockback constants (see `game.js`'s `STRAIGHT_CLAW_*`
+  constants and `updateBossStraightClaw()`/`spawnStraightClaw()`).

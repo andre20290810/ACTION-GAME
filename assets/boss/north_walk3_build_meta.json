@@ -1,0 +1,40 @@
+{
+  "purpose": "NORTH WALK 3-frame REPLACEMENT (walk_north_1/2/3.png) — new source art, same landmark-matching methodology as the previous north walk batches. north_idle/north_attack/north_defense are explicitly NOT touched.",
+  "sources": {
+    "frame1": { "file": "assets/boss/source/north_walk2_frame1_raw.png", "native_size": [1199, 1926], "used_for": ["walk_north_1.png"] },
+    "frame2": { "file": "assets/boss/source/north_walk2_frame2_raw.png", "native_size": [1137, 1903], "used_for": ["walk_north_2.png"] },
+    "frame3": { "file": "assets/boss/source/north_walk2_frame3_raw.png", "native_size": [1120, 1823], "used_for": ["walk_north_3.png"] }
+  },
+  "processing": "Non-generative only -- no AI redraw/regeneration/mirroring. All 3 sources carried the SAME white-background-composite alpha bug as earlier batches (DARK PHASE, the first south-walk batch): bucketing edge pixels (alpha in (3,250)) by alpha value showed mean brightness falling from ~226-228 (alpha 3-30) down to ~58-80 (alpha 200-250) -- climbing toward white as alpha drops is the signature of a flatten-over-white-then-rethreshold pipeline that never un-premultiplied the RGB. Fixed via the same deterministic 'un-premultiply against a known white background' formula used previously: for every pixel with alpha>0, true color F = clip((RGB - (1-alpha/255)*255) / (alpha/255), 0, 255); alpha kept as-is; alpha==0 zeroed. Re-bucketed after the fix: brightness roughly flat (~24-67) across the mid/high alpha range instead of climbing toward white; confirmed visually with a dark-background composite (no fringe on the wing feather edges). The unblended intermediates were not persisted separately -- only the original raw sources and the final composited walk_north_N.png files are kept, matching how the earlier south-walk unblend batch documented (not stored) its own intermediate.",
+  "landmark_method": "head_top_y/head_center_x found by scanning alpha>10 within columns x < ~50-55% of native image width (excludes the wing, which sits right-of-center/back in this pose) for the topmost contiguous opaque row and that row's horizontal center; verified visually per-frame by marking the computed point and confirming it lands on the crown of the head. feet_bottom_y is the single lowest opaque row overall.",
+  "targets_reused_from_existing_shipped_assets": {
+    "TARGET_HEAD_TOP_Y": 182.0,
+    "TARGET_HEAD_CENTER_X": 337.0,
+    "TARGET_FEET_BOTTOM_Y": 900.0,
+    "TARGET_BODY_SPAN_PX": 718.0,
+    "note": "Re-measured directly on the CURRENTLY SHIPPED walk_north_1/2/3.png (rather than trusting the older north_walk2_build_meta.json alone) to confirm the live target: all 3 shipped frames land within 1px of head_top_y=182-183/head_center_x=336.5-337/feet_bottom_y=898-899, matching that older meta's own target_head_top_y=182/target_head_center_x=337.0/target_feet_bottom_y=900/target_body_span=718 (originally derived from north_idle.png) almost exactly -- so this batch reuses those same constants to preserve the pre-replacement on-canvas size."
+  },
+  "per_new_image_measurement": {
+    "frame1": { "native_head_top_y": 349, "native_head_center_x": 566.0, "native_feet_bottom_y": 1923, "native_body_span": 1574 },
+    "frame2": { "native_head_top_y": 390, "native_head_center_x": 478.5, "native_feet_bottom_y": 1899, "native_body_span": 1509 },
+    "frame3": { "native_head_top_y": 352, "native_head_center_x": 535.0, "native_feet_bottom_y": 1820, "native_body_span": 1468 }
+  },
+  "scale_formula": "scale = TARGET_BODY_SPAN_PX / native_body_span (per-image).",
+  "placement_formula": "paste_x = round(TARGET_HEAD_CENTER_X - head_center_x*scale); paste_y = round(TARGET_FEET_BOTTOM_Y - feet_bottom_y*scale); pasted onto a fresh transparent 700x920 canvas.",
+  "applied_scale_and_offset": {
+    "frame1": { "scale": 0.45616264294790343, "paste_offset": [79, 23], "clip_top_px": 0 },
+    "frame2": { "scale": 0.4758117958913188, "paste_offset_before_clip": [109, -4], "clip_top_px": 4, "final_paste_offset": [109, 0] },
+    "frame3": { "scale": 0.4891008174386921, "paste_offset": [75, 10], "clip_top_px": 0 }
+  },
+  "clip_note": "frame2's placement math wanted paste_y=-4 (4px above the canvas top) -- cropped the resized image's top 4px (a wing feather tip only, imperceptible on a 920px-tall canvas) before pasting at paste_y=0 rather than shrinking the body match. frame1/frame3 needed no clipping.",
+  "verification_on_final_canvas": {
+    "method": "Re-measured head_top_y/head_center_x on the FINAL 700x920 canvas (x<385px column exclusion, matching how the live target itself was re-verified) and feet_bottom_y as the overall lowest opaque row.",
+    "frame1": { "head_top_y": 182, "head_center_x": 337.0, "feet_bottom_y": 900 },
+    "frame2": { "head_top_y": 181, "head_center_x": 336.5, "feet_bottom_y": 899 },
+    "frame3": { "head_top_y": 182, "head_center_x": 336.0, "feet_bottom_y": 900 },
+    "note": "All three land within 1px of TARGET and of each other on every axis -- no per-frame jump in size, position, or foot anchor."
+  },
+  "in_game_scale": "walk_north_1/2/3 continue to use the boss's normal uniform BOSS_DRAW_H/BOSS_CANVAS_W/H rendering plus the existing small NORTH_BOUNCE_AMPLITUDE draw-time bounce -- neither was touched by this batch.",
+  "animation_wiring": "bossFrameName()'s NORTH branch is UNCHANGED by this batch -- still the plain 1 -> 2 -> 3 -> 1 wrap-around via `Math.floor(now / WALK_FRAME_PERIOD_MS) % 3`, same WALK_FRAME_PERIOD_MS as before. Only the 3 image files were replaced.",
+  "not_touched": "north_idle.png, attack_north.png, defense_north.png are unmodified by this batch."
+}

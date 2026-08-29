@@ -1,0 +1,34 @@
+{
+  "purpose": "STRAIGHT CLAW counterattack — 2 new dedicated images (straight_claw_windup.png, straight_claw_release.png), single non-directional pose pair used regardless of GABRIEL's facing when the counter triggers (only 2 images were supplied, not a per-direction set, matching the instruction's intent of a fixed 'special move' pose).",
+  "sources": {
+    "windup": { "file": "assets/boss/source/straight_claw_windup_raw.png", "native_size": [1151, 2051], "used_for": ["straight_claw_windup.png"] },
+    "release": { "file": "assets/boss/source/straight_claw_release_raw.png", "native_size": [1260, 2020], "used_for": ["straight_claw_release.png"] }
+  },
+  "processing": "Non-generative only -- no AI redraw/regeneration/mirroring/other-pose-substitution. windup carried no white-fringe issue (edge brightness roughly flat, ~67-78, across the alpha range). release carried the same white-background-composite bug seen in earlier batches (brightness climbing from ~97 at high alpha to ~220 at low alpha); fixed with the same deterministic un-premultiply-against-white formula used throughout this project, confirmed flat afterward (~30-84 across the alpha range) with no residual fringe on a dark-bg composite. The unblended intermediate was not persisted separately, matching this project's established convention.",
+  "landmark_method": "Neither image's silhouette matches the simple 'wing entirely on one side' shape used for walk/idle art -- both have an elaborate crest/wing structure that also reaches upward near the head, so the generic single-column-threshold method used elsewhere was unreliable here (it kept latching onto a feather/crest tip instead of the actual helmet dome). Instead the smooth white helmet dome's own topmost point was located by visual inspection (marking candidate points and confirming placement against the source render), the same anatomical landmark used everywhere else in this project -- just found manually instead of via an automated column-scan for these two specific poses. feet_bottom_y is the single lowest opaque row overall, as elsewhere.",
+  "reference_target": {
+    "TARGET_BODY_SPAN_PX": 770.0,
+    "TARGET_CENTER_X": 365.0,
+    "TARGET_FEET_BOTTOM_Y": 899.5,
+    "note": "Reused the same established front-facing GABRIEL body-size target used for south_walk/south_idle (and originally derived from the pre-existing SOUTH WALK art) -- both new images are front-facing full-body poses, so matching this same reference keeps STRAIGHT CLAW's on-canvas body size consistent with every other front-facing GABRIEL render, per instruction A-18's requirement to compare against existing GABRIEL images rather than raw pixel dimensions."
+  },
+  "per_image_measurement": {
+    "windup": { "native_head_top_y": 245, "native_head_center_x": 700, "native_feet_bottom_y": 2048, "native_body_span": 1803 },
+    "release": { "native_head_top_y": 520, "native_head_center_x": 545, "native_feet_bottom_y": 2017, "native_body_span": 1497 }
+  },
+  "scale_formula": "scale = TARGET_BODY_SPAN_PX / native_body_span (per-image).",
+  "placement_formula": "paste_x = round(TARGET_CENTER_X - head_center_x*scale); paste_y = round(TARGET_FEET_BOTTOM_Y - feet_bottom_y*scale); pasted onto a fresh transparent 700x920 canvas.",
+  "applied_scale_and_offset": {
+    "windup": { "scale": 0.42706600110926235, "paste_offset": [66, 25], "clip_top_px": 0 },
+    "release": { "scale": 0.5143620574482298, "paste_offset_before_clip": [85, -138], "clip_top_px": 138, "final_paste_offset": [85, 0] }
+  },
+  "clip_note": "release's placement math wanted paste_y=-138 -- this pose's wing/crest extends much further above the head (relative to body height) than windup's does, so matching the same body scale pushes the wingtip 138px above the canvas top. Cropped the resized image's top 138px (verified by direct coordinate transform, not just visual spot-check, that the head/body/limbs/claw are all comfortably below the crop line and land at the same target as windup) rather than shrinking the body to fit the wing -- confirmed visually afterward: full head, torso, both arms, the extended claw, and both legs/feet are intact; only the very top of the flared wing crest is trimmed, and it reads naturally (does not look cut off) against a dark background.",
+  "verification": {
+    "method": "Directly transformed each image's own chosen native landmark point through its own scale+paste_offset (not a generic re-scan, which is unreliable for these two poses per landmark_method above) and confirmed the result, then marked that exact computed point on the final canvas image and visually confirmed it sits on the helmet dome.",
+    "windup": { "computed_head_top_y": 129.6, "computed_head_center_x": 365.0, "shipped_feet_bottom_y": 899 },
+    "release": { "computed_head_top_y": 129.47, "computed_head_center_x": 365.33, "shipped_feet_bottom_y": 899 },
+    "note": "Both land within 0.5px of TARGET_HEAD_TOP_Y (129.5) and TARGET_CENTER_X (365.0), and both shipped feet_bottom_y land at 899 (target 899.5) -- windup and release read as the same body size/position, confirming no jump (A-19) between the two phases."
+  },
+  "in_game_scale": "Rendered with the boss's normal uniform BOSS_DRAW_H/BOSS_CANVAS_W/H sizing, same as every other 700x920-canvas GABRIEL frame -- no extra per-image scale multiplier was needed since the landmark-matching above already targets the same body size as the rest of the roster.",
+  "non_directional": "Both images are used regardless of boss.dir/facing when the STRAIGHT CLAW counter triggers -- only 2 images were supplied (not 8 for 4 directions), matching instruction A-6's singular 'windup専用画像' framing. The actual attack DIRECTION (where the hitbox travels) is computed independently from GABRIEL's position to the player's locked position at release, per A-10/A-11 -- it does not depend on which way this sprite visually faces."
+}

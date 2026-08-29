@@ -22,6 +22,35 @@
   let cameraY = 0;
   const WORLD_EXTRA_ABOVE_FACTOR = 1.3; // world opens up to 1.3x the screen height taller, post-victory
 
+  // ---------- AREA 1 / AREA 2 vertical stage (SECTION C) ----------
+  // The world is now always exactly 2 screens tall during BOSS MODE: AREA 1
+  // (south, world Y band [0, H] — pixel-identical to the original
+  // single-screen layout) and AREA 2 (north, world Y band [-H, 0]), both
+  // drawn with the SAME background asset (see draw()'s stage-tiling loop) —
+  // never a second image. worldExtraAbove above stays exactly what it was
+  // before this batch (the small post-clear EXIT-hunting bonus space), just
+  // now anchored an extra H further north (beyond AREA 2) rather than
+  // directly above the original screen — see worldScrollUnlocked()/
+  // exitWorldPos(), both re-gated on area2Cleared instead of the old single
+  // boss-death check.
+  let currentArea = 1;
+  let area1Cleared = false;
+  let area2Activated = false;
+  let area2Cleared = false;
+  // Exponential smoothing rate, in 1/seconds (not a plain per-frame
+  // fraction) so the follow speed stays consistent regardless of frame
+  // rate — see the camera update in update(): cameraY moves toward its
+  // target by (1 - e^(-RATE*dt)) of the remaining distance each frame.
+  const CAMERA_FOLLOW_RATE = 6;
+  // World Y of the top edge of the given area's own screen-sized band —
+  // AREA 1's origin is world Y 0 (unchanged from every pre-existing single-
+  // screen coordinate in this file); AREA 2 sits exactly one screen height
+  // further north. Threaded through every function that places or clamps
+  // something relative to "the current area's own screen," so the exact
+  // same relative composition (spawn position, barrel margins, ...) works
+  // identically in both areas with no separate code path per area.
+  function areaTopY(area) { return area === 2 ? -H : 0; }
+
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const rect = playArea.getBoundingClientRect();
@@ -176,7 +205,9 @@
     attack_east_release: 'attack_east_release',
     preattack_south: 'attack_south_release',
     defense_south: 'defense', defense_north: 'defense_north', defense_east: 'defense_east', defense_west: 'defense_west',
-    walk_south_1: 'walk_south_1', walk_south_2: 'walk_south_2', walk_south_3: 'walk_south_3',
+    // SOUTH is a 2-frame cycle now (see south_walk3_build_meta.json) — the
+    // old walk_south_3.png file is left on disk but no longer loaded here.
+    walk_south_1: 'walk_south_1', walk_south_2: 'walk_south_2',
     // NORTH (3-frame) / EAST (2-frame) / WEST (2-frame) walk cycles —
     // fully wired in bossFrameName() below. Supersedes the old single-frame
     // walk_east.png/walk_west.png pair (which had its content swapped from
@@ -185,6 +216,9 @@
     walk_north_1: 'walk_north_1', walk_north_2: 'walk_north_2', walk_north_3: 'walk_north_3',
     walk_east_1: 'walk_east_1', walk_east_2: 'walk_east_2',
     walk_west_1: 'walk_west_1', walk_west_2: 'walk_west_2',
+    // STRAIGHT CLAW counterattack — non-directional, used regardless of
+    // boss.dir (see straight_claw_build_meta.json).
+    straight_claw_windup: 'straight_claw_windup', straight_claw_release: 'straight_claw_release',
   };
   const bossSprites = {};
   let bossSpritesReady = 0;
@@ -424,6 +458,29 @@
   const CLAW_STING_LIFETIME_MS = 380; // quick stab — faster than ARC_CLAW_LIFETIME_MS's full arc
   const CLAW_STING_OVERSHOOT = 1.3; // travels this far past the locked point along the same line, so it reads as a real thrust-through, not a stop-on-a-dime
 
+  // ---------- STRAIGHT CLAW counterattack (guard-break punish) ----------
+  // A dedicated, non-directional special counter — triggers when GABRIEL has
+  // blocked STRAIGHT_CLAW_TRIGGER_GUARDS consecutive shots in a row while in
+  // DEFENSE (see boss.consecutiveGuardedShots / applyBodyHitToBoss()), taking
+  // priority over normal AI. Its own boss.state ('straightclaw') owns the
+  // whole windup->release->recovery sequence via updateBossStraightClaw() —
+  // see the early-return dispatch in updateBoss(), same pattern as
+  // intro/darkphase/teleport — so normal CHASE/ATTACK/DEFENSE movement never
+  // runs during it. The actual hit uses the SAME straight-line, fixed-
+  // rotation motion + oriented-rectangle hitbox as CLAW STING above (a new
+  // 'straightClaw' kind in the shared arcClawSlashes array), never ARC CLAW
+  // SLASH's curved bezier hitbox.
+  const STRAIGHT_CLAW_TRIGGER_GUARDS = 5; // 5th consecutive guarded shot triggers it (1-4 do not)
+  const STRAIGHT_CLAW_WINDUP_MS = 2000; // straight_claw_windup.png shown; no damage/hit/knockback can occur yet
+  const STRAIGHT_CLAW_ATTACK_MS = 400; // straight_claw_release.png shown; the actual straight-line hit travels during this window
+  const STRAIGHT_CLAW_RECOVERY_MS = 600; // straight_claw_release.png still shown; no new hit, GABRIEL still invulnerable
+  const STRAIGHT_CLAW_OVERSHOOT = 1.3; // same convention as CLAW_STING_OVERSHOOT — travels past the locked point so it reads as a real thrust-through
+  const STRAIGHT_CLAW_HIT_HALF_LEN_FWD = 26; // small margin ahead of the line's end point
+  const STRAIGHT_CLAW_HIT_HALF_LEN_BACK = 620; // covers the whole travel back to GABRIEL's own position — a single long thrust, not just its tip
+  const STRAIGHT_CLAW_HIT_HALF_WIDTH = 20; // a hair wider than ARC_CLAW's 16 — this is the single, deliberate blow of a punish counter, not a fast graze
+  const STRAIGHT_CLAW_KNOCKBACK_DISTANCE = 200; // clearly-visible "blown away" distance, in the same band as ARC_CLAW_KNOCKBACK_DISTANCE (170) but a touch stronger since this is the bigger punish hit
+  const STRAIGHT_CLAW_KNOCKBACK_LOCK_MS = 400; // within the requested 300-500ms band
+
   // ---------- Direction bucket mapping (ACTION STICK -> base facing) ----------
   // angle: 0 = right, positive = clockwise (down), atan2(dy, dx), dy-down positive
   function angleToBucket(angle) {
@@ -569,13 +626,22 @@
     forceSetBaseDir(dir);
   }
 
+  // SECTION C: the walkable world now opens up in TWO stages instead of
+  // one — AREA 1 only (pixel-identical to the original single-screen
+  // clamp) until area1Cleared, then AREA 2's own full band once it is
+  // (C-14/C-15 — the invisible north boundary between the two areas), and
+  // finally the small post-clear EXIT-hunting bonus space beyond AREA 2
+  // once area2Cleared too (worldScrollUnlocked(), unchanged in spirit from
+  // before this batch, just re-gated on the new final win condition).
   function clampPlayerToScreen() {
     const halfW = (SPRITE_DRAW_H * spriteAspect) / 2;
     const halfH = SPRITE_DRAW_H / 2;
-    // Before the boss is fully defeated, this is pixel-identical to the
-    // original single-screen clamp (worldScrollUnlocked() is false) — the
-    // extra world space above only becomes walkable post-victory.
-    const topY = worldScrollUnlocked() ? -worldExtraAbove + halfH : halfH;
+    let topY = halfH; // AREA 1 only — identical to the original pre-stage-system clamp
+    if (worldScrollUnlocked()) {
+      topY = -H - worldExtraAbove + halfH;
+    } else if (area1Cleared) {
+      topY = -H + halfH;
+    }
     player.x = Math.max(halfW, Math.min(W - halfW, player.x));
     player.y = Math.max(topY, Math.min(H - halfH, player.y));
   }
@@ -737,7 +803,14 @@
   const DARKPHASE_CLOSEIN_CURVE_RAD = 55 * Math.PI / 180; // how far CLOSE IN's path starts curving away from a straight line to the player
   const DARKPHASE_DISENGAGE_CURVE_RAD = 40 * Math.PI / 180;
   const DARKPHASE_STALK_MIN_DIST = 200, DARKPHASE_STALK_MAX_DIST = 420; // keeps STALK's lateral drift within a believable "circling" band
-  const WALK_FRAME_PERIOD_MS = 260; // south 2-frame alternation period
+  const WALK_FRAME_PERIOD_MS = 260; // NORTH (3-frame wrap) / EAST / WEST (2-frame alternation) walk-cycle period
+  // SOUTH alone gets its own, slower period — it now has only 2 walk
+  // frames (see BOSS_FRAME_FILES/south_walk3_build_meta.json), and
+  // alternating just 2 frames at the same cadence as everyone else's
+  // 3-frame cycle reads as an unnaturally fast flicker, so this runs
+  // ~50% slower instead. NORTH/EAST/WEST keep using WALK_FRAME_PERIOD_MS
+  // unchanged.
+  const SOUTH_WALK_FRAME_PERIOD_MS = WALK_FRAME_PERIOD_MS * 1.5;
   const NORTH_BOUNCE_AMPLITUDE = 4; // px, decorative only (no NORTH walk art)
   const SOUTH_WALK_SCALE = 1.10; // visual-only — SOUTH WALK reads a touch small next to the other directions
   const PRE_ATTACK_SCALE = 1.10; // visual-only — matches SOUTH_ATTACK_SCALE so the telegraph reads the same size as the real release
@@ -913,6 +986,8 @@
     warningUntil: 0,
     defenseAimHits: 0, // valid AUTO-AIM-assisted hits landed during the current DEFENSE
     weakPointConsecutiveHits: 0, // ANY valid weak-point damage hit (auto-aimed or manual) landed during the current DEFENSE
+    consecutiveGuardedShots: 0, // shots successfully BLOCKED (0 damage) during the current DEFENSE — see applyBodyHitToBoss(); resets to 0 on any non-'defense' state transition, same lifecycle as the two counters above
+    straightClawHitSpawned: false, // guards the single spawnStraightClaw() call per 'straightclaw' state — see bossEnterState()/updateBossStraightClaw()
     autoAimHitStreak: 0, // ANY valid AUTO-AIM-assisted damage hit, body or weak point, regardless of state — see registerGlobalAutoAimHit()
     invulnerableUntil: 0, // legacy field — no longer ever set to a nonzero value (4-hit AUTO AIM now triggers DARK PHASE, not a timed window); left in place harmlessly
     closeRangeInvulnUntil: 0, // set by the POINT-BLANK counter — see triggerCloseRangeCounter()
@@ -975,13 +1050,19 @@
       boss.attackHitApplied = false;
       boss.attackProjectileSpawned = false;
     }
-    // The GUARD BREAK and weak-point-streak counters only ever mean
-    // something mid-DEFENSE — reset them the instant any other state
-    // (fresh DEFENSE included, since this covers entering it too) is
-    // entered so a stale count never survives.
+    if (state === 'straightclaw') {
+      boss.straightClawHitSpawned = false;
+    }
+    // The GUARD BREAK, weak-point-streak, and guarded-shot counters only
+    // ever mean something mid-DEFENSE — reset them the instant any other
+    // state (fresh DEFENSE included, since this covers entering it too;
+    // entering 'straightclaw' itself is included here too, satisfying "the
+    // counter resets when the counter starts") is entered so a stale count
+    // never survives.
     if (state !== 'defense') {
       boss.defenseAimHits = 0;
       boss.weakPointConsecutiveHits = 0;
+      boss.consecutiveGuardedShots = 0;
     }
     // Cinematic phases track their own progress by accumulating `dt` inside
     // update() (which PAUSE already skips entirely) rather than by
@@ -1027,8 +1108,9 @@
   }
 
   function spawnBoss(now) {
+    const areaTop = areaTopY(currentArea); // SECTION C: same relative composition in AREA 1 or AREA 2
     boss.x = W / 2;
-    boss.introTargetY = Math.max(BOSS_DRAW_H * 0.55, H * 0.16); // the normal resting spawn spot
+    boss.introTargetY = areaTop + Math.max(BOSS_DRAW_H * 0.55, H * 0.16); // the normal resting spawn spot
     boss.y = boss.introTargetY; // PART 6: no visible slide-in — GABRIEL is silhouette-revealed then lands INSTANTLY, always at this one position
     boss.spawned = true;
     boss.hp = BOSS_HP_MAX;
@@ -1057,7 +1139,7 @@
     // call sites — so nothing can move the player away from this pose
     // before battle actually starts.
     player.x = W * 0.50;
-    player.y = H * 0.80;
+    player.y = areaTop + H * 0.80;
     player.baseDir = 'up';
     player.moving = false;
     player.dashing = false;
@@ -1531,13 +1613,15 @@
     // bossIsInCinematic() also covers intro/threshold/dying/dead: the boss
     // is untargetable throughout every cinematic sequence, not just death.
     if (!boss.spawned || bossIsInCinematic() || boss.state === 'guardbreak') return;
-    // DARK PHASE: total damage immunity — still shows the same realistic
-    // ricochet/spark feedback as an ordinary blocked hit, never a big blue
-    // barrier. Unlike DEFENSE (which barrel explosions always bypass), DARK
-    // PHASE blocks EVEN barrel explosions — see applyExplosionDamageToBoss().
-    // Has no timeout of its own; only FLASH GRENADE ends it. TELEPORT (PART
+    // DARK PHASE / STRAIGHT CLAW counter: total damage immunity — still
+    // shows the same realistic ricochet/spark feedback as an ordinary
+    // blocked hit, never a big blue barrier. Unlike DEFENSE (which barrel
+    // explosions always bypass), these block EVEN barrel explosions — see
+    // applyExplosionDamageToBoss(). DARK PHASE has no timeout of its own
+    // (only FLASH GRENADE ends it); STRAIGHT CLAW's own windup->release->
+    // recovery timeline (updateBossStraightClaw()) ends it. TELEPORT (PART
     // 7's own, entirely separate, total-immunity window) works the same way.
-    if (boss.state === 'darkphase' || boss.state === 'teleport') {
+    if (boss.state === 'darkphase' || boss.state === 'teleport' || boss.state === 'straightclaw') {
       spawnDefenseRicochet(now, bulletX, bulletY, bulletVx, bulletVy);
       return;
     }
@@ -1552,6 +1636,15 @@
         return;
       }
       spawnDefenseRicochet(now, bulletX, bulletY, bulletVx, bulletVy);
+      // STRAIGHT CLAW counter (A-2/A-3): counts CONSECUTIVE genuinely-blocked
+      // shots (0 damage) during DEFENSE — a real-damage hit anywhere below
+      // resets this to 0 via bossEnterState()'s own state !== 'defense'
+      // guard the instant DEFENSE ends for any other reason, so the same 5
+      // blocks can never be reused across separate DEFENSE windows.
+      boss.consecutiveGuardedShots += 1;
+      if (boss.consecutiveGuardedShots >= STRAIGHT_CLAW_TRIGGER_GUARDS) {
+        bossEnterState('straightclaw', now); // takes priority over normal AI/DEFENSE's own exit timing
+      }
       return;
     }
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
@@ -1671,6 +1764,43 @@
     }
   }
 
+  // STRAIGHT CLAW counterattack — owns its whole windup->release->recovery
+  // sequence via elapsed-time thresholds off boss.stateEnteredAt (like
+  // DEFENSE/RECOVER above, not the dt-accumulated cinematicElapsed pattern
+  // INTRO/THRESHOLD/DYING use — this state isn't paused/resumed across a
+  // real-world PAUSE any differently than ordinary combat states already
+  // are, since update() itself skips entirely while gameState.paused).
+  // GABRIEL is invulnerable for this ENTIRE function's duration (see the
+  // 'straightclaw' checks added to applyBodyHitToBoss()/
+  // applyExplosionDamageToBoss()/getAutoAimTargetPoint()) — from the instant
+  // bossEnterState('straightclaw', ...) fires (A-2) until bossEnterState
+  // ('chase', ...) fires at the very end of this function (A-17).
+  function updateBossStraightClaw(now) {
+    const elapsed = now - boss.stateEnteredAt;
+    // A-7/A-9: windup shows straight_claw_windup.png with zero damage/hit/
+    // knockback for STRAIGHT_CLAW_WINDUP_MS; the player may move freely.
+    // Exactly once, at the windup->release instant, lock the attack's
+    // direction from GABRIEL's CURRENT belief of the player's position
+    // (getBossTargetPos() — same STEALTH-aware helper CLAW STING already
+    // uses) and fire the actual straight-line hit; A-11: never re-read
+    // afterward, so the attack does not track the player post-release.
+    if (elapsed >= STRAIGHT_CLAW_WINDUP_MS && !boss.straightClawHitSpawned) {
+      boss.straightClawHitSpawned = true;
+      spawnStraightClaw(now, { x: boss.x, y: boss.y }, getBossTargetPos(now));
+    }
+    // A-16: windup -> release/attack -> recovery -> normal AI. Recovery has
+    // no visual/behavioral difference from the release/attack window here
+    // (both show straight_claw_release.png, per A-8 — no separate recovery
+    // art was supplied) beyond the attack's own hitbox naturally expiring
+    // after STRAIGHT_CLAW_ATTACK_MS (see updateArcClawSlashes()); this
+    // function simply keeps GABRIEL in the same invulnerable state for the
+    // extra STRAIGHT_CLAW_RECOVERY_MS before finally returning to CHASE.
+    if (elapsed >= STRAIGHT_CLAW_WINDUP_MS + STRAIGHT_CLAW_ATTACK_MS + STRAIGHT_CLAW_RECOVERY_MS) {
+      boss.chaseBackoffUntil = now + 300;
+      bossEnterState('chase', now);
+    }
+  }
+
   function applyWeakPointHitToBoss(now, autoAimed, bulletX, bulletY, bulletVx, bulletVy) {
     if (!boss.spawned || boss.state !== 'defense') return;
     if (now < boss.invulnerableUntil) {
@@ -1734,6 +1864,7 @@
     if (boss.state === 'flashdown') { updateBossFlashDown(dt, now); return; }
     if (boss.state === 'darkphase') { updateBossDarkPhase(dt, now); return; }
     if (boss.state === 'teleport') { updateBossTeleport(dt, now); return; }
+    if (boss.state === 'straightclaw') { updateBossStraightClaw(now); return; }
     if (window.__game.freezeBossAI) return; // debug/verification only
 
 
@@ -1861,8 +1992,14 @@
       boss.dir = angleToBucket(Math.atan2(vy, vx));
     }
 
+    // SECTION C: clamp relative to the CURRENT area's own screen-sized band
+    // (areaTopY(currentArea) .. +H), not always the original [0,H] — without
+    // this, an AREA 2 boss (whose Y sits around -H+something) would get
+    // pulled straight back down into AREA 1's band by this same clamp every
+    // single frame during CHASE movement.
+    const areaTop = areaTopY(currentArea);
     boss.x = Math.max(BOSS_DRAW_W * 0.3, Math.min(W - BOSS_DRAW_W * 0.3, boss.x));
-    boss.y = Math.max(BOSS_DRAW_H * 0.3, Math.min(H - BOSS_DRAW_H * 0.3, boss.y));
+    boss.y = Math.max(areaTop + BOSS_DRAW_H * 0.3, Math.min(areaTop + H - BOSS_DRAW_H * 0.3, boss.y));
   }
 
   // BOSS MODE start (PART 1-8): initial violent shake -> silence -> shadow
@@ -2016,22 +2153,45 @@
     });
   }
 
+  // STRAIGHT CLAW counterattack (A-9/A-10/A-11/A-12): a THIRD kind sharing
+  // this same array/update/hit-test machinery, reusing STING's dead-straight
+  // fixed-rotation motion (never ARC CLAW SLASH's curved bezier) but with
+  // its own timing/hitbox/knockback constants. `target` is captured ONCE by
+  // the caller (updateBossStraightClaw(), at the exact windup->release
+  // instant) and never re-read afterward, so the player can freely move
+  // during the 2s windup but the attack never re-aims once released.
+  function spawnStraightClaw(now, origin, target) {
+    const dist = Math.hypot(target.x - origin.x, target.y - origin.y) || 1;
+    const angle = Math.atan2(target.y - origin.y, target.x - origin.x);
+    const endX = origin.x + Math.cos(angle) * dist * STRAIGHT_CLAW_OVERSHOOT;
+    const endY = origin.y + Math.sin(angle) * dist * STRAIGHT_CLAW_OVERSHOOT;
+    arcClawSlashes.push({
+      kind: 'straightClaw',
+      p0: origin, p2: { x: endX, y: endY },
+      startedAt: now, hasHit: false,
+      x: origin.x, y: origin.y, angle: 0, tangentAngle: angle, trail: [],
+    });
+  }
+
   function updateArcClawSlashes(now) {
     for (let i = arcClawSlashes.length - 1; i >= 0; i--) {
       const s = arcClawSlashes[i];
       const isSting = s.kind === 'sting';
-      const lifetimeMs = isSting ? CLAW_STING_LIFETIME_MS : ARC_CLAW_LIFETIME_MS;
+      const isStraightClaw = s.kind === 'straightClaw';
+      const isStraightLine = isSting || isStraightClaw;
+      const lifetimeMs = isSting ? CLAW_STING_LIFETIME_MS : (isStraightClaw ? STRAIGHT_CLAW_ATTACK_MS : ARC_CLAW_LIFETIME_MS);
       const u = (now - s.startedAt) / lifetimeMs;
       if (u >= 1) { arcClawSlashes.splice(i, 1); continue; }
       const t = arcClawEase(Math.max(0, u));
       // SLASH sweeps a quadratic-Bezier arc with a continuously recomputed
-      // tangent; STING travels a dead-straight line at the angle it was
-      // locked to at spawn time (s.tangentAngle never changes afterward —
-      // see spawnClawSting()), so it never re-aims mid-flight.
-      const pos = isSting
+      // tangent; STING/STRAIGHT CLAW both travel a dead-straight line at the
+      // angle locked at spawn time (s.tangentAngle never changes afterward —
+      // see spawnClawSting()/spawnStraightClaw()), so neither ever re-aims
+      // mid-flight.
+      const pos = isStraightLine
         ? { x: s.p0.x + (s.p2.x - s.p0.x) * t, y: s.p0.y + (s.p2.y - s.p0.y) * t }
         : quadBezierPoint(s.p0, s.p1, s.p2, t);
-      const tangentAngle = isSting ? s.tangentAngle : quadBezierTangentAngle(s.p0, s.p1, s.p2, t);
+      const tangentAngle = isStraightLine ? s.tangentAngle : quadBezierTangentAngle(s.p0, s.p1, s.p2, t);
 
       // Each stored sample keeps its OWN position/rotation from when it was
       // the live frame — angle for the claw image's draw rotation, and the
@@ -2041,29 +2201,44 @@
       if (s.trail.length > ARC_CLAW_TRAIL_LEN) s.trail.shift();
 
       s.x = pos.x; s.y = pos.y; s.tangentAngle = tangentAngle;
-      if (!isSting) {
+      if (!isStraightLine) {
         // Re-align the claw image's own tip<->base axis to the live tangent
         // direction, so it visibly points where it's travelling rather than
-        // just spinning around its own center. STING's s.angle was already
-        // fixed once at spawn time and stays that way for its whole flight.
+        // just spinning around its own center. STING/STRAIGHT CLAW's s.angle
+        // was already fixed once at spawn time and stays that way for its
+        // whole flight (and isn't drawn as a separate claw image at all for
+        // STRAIGHT CLAW — see drawArcClawSlash()).
         const baseTip = s.mirrored ? ARC_CLAW_BASE_TIP_ANGLE_FLIPPED : ARC_CLAW_BASE_TIP_ANGLE;
         s.angle = tangentAngle - baseTip;
       }
 
       if (!s.hasHit && !isPlayerInvulnerable()) {
         // Oriented rectangle aligned to the live travel direction (never a
-        // plain circle) — local +X is "ahead of the tip", local -X runs
-        // back along the trailing claw body.
+        // plain circle, and never ARC CLAW SLASH's curved hitbox — A-12) —
+        // local +X is "ahead of the tip", local -X runs back along the
+        // trailing claw body.
         const relX = player.x - s.x, relY = player.y - s.y;
         const c = Math.cos(-tangentAngle), sn = Math.sin(-tangentAngle);
         const localX = relX * c - relY * sn;
         const localY = relX * sn + relY * c;
-        if (localX >= -ARC_CLAW_HIT_HALF_LEN_BACK && localX <= ARC_CLAW_HIT_HALF_LEN_FWD &&
-            Math.abs(localY) <= ARC_CLAW_HIT_HALF_WIDTH + PLAYER_HIT_RADIUS) {
+        const halfLenFwd = isStraightClaw ? STRAIGHT_CLAW_HIT_HALF_LEN_FWD : ARC_CLAW_HIT_HALF_LEN_FWD;
+        const halfLenBack = isStraightClaw ? STRAIGHT_CLAW_HIT_HALF_LEN_BACK : ARC_CLAW_HIT_HALF_LEN_BACK;
+        const halfWidth = isStraightClaw ? STRAIGHT_CLAW_HIT_HALF_WIDTH : ARC_CLAW_HIT_HALF_WIDTH;
+        if (localX >= -halfLenBack && localX <= halfLenFwd &&
+            Math.abs(localY) <= halfWidth + PLAYER_HIT_RADIUS) {
           s.hasHit = true; // at most one damage instance per slash, ever
           window.__game.playerHitCount++;
           playerHitFlashUntil = now + 150;
-          applyPlayerKnockbackAlongAngle(tangentAngle, ARC_CLAW_KNOCKBACK_DISTANCE, ARC_CLAW_KNOCKBACK_SUPPRESS_MS, now);
+          // A-13/A-14: knocks the player away FROM GABRIEL (along the same
+          // straight line the attack travelled), a clearly-visible distance,
+          // clamped within PLAY AREA/world bounds by
+          // applyPlayerKnockbackAlongAngle()'s own clampPlayerToScreen() call
+          // — never off-screen, never stuck in an obstacle forever.
+          if (isStraightClaw) {
+            applyPlayerKnockbackAlongAngle(tangentAngle, STRAIGHT_CLAW_KNOCKBACK_DISTANCE, STRAIGHT_CLAW_KNOCKBACK_LOCK_MS, now);
+          } else {
+            applyPlayerKnockbackAlongAngle(tangentAngle, ARC_CLAW_KNOCKBACK_DISTANCE, ARC_CLAW_KNOCKBACK_SUPPRESS_MS, now);
+          }
         }
       }
     }
@@ -2116,6 +2291,11 @@
   }
 
   function drawArcClawSlash(s) {
+    // STRAIGHT CLAW's attack is communicated entirely through GABRIEL's own
+    // windup/release body sprite (see bossFrameName()) — this shared
+    // slash/sting claw-image VFX is never drawn for it, only its hitbox
+    // (updateArcClawSlashes() above) is tracked here.
+    if (s.kind === 'straightClaw') return;
     // A very thin, non-magical white/silver trail connecting the recent
     // positions — "air cut open", never a glowing/blue energy line.
     if (s.trail.length >= 1) {
@@ -2163,11 +2343,19 @@
   // automatic on boss death. TRAINING MODE (and landscape) never unlocks
   // this at all, same as the stage background itself.
   const EXIT_ZONE_W = 150, EXIT_ZONE_H = 90;
+  // SECTION C: the old single-boss-death win condition is now "both AREA 1
+  // AND AREA 2 have been cleared" — area2Cleared already implies area1
+  // Cleared (AREA 2 can't even be reached otherwise), so checking it alone
+  // is sufficient. Everything downstream (the EXIT zone, the fade-to-next-
+  // stage transition) is otherwise completely unchanged from before.
   function worldScrollUnlocked() {
-    return H >= W && gameState.mode === 'boss' && boss.state === 'dead' && !stageTransition.active;
+    return H >= W && gameState.mode === 'boss' && area2Cleared && !stageTransition.active;
   }
   function exitWorldPos() {
-    return { x: W / 2, y: -worldExtraAbove + EXIT_ZONE_H / 2 + 20 };
+    // Anchored an extra H further north than before this batch, since AREA
+    // 2's own full-screen band now sits between the original screen and
+    // this bonus space.
+    return { x: W / 2, y: -H - worldExtraAbove + EXIT_ZONE_H / 2 + 20 };
   }
 
   // Short, simple fade sequence (never a long loading-style one): fade to
@@ -2189,6 +2377,12 @@
       if (elapsed < STAGE_FADE_MS) return;
       currentStageIndex = pickRandomOtherStage(currentStageIndex);
       cameraY = 0;
+      // SECTION C: the next stage always starts back at AREA 1, fully
+      // closed up again — same two-area structure repeats fresh each time.
+      currentArea = 1;
+      area1Cleared = false;
+      area2Activated = false;
+      area2Cleared = false;
       resetPlayerPosition();
       player.baseDir = 'down';
       player.aimOffsetRaw = 0; player.aimOffset = 0;
@@ -2271,19 +2465,24 @@
   }
 
   function pickBarrelSpot() {
+    // SECTION C: margins/fallback are relative to the CURRENT area's own
+    // screen-sized band (areaTopY(currentArea)..+H), so barrels spawned
+    // while fighting in AREA 2 land within AREA 2's own visible band, not
+    // back in AREA 1's world-Y range.
+    const areaTop = areaTopY(currentArea);
     const marginX = BARREL_DRAW_H * 1.5;
-    const marginTop = H * 0.22; // stay clear of the boss's spawn band up top
+    const marginTop = areaTop + H * 0.22; // stay clear of the boss's spawn band up top
     const marginBottom = H * 0.30;
     // Live player/boss positions (not just their initial spawn points) —
     // matters for the ceiling restock, which can fire mid-fight with both
     // anywhere on the field, not only at mode-start.
     const playerX = player.x, playerY = player.y;
     const bossX = boss.spawned ? boss.x : W / 2;
-    const bossY = boss.spawned ? boss.y : Math.max(BOSS_DRAW_H * 0.55, H * 0.16);
+    const bossY = boss.spawned ? boss.y : areaTop + Math.max(BOSS_DRAW_H * 0.55, H * 0.16);
     for (let attempt = 0; attempt < 30; attempt++) {
       const x = marginX + Math.random() * (W - marginX * 2);
-      const y = marginTop + Math.random() * (H - marginTop - marginBottom);
-      if (isNearUIZone(x, y)) continue;
+      const y = marginTop + Math.random() * (H - H * 0.22 - marginBottom);
+      if (isNearUIZone(x, y - areaTop)) continue; // isNearUIZone reads screen-space UI zones — offset back to a 0-based band first
       if (Math.hypot(x - playerX, y - playerY) < 90) continue; // clear of the player
       if (Math.hypot(x - bossX, y - bossY) < 110) continue; // clear of the boss
       let tooClose = false;
@@ -2294,7 +2493,7 @@
       return { x, y };
     }
     // Fallback if 30 attempts all collided with something (very small screens)
-    return { x: W / 2 + (Math.random() - 0.5) * W * 0.5, y: H * 0.5 };
+    return { x: W / 2 + (Math.random() - 0.5) * W * 0.5, y: areaTop + H * 0.5 };
   }
 
   // WEAK-POINT-SPAM teleport (PART 7): reuses pickBarrelSpot()'s own
@@ -2589,7 +2788,7 @@
   // outright. DARK PHASE is the one exception: total invulnerability, no
   // damage source bypasses it, per spec.
   function applyExplosionDamageToBoss(amount, now) {
-    if (!boss.spawned || bossIsInCinematic() || boss.state === 'darkphase' || boss.state === 'teleport') return;
+    if (!boss.spawned || bossIsInCinematic() || boss.state === 'darkphase' || boss.state === 'teleport' || boss.state === 'straightclaw') return;
     if (boss.hp <= 0) return; // already at 0 — no further reduction possible, so no flash either
     boss.hp = Math.max(0, boss.hp - amount);
     // PART 6: barrel explosions are an HP-reducing source too — the unified
@@ -2617,7 +2816,7 @@
     // or once truly dead — bossIsInCinematic() covers all four. TELEPORT
     // (PART 7) is the same: GABRIEL isn't visually present, so there's
     // nothing for AUTO AIM to snap onto until it reappears.
-    if (boss.spawned && (bossIsInCinematic() || boss.state === 'teleport')) return { primary: null, secondary: null };
+    if (boss.spawned && (bossIsInCinematic() || boss.state === 'teleport' || boss.state === 'straightclaw')) return { primary: null, secondary: null };
     // DEFENSE: the forehead weak point takes priority over the body — only
     // fall back to the body center if the weak point itself isn't in range
     // (or doesn't exist at all for the current defenseDir, e.g. NORTH).
@@ -2736,6 +2935,8 @@
     boss.lastKnownPlayerY = 0;
     boss.revealedShotX = null;
     boss.revealedShotY = null;
+    boss.consecutiveGuardedShots = 0; // STRAIGHT CLAW guard counter — explicit RESTART reset (A-4)
+    boss.straightClawHitSpawned = false;
     resetStealth(); // RESTART/mode switch ends STEALTH and its cooldown outright — the only two things allowed to (PART 21)
 
     // Stage world/camera/EXIT (PART 21-29) — a RESTART or mode switch always
@@ -2744,6 +2945,12 @@
     cameraY = 0;
     stageTransition.active = false;
     stageTransition.phase = null;
+    // SECTION C: RESTART/mode switch always returns to AREA 1, fully closed
+    // back up (C-28).
+    currentArea = 1;
+    area1Cleared = false;
+    area2Activated = false;
+    area2Cleared = false;
 
     modeStartTime = performance.now();
     barrelLandings.length = 0;
@@ -3570,6 +3777,7 @@
     getWeakPointScreenPos, arcClawSlashes, spawnArcClawSlash,
     gameState, barrels, explosions, bullets, spawnBarrels, startMode,
     get autoAimActive() { return autoAimActive; },
+    getAutoAimTargetPoint, // debug/verification only
     get autoAimTargetIsBoss() { return autoAimTargetIsBoss; },
     MUZZLE_DIST, AIM_LINE_LEN, AUTO_AIM_RADIUS,
     // Debug/verification only — boss cinematic sequences.
@@ -3637,6 +3845,19 @@
     // Debug/verification only — GABRIEL defeat sequence (PART 37-42).
     BOSS_DEFEAT_DOWN_PAUSE_MS, BOSS_DEFEAT_BLACKEN_MS, BOSS_DEFEAT_DISINTEGRATE_MS,
     BOSS_DEFEAT_BLACKEN_START, BOSS_DEFEAT_BLACKEN_END,
+    // Debug/verification only — walk-cycle timing (north/south walk frame replacement batch).
+    WALK_FRAME_PERIOD_MS, SOUTH_WALK_FRAME_PERIOD_MS,
+    // Debug/verification only — STRAIGHT CLAW counterattack (SECTION A).
+    STRAIGHT_CLAW_TRIGGER_GUARDS, STRAIGHT_CLAW_WINDUP_MS, STRAIGHT_CLAW_ATTACK_MS, STRAIGHT_CLAW_RECOVERY_MS,
+    STRAIGHT_CLAW_KNOCKBACK_DISTANCE, STRAIGHT_CLAW_KNOCKBACK_LOCK_MS,
+    // Debug/verification only — AREA 1/AREA 2 vertical stage (SECTION C).
+    get currentArea() { return currentArea; },
+    get area1Cleared() { return area1Cleared; },
+    set area1Cleared(v) { area1Cleared = v; }, // debug/verification only
+    get area2Activated() { return area2Activated; },
+    get area2Cleared() { return area2Cleared; },
+    set area2Cleared(v) { area2Cleared = v; }, // debug/verification only
+    CAMERA_FOLLOW_RATE, areaTopY, clampPlayerToScreen,
   };
 
   // ---------- Main loop ----------
@@ -3722,15 +3943,60 @@
     // Clamp to screen bounds (keep character fully visible)
     clampPlayerToScreen();
 
-    // Camera + EXIT (PART 21-29) — only meaningful once worldScrollUnlocked()
-    // (boss fully dead, portrait, BOSS MODE, not already mid-transition).
-    // Reaching the exit is never automatic on boss death: the player must
-    // physically walk into this zone themselves.
-    if (worldScrollUnlocked()) {
-      cameraY = Math.max(-worldExtraAbove, Math.min(0, player.y - H * 0.6));
-      const exit = exitWorldPos();
-      if (Math.abs(player.x - exit.x) < EXIT_ZONE_W / 2 && Math.abs(player.y - exit.y) < EXIT_ZONE_H / 2) {
-        beginStageTransition(now);
+    // SECTION C: `currentArea` tracks the player's LIVE position every
+    // frame (not just a one-time flag) purely so barrel-spawn margins
+    // (pickBarrelSpot()) always match whichever band the player is
+    // actually standing in, even if they wander back south into AREA 1
+    // after AREA 2 has opened up — area2Activated (below) is the real
+    // one-time "has AREA 2's own boss been spawned yet" gate.
+    if (H >= W && gameState.mode === 'boss') {
+      currentArea = player.y < 0 ? 2 : 1;
+      // AREA 1 clear (C-13): its own boss fully dissolved.
+      if (!area1Cleared && boss.state === 'dead' && currentArea === 1) {
+        area1Cleared = true;
+      }
+      // AREA 1 -> AREA 2 (C-15/C-16/C-17): the moment the player actually
+      // walks north past the seam (world Y 0) for the first time after
+      // AREA 1 is cleared, activate AREA 2 exactly once — a fresh boss
+      // (C-19: the same GABRIEL, no new AI needed) spawns with its own
+      // full intro, inactive until this very moment (C-18) since nothing
+      // above ever calls spawnBoss() for AREA 2 before the player arrives.
+      if (area1Cleared && !area2Activated && player.y < 0) {
+        area2Activated = true;
+        bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
+        spawnBoss(now); // currentArea is already 2 here, so this spawns/positions relative to AREA 2's own band
+        spawnBarrels(2 + Math.floor(Math.random() * 3));
+      }
+      // AREA 2 clear (C-20): its own boss fully dissolved -> the existing
+      // EXIT/stage-transition machinery (unchanged) takes over from here.
+      if (!area2Cleared && boss.state === 'dead' && currentArea === 2) {
+        area2Cleared = true;
+      }
+    }
+
+    // Camera + EXIT (PART 21-29, extended by SECTION C) — smooth-follows
+    // the player vertically through AREA 1 -> AREA 2 -> (once
+    // worldScrollUnlocked()) the small post-clear EXIT-hunting bonus space,
+    // clamped so it never scrolls past whichever band is currently unlocked
+    // (C-10). Reaching the EXIT is never automatic on boss death: the
+    // player must physically walk into that zone themselves, exactly as
+    // before this batch.
+    if (H >= W && gameState.mode === 'boss' && !stageTransition.active) {
+      let minCameraY;
+      if (worldScrollUnlocked()) minCameraY = -H - worldExtraAbove;
+      else if (area1Cleared) minCameraY = -H;
+      else minCameraY = 0; // AREA 1 only — camera stays pinned exactly like the original single-screen layout
+      const targetCameraY = Math.max(minCameraY, Math.min(0, player.y - H * 0.6));
+      // Exponential smoothing (C-9): closes (1 - e^(-RATE*dt)) of the
+      // remaining distance each frame — framerate-independent, and fast
+      // enough (RATE=6) that the player is never left stranded off-screen.
+      cameraY += (targetCameraY - cameraY) * Math.min(1, CAMERA_FOLLOW_RATE * dt);
+      cameraY = Math.max(minCameraY, Math.min(0, cameraY)); // C-10: never past whichever band is currently unlocked
+      if (worldScrollUnlocked()) {
+        const exit = exitWorldPos();
+        if (Math.abs(player.x - exit.x) < EXIT_ZONE_W / 2 && Math.abs(player.y - exit.y) < EXIT_ZONE_H / 2) {
+          beginStageTransition(now);
+        }
       }
     } else {
       cameraY = 0;
@@ -3984,7 +4250,11 @@
       const dw = iw * scale, dh = ih * scale;
       const dx = (W - dw) / 2;
       const baseDy = (H - dh) / 2;
-      const topLimit = -worldExtraAbove - dh;
+      // SECTION C: the tiled column now needs to reach past AREA 2's own
+      // full screen-height band (H) as well as the further post-clear EXIT
+      // bonus space beyond it — same single background asset the whole
+      // way up, never a different image per area (C-2/C-3/C-7).
+      const topLimit = -H - worldExtraAbove - dh;
       for (let y = baseDy; y > topLimit; y -= dh) {
         ctx.drawImage(stage.img, dx, y, dw, dh);
       }
@@ -4141,16 +4411,31 @@
   const stealthCompositeCtx = stealthCompositeCanvas.getContext('2d');
   const STEALTH_TINT_RGB = '110, 175, 230'; // metallic/cold blue — PART 32 replaces the old neon green entirely
   const STEALTH_TINT_MAX_ALPHA = 0.72; // strong enough to read as a clear metallic-blue tint at full strength, still sheer enough that armor/face detail shows through (never a flat single-color silhouette)
-  const STEALTH_ALPHA_ACTIVE = 0.60; // PART 31: 60% opacity (was 30%) — clearly visible, not near-transparent
+  // 20 percentage points more transparent than the previous 0.60 (not a
+  // fixed value) — Math.max(0, previous - 0.20), per instruction.
+  const STEALTH_ALPHA_ACTIVE_PREVIOUS = 0.60;
+  const STEALTH_ALPHA_ACTIVE = Math.max(0, STEALTH_ALPHA_ACTIVE_PREVIOUS - 0.20);
   const STEALTH_NOISE_PERIOD_MS = 90; // how often the noise speckle pattern re-rolls — a short period, not a per-frame flicker
   const STEALTH_NOISE_COUNT = 16; // small grain count per refresh, kept light on CPU/GPU
+  // Faint optical-camouflage-style outline glow, layered on top of the
+  // existing body tint (not a replacement for it) — a canvas shadowBlur/
+  // shadowColor halo drawn around the sprite's own opaque silhouette, kept
+  // deliberately subtle (moderate blur radius, capped alpha) so it never
+  // reads as neon or blows out into flat white.
+  const STEALTH_GLOW_COLOR_RGB = '150, 205, 255'; // slightly brighter/cooler than the body tint, so the glow reads as light coming FROM the silhouette, not just more of the same fill
+  const STEALTH_GLOW_BLUR_PX = 12;
+  const STEALTH_GLOW_ALPHA_MAX = 0.65; // capped well under 1 — a faint halo, never a solid white/blue blob
   let stealthNoiseAt = -Infinity;
   let stealthNoiseSpecks = [];
   // Debug/verification only — declared after window.__game's own literal
   // above, so appended here rather than inside it (same pattern as
   // window.__game.playerFrame below).
   window.__game.STEALTH_ALPHA_ACTIVE = STEALTH_ALPHA_ACTIVE;
+  window.__game.STEALTH_ALPHA_ACTIVE_PREVIOUS = STEALTH_ALPHA_ACTIVE_PREVIOUS;
   window.__game.STEALTH_TINT_RGB = STEALTH_TINT_RGB;
+  window.__game.STEALTH_GLOW_COLOR_RGB = STEALTH_GLOW_COLOR_RGB;
+  window.__game.STEALTH_GLOW_BLUR_PX = STEALTH_GLOW_BLUR_PX;
+  window.__game.STEALTH_GLOW_ALPHA_MAX = STEALTH_GLOW_ALPHA_MAX;
 
   function rollStealthNoise(cw, ch) {
     const specks = [];
@@ -4213,6 +4498,14 @@
     ctx.save();
     // 1 at strength=0 (fully normal/opaque) -> STEALTH_ALPHA_ACTIVE at strength=1.
     ctx.globalAlpha = 1 - (1 - STEALTH_ALPHA_ACTIVE) * strength;
+    // Faint outline glow: shadowBlur/shadowColor build a halo from the
+    // sprite's own opaque silhouette (canvas shadow follows alpha, not a
+    // separate shape) — scaled by `strength` so it fades in/out with
+    // everything else and never appears as a snap. Cleared automatically
+    // by ctx.restore() below, so normal (non-STEALTH) draws are never
+    // affected — see PART 4/B-4: no residue once STEALTH ends.
+    ctx.shadowColor = `rgba(${STEALTH_GLOW_COLOR_RGB}, ${STEALTH_GLOW_ALPHA_MAX * strength})`;
+    ctx.shadowBlur = STEALTH_GLOW_BLUR_PX * strength;
     ctx.drawImage(stealthCompositeCanvas, dx, dy, w, h);
     ctx.restore();
   }
@@ -4281,6 +4574,13 @@
 
   // ---------- Boss rendering ----------
   function bossFrameName(now) {
+    if (boss.state === 'straightclaw') {
+      // Non-directional (A-6) — windup for the full 2s telegraph, then the
+      // release pose for both the attack window and recovery (no separate
+      // recovery art was supplied, per A-16's own image list).
+      const elapsed = now - boss.stateEnteredAt;
+      return elapsed < STRAIGHT_CLAW_WINDUP_MS ? 'straight_claw_windup' : 'straight_claw_release';
+    }
     if (boss.state === 'preattack') {
       // SOUTH only now — NORTH/EAST/WEST never enter this state (see
       // updateBoss()'s CHASE->PRE_ATTACK/ATTACK branch); EAST/WEST's old
@@ -4309,13 +4609,10 @@
     const key = DIR_TO_BOSS_KEY[boss.dir]; // north | south | east | west
     if (key === 'south') {
       if (!boss.moving) return 'south_idle';
-      // SOUTH alone uses a ping-pong cycle (1->2->3->2->1->2->3->2->1...)
-      // rather than the plain 1->2->3->1 wrap-around the other directions
-      // use below — a period-4 step through [1,2,3,2], same
-      // WALK_FRAME_PERIOD_MS per step as every other direction.
-      const SOUTH_WALK_PINGPONG = [1, 2, 3, 2];
-      const step = Math.floor(now / WALK_FRAME_PERIOD_MS) % SOUTH_WALK_PINGPONG.length;
-      return `walk_south_${SOUTH_WALK_PINGPONG[step]}`;
+      // 2-frame alternation (1->2->1->2...) at SOUTH_WALK_FRAME_PERIOD_MS
+      // (~50% slower than WALK_FRAME_PERIOD_MS, since only 2 frames exist
+      // now — see BOSS_FRAME_FILES/south_walk3_build_meta.json).
+      return (Math.floor(now / SOUTH_WALK_FRAME_PERIOD_MS) % 2 === 0) ? 'walk_south_1' : 'walk_south_2';
     }
     if (key === 'north') {
       if (!boss.moving) return 'north_idle';
