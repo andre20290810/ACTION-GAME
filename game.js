@@ -481,6 +481,18 @@
   const STRAIGHT_CLAW_KNOCKBACK_DISTANCE = 200; // clearly-visible "blown away" distance, in the same band as ARC_CLAW_KNOCKBACK_DISTANCE (170) but a touch stronger since this is the bigger punish hit
   const STRAIGHT_CLAW_KNOCKBACK_LOCK_MS = 400; // within the requested 300-500ms band
 
+  // COUNTER ATTACK direction split: the pose used by STRAIGHT CLAW's own
+  // windup/release images only reads correctly when GABRIEL is facing the
+  // player (i.e. the player is south of it, the direction the images were
+  // built for) — see boss.counterDir, captured once at trigger time in
+  // applyBodyHitToBoss(). When the player is north/east/west instead, the
+  // counter reuses the EXISTING per-direction ARC CLAW SLASH attack pose
+  // and geometry (no new images), just at double speed.
+  const COUNTER_STING_SCALE = 0.90; // real-device feedback: straight_claw_windup/release read too large — 10% smaller, applied to BOTH so windup->release still shows no size jump
+  const COUNTER_ARC_CLAW_LIFETIME_MS = ARC_CLAW_LIFETIME_MS / 2; // "2x speed" = half the normal travel time along the SAME bezier geometry — see the 'counterArc' kind in updateArcClawSlashes()
+  // COUNTER_DAMAGE_MULTIPLIER/COUNTER_ATTACK_DAMAGE are defined further
+  // below, right after BULLET_DAMAGE (the constant they derive from).
+
   // ---------- Direction bucket mapping (ACTION STICK -> base facing) ----------
   // angle: 0 = right, positive = clockwise (down), atan2(dy, dx), dy-down positive
   function angleToBucket(angle) {
@@ -568,6 +580,7 @@
     dashFromY: 0,
     dashDistance: 0,
     knockbackUntil: 0, // brief movement-input suppression after a forced-counter KNOCKBACK
+    lastCounterDamage: 0, // SECTION 7 future-LIFE placeholder — set to COUNTER_ATTACK_DAMAGE on a landed COUNTER hit (STING or COUNTER ARC CLAW); never subtracted from anything since no LIFE stat exists yet
     // RELAXED IDLE (SOUTH only): tracks how long all inputs have been idle.
     lastActivityAt: performance.now(),
     relaxed: false,
@@ -737,6 +750,15 @@
   const BOSS_DEFENSE_MS = 1800;
   const BOSS_HURT_RADIUS = 46; // small torso-only hurtbox, not the full sprite
   const BULLET_DAMAGE = 40;
+  // COUNTER ATTACK damage placeholder (SECTION 7): the player has no LIFE/HP
+  // stat yet, so this is never subtracted from anything — it's derived from
+  // BULLET_DAMAGE (the only "normal attack damage" constant that exists
+  // anywhere in this game) purely so a future LIFE system has a single,
+  // already-scaled number to read (player.lastCounterDamage, set on a
+  // COUNTER hit — see updateArcClawSlashes()). Both the south STING variant
+  // and the north/east/west COUNTER ARC CLAW variant use this SAME multiplier.
+  const COUNTER_DAMAGE_MULTIPLIER = 1.3;
+  const COUNTER_ATTACK_DAMAGE = BULLET_DAMAGE * COUNTER_DAMAGE_MULTIPLIER;
   // GUARD BREAK: a valid AUTO-AIM-assisted hit during DEFENSE (weak point or,
   // where none exists, the body target AUTO AIM falls back to) counts toward
   // this; the 4th one breaks DEFENSE outright into a brief stagger and then
@@ -805,13 +827,20 @@
   const DARKPHASE_STALK_MIN_DIST = 200, DARKPHASE_STALK_MAX_DIST = 420; // keeps STALK's lateral drift within a believable "circling" band
   const WALK_FRAME_PERIOD_MS = 260; // NORTH (3-frame wrap) / EAST / WEST (2-frame alternation) walk-cycle period
   // SOUTH alone gets its own, slower period — it now has only 2 walk
-  // frames (see BOSS_FRAME_FILES/south_walk3_build_meta.json), and
-  // alternating just 2 frames at the same cadence as everyone else's
-  // 3-frame cycle reads as an unnaturally fast flicker, so this runs
-  // ~50% slower instead. NORTH/EAST/WEST keep using WALK_FRAME_PERIOD_MS
-  // unchanged.
-  const SOUTH_WALK_FRAME_PERIOD_MS = WALK_FRAME_PERIOD_MS * 1.5;
-  const NORTH_BOUNCE_AMPLITUDE = 4; // px, decorative only (no NORTH walk art)
+  // frames (see BOSS_FRAME_FILES/south_walk3_build_meta.json). Alternating
+  // just 2 static-photo poses reads as a binary on/off flicker rather than
+  // a walk with no 3rd frame to smooth the transition, and real-device
+  // testing confirmed 1.5x was still too fast to read as walking rather
+  // than shimmying — raised further to 2.3x (~600ms/frame).
+  const SOUTH_WALK_FRAME_PERIOD_MS = WALK_FRAME_PERIOD_MS * 2.3;
+  // Was a small decorative sine bounce added back when NORTH had no real
+  // walk art of its own (a stand-in for motion). Real NORTH walk art
+  // (walk_north_1/2/3) now supplies its own genuine per-frame motion, and
+  // real-device testing showed this extra synthetic vertical bob — synced
+  // to the frame flip — compounds with the art's own pose changes into a
+  // "wriggling" look rather than a clean walk. Zeroed rather than removed
+  // outright so the mechanism stays available if ever needed again.
+  const NORTH_BOUNCE_AMPLITUDE = 0;
   const SOUTH_WALK_SCALE = 1.10; // visual-only — SOUTH WALK reads a touch small next to the other directions
   const PRE_ATTACK_SCALE = 1.10; // visual-only — matches SOUTH_ATTACK_SCALE so the telegraph reads the same size as the real release
   const NORTH_IDLE_SCALE = 1.10; // visual-only — NORTH IDLE reads a touch small next to the other directions
@@ -987,7 +1016,8 @@
     defenseAimHits: 0, // valid AUTO-AIM-assisted hits landed during the current DEFENSE
     weakPointConsecutiveHits: 0, // ANY valid weak-point damage hit (auto-aimed or manual) landed during the current DEFENSE
     consecutiveGuardedShots: 0, // shots successfully BLOCKED (0 damage) during the current DEFENSE — see applyBodyHitToBoss(); resets to 0 on any non-'defense' state transition, same lifecycle as the two counters above
-    straightClawHitSpawned: false, // guards the single spawnStraightClaw() call per 'straightclaw' state — see bossEnterState()/updateBossStraightClaw()
+    straightClawHitSpawned: false, // guards the single spawnStraightClaw()/spawnCounterArcClaw() call per 'straightclaw' state — see bossEnterState()/updateBossStraightClaw()
+    counterDir: 'south', // 'south'|'north'|'east'|'west' — captured ONCE at COUNTER ATTACK trigger time from the player's position relative to GABRIEL; picks STING (south) vs COUNTER ARC CLAW (north/east/west) — see applyBodyHitToBoss()/bossFrameName()/updateBossStraightClaw()
     autoAimHitStreak: 0, // ANY valid AUTO-AIM-assisted damage hit, body or weak point, regardless of state — see registerGlobalAutoAimHit()
     invulnerableUntil: 0, // legacy field — no longer ever set to a nonzero value (4-hit AUTO AIM now triggers DARK PHASE, not a timed window); left in place harmlessly
     closeRangeInvulnUntil: 0, // set by the POINT-BLANK counter — see triggerCloseRangeCounter()
@@ -1435,6 +1465,55 @@
     return boss.state === 'darkphase' && flashCooldownRemainingMs <= 0 && isAimedAtDarkPhaseHead();
   }
 
+  // General "is the player's raw aim ray currently pointed at GABRIEL's
+  // body" check — same ray-to-point perpendicular-distance technique as
+  // isAimedAtDarkPhaseHead() just above, targeting the boss's general body
+  // center with its existing hurtbox radius instead of the DARK PHASE head
+  // anchor. Used by canFlashTarget()/isAimingAtBoss() for COUNTER ATTACK
+  // (boss.state === 'straightclaw'), where the ordinary AUTO AIM magnet is
+  // deliberately inert (see getAutoAimTargetPoint()) so autoAimActive can
+  // never become true there.
+  function isAimedAtBossBody() {
+    const angle = getFinalAimAngle();
+    const dirX = Math.cos(angle), dirY = Math.sin(angle);
+    const toX = boss.x - player.x, toY = boss.y - player.y;
+    const along = toX * dirX + toY * dirY;
+    if (along < 0) return false;
+    const perpX = toX - dirX * along, perpY = toY - dirY * along;
+    return Math.hypot(perpX, perpY) <= BOSS_HURT_RADIUS;
+  }
+
+  // Whether GABRIEL specifically (never a barrel, never "nothing") is the
+  // current AIM target, via whichever mechanism is actually live for the
+  // current boss state: the normal AUTO AIM magnet everywhere it's active,
+  // or the raw-aim-ray check above for COUNTER ATTACK specifically.
+  function isAimingAtBoss() {
+    if (boss.state === 'straightclaw') return isAimedAtBossBody();
+    return autoAimActive && autoAimTargetIsBoss;
+  }
+
+  // SECTION 9/10: the ONE shared predicate for "does a FLASH thrown THIS
+  // instant actually affect GABRIEL" — used identically by flashPress()
+  // (the real success check, captured once at throw time) and
+  // drawAimLine()/the reticle (the red "LOCK" visual), generalizing the
+  // pre-existing DARK-PHASE-only isDarkPhaseFlashLocked() pattern above to
+  // EVERY boss state. Previously, outside DARK PHASE, the red indicator was
+  // driven purely by the AUTO AIM magnet with no distance or cooldown
+  // check at all, while flashPress() itself required distance but never
+  // aim — the two could disagree in both directions. COUNTER ATTACK
+  // (boss.state === 'straightclaw') is the one deliberate exception to the
+  // distance requirement (SECTION 11) — aim still fully applies.
+  function canFlashTarget() {
+    if (!boss.spawned || flashDisabledByCinematic() || flashCooldownRemainingMs > 0) return false;
+    if (boss.state === 'darkphase') return isAimedAtDarkPhaseHead();
+    if (!isAimingAtBoss()) return false;
+    if (boss.state !== 'straightclaw') {
+      const dist = Math.hypot(boss.x - player.x, boss.y - player.y);
+      if (dist < FLASH_MIN_DISTANCE) return false;
+    }
+    return true;
+  }
+
   // FLASH GRENADE success: GABRIEL goes fully DOWN for FLASH_DOWN_MS — no
   // movement/attack/DEFENSE, but (unlike intro/threshold/dying/dead) still
   // fully damageable, and still a valid AUTO AIM target. Uses the SAME
@@ -1643,6 +1722,13 @@
       // blocks can never be reused across separate DEFENSE windows.
       boss.consecutiveGuardedShots += 1;
       if (boss.consecutiveGuardedShots >= STRAIGHT_CLAW_TRIGGER_GUARDS) {
+        // COUNTER ATTACK direction split (SECTION 2/3/4): captured ONCE,
+        // right now, from the player's position relative to GABRIEL at the
+        // exact instant the counter triggers — never re-evaluated later, so
+        // a player who repositions during the windup doesn't change which
+        // variant plays. 'down'/'up'/'left'/'right' -> DIR_TO_BOSS_KEY's own
+        // south/north/west/east naming, same mapping used everywhere else.
+        boss.counterDir = DIR_TO_BOSS_KEY[angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x))];
         bossEnterState('straightclaw', now); // takes priority over normal AI/DEFENSE's own exit timing
       }
       return;
@@ -1777,25 +1863,37 @@
   // ('chase', ...) fires at the very end of this function (A-17).
   function updateBossStraightClaw(now) {
     const elapsed = now - boss.stateEnteredAt;
+    // SECTION 3/4: boss.counterDir (captured once at trigger time — see
+    // applyBodyHitToBoss()) picks which variant this instance is. South
+    // keeps the original STING-style straight-line attack unchanged;
+    // north/east/west instead fire a COUNTER ARC CLAW (SECTION 5's 2x-speed
+    // reuse of the existing curved ARC CLAW SLASH geometry). Either way the
+    // attack window's own duration also depends on the variant, since the
+    // COUNTER ARC CLAW's travel time is intentionally half of STING's.
+    const isSouth = boss.counterDir === 'south';
+    const attackWindowMs = isSouth ? STRAIGHT_CLAW_ATTACK_MS : COUNTER_ARC_CLAW_LIFETIME_MS;
     // A-7/A-9: windup shows straight_claw_windup.png with zero damage/hit/
     // knockback for STRAIGHT_CLAW_WINDUP_MS; the player may move freely.
     // Exactly once, at the windup->release instant, lock the attack's
     // direction from GABRIEL's CURRENT belief of the player's position
     // (getBossTargetPos() — same STEALTH-aware helper CLAW STING already
-    // uses) and fire the actual straight-line hit; A-11: never re-read
-    // afterward, so the attack does not track the player post-release.
+    // uses) and fire the actual hit; A-11: never re-read afterward, so the
+    // attack does not track the player post-release.
     if (elapsed >= STRAIGHT_CLAW_WINDUP_MS && !boss.straightClawHitSpawned) {
       boss.straightClawHitSpawned = true;
-      spawnStraightClaw(now, { x: boss.x, y: boss.y }, getBossTargetPos(now));
+      if (isSouth) {
+        spawnStraightClaw(now, { x: boss.x, y: boss.y }, getBossTargetPos(now));
+      } else {
+        spawnCounterArcClaw(now, getClawOrigin(), getBossTargetPos(now));
+      }
     }
     // A-16: windup -> release/attack -> recovery -> normal AI. Recovery has
     // no visual/behavioral difference from the release/attack window here
-    // (both show straight_claw_release.png, per A-8 — no separate recovery
-    // art was supplied) beyond the attack's own hitbox naturally expiring
-    // after STRAIGHT_CLAW_ATTACK_MS (see updateArcClawSlashes()); this
-    // function simply keeps GABRIEL in the same invulnerable state for the
-    // extra STRAIGHT_CLAW_RECOVERY_MS before finally returning to CHASE.
-    if (elapsed >= STRAIGHT_CLAW_WINDUP_MS + STRAIGHT_CLAW_ATTACK_MS + STRAIGHT_CLAW_RECOVERY_MS) {
+    // beyond the attack's own hitbox naturally expiring after
+    // attackWindowMs (see updateArcClawSlashes()); this function simply
+    // keeps GABRIEL in the same invulnerable state for the extra
+    // STRAIGHT_CLAW_RECOVERY_MS before finally returning to CHASE.
+    if (elapsed >= STRAIGHT_CLAW_WINDUP_MS + attackWindowMs + STRAIGHT_CLAW_RECOVERY_MS) {
       boss.chaseBackoffUntil = now + 300;
       bossEnterState('chase', now);
     }
@@ -2173,13 +2271,33 @@
     });
   }
 
+  // COUNTER ARC CLAW (SECTION 4/5): the north/east/west COUNTER ATTACK
+  // variant. Reuses ARC CLAW SLASH's own curved-bezier geometry/hitbox/
+  // knockback wholesale (pickArcClawGeometry() — the exact same function a
+  // normal ARC CLAW SLASH attack calls) so it's visually and mechanically
+  // the SAME attack, just travelling at COUNTER_ARC_CLAW_LIFETIME_MS (half
+  // of ARC_CLAW_LIFETIME_MS) instead — see the 'counterArc' kind's lifetime
+  // selection in updateArcClawSlashes(), the only place its speed differs
+  // from a normal 'slash'. Never used for boss.counterDir === 'south' (that
+  // direction keeps the existing STING-style spawnStraightClaw() above).
+  function spawnCounterArcClaw(now, origin, target) {
+    const geo = pickArcClawGeometry(origin, target);
+    arcClawSlashes.push({
+      kind: 'counterArc',
+      p0: geo.p0, p1: geo.p1, p2: geo.p2, mirrored: geo.mirrored,
+      startedAt: now, hasHit: false,
+      x: geo.p0.x, y: geo.p0.y, angle: 0, tangentAngle: 0, trail: [],
+    });
+  }
+
   function updateArcClawSlashes(now) {
     for (let i = arcClawSlashes.length - 1; i >= 0; i--) {
       const s = arcClawSlashes[i];
       const isSting = s.kind === 'sting';
       const isStraightClaw = s.kind === 'straightClaw';
+      const isCounterArc = s.kind === 'counterArc'; // COUNTER ATTACK's north/east/west variant — SAME curved-bezier motion as 'slash', just faster (see lifetimeMs below)
       const isStraightLine = isSting || isStraightClaw;
-      const lifetimeMs = isSting ? CLAW_STING_LIFETIME_MS : (isStraightClaw ? STRAIGHT_CLAW_ATTACK_MS : ARC_CLAW_LIFETIME_MS);
+      const lifetimeMs = isSting ? CLAW_STING_LIFETIME_MS : (isStraightClaw ? STRAIGHT_CLAW_ATTACK_MS : (isCounterArc ? COUNTER_ARC_CLAW_LIFETIME_MS : ARC_CLAW_LIFETIME_MS));
       const u = (now - s.startedAt) / lifetimeMs;
       if (u >= 1) { arcClawSlashes.splice(i, 1); continue; }
       const t = arcClawEase(Math.max(0, u));
@@ -2229,6 +2347,14 @@
           s.hasHit = true; // at most one damage instance per slash, ever
           window.__game.playerHitCount++;
           playerHitFlashUntil = now + 150;
+          // SECTION 6/7: this is the ONLY place either COUNTER variant ever
+          // "damages" the player — purely a genuine hitbox-overlap check
+          // above (never an automatic hit on COUNTER start/trigger). No
+          // LIFE/HP stat exists yet to actually subtract from, so this is
+          // just recorded as a future-system placeholder.
+          if (isStraightClaw || isCounterArc) {
+            player.lastCounterDamage = COUNTER_ATTACK_DAMAGE;
+          }
           // A-13/A-14: knocks the player away FROM GABRIEL (along the same
           // straight line the attack travelled), a clearly-visible distance,
           // clamped within PLAY AREA/world bounds by
@@ -2349,7 +2475,9 @@
   // is sufficient. Everything downstream (the EXIT zone, the fade-to-next-
   // stage transition) is otherwise completely unchanged from before.
   function worldScrollUnlocked() {
-    return H >= W && gameState.mode === 'boss' && area2Cleared && !stageTransition.active;
+    // SECTION 15-18: no longer restricted to portrait (H >= W) — see the
+    // matching note above the currentArea/area1Cleared block in update().
+    return gameState.mode === 'boss' && area2Cleared && !stageTransition.active;
   }
   function exitWorldPos() {
     // Anchored an extra H further north than before this batch, since AREA
@@ -2937,6 +3065,8 @@
     boss.revealedShotY = null;
     boss.consecutiveGuardedShots = 0; // STRAIGHT CLAW guard counter — explicit RESTART reset (A-4)
     boss.straightClawHitSpawned = false;
+    boss.counterDir = 'south';
+    player.lastCounterDamage = 0;
     resetStealth(); // RESTART/mode switch ends STEALTH and its cooldown outright — the only two things allowed to (PART 21)
 
     // Stage world/camera/EXIT (PART 21-29) — a RESTART or mode switch always
@@ -3418,31 +3548,41 @@
     if (gameState.paused) return;
     if (flashCooldownRemainingMs > 0) return; // cooldown active: nothing happens at all, not even feedback
     if (!boss.spawned || flashDisabledByCinematic()) return;
-    const dist = Math.hypot(boss.x - player.x, boss.y - player.y);
-    if (dist < FLASH_MIN_DISTANCE) {
-      // Too close: a clearly noticeable (but text-free) red-tinted
-      // button pulse — no throw, no cooldown, no screen flash, no DOWN.
-      // This is the common case right as cooldown clears (GABRIEL's own
-      // chase during the preceding few seconds often closes back within
-      // range), so the rejection needs to read as "rejected", not just
-      // "nothing happened" — a too-brief/too-subtle cue was easy to miss
-      // mid-combat and looked like a stuck/broken button.
-      flashButton.classList.add('too-close');
-      setTimeout(() => flashButton.classList.remove('too-close'), 380);
-      return;
+    // SECTION 11: COUNTER ATTACK (boss.state === 'straightclaw') is the one
+    // state where the distance requirement is deliberately skipped — the
+    // player must be able to punish it from anywhere, not just from
+    // FLASH_MIN_DISTANCE+ away. Every other state keeps the original
+    // "too close" rejection unchanged.
+    const counterMode = boss.state === 'straightclaw';
+    if (!counterMode) {
+      const dist = Math.hypot(boss.x - player.x, boss.y - player.y);
+      if (dist < FLASH_MIN_DISTANCE) {
+        // Too close: a clearly noticeable (but text-free) red-tinted
+        // button pulse — no throw, no cooldown, no screen flash, no DOWN.
+        // This is the common case right as cooldown clears (GABRIEL's own
+        // chase during the preceding few seconds often closes back within
+        // range), so the rejection needs to read as "rejected", not just
+        // "nothing happened" — a too-brief/too-subtle cue was easy to miss
+        // mid-combat and looked like a stuck/broken button.
+        flashButton.classList.add('too-close');
+        setTimeout(() => flashButton.classList.remove('too-close'), 380);
+        return;
+      }
     }
-    // DARK PHASE head-aim gate (PART 7-9, unified via isDarkPhaseFlashLocked()
-    // per PART 15-18): captured ONCE, right now at throw time (the moment of
+    // SECTION 9/10: captured ONCE, right now at throw time (the moment of
     // commitment — GABRIEL keeps moving during the grenade's short flight,
-    // so re-checking at detonation would judge a different position than the
-    // one the player actually aimed at), and BEFORE the cooldown reset just
-    // below — isDarkPhaseFlashLocked() itself checks the cooldown, which by
-    // this point in the function is guaranteed still 0 (the early-return
-    // above already confirmed it). Outside DARK PHASE this is always true —
-    // FLASH's success has never depended on aim, and still doesn't.
-    const darkPhaseHeadHit = boss.state !== 'darkphase' || isDarkPhaseFlashLocked();
+    // so re-checking at detonation would judge a different position/aim
+    // than the one the player actually committed to), and BEFORE the
+    // cooldown reset just below — canFlashTarget() itself checks the
+    // cooldown, which by this point is guaranteed still 0 (the early-return
+    // above already confirmed it). This is the SAME predicate the reticle's
+    // red color uses (drawAimLine()), so "shown red" and "actually hits"
+    // can never disagree again, in ANY boss state — including outside DARK
+    // PHASE/COUNTER ATTACK, where a throw previously always succeeded
+    // regardless of aim as long as the distance gate passed.
+    const targetHit = canFlashTarget();
     flashCooldownRemainingMs = FLASH_COOLDOWN_MS; // starts the instant a valid throw is accepted — win or miss, see below
-    flashGrenade = { startX: player.x, startY: player.y, endX: boss.x, endY: boss.y, elapsedMs: 0, darkPhaseHeadHit };
+    flashGrenade = { startX: player.x, startY: player.y, endX: boss.x, endY: boss.y, elapsedMs: 0, targetHit };
   }
   flashZone.addEventListener('touchstart', flashPress, { passive: false });
   flashZone.addEventListener('mousedown', flashPress);
@@ -3470,18 +3610,28 @@
     if (flashGrenade) {
       flashGrenade.elapsedMs += dt * 1000;
       if (flashGrenade.elapsedMs >= FLASH_THROW_MS) {
-        const headHit = flashGrenade.darkPhaseHeadHit;
+        const targetHit = flashGrenade.targetHit;
         flashGrenade = null;
         flashScreenFlashRemainingMs = FLASH_SCREEN_FLASH_MS; // the grenade itself still detonates either way
-        if (boss.spawned && !flashDisabledByCinematic()) {
-          // PART 7/8: during DARK PHASE, a throw that wasn't aimed at
-          // GABRIEL's head (captured at throw time — see flashPress())
-          // detonates but does nothing to GABRIEL — no DOWN, no DARK PHASE
-          // end. The 10s cooldown above already started regardless, so a
-          // missed head-shot is a genuinely wasted use, not a free retry.
-          if (!(boss.state === 'darkphase' && !headHit)) {
-            startBossFlashDown(now);
-          }
+        // SECTION 9/10: a throw that wasn't a valid target at commit time
+        // (captured via canFlashTarget() in flashPress()) detonates but
+        // does nothing to GABRIEL at all — no DOWN, no COUNTER cancel, no
+        // DARK PHASE end. The cooldown above already started regardless,
+        // so a miss is a genuinely wasted use, not a free retry. This now
+        // applies uniformly to every boss state (previously only DARK
+        // PHASE required aim at all — outside it, a throw always succeeded
+        // as long as the distance gate passed, aim-independent).
+        if (boss.spawned && !flashDisabledByCinematic() && targetHit) {
+          // SECTION 12: interrupting COUNTER ATTACK (boss.state ===
+          // 'straightclaw') via a successful FLASH is handled by this SAME
+          // call — startBossFlashDown() already unconditionally clears
+          // arcClawSlashes (invalidating any in-flight COUNTER hitbox
+          // before it can land a late hit) and moves boss.state to
+          // 'flashdown' in the same synchronous step, which is also
+          // exactly when COUNTER's invulnerability lifts (every
+          // invulnerability check tests boss.state === 'straightclaw'
+          // directly) — no separate cancel path needed.
+          startBossFlashDown(now);
         }
       }
     }
@@ -3827,6 +3977,7 @@
     DARKPHASE_STALK_MS_MIN, DARKPHASE_STALK_MS_MAX, DARKPHASE_PAUSE_MS_MIN, DARKPHASE_PAUSE_MS_MAX,
     DARKPHASE_DISENGAGE_MS_MIN, DARKPHASE_DISENGAGE_MS_MAX, DARKPHASE_LUNGE_TIMEOUT_MS,
     isDarkPhaseFlashLocked, // debug/verification only
+    canFlashTarget, isAimingAtBoss, isAimedAtBossBody, // debug/verification only — SECTION 9/10/11
     // Debug/verification only — boss INTRO sequence (PART 1-8).
     spawnBoss, isBossIntroLocked,
     BOSS_INTRO_INITIAL_SHAKE_MS, BOSS_INTRO_SILENCE_MS, BOSS_INTRO_SHADOW_REVEAL_MS,
@@ -3850,6 +4001,8 @@
     // Debug/verification only — STRAIGHT CLAW counterattack (SECTION A).
     STRAIGHT_CLAW_TRIGGER_GUARDS, STRAIGHT_CLAW_WINDUP_MS, STRAIGHT_CLAW_ATTACK_MS, STRAIGHT_CLAW_RECOVERY_MS,
     STRAIGHT_CLAW_KNOCKBACK_DISTANCE, STRAIGHT_CLAW_KNOCKBACK_LOCK_MS,
+    // Debug/verification only — COUNTER ATTACK direction split (this batch).
+    COUNTER_STING_SCALE, COUNTER_ARC_CLAW_LIFETIME_MS, COUNTER_DAMAGE_MULTIPLIER, COUNTER_ATTACK_DAMAGE,
     // Debug/verification only — AREA 1/AREA 2 vertical stage (SECTION C).
     get currentArea() { return currentArea; },
     get area1Cleared() { return area1Cleared; },
@@ -3949,7 +4102,17 @@
     // actually standing in, even if they wander back south into AREA 1
     // after AREA 2 has opened up — area2Activated (below) is the real
     // one-time "has AREA 2's own boss been spawned yet" gate.
-    if (H >= W && gameState.mode === 'boss') {
+    // SECTION 15-18: this whole AREA 1/AREA 2 system was previously gated
+    // on `H >= W` (portrait only) — but style.css itself documents that
+    // "this game is primarily played in landscape" (PART 17), so on a real
+    // device in its actual primary orientation, currentArea/area1Cleared/
+    // area2Activated never updated at all and the stage never appeared as
+    // 2 areas, no matter how thoroughly a portrait-viewport test verified
+    // the underlying logic. The camera-scroll math itself (cameraY, the
+    // "cover"-style background tiling below) has no dependency on aspect
+    // ratio, so removing the orientation restriction is enough — it now
+    // runs identically in landscape and portrait.
+    if (gameState.mode === 'boss') {
       currentArea = player.y < 0 ? 2 : 1;
       // AREA 1 clear (C-13): its own boss fully dissolved.
       if (!area1Cleared && boss.state === 'dead' && currentArea === 1) {
@@ -3981,7 +4144,7 @@
     // (C-10). Reaching the EXIT is never automatic on boss death: the
     // player must physically walk into that zone themselves, exactly as
     // before this batch.
-    if (H >= W && gameState.mode === 'boss' && !stageTransition.active) {
+    if (gameState.mode === 'boss' && !stageTransition.active) {
       let minCameraY;
       if (worldScrollUnlocked()) minCameraY = -H - worldExtraAbove;
       else if (area1Cleared) minCameraY = -H;
@@ -4200,12 +4363,15 @@
     const ex = bx + Math.cos(angle) * guideLen;
     const ey = by + Math.sin(angle) * guideLen;
 
-    // PART 15-18: during DARK PHASE, the red "locked" color must mean
-    // EXACTLY "a FLASH thrown right now would hit" — isDarkPhaseFlashLocked()
-    // is the same predicate flashPress() checks, so the two can never
-    // disagree the way the old body-position-based autoAimActive check did.
-    // Every other state keeps the normal AUTO AIM red/white logic, untouched.
-    const isLocked = boss.state === 'darkphase' ? isDarkPhaseFlashLocked() : autoAimActive;
+    // PART 15-18 / SECTION 9-13: whenever the current AIM target IS
+    // GABRIEL (isAimingAtBoss() — DARK PHASE's head, a normal/COUNTER body
+    // lock, or COUNTER's raw-aim-ray check), red means EXACTLY "a FLASH
+    // thrown right now would hit" — canFlashTarget() is the SAME predicate
+    // flashPress() checks, so the two can never disagree. Aimed at
+    // something else entirely (a barrel, or nothing) keeps the original,
+    // unrelated AUTO AIM red/white feedback — FLASH has no opinion there.
+    const aimedAtBoss = isAimingAtBoss();
+    const isLocked = aimedAtBoss ? canFlashTarget() : autoAimActive;
     ctx.save();
     ctx.strokeStyle = isLocked ? 'rgba(255,90,80,0.6)' : 'rgba(255,255,255,0.55)';
     ctx.lineWidth = 2;
@@ -4234,7 +4400,11 @@
     // fully dead, cameraY is always 0, so this is pixel-identical to the
     // original single-screen rendering. ----
     const stage = currentStage();
-    const stageOn = stage.ready && H >= W;
+    // SECTION 15-18: no longer restricted to portrait — the "cover"-style
+    // scale formula below (Math.max(W/iw, H/ih)) already works correctly
+    // for any aspect ratio, so the only real gate is whether the image
+    // itself has loaded.
+    const stageOn = stage.ready;
     ctx.save();
     ctx.translate(0, -cameraY);
 
@@ -4575,11 +4745,19 @@
   // ---------- Boss rendering ----------
   function bossFrameName(now) {
     if (boss.state === 'straightclaw') {
-      // Non-directional (A-6) — windup for the full 2s telegraph, then the
-      // release pose for both the attack window and recovery (no separate
-      // recovery art was supplied, per A-16's own image list).
+      // The windup telegraph is shared by every direction (only 1 windup
+      // image exists, and it's just a generic "charging up" pose). What
+      // changes is the RELEASE/recovery pose: boss.counterDir === 'south'
+      // keeps the original front-facing STING pose (straight_claw_release);
+      // north/east/west instead reuse the EXISTING per-direction ARC CLAW
+      // SLASH attack pose (SECTION 4) — the STING pose only reads correctly
+      // when GABRIEL is facing the player, i.e. player south of it.
       const elapsed = now - boss.stateEnteredAt;
-      return elapsed < STRAIGHT_CLAW_WINDUP_MS ? 'straight_claw_windup' : 'straight_claw_release';
+      if (elapsed < STRAIGHT_CLAW_WINDUP_MS) return 'straight_claw_windup';
+      if (boss.counterDir === 'north') return 'attack_north';
+      if (boss.counterDir === 'east') return 'attack_east_release';
+      if (boss.counterDir === 'west') return 'attack_west_release';
+      return 'straight_claw_release'; // 'south'
     }
     if (boss.state === 'preattack') {
       // SOUTH only now — NORTH/EAST/WEST never enter this state (see
@@ -4673,6 +4851,17 @@
     else if (name === 'north_idle' || name === 'walk_north_1' || name === 'walk_north_2' || name === 'walk_north_3') scale = NORTH_IDLE_SCALE;
     else if (name === 'attack_north') scale = NORTH_ATTACK_SCALE;
     else if (name === 'attack_south_release') scale = SOUTH_ATTACK_SCALE;
+    // SECTION 3: real-device feedback said the STING windup/release images
+    // read too large — 10% smaller (COUNTER_STING_SCALE), applied to BOTH
+    // so the windup->release transition still shows no size jump. Scaling
+    // via this same shared mechanism scales from the sprite's own BOTTOM
+    // edge (see the comment above), so the ground anchor/attack position
+    // are unaffected — only the drawn height/width shrink. attack_north/
+    // attack_east_release/attack_west_release (shown instead of these for
+    // a north/east/west COUNTER ATTACK — see bossFrameName()) keep their
+    // own existing scale untouched, matching how they already look during
+    // a normal ARC CLAW SLASH attack.
+    else if (name === 'straight_claw_windup' || name === 'straight_claw_release') scale = COUNTER_STING_SCALE;
     if (img && img.complete && img.naturalWidth > 0) {
       const w = BOSS_DRAW_W * scale, h = BOSS_DRAW_H * scale;
       const bottomY = boss.y + BOSS_DRAW_H / 2 + bounce;
