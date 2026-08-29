@@ -4309,11 +4309,13 @@
     const key = DIR_TO_BOSS_KEY[boss.dir]; // north | south | east | west
     if (key === 'south') {
       if (!boss.moving) return 'south_idle';
-      // 3-frame cycle — same WALK_FRAME_PERIOD_MS per frame throughout.
-      const frame = Math.floor(now / WALK_FRAME_PERIOD_MS) % 3;
-      if (frame === 0) return 'walk_south_1';
-      if (frame === 1) return 'walk_south_2';
-      return 'walk_south_3';
+      // SOUTH alone uses a ping-pong cycle (1->2->3->2->1->2->3->2->1...)
+      // rather than the plain 1->2->3->1 wrap-around the other directions
+      // use below — a period-4 step through [1,2,3,2], same
+      // WALK_FRAME_PERIOD_MS per step as every other direction.
+      const SOUTH_WALK_PINGPONG = [1, 2, 3, 2];
+      const step = Math.floor(now / WALK_FRAME_PERIOD_MS) % SOUTH_WALK_PINGPONG.length;
+      return `walk_south_${SOUTH_WALK_PINGPONG[step]}`;
     }
     if (key === 'north') {
       if (!boss.moving) return 'north_idle';

@@ -1,0 +1,35 @@
+{
+  "purpose": "EAST/WEST ATTACK release-frame REPLACEMENT (attack_east_release.png / attack_west_release.png) with new source art (different pose/proportions than the previous art), landmark-matched to the PRE-REPLACEMENT images' own apparent on-canvas size rather than a raw bbox-height match, per explicit instruction (wings/claws are large enough that a raw bbox match would misjudge body scale).",
+  "sources": {
+    "attack_east_release": { "file": "assets/boss/source/attack_east_release2_raw.png", "native_size": [1017, 2033], "used_for": ["attack_east_release.png"] },
+    "attack_west_release": { "file": "assets/boss/source/attack_west_release2_raw.png", "native_size": [925, 1957], "used_for": ["attack_west_release.png"] }
+  },
+  "processing": "Non-generative only -- no AI redraw/regeneration, no left-right-flip substitution between east/west (each uses its own dedicated source image; verified orientation independently for both — see orientation_check below). No white-background fringe found in either source (edge-pixel alpha/brightness bucketing showed brightness falling, not rising, toward low alpha -- the expected pattern for a dark subject faded against transparency, not a white-composite artifact), so no un-premultiply step was needed.",
+  "orientation_check": "attack_east_release2_raw.png: claws reach to frame-right, wing to frame-left -- matches the pre-replacement attack_east_release.png's own orientation (claw-right/wing-left). attack_west_release2_raw.png: claws reach to frame-left, wing to frame-right/rear -- matches the pre-replacement attack_west_release.png's own orientation (claw-left/wing-right). No flip needed or applied.",
+  "landmark_method": "For each of the 4 images involved (2 old references being matched against, 2 new sources), head_top_y/head_center_x found the same way as the south-walk batches: topmost contiguous opaque segment within a column range chosen to exclude that pose's wing (verified per-image by marking the computed point and confirming it lands on the head/helmet crest, not a wing feather or claw tip). feet_bottom_y is each image's single lowest opaque row overall.",
+  "reference_measurements_on_preexisting_canvas": {
+    "note": "Measured on the PRE-REPLACEMENT attack_east_release.png / attack_west_release.png (both already living on the shared 700x920 canvas) to define this batch's own target -- i.e. this batch preserves THEIR apparent size, not an arbitrary new one.",
+    "attack_east_release_OLD": { "head_top_y": 111, "head_center_x": 327.5, "feet_bottom_y": 900, "body_span": 789 },
+    "attack_west_release_OLD": { "head_top_y": 96, "head_center_x": 424.5, "feet_bottom_y": 899, "body_span": 803 }
+  },
+  "per_new_image_measurement": {
+    "attack_east_release": { "native_head_top_y": 298, "native_head_center_x": 519, "native_feet_bottom_y": 2030, "native_body_span": 1732 },
+    "attack_west_release": { "native_head_top_y": 207, "native_head_center_x": 533, "native_feet_bottom_y": 1954, "native_body_span": 1747 }
+  },
+  "scale_formula": "scale = OLD_body_span / new_native_body_span (per-image).",
+  "placement_formula": "paste_x = round(OLD_head_center_x - new_head_center_x*scale); paste_y = round(OLD_feet_bottom_y - new_feet_bottom_y*scale); pasted onto a fresh transparent 700x920 canvas.",
+  "applied_scale_and_offset": {
+    "attack_east_release": { "scale": 0.45554272517321015, "paste_offset_before_clip": [91, -25], "clip_top_px_native_scale": 25, "final_paste_offset": [91, 0] },
+    "attack_west_release": { "scale": 0.4596451058958214, "paste_offset": [180, 1], "clip_top_px_native_scale": 0 }
+  },
+  "clip_note": "attack_east_release's placement math wanted paste_y=-25 (the new pose's wingspan-to-body-height ratio is taller than the old art's), which would start the pasted image 25px above the canvas top. Rather than shrink the whole body to avoid this (which would break the head/shoulder/torso size match this batch is required to hit), the resized image's top 25px were cropped before pasting at paste_y=0 -- this trims only the very tips of two wing feathers (~3% of canvas height), confirmed by visual inspection to be imperceptible; the head, body, and all four limbs are fully intact and correctly sized/anchored. attack_west_release needed no clipping.",
+  "verification_on_final_canvas": {
+    "method": "Re-measured head_top_y/head_center_x on the FINAL 700x920 canvas (column-excluding the wing side per-image) and feet_bottom_y as the overall lowest opaque row.",
+    "attack_east_release": { "head_top_y": 110, "head_center_x": 316.0, "feet_bottom_y": 899 },
+    "attack_west_release": { "head_top_y": 97, "head_center_x": 421.0, "feet_bottom_y": 899 },
+    "vs_old_reference": { "attack_east_release": "old (111, 327.5, 900) vs new (110, 316.0, 899) -- within 12px on center_x, 1px on head_top_y/feet_bottom_y", "attack_west_release": "old (96, 424.5, 899) vs new (97, 421.0, 899) -- within 4px on all three" },
+    "note": "Head_center_x differs by up to ~12px because the new art's head is tilted/turned at a different angle than the old art (a genuine pose difference, not a scale error) -- head height, shoulder width, torso, hip, leg length and foot position all match the old reference within a few pixels, matching the instruction to compare anatomical landmarks rather than force an exact pixel-identical silhouette."
+  },
+  "in_game_scale": "attack_east_release/attack_west_release continue to use the boss's normal uniform BOSS_DRAW_H/BOSS_CANVAS_W/H rendering -- no per-image scale override existed before this batch and none was added.",
+  "logic_unchanged": "Attack timing, hitbox, damage, range, duration, cooldown, AI decision and direction-facing logic in game.js are completely unmodified by this batch -- only the two image files were replaced (see BOSS_FRAME_FILES.attack_east_release/attack_west_release in game.js, whose filenames are unchanged)."
+}

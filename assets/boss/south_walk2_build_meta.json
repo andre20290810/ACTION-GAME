@@ -1,0 +1,39 @@
+{
+  "purpose": "SOUTH WALK 3-frame animation REPLACEMENT (walk_south_1/2/3.png) — new source art, same landmark-matching methodology as the previous south_walk_build_meta.json batch. south_idle.png/south_attack*/defense are explicitly NOT touched by this batch.",
+  "sources": {
+    "frame1": { "file": "assets/boss/source/south_walk2_frame1_raw.png", "native_size": [1194, 1779], "used_for": ["walk_south_1.png"] },
+    "frame2": { "file": "assets/boss/source/south_walk2_frame2_raw.png", "native_size": [1130, 1736], "used_for": ["walk_south_2.png"] },
+    "frame3": { "file": "assets/boss/source/south_walk2_frame3_raw.png", "native_size": [1196, 1790], "used_for": ["walk_south_3.png"] }
+  },
+  "processing": "Non-generative only -- no AI redraw/regeneration/compositing/mirroring. Each source already carried a genuine straight (non-premultiplied) alpha channel with no white-background fringe (checked by bucketing edge pixels by alpha and confirming brightness does not climb toward white as alpha drops), so unlike the previous south-walk batch, no color un-premultiply step was needed. One deterministic step per image: landmark-based scale+anchor onto the existing shared 700x920 boss canvas, matching the SAME target constants the previous south_walk_build_meta.json batch established (this batch replaces that art, not the target sizing).",
+  "landmark_method": "head_top_y/head_center_x found by scanning alpha>10 within columns x >= 40% of native image width (excludes the wing, which sits left-of-center in this pose) for the topmost contiguous opaque row and that row's horizontal center; verified visually per-frame by marking the computed point on the source image and confirming it lands on the crown of the head, not a wing feather tip. feet_bottom_y is the single lowest opaque row overall (a foot/claw tip), matching the previous batch's convention.",
+  "targets_reused_from_previous_batch": {
+    "TARGET_BODY_SPAN_PX": 770.0,
+    "TARGET_CENTER_X": 365.0,
+    "TARGET_FEET_BOTTOM_Y": 899.5,
+    "note": "Same targets as south_walk_build_meta.json (the batch this one replaces) -- keeps this batch's apparent on-canvas size identical to the pre-replacement south walk art, per instruction to match the previous images' look."
+  },
+  "per_new_image_measurement": {
+    "frame1": { "native_head_top_y": 194, "native_head_center_x": 749.5, "native_feet_bottom_y": 1775, "native_body_span": 1581 },
+    "frame2": { "native_head_top_y": 139, "native_head_center_x": 571.5, "native_feet_bottom_y": 1733, "native_body_span": 1594 },
+    "frame3": { "native_head_top_y": 187, "native_head_center_x": 738.5, "native_feet_bottom_y": 1786, "native_body_span": 1599 }
+  },
+  "scale_formula": "scale = TARGET_BODY_SPAN_PX / native_body_span (per-image).",
+  "placement_formula": "paste_x = round(TARGET_CENTER_X - head_center_x*scale); paste_y = round(TARGET_FEET_BOTTOM_Y - feet_bottom_y*scale); pasted onto a fresh transparent 700x920 canvas. No clipping needed for any of the 3 frames (all fit within [0,700]x[0,920] after placement).",
+  "applied_scale_and_offset": {
+    "frame1": { "scale": 0.48703352308665404, "paste_offset": [0, 35] },
+    "frame2": { "scale": 0.48306148055207027, "paste_offset": [89, 62] },
+    "frame3": { "scale": 0.4815509693558474, "paste_offset": [9, 39] }
+  },
+  "verification_on_final_canvas": {
+    "method": "Re-measured head_top_y/head_center_x on the FINAL 700x920 canvas using the same x>=245px (~35% of canvas width) column exclusion, and feet_bottom_y as the overall lowest opaque row.",
+    "frame1": { "head_top_y": 130, "head_center_x": 364.5, "feet_bottom_y": 898 },
+    "frame2": { "head_top_y": 129, "head_center_x": 365.0, "feet_bottom_y": 899 },
+    "frame3": { "head_top_y": 129, "head_center_x": 364.0, "feet_bottom_y": 899 },
+    "note": "All three land within 1px of TARGET_CENTER_X/TARGET_FEET_BOTTOM_Y and within 1px of each other on head_top_y -- no per-frame jump in size, position, or foot anchor."
+  },
+  "in_game_scale": "All three files continue to use the existing SOUTH_WALK_SCALE (1.10) render-time multiplier applied uniformly in drawBoss() -- unchanged, not touched by this batch.",
+  "animation_wiring": "bossFrameName() now cycles walk_south_1 -> walk_south_2 -> walk_south_3 -> walk_south_2 -> walk_south_1 -> ... (ping-pong, period 4: [1,2,3,2]) while boss.moving and facing south, via `[1,2,3,2][Math.floor(now / WALK_FRAME_PERIOD_MS) % 4]`. WALK_FRAME_PERIOD_MS itself is unchanged. NORTH/EAST/WEST keep their original wrap-around cycles untouched.",
+  "south_idle_explicitly_untouched": "south_idle.png is NOT updated by this batch (explicit instruction) -- it remains the old walk_south_1 image from the previous batch, so IDLE<->WALK now has a small, expected visual seam on the very first walk frame; this is intentional per this batch's scope, not an oversight.",
+  "dark_phase_exclusion": "Unchanged -- DARK PHASE never draws south_idle/walk_south_* (see drawBossDarkPhase())."
+}

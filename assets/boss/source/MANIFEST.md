@@ -498,3 +498,44 @@ Notes:
   given to the user) — necessarily an approximation given the wings'
   variable spread per pose, disclosed to the user rather than presented
   as exact.
+
+Batch 13 — SOUTH WALK 3-frame REPLACEMENT (`walk_south_1/2/3.png`) + EAST/WEST
+ATTACK release-frame REPLACEMENT (`attack_east_release.png`,
+`attack_west_release.png`), plus a SOUTH-only ping-pong walk-cycle change:
+
+- SOUTH WALK: 3 new source images (`assets/boss/source/south_walk2_frame1/2/3_raw.png`,
+  1130-1196 x 1736-1790, genuine straight alpha, no white-fringe cleanup
+  needed) replace the previous batch's `walk_south_1/2/3.png` one-for-one
+  (frame N of the new attachment set = `walk_south_N.png`, no reordering).
+  `south_idle.png`/`south_attack*`/`defense_*` are explicitly NOT touched —
+  `south_idle.png` still holds the PREVIOUS batch's frame-1 image, so IDLE
+  and the new WALK frame 1 are no longer byte-identical (an accepted,
+  explicitly-instructed seam, not an oversight).
+- Landmark-based scale/anchor, reusing the PREVIOUS batch's own target
+  constants (body span 770px, center_x=365, feet_bottom_y=899.5) so the
+  new art lands at the exact same on-canvas size as what it replaces.
+  Verified within 1px of target and of each other across all 3 frames.
+  Full measurements: `assets/boss/south_walk2_build_meta.json`.
+- Animation change: `bossFrameName()`'s SOUTH branch now cycles
+  1 -> 2 -> 3 -> 2 -> 1 -> 2 -> 3 -> 2 -> 1... (ping-pong, period 4 over
+  `[1,2,3,2]`) instead of the previous plain 1 -> 2 -> 3 -> 1 wrap-around —
+  SOUTH only; NORTH/EAST/WEST keep their original wrap-around cycles.
+  `WALK_FRAME_PERIOD_MS` (frame interval) itself is unchanged.
+- EAST/WEST ATTACK: 2 new source images (`assets/boss/source/
+  attack_east_release2_raw.png` 1017x2033, `attack_west_release2_raw.png`
+  925x1957) replace `attack_east_release.png`/`attack_west_release.png`.
+  Verified each new source's own claw/wing side matches its predecessor's
+  orientation (east: claw-right/wing-left; west: claw-left/wing-right) —
+  no flip used, each direction kept its own dedicated image.
+  Landmark-matched (head/feet, not raw bbox) to each OLD image's own
+  measured body span/anchor on the shared canvas, since the new art's
+  wing/claw proportions differ from the old art's. attack_east_release
+  needed the resized image's top ~25px (wing feather tips only) clipped to
+  fit the canvas without shrinking the body match; attack_west_release
+  needed no clipping. Verified within a few px of the old reference on
+  head_top_y/feet_bottom_y; head_center_x differs by ~4-12px, attributable
+  to the new head being tilted at a different angle in the new pose, not a
+  scale error. Full measurements: `assets/boss/attack_ew_release2_build_meta.json`.
+- Attack timing/hitbox/damage/range/duration/cooldown/AI/direction logic
+  in `game.js` is unchanged — only the two image files were replaced,
+  under their existing filenames.
