@@ -258,7 +258,14 @@ body {
   justify-content: center;
   gap: 6px;
   width: 56px;
-  height: 48px;
+  /* PART 21: track length increased ~2.5x (well above the requested 1.8x
+     floor) by growing this zone — since applyRangeFrac()/handleRangeMove()
+     already position the thumb as a PERCENTAGE of #range-track's own live
+     height (see below), lengthening the track here is the entire fix; the
+     0-100% fraction automatically spans the new, longer physical distance
+     with no JS change (PART 22). Sized to sit within the button grid's own
+     104px height so CONTROL AREA doesn't grow. */
+  height: 100px;
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -287,7 +294,7 @@ body {
 #range-track {
   position: relative;
   width: 6px;
-  height: 34px;
+  height: 84px;
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.18);
   pointer-events: none;
@@ -504,17 +511,41 @@ body {
   #control-area { gap: 10px; padding-top: 6px; padding-bottom: max(6px, env(safe-area-inset-bottom)); }
   #control-left { gap: 10px; }
   #action-stick-zone, #aim-stick-zone { width: 84px; height: 84px; }
-  #range-zone { width: 64px; height: 60px; gap: 6px; }
+  #range-zone { width: 64px; height: 110px; gap: 6px; }
   #range-label { width: 24px; font-size: 7.5px; }
-  #range-track { height: 44px; }
+  #range-track { height: 94px; }
   #button-grid { grid-template-columns: repeat(2, 52px); grid-template-rows: repeat(2, 52px); gap: 10px; }
   #flash-zone, #stealth-zone, #dash-zone, #fire-zone { width: 52px; height: 52px; }
 }
 
+/* Very short landscape viewports (PART 45/46) — e.g. iPhone SE/mini-class
+   phones land around 300-345px tall, where #play-area's 220px floor plus
+   the block above's ~127px-tall CONTROL AREA (347px combined) no longer
+   fits and previously pushed CONTROL AREA below the visible viewport
+   (PART 43's bug). This tier shrinks CONTROL AREA further on top of the
+   sizes above and lowers PLAY AREA's own floor so both fit without
+   relying on the page-scroll fallback for realistic devices — touch
+   targets stay at 44px, the accepted minimum comfortable touch size, so
+   they never get "impractically small" (PART 45). The page-scroll
+   fallback from html/body above is kept for anything shorter than this
+   tier still handles (PART 47). */
+@media (orientation: landscape) and (max-height: 360px) {
+  #play-area { min-height: 130px; }
+  #control-area { gap: 6px; padding-top: 4px; padding-bottom: max(4px, env(safe-area-inset-bottom)); }
+  #control-left { gap: 6px; }
+  #action-stick-zone, #aim-stick-zone { width: 60px; height: 60px; }
+  #range-zone { width: 50px; height: 78px; gap: 4px; }
+  #range-label { width: 20px; font-size: 6px; }
+  #range-track { height: 64px; }
+  #button-grid { grid-template-columns: repeat(2, 44px); grid-template-rows: repeat(2, 44px); gap: 6px; }
+  #flash-zone, #stealth-zone, #dash-zone, #fire-zone { width: 44px; height: 44px; }
+}
+
 /* Portrait: width is the scarce dimension here (not height) — MOVE/AIM
-   (72px), RANGE (52px) and the button grid (48px cells) already use their
-   smaller base sizes above (no override needed), which is what keeps the
-   left+center+right total narrow enough to fit a ~360-390px-wide phone. */
+   (72px), RANGE (100px-tall track) and the button grid (48px cells)
+   already use their smaller base sizes above (no override needed), which
+   is what keeps the left+center+right total narrow enough to fit a
+   ~360-390px-wide phone. */
 
 /* ---------- Mode select / PAUSE menu ---------- */
 #mode-menu {
