@@ -92,6 +92,18 @@
 
   const SPRITE_DRAW_H = 116; // on-screen character height in px (unchanged)
   let spriteAspect = 384 / 340;
+  // Every player sprite (including right_dash/left_dash) is pre-aligned onto
+  // this same shared 384x340 canvas with its foot at row 336 (see the
+  // *_build_meta.json files) — drawPlayer() always draws that whole canvas
+  // centered on player.x/y, so row 336-of-340 is the universal ground
+  // baseline for every direction/pose without needing a per-sprite constant.
+  const PLAYER_CANVAS_H = 340, PLAYER_FOOT_Y = 336;
+  // East/west DASH only, shown 10% smaller than every other sprite (see
+  // drawPlayer()) — a display-only shrink with the foot position corrected
+  // so it lands on the exact same screen row as before, never lifting or
+  // sinking the character (north/south DASH and DASH's game logic/hitbox
+  // are all untouched).
+  const SIDE_DASH_DISPLAY_SCALE = 0.90;
 
   // DASH (right/left only) and SOUTH RELAXED IDLE — separate from the
   // aim/fire pose grid above since they're pose overrides, not part of the
@@ -4090,9 +4102,19 @@
     window.__game.playerFrame = img ? img.src.slice(img.src.lastIndexOf('/') + 1).replace('.png', '') : null; // debug/verification only
     if (img && img.complete && img.naturalWidth > 0) {
       spriteAspect = img.naturalWidth / img.naturalHeight;
-      const drawH = SPRITE_DRAW_H;
+      const isSideDash = player.dashing && (player.dashDir === 'right' || player.dashDir === 'left');
+      const scaleMul = isSideDash ? SIDE_DASH_DISPLAY_SCALE : 1;
+      const drawH = SPRITE_DRAW_H * scaleMul;
       const drawW = drawH * spriteAspect;
-      const dx = player.x - drawW / 2, dy = player.y - drawH / 2;
+      const dx = player.x - drawW / 2;
+      // Canvas-center (screen x = player.x always, any scale) needs no
+      // correction, but the foot row does: a plain center-anchored shrink
+      // would otherwise lift east/west DASH's feet off the ground. Solve dy
+      // so the foot lands exactly where it would at normal (100%) scale.
+      const footFrac = PLAYER_FOOT_Y / PLAYER_CANVAS_H;
+      const dy = isSideDash
+        ? player.y - SPRITE_DRAW_H / 2 + SPRITE_DRAW_H * footFrac * (1 - scaleMul)
+        : player.y - drawH / 2;
       // STEALTH (PART 15 + addendum): whatever sprite was just picked above
       // (idle/walk/DASH/FIRE, any direction) draws exactly as it always
       // has — same scale/anchor/facing — only the pixels change, via the

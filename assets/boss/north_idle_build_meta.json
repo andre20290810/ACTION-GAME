@@ -1,0 +1,35 @@
+{
+  "north_idle": {
+    "source": "5c80aba2-image.png",
+    "source_canvas": [
+      1306,
+      2021
+    ],
+    "head_top_y": 365,
+    "head_center_x": 619.0,
+    "feet_bottom_y": 2019,
+    "native_body_span": 1654,
+    "note": "Head/feet measured within an x-band (450-850) that excludes the huge silver wing (right) and the claw arm (left), same method used for walk_north_1/2/3. Full-canvas alpha bbox was NOT used for scale (PART 13's explicit warning) since the wingtip/claw extend far beyond the body itself.",
+    "reference": "north_idle.png (previous version, itself referenced by walk_north_1/2/3's own build meta)",
+    "target_head_top_y": 182,
+    "target_head_center_x": 337.0,
+    "target_feet_bottom_y": 900,
+    "target_body_span": 718,
+    "scale": 0.43409915356711004,
+    "paste_xy": [
+      68,
+      24
+    ],
+    "output_canvas": [
+      700,
+      920
+    ],
+    "horizontal_clamp_applied": false,
+    "rendered_bbox": [
+      68,
+      24,
+      634,
+      900
+    ]
+  }
+}

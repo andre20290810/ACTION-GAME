@@ -95,7 +95,7 @@ body {
 
 /* ---------- CONTROL AREA ----------
    A separate DOM region in normal document flow BELOW #play-area — never
-   an absolute/fixed overlay on top of the game view (PART 1/2). Visually
+   an absolute/fixed overlay on top of the game view (PART 1/2/9). Visually
    distinct (own background + top border) so it reads as "this is the
    control panel" without being flashy (PART 13). Never receives any game
    drawing — it has no canvas, no game.js draw() call ever touches it
@@ -103,8 +103,9 @@ body {
    gaps BETWEEN controls scroll the page like anywhere else; every
    individual stick/button zone below overrides back to touch-action:none
    so operating a control never also pans the page (PART 15). Horizontal,
-   low-height by design (PART 5) — three groups side by side rather than
-   stacked (PART 6). */
+   low-height by design (PART 5) — three groups side by side: MOVE+AIM
+   (left), RANGE (center), the FLASH/STEALTH/DASH/FIRE 2x2 grid (right)
+   (PART 6/8). */
 #control-area {
   flex: 0 0 auto;
   width: 100%;
@@ -119,27 +120,29 @@ body {
   touch-action: pan-y;
 }
 
+/* MOVE + AIM side by side (PART 2) — same flex row, same align-items:center
+   so both sticks' center Y lines up automatically without either one
+   sticking out above/below the other (PART 2's explicit prohibition). */
 #control-left {
   flex: 0 0 auto;
   display: flex;
+  flex-direction: row;
   align-items: center;
+  gap: 8px;
 }
 
-/* row (AIM beside RANGE) by default — landscape has the width to spare;
-   portrait switches this to a column below, since portrait is short on
-   width but has height to spare instead. flex-shrink:0 on every zone
-   below (not just this wrapper) guards against the exact bug a narrow
-   portrait viewport hit during verification: with only flex:1/min-width:0
-   and no shrink guard on the fixed-size children, the browser was free to
-   shrink #aim-stick-zone all the way to 0 width instead of just tightening
-   the row's own gaps — collapsing the AIM STICK entirely. */
+/* RANGE alone, roughly centered across CONTROL AREA's overall width (PART
+   4) rather than hugging AIM STICK — flex:1 1 auto with justify-content:
+   center means it floats in the middle of whatever space is left between
+   the left and right groups on wide (landscape) screens, while min-width:0
+   plus flex-shrink:0 on the zone itself (below) keeps the same
+   shrink-to-zero guard the previous layout needed on a narrow portrait
+   phone. */
 #control-center {
   flex: 1 1 auto;
   display: flex;
-  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 10px;
   min-width: 0;
 }
 
@@ -154,14 +157,14 @@ body {
    circle AND the touch hit area shrink together this time (unlike the
    old overlay layout's separate visual-inset trick), since the whole
    point now is a genuinely smaller footprint, not just a smaller-looking
-   one. Sized to match AIM STICK (PART 8). Portrait default here is sized
-   to comfortably fit a ~360px-wide phone alongside CENTER and the FIRE
-   cluster — see the landscape override further down, which sizes for the
+   one. Sized to match AIM STICK (PART 3/8). Portrait default here is sized
+   to comfortably fit a ~360px-wide phone alongside CENTER and the button
+   grid — see the landscape override further down, which sizes for the
    opposite constraint (ample width, scarce height). */
 #action-stick-zone {
   position: relative;
-  width: 84px;
-  height: 84px;
+  width: 72px;
+  height: 72px;
   flex-shrink: 0;
   pointer-events: auto;
   touch-action: none;
@@ -195,8 +198,8 @@ body {
    (PART 7/11). */
 #aim-stick-zone {
   position: relative;
-  width: 84px;
-  height: 84px;
+  width: 72px;
+  height: 72px;
   flex-shrink: 0;
   pointer-events: auto;
   touch-action: none;
@@ -236,21 +239,26 @@ body {
 }
 
 /* ---------- RANGE gauge ----------
-   Sits directly beside AIM STICK inside #control-center (PART 12) instead
-   of over on the right side — same compact vertical track/thumb, just
-   shorter so its full height sits inside CONTROL AREA alongside the
-   (now smaller) AIM STICK. Hidden by default; only shown while AIM STICK
-   is actively held (see showRangeUI()/hideRangeUI() in game.js) — still
-   opacity/visibility based (not display) so showing/hiding it never
-   shifts anything else in the row. Functionality itself is unchanged. */
+   Moved into its own #control-center group, roughly in the middle of
+   CONTROL AREA overall rather than hugging AIM STICK (PART 4). Laid out as
+   a horizontally-long, compact widget — label beside the track instead of
+   above it — so its footprint reads as wide-and-short (shrinking CONTROL
+   AREA's height contribution vs. the old stacked layout) without touching
+   the track's own vertical drag axis or fraction math in game.js
+   (applyRangeFrac()/handleRangeMove() are completely unchanged — only this
+   container's direction and the track's length are visual). Hidden by
+   default; only shown while AIM STICK is actively held (see
+   showRangeUI()/hideRangeUI() in game.js) — still opacity/visibility based
+   (not display) so showing/hiding it never shifts anything else in the
+   row. Functionality itself is unchanged. */
 #range-zone {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 4px;
-  width: 32px;
-  height: 76px;
-  justify-content: flex-end;
+  justify-content: center;
+  gap: 6px;
+  width: 56px;
+  height: 48px;
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -266,15 +274,20 @@ body {
 #range-label {
   font-family: sans-serif;
   font-weight: 600;
-  font-size: 8px;
-  letter-spacing: 0.06em;
+  font-size: 6.5px;
+  letter-spacing: -0.01em;
   color: rgba(220, 225, 230, 0.55);
   pointer-events: none;
+  width: 24px;
+  flex-shrink: 0;
+  text-align: center;
+  line-height: 1.05;
+  white-space: nowrap;
 }
 #range-track {
   position: relative;
   width: 6px;
-  height: 52px;
+  height: 34px;
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.18);
   pointer-events: none;
@@ -283,8 +296,8 @@ body {
   position: absolute;
   left: 50%;
   bottom: 60%; /* overwritten inline per-frame from aimRangeLen's current fraction */
-  width: 26px;
-  height: 14px;
+  width: 16px;
+  height: 12px;
   border-radius: 4px;
   background: rgba(200, 210, 220, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.55);
@@ -292,27 +305,31 @@ body {
   pointer-events: none;
 }
 
-/* ---------- FIRE cluster (PART 9/10/11) ----------
-   FIRE is the main button, dead center. STEALTH/FLASH/DASH surround it at
-   the SAME center-to-center distance in every direction (left/right/
-   bottom) — not a full circle, so the cluster stays short (only grows
-   downward for DASH, not upward too), keeping CONTROL AREA low. Sized so
-   the farthest sub-button edge is the cluster's own bounding box — no
-   separate "container circle" to overflow. */
-#fire-cluster {
-  position: relative;
-  width: 152px;
-  height: 102px;
+/* ---------- 2x2 button grid (FLASH / STEALTH / DASH / FIRE) ----------
+   Replaces the old "FIRE-centered radial cluster" design. A real CSS grid
+   guarantees the 4 buttons' CENTERS form a mathematically exact square —
+   equal horizontal gap, equal vertical gap, by construction (PART 5/6) —
+   rather than approximating it with hand-placed offsets. DOM order (flash,
+   stealth, dash, fire) maps directly onto the grid's row-major auto-flow:
+     [FLASH   STEALTH]
+     [DASH    FIRE   ]
+   Every zone is the SAME cell size (equal touch-target area for all 4,
+   PART 7's hit-area requirement); FIRE reads as the main button purely by
+   filling more of its own cell (bigger visible circle, bolder border/text
+   — see #fire-button below) than the other three do inside theirs, so
+   emphasizing it never perturbs the grid's own geometry (PART 7). */
+#button-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 48px);
+  grid-template-rows: repeat(2, 48px);
+  gap: 8px;
   flex-shrink: 0;
 }
 
-#fire-zone {
-  position: absolute;
-  left: 50%;
-  top: 26px;
-  transform: translate(-50%, -50%);
-  width: 52px;
-  height: 52px;
+#flash-zone, #stealth-zone, #dash-zone, #fire-zone {
+  position: relative;
+  width: 48px;
+  height: 48px;
   pointer-events: auto;
   touch-action: none;
 }
@@ -326,7 +343,7 @@ body {
   color: #ffe6e0;
   font-family: sans-serif;
   font-weight: bold;
-  font-size: 15px;
+  font-size: 13px;
   letter-spacing: 0.05em;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
@@ -339,53 +356,16 @@ body {
   background: rgba(255, 60, 40, 0.6);
 }
 
-/* STEALTH: directly left of FIRE, same center height. */
-#stealth-zone {
-  position: absolute;
-  left: 50%;
-  top: 26px;
-  transform: translate(calc(-50% - 54px), -50%);
-  width: 44px;
-  height: 44px;
-  pointer-events: auto;
-  touch-action: none;
-}
-/* FLASH: directly right of FIRE, same center height — mirrors STEALTH so
-   FIRE-to-STEALTH and FIRE-to-FLASH are the exact same distance. */
-#flash-zone {
-  position: absolute;
-  left: 50%;
-  top: 26px;
-  transform: translate(calc(-50% + 54px), -50%);
-  width: 44px;
-  height: 44px;
-  pointer-events: auto;
-  touch-action: none;
-}
-/* DASH: directly below FIRE, same center-to-center distance as the two
-   above (54px) — completing an even "left / right / bottom" spread
-   around FIRE rather than a lopsided one. */
-#dash-zone {
-  position: absolute;
-  left: 50%;
-  top: 26px;
-  transform: translate(-50%, calc(-50% + 54px));
-  width: 44px;
-  height: 44px;
-  pointer-events: auto;
-  touch-action: none;
-}
-
 #stealth-button {
   position: absolute;
-  inset: 0;
+  inset: 4px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.05);
   border: 2px solid rgba(120, 230, 160, 0.45);
   color: #d8ffe6;
   font-family: sans-serif;
   font-weight: bold;
-  font-size: 9px;
+  font-size: 8px;
   letter-spacing: 0.03em;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
@@ -434,14 +414,14 @@ body {
 
 #flash-button {
   position: absolute;
-  inset: 0;
+  inset: 4px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.05);
   border: 2px solid rgba(255, 225, 140, 0.45);
   color: #fff2c8;
   font-family: sans-serif;
   font-weight: bold;
-  font-size: 10px;
+  font-size: 8px;
   letter-spacing: 0.05em;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
@@ -491,14 +471,14 @@ body {
 
 #dash-button {
   position: absolute;
-  inset: 0;
+  inset: 4px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.05);
   border: 2px solid rgba(150, 170, 255, 0.5);
   color: #e2e6ff;
   font-family: sans-serif;
   font-weight: bold;
-  font-size: 10px;
+  font-size: 8px;
   letter-spacing: 0.05em;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
@@ -515,30 +495,26 @@ body {
 }
 
 /* Landscape: this game is primarily played in landscape (PART 17) — the
-   3-group row is already horizontal, so this just tightens every
-   dimension further to keep CONTROL AREA as low as possible when screen
-   height is scarce (as low as ~360-400px on a phone in landscape). */
+   3-group row is already horizontal, so this just enlarges everything a
+   little (ample width to spare) while keeping CONTROL AREA as low as
+   possible when screen height is scarce (as low as ~360-400px on a phone
+   in landscape). MOVE/AIM stay side by side and the button grid stays
+   2x2 — only the pixel sizes change, not the structure. */
 @media (orientation: landscape) {
-  #control-area { gap: 8px; padding-top: 6px; padding-bottom: max(6px, env(safe-area-inset-bottom)); }
-  #action-stick-zone, #aim-stick-zone { width: 96px; height: 96px; }
-  #range-zone { width: 34px; height: 82px; }
-  #range-track { height: 58px; }
-  #fire-cluster { width: 168px; height: 116px; }
-  #fire-zone { top: 30px; width: 60px; height: 60px; }
-  #stealth-zone, #flash-zone, #dash-zone { top: 30px; width: 46px; height: 46px; }
-  #stealth-zone { transform: translate(calc(-50% - 59px), -50%); }
-  #flash-zone { transform: translate(calc(-50% + 59px), -50%); }
-  #dash-zone { transform: translate(-50%, calc(-50% + 59px)); }
+  #control-area { gap: 10px; padding-top: 6px; padding-bottom: max(6px, env(safe-area-inset-bottom)); }
+  #control-left { gap: 10px; }
+  #action-stick-zone, #aim-stick-zone { width: 84px; height: 84px; }
+  #range-zone { width: 64px; height: 60px; gap: 6px; }
+  #range-label { width: 24px; font-size: 7.5px; }
+  #range-track { height: 44px; }
+  #button-grid { grid-template-columns: repeat(2, 52px); grid-template-rows: repeat(2, 52px); gap: 10px; }
+  #flash-zone, #stealth-zone, #dash-zone, #fire-zone { width: 52px; height: 52px; }
 }
 
-/* Portrait: width is the scarce dimension here (not height), so stack
-   AIM STICK above RANGE inside #control-center instead of placing them
-   side by side — frees up enough row width for MOVE + AIM + the FIRE
-   cluster to all fit on a ~360-390px-wide phone without re-triggering the
-   flex shrink-to-zero collapse (see the #control-center comment above). */
-@media (orientation: portrait) {
-  #control-center { flex-direction: column; gap: 4px; }
-}
+/* Portrait: width is the scarce dimension here (not height) — MOVE/AIM
+   (72px), RANGE (52px) and the button grid (48px cells) already use their
+   smaller base sizes above (no override needed), which is what keeps the
+   left+center+right total narrow enough to fit a ~360-390px-wide phone. */
 
 /* ---------- Mode select / PAUSE menu ---------- */
 #mode-menu {
