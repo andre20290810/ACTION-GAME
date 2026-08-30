@@ -52,6 +52,15 @@
     <button class="main-menu-item" id="main-menu-training-btn">TRAINING MODE</button>
     <button class="main-menu-item" id="main-menu-setting-btn">SETTING</button>
   </div>
+  <!-- PART 2 SECTION A: TRAINING MODE's own BASIC/SECURITY submenu — same
+       plain-text-over-video treatment as #main-menu-overlay, no boxed
+       card/panel styling. Both choices route through the same startMode()
+       everything else already uses. -->
+  <div id="training-select-overlay" hidden>
+    <button class="main-menu-item" id="training-select-basic-btn">BASIC TRAINING</button>
+    <button class="main-menu-item" id="training-select-security-btn">SECURITY TRAINING</button>
+    <button class="main-menu-item" id="training-select-back-btn">BACK</button>
+  </div>
 </div>
 
 <!-- SECTION Q/R: RESULT — shown after GAME CLEAR (see the canvas-drawn

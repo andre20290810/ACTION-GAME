@@ -116,6 +116,11 @@
   });
   const TRAINING_BG_INDEX = 0; // active pool entry — see comment above
 
+  // PART 2 SECTION B/D: SECURITY TRAINING picks ONE background from the same
+  // TRAINING_BACKGROUNDS pool at session start and keeps using that same one
+  // across both AREA1 and AREA2 (re-randomized in resetModeState()).
+  let securityTrainingBgIndex = 0;
+
   // SECTION D: the ONE place draw()/barrel-spawn/etc. read "the current
   // background" from — returns TRAINING's own pool while in TRAINING MODE,
   // STORY's STAGES otherwise, so every existing caller (draw()'s
@@ -123,6 +128,7 @@
   // further changes needed anywhere else.
   function currentStage() {
     if (gameState.mode === 'training') return TRAINING_BACKGROUNDS[TRAINING_BG_INDEX];
+    if (gameState.mode === 'securityTraining') return TRAINING_BACKGROUNDS[securityTrainingBgIndex];
     return STAGES[currentStageIndex];
   }
 
@@ -968,6 +974,65 @@
   const DARK_PHASE_MASK_TELEGRAPH_MS = 1000; // named per spec — mask visible, no attack yet
   const DARK_PHASE_CLAW_INTERVAL_MS = 550; // gap AFTER each claw's own lifetime finishes, before the next fires — keeps every attack individually visible/dodgeable
   const DARK_PHASE_MASK_SCALE_BOOST = 1.03; // runtime-only ×1.03 on top of the existing DARKPHASE_SCALE — never baked into the source image
+
+  // ================= PART 2: SECURITY TRAINING / SECURITY ROBOT =================
+  // TRAINING-MODE-ONLY stealth-verification stage. SECURITY ROBOT is a fixed
+  // floor-mounted turret that never moves from its spawn spot (no wall
+  // attachment, no sliding, no player-tracking movement — SECTION E). It
+  // periodically re-picks a facing direction (SOUTH/WEST/EAST) and casts a
+  // matching floor SHADOW; stepping into that SHADOW triggers a telegraphed,
+  // dodgeable laser sniped from the image's own visual center-bottom.
+  // gameState.mode === 'securityTraining' is a mode wholly separate from
+  // 'boss'/'training' — updateBoss() already early-returns for any mode
+  // other than 'boss' (see below), so GABRIEL/BOSS INTRO/BOSS HUD/DARK PHASE
+  // are structurally impossible here with no extra guard needed (SECTION S).
+  const SECURITY_ROBOT_COUNT = 5; // SECTION E: 4-6 robots, 5 is the default
+  const SECURITY_ROBOT_MIN_SPACING = 130; // px between any two robots' fixed spots
+  const SECURITY_DIRECTION_MIN_MS = 800, SECURITY_DIRECTION_MAX_MS = 2000; // SECTION F: independent per-robot facing timer
+  const SECURITY_TELEGRAPH_MS = 450; // SECTION J: 300-600ms band, default ~450ms
+  const SECURITY_LASER_VISUAL_MS = 220; // cosmetic beam-display duration after firing (SECTION L — no re-tracking during this window)
+  const SECURITY_LASER_COOLDOWN_MIN_MS = 1000, SECURITY_LASER_COOLDOWN_MAX_MS = 2000; // SECTION O: per-robot cooldown after firing
+  const SECURITY_MAX_SIMULTANEOUS_ATTACKS = 2; // SECTION N: global cap across ALL robots combined
+  const SECURITY_SHADOW_LENGTH = 140; // px the floor SHADOW extends from the robot in its facing direction
+  const SECURITY_SHADOW_WIDTH = 34; // px, perpendicular to the facing direction
+  // SECTION C: on-screen SECURITY ROBOT diameter is derived from GABRIEL's
+  // OWN existing DARK PHASE mask size (not an arbitrary new value) — the
+  // DARK PHASE "mask" IS the small head sprite drawn by drawBossDarkPhase()
+  // (there is no separate larger body during DARK PHASE), displayed at
+  // DARKPHASE_HEAD_DISPLAY_H boosted by DARK_PHASE_MASK_SCALE_BOOST. Using
+  // that same final figure here means SECURITY ROBOT reads as "roughly the
+  // same" occupied on-screen area as that mask, per spec.
+  const SECURITY_ROBOT_DRAW_D = DARKPHASE_HEAD_DISPLAY_H * DARK_PHASE_MASK_SCALE_BOOST;
+  // Per-direction source metrics measured directly from the 3 attached
+  // images (native pixel size + the fraction of the image's own opaque
+  // pixel bounding box that is horizontally centered / vertically at the
+  // very bottom) — used to compute a per-direction "visual center-bottom"
+  // muzzle point (SECTION K) without hand-tuning per direction, and to
+  // scale each direction to the SAME on-screen diameter (SECTION C-4: no
+  // visible size jump between SOUTH/WEST/EAST).
+  const SECURITY_ROBOT_METRICS = {
+    south: { nativeW: 1279, nativeH: 1280, muzzleFracX: 0.4996, muzzleFracY: 0.9992 },
+    west: { nativeW: 1278, nativeH: 1297, muzzleFracX: 0.4996, muzzleFracY: 0.9977 },
+    east: { nativeW: 1261, nativeH: 1280, muzzleFracX: 0.4996, muzzleFracY: 0.9992 },
+  };
+  Object.keys(SECURITY_ROBOT_METRICS).forEach((key) => {
+    const m = SECURITY_ROBOT_METRICS[key];
+    m.scale = SECURITY_ROBOT_DRAW_D / Math.max(m.nativeW, m.nativeH);
+    m.drawW = m.nativeW * m.scale;
+    m.drawH = m.nativeH * m.scale;
+  });
+  // SECTION C/D: official, untouched, non-AI-regenerated assets — exact
+  // mapping per the request (1st image=SOUTH, 2nd=WEST, 3rd=EAST), visually
+  // confirmed to already carry proper alpha transparency (no white
+  // background), so no cleanup/editing was applied to any of the 3 files.
+  const securityRobotImgs = { south: new Image(), west: new Image(), east: new Image() };
+  securityRobotImgs.south.src = 'assets/security/security_robot_south.png';
+  securityRobotImgs.west.src = 'assets/security/security_robot_west.png';
+  securityRobotImgs.east.src = 'assets/security/security_robot_east.png';
+  let securityRobots = [];
+  let securityAttackSlotsInUse = 0;
+  // ================= END PART 2 constants (state machine/logic further below) =================
+
   // Minimum straight-line distance a new relocate position must keep from
   // the PREVIOUS one, so the loop never reads as a near-repeat/fixed spot.
   // Sized to comfortably fit the valid on-stage relocate box on the
@@ -2811,10 +2876,14 @@
     // container (and its one persistent <video>) — only which overlay
     // shows on top of it differs. The video itself is never hidden/
     // recreated by this toggle.
-    const showOpeningContainer = next === 'opening' || next === 'mainMenu';
+    // PART 2 SECTION A: the TRAINING submenu (BASIC/SECURITY TRAINING) reuses
+    // this exact same persistent-video #opening-screen container/pattern —
+    // just one more overlay toggled by this same helper, no new screen host.
+    const showOpeningContainer = next === 'opening' || next === 'mainMenu' || next === 'trainingSelect';
     document.getElementById('opening-screen').hidden = !showOpeningContainer;
     document.getElementById('opening-overlay').hidden = next !== 'opening';
     document.getElementById('main-menu-overlay').hidden = next !== 'mainMenu';
+    document.getElementById('training-select-overlay').hidden = next !== 'trainingSelect';
     document.getElementById('result-screen').hidden = next !== 'result';
     document.getElementById('game-over-screen').hidden = next !== 'gameover';
     // PLAY AREA / CONTROL AREA are only meaningful during actual gameplay —
@@ -2921,7 +2990,13 @@
   // duplicate gameplay wiring. SETTING is wired earlier, alongside PAUSE
   // MENU's own SETTING button (openSettingPanel('mainMenu')).
   document.getElementById('main-menu-story-btn').addEventListener('click', () => startMode('boss'));
-  document.getElementById('main-menu-training-btn').addEventListener('click', () => startMode('training'));
+  // PART 2 SECTION A: TRAINING now opens a BASIC/SECURITY submenu instead of
+  // jumping straight into BASIC TRAINING — both submenu choices still route
+  // through the exact same startMode() everything else already uses.
+  document.getElementById('main-menu-training-btn').addEventListener('click', () => setScreen('trainingSelect'));
+  document.getElementById('training-select-basic-btn').addEventListener('click', () => startMode('training'));
+  document.getElementById('training-select-security-btn').addEventListener('click', () => startMode('securityTraining'));
+  document.getElementById('training-select-back-btn').addEventListener('click', () => setScreen('mainMenu'));
 
   // ---------- Stage world / camera / EXIT (PART 21-29) ----------
   // Before the boss is fully defeated (state 'dead', not merely HP<=0 and
@@ -3277,6 +3352,287 @@
     }
   }
 
+  // ================= PART 2: SECURITY ROBOT placement/state/attack =================
+
+  // SECTION E: mirrors pickBarrelSpot()'s own safe-random-placement pattern
+  // (margins, isNearUIZone, minimum-distance checks, 30-attempt retry with a
+  // graceful fallback) but spans the FULL 2-area TRAINING world (both AREA1
+  // and AREA2 bands) since robots are placed ONCE per session at fixed
+  // spots, never re-picked relative to whichever area the player currently
+  // stands in.
+  function pickSecurityRobotSpot(existingRobots) {
+    const marginX = SECURITY_ROBOT_DRAW_D * 3;
+    const marginTop = H * 0.22;
+    const marginBottom = H * 0.22;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const area = Math.random() < 0.5 ? 1 : 2;
+      const areaTop = areaTopY(area);
+      const x = marginX + Math.random() * (W - marginX * 2);
+      const y = areaTop + marginTop + Math.random() * (H - marginTop - marginBottom);
+      if (isNearUIZone(x, y - areaTop)) continue; // isNearUIZone reads screen-space UI zones — offset back to a 0-based band first
+      if (Math.hypot(x - player.x, y - player.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue; // clear of the player's initial spot
+      let tooClose = false;
+      for (const r of existingRobots) {
+        if (Math.hypot(x - r.x, y - r.y) < SECURITY_ROBOT_MIN_SPACING) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      return { x, y };
+    }
+    // Fallback if 30 attempts all collided (very small screens): spread
+    // deterministically across alternating areas rather than stacking.
+    const area = existingRobots.length % 2 === 0 ? 1 : 2;
+    const areaTop = areaTopY(area);
+    return { x: W * (0.25 + 0.5 * Math.random()), y: areaTop + H * 0.5 };
+  }
+
+  const SECURITY_DIRECTIONS = ['south', 'west', 'east'];
+  function pickSecurityDirectionChangeAt(now) {
+    return now + SECURITY_DIRECTION_MIN_MS + Math.random() * (SECURITY_DIRECTION_MAX_MS - SECURITY_DIRECTION_MIN_MS);
+  }
+
+  // SECTION E/Q: reset-then-repopulate, mirroring spawnBarrels()'s own
+  // pattern — called fresh from resetModeState() on every SECURITY TRAINING
+  // session start AND every RESTART, so robot positions/directions/state are
+  // always fully re-randomized from scratch (Q-1).
+  function spawnSecurityRobots() {
+    securityRobots.length = 0;
+    securityAttackSlotsInUse = 0;
+    const now = performance.now();
+    for (let i = 0; i < SECURITY_ROBOT_COUNT; i++) {
+      const spot = pickSecurityRobotSpot(securityRobots);
+      securityRobots.push({
+        x: spot.x, y: spot.y,
+        dir: SECURITY_DIRECTIONS[Math.floor(Math.random() * SECURITY_DIRECTIONS.length)],
+        dirChangeAt: pickSecurityDirectionChangeAt(now),
+        state: 'watching',
+        telegraphElapsedMs: 0,
+        cooldownRemainingMs: 0,
+        lockedTargetX: 0, lockedTargetY: 0,
+        laserOriginX: 0, laserOriginY: 0, laserEndX: 0, laserEndY: 0,
+        laserRemainingMs: 0,
+      });
+    }
+  }
+
+  // SECTION G: the ONE shared along/across projection used by BOTH the
+  // SHADOW's drawn rectangle (drawSecurityShadow()) AND its detection hitbox
+  // (isPlayerInSecurityShadow()) — so the two can never drift apart. All 3
+  // directions are cardinal (no rotation math needed): SOUTH extends +Y,
+  // WEST extends -X, EAST extends +X, from the robot's own FIXED position.
+  function securityShadowProject(robot, px, py) {
+    const dx = px - robot.x, dy = py - robot.y;
+    if (robot.dir === 'south') return { along: dy, across: dx };
+    if (robot.dir === 'west') return { along: -dx, across: dy };
+    return { along: dx, across: dy }; // east
+  }
+
+  // SECTION H: detection is the PLAYER overlapping the SHADOW region —
+  // merely colliding with the robot's own body is never checked here.
+  function isPlayerInSecurityShadow(robot) {
+    const p = securityShadowProject(robot, player.x, player.y);
+    return p.along >= -PLAYER_HIT_RADIUS && p.along <= SECURITY_SHADOW_LENGTH + PLAYER_HIT_RADIUS &&
+      Math.abs(p.across) <= SECURITY_SHADOW_WIDTH / 2 + PLAYER_HIT_RADIUS;
+  }
+
+  // SECTION K: per-direction "visual center-bottom" muzzle point, derived
+  // from the SAME measured opaque-pixel-bbox fractions used to scale the
+  // sprite itself — never a hand-tuned separate offset that could drift
+  // from the actual art as directions change.
+  function getSecurityRobotMuzzlePos(robot) {
+    const m = SECURITY_ROBOT_METRICS[robot.dir];
+    const drawX = robot.x - m.drawW / 2;
+    const drawY = robot.y - m.drawH / 2;
+    return { x: drawX + m.drawW * m.muzzleFracX, y: drawY + m.drawH * m.muzzleFracY };
+  }
+
+  // Point-to-segment distance — no existing helper of this shape was found
+  // elsewhere in the codebase (ARC CLAW/CLAW STING use a rotated-local-frame
+  // check instead, not applicable to a simple straight muzzle->target shot).
+  function distanceToSegment(px, py, x0, y0, x1, y1) {
+    const dx = x1 - x0, dy = y1 - y0;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq > 0 ? ((px - x0) * dx + (py - y0) * dy) / lenSq : 0;
+    t = Math.max(0, Math.min(1, t));
+    const cx = x0 + t * dx, cy = y0 + t * dy;
+    return Math.hypot(px - cx, py - cy);
+  }
+
+  // SECTION L/M: fires ONCE at the exact instant telegraph ends, from the
+  // muzzle to the already-locked target — the laser's VISUAL endpoints
+  // (robot.laserOriginX/Y -> laserEndX/Y, drawn by drawSecurityLaserBeam())
+  // and its damage hitbox (the distanceToSegment check right below) are
+  // computed from these exact same two points, so they can never disagree.
+  // No re-tracking happens after this call — the player's position at THIS
+  // instant is what's checked, once.
+  function fireSecurityLaser(robot, now) {
+    const muzzle = getSecurityRobotMuzzlePos(robot);
+    robot.laserOriginX = muzzle.x;
+    robot.laserOriginY = muzzle.y;
+    robot.laserEndX = robot.lockedTargetX;
+    robot.laserEndY = robot.lockedTargetY;
+    robot.laserRemainingMs = SECURITY_LASER_VISUAL_MS;
+    // SECTION L (dodgeability, this fix): the target is locked from the
+    // player's position AT THIS EXACT INSTANT, so hit-testing right here
+    // would always read as a guaranteed hit (distance ~0) and the beam
+    // could never actually be dodged — contradicting L-2's own "the player
+    // can see the shot coming and move before the beam actually resolves".
+    // Damage is instead resolved once the beam's short travel window
+    // finishes (see updateSecurityRobots()'s 'attack' case below), checking
+    // the player's position AT THAT LATER MOMENT against this SAME fixed
+    // muzzle->lockedTarget segment — giving a real window to step off the
+    // line after the shot is visibly telegraphed and fired.
+  }
+
+  // SECTION L/M: resolves a fired laser's damage once its brief travel
+  // window elapses — checks the player's position AT RESOLVE TIME against
+  // the fixed muzzle->lockedTarget segment set at fire-time (never
+  // re-aimed), so the player can dodge by moving off that line before this
+  // fires, while a player who stays on it (or wanders back onto it) still
+  // gets hit.
+  function resolveSecurityLaserHit(robot, now) {
+    const dist = distanceToSegment(player.x, player.y, robot.laserOriginX, robot.laserOriginY, robot.laserEndX, robot.laserEndY);
+    if (dist <= PLAYER_HIT_RADIUS) {
+      // SECTION M: routes through the SAME shared damage choke-point and
+      // the SAME existing normal-attack damage constant used elsewhere —
+      // never a bypassing `player.life -=` or an invented damage number.
+      applyDamageToPlayerLife(now, BULLET_DAMAGE);
+    }
+  }
+
+  // SECTION I: per-robot state machine — watching (direction can still
+  // change; checks shadow overlap) -> detected (one-tick bookkeeping state,
+  // moves on to telegraph on the NEXT tick, never the same frame, so it's
+  // independently observable) -> telegraph (windup; locks the target exactly
+  // once at the end) -> attack (holds the beam visually; damage resolves
+  // once the beam's travel window elapses, not at fire-time — see
+  // resolveSecurityLaserHit()) -> cooldown (per-robot, before returning to
+  // watching). Once a robot leaves 'watching' it stops re-checking the
+  // shadow entirely until it returns to 'watching' — this is what keeps
+  // standing in the same shadow every frame from spamming infinite
+  // attack-requests (I-2).
+  function updateSecurityRobots(dt, now) {
+    if (gameState.mode !== 'securityTraining') return;
+    for (const robot of securityRobots) {
+      switch (robot.state) {
+        case 'watching': {
+          if (now >= robot.dirChangeAt) {
+            robot.dir = SECURITY_DIRECTIONS[Math.floor(Math.random() * SECURITY_DIRECTIONS.length)];
+            robot.dirChangeAt = pickSecurityDirectionChangeAt(now);
+          }
+          if (isPlayerInSecurityShadow(robot)) {
+            robot.state = 'detected';
+          }
+          break;
+        }
+        case 'detected': {
+          robot.telegraphElapsedMs = 0;
+          robot.state = 'telegraph';
+          break;
+        }
+        case 'telegraph': {
+          robot.telegraphElapsedMs += dt * 1000;
+          if (robot.telegraphElapsedMs >= SECURITY_TELEGRAPH_MS) {
+            robot.lockedTargetX = player.x; // SECTION J: locked ONCE, exactly at telegraph-end
+            robot.lockedTargetY = player.y;
+            if (securityAttackSlotsInUse < SECURITY_MAX_SIMULTANEOUS_ATTACKS) {
+              securityAttackSlotsInUse++;
+              robot.state = 'attack';
+              fireSecurityLaser(robot, now);
+            } else {
+              // SECTION N: no free attack slot — fail safe back to watching
+              // rather than queuing (never spam infinite attack-requests).
+              robot.state = 'watching';
+              robot.dirChangeAt = pickSecurityDirectionChangeAt(now);
+            }
+          }
+          break;
+        }
+        case 'attack': {
+          robot.laserRemainingMs -= dt * 1000;
+          if (robot.laserRemainingMs <= 0) {
+            resolveSecurityLaserHit(robot, now); // SECTION L: hit-tested here, at beam-resolve time, not at fire-time — see resolveSecurityLaserHit()'s own comment
+            securityAttackSlotsInUse = Math.max(0, securityAttackSlotsInUse - 1);
+            robot.state = 'cooldown';
+            robot.cooldownRemainingMs = SECURITY_LASER_COOLDOWN_MIN_MS + Math.random() * (SECURITY_LASER_COOLDOWN_MAX_MS - SECURITY_LASER_COOLDOWN_MIN_MS);
+          }
+          break;
+        }
+        case 'cooldown': {
+          robot.cooldownRemainingMs -= dt * 1000;
+          if (robot.cooldownRemainingMs <= 0) {
+            robot.state = 'watching';
+            robot.dirChangeAt = pickSecurityDirectionChangeAt(now);
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // Drawn UNDER the robot body, in the same world space, as a soft dark
+  // elongated shape — deliberately NOT a red laser-sight look, NOT a flashy
+  // glow, and NOT a solid opaque giant rectangle (low alpha + blur instead).
+  function drawSecurityShadow(robot) {
+    const w = SECURITY_SHADOW_WIDTH, len = SECURITY_SHADOW_LENGTH;
+    let rx, ry, rw, rh;
+    if (robot.dir === 'south') { rx = robot.x - w / 2; ry = robot.y; rw = w; rh = len; }
+    else if (robot.dir === 'west') { rx = robot.x - len; ry = robot.y - w / 2; rw = len; rh = w; }
+    else { rx = robot.x; ry = robot.y - w / 2; rw = len; rh = w; } // east
+    ctx.save();
+    ctx.filter = 'blur(2px)';
+    // SECTION G: readable against the stage's own dark-but-not-black floor
+    // texture (a plain near-black fill washed out to near-invisibility
+    // there) while staying a soft, non-flashy dark tone — never the
+    // forbidden red laser-sight look or a solid opaque rectangle.
+    ctx.globalAlpha = (robot.state === 'detected' || robot.state === 'telegraph' || robot.state === 'attack') ? 0.75 : 0.6;
+    ctx.fillStyle = '#050608';
+    ctx.fillRect(rx, ry, rw, rh);
+    ctx.restore();
+  }
+
+  function drawSecurityRobot(robot) {
+    const img = securityRobotImgs[robot.dir];
+    const m = SECURITY_ROBOT_METRICS[robot.dir];
+    if (!img.complete || img.naturalWidth === 0) return;
+    ctx.drawImage(img, robot.x - m.drawW / 2, robot.y - m.drawH / 2, m.drawW, m.drawH);
+    // SECTION J: telegraph-only core emphasis — a canvas-drawn radial glow
+    // layered on top of the untouched source image, never a regenerated/
+    // re-edited asset.
+    if (robot.state === 'telegraph') {
+      ctx.save();
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 60);
+      ctx.globalAlpha = 0.35 + 0.25 * pulse;
+      const grad = ctx.createRadialGradient(robot.x, robot.y, 0, robot.x, robot.y, m.drawW * 0.45);
+      grad.addColorStop(0, 'rgba(255,70,50,0.9)');
+      grad.addColorStop(1, 'rgba(255,70,50,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(robot.x, robot.y, m.drawW * 0.45, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // SECTION L: straight-line beam from the exact muzzle origin to the exact
+  // locked target — the SAME two points fireSecurityLaser() already used
+  // for the damage hitbox, so visual and hitbox can never disagree. Fades
+  // out over its short cosmetic display window rather than cutting off.
+  function drawSecurityLaserBeam(robot) {
+    if (robot.state !== 'attack') return;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, robot.laserRemainingMs / SECURITY_LASER_VISUAL_MS));
+    ctx.strokeStyle = 'rgba(255,60,50,0.9)';
+    ctx.lineWidth = 3;
+    ctx.shadowColor = 'rgba(255,60,50,0.6)';
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.moveTo(robot.laserOriginX, robot.laserOriginY);
+    ctx.lineTo(robot.laserEndX, robot.laserEndY);
+    ctx.stroke();
+    ctx.restore();
+  }
+  // ================= END PART 2 SECURITY ROBOT logic =================
+
   function drawBarrel(b) {
     if (!barrelImg.complete || barrelImg.naturalWidth === 0) return;
     const aspect = barrelImg.naturalWidth / barrelImg.naturalHeight;
@@ -3600,6 +3956,19 @@
     spawnBarrels(BARREL_COUNT);
     hideRangeUI();
     resetFlashGrenade();
+
+    // SECTION B/D/Q (PART 2): SECURITY TRAINING picks a fresh background and
+    // fully re-spawns its robots (positions/directions/state/cooldowns) on
+    // every session start AND every RESTART — never carried over from a
+    // previous run. Leaving the mode clears robot state so it can never be
+    // drawn/updated/collide with anything outside SECURITY TRAINING (S).
+    if (gameState.mode === 'securityTraining') {
+      securityTrainingBgIndex = Math.floor(Math.random() * TRAINING_BACKGROUNDS.length);
+      spawnSecurityRobots();
+    } else {
+      securityRobots.length = 0;
+      securityAttackSlotsInUse = 0;
+    }
   }
 
   function startMode(mode) {
@@ -4791,7 +5160,10 @@
     // happens, which also immediately halts update()/draw() entirely (see
     // loop()'s own screen==='gameplay' gate) — boss AI/projectiles/input
     // all stop in the same instant, satisfying M-2 for free.
-    if (player.life <= 0 && gameState.mode === 'boss' && gameState.screen === 'gameplay') {
+    // SECTION M-4: SECURITY TRAINING's laser hit reuses this exact same
+    // GAME OVER wiring — widened here rather than duplicated elsewhere, so
+    // it inherits the identical instant halt-of-update/draw behavior.
+    if (player.life <= 0 && (gameState.mode === 'boss' || gameState.mode === 'securityTraining') && gameState.screen === 'gameplay') {
       triggerGameOver(now);
     }
   }
@@ -4822,6 +5194,7 @@
     BOSS_PHASE_THRESHOLDS, INTRO_TOTAL_MS, THRESHOLD_CINEMATIC_MS, DYING_DURATION_MS,
     DEFENSE_GUARD_BREAK_HITS, BARREL_EXPLOSION_RADIUS, BOSS_HURT_RADIUS,
     BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS, BARREL_DAMAGE, BARREL_DAMAGE_BOSS, BARREL_DAMAGE_BOSS_MULTIPLIER, // debug/verification only — SECTION C (this turn)
+    BULLET_DAMAGE, // debug/verification only — PART 2: the reused normal-attack damage constant for SECURITY ROBOT's laser
     TRAINING_BACKGROUNDS, get currentStage() { return currentStage(); }, // debug/verification only — SECTION D (this turn)
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
     STAGES,
@@ -4946,6 +5319,19 @@
     get encounter3StunFlashRemainingMs() { return encounter3StunFlashRemainingMs; },
     set encounter3StunFlashRemainingMs(v) { encounter3StunFlashRemainingMs = v; }, // debug/verification only
     ENCOUNTER3_STUN_FLASH_TOTAL_MS,
+    // Debug/verification only — PART 2: SECURITY TRAINING / SECURITY ROBOT.
+    securityRobots, spawnSecurityRobots, pickSecurityRobotSpot,
+    isPlayerInSecurityShadow, securityShadowProject, getSecurityRobotMuzzlePos,
+    fireSecurityLaser, resolveSecurityLaserHit, updateSecurityRobots, distanceToSegment,
+    get securityAttackSlotsInUse() { return securityAttackSlotsInUse; },
+    set securityAttackSlotsInUse(v) { securityAttackSlotsInUse = v; }, // debug/verification only
+    get securityTrainingBgIndex() { return securityTrainingBgIndex; },
+    set securityTrainingBgIndex(v) { securityTrainingBgIndex = v; }, // debug/verification only
+    SECURITY_ROBOT_COUNT, SECURITY_DIRECTION_MIN_MS, SECURITY_DIRECTION_MAX_MS,
+    SECURITY_TELEGRAPH_MS, SECURITY_LASER_VISUAL_MS,
+    SECURITY_LASER_COOLDOWN_MIN_MS, SECURITY_LASER_COOLDOWN_MAX_MS,
+    SECURITY_MAX_SIMULTANEOUS_ATTACKS, SECURITY_SHADOW_LENGTH, SECURITY_SHADOW_WIDTH,
+    SECURITY_ROBOT_DRAW_D, SECURITY_ROBOT_METRICS, SECURITY_ROBOT_MIN_SPACING,
   };
 
   // ---------- Main loop ----------
@@ -5063,8 +5449,13 @@
     // explicitly below. "battle active" is interpreted as boss spawned and
     // not mid-cinematic (threshold/dying/dead), since the player has
     // nothing to meaningfully react to otherwise.
-    if (gameState.mode === 'boss' && boss.spawned && !bossIsInCinematic() &&
-        !player.stunned && gameClearRemainingMs <= 0) {
+    // SECTION P (PART 2): SECURITY TRAINING also counts as "battle active"
+    // for the watchdog — the user asked for STUN to remain fully usable
+    // there. Deliberately NOT extended to plain 'training' (BASIC TRAINING
+    // must stay byte-identical to its pre-existing, STUN-less behavior).
+    const battleActiveForWatchdog = (gameState.mode === 'boss' && boss.spawned && !bossIsInCinematic()) ||
+      gameState.mode === 'securityTraining';
+    if (battleActiveForWatchdog && !player.stunned && gameClearRemainingMs <= 0) {
       if (detectControlStateCorruption() || now - lastPlayerInputAt >= CONTROL_WATCHDOG_IDLE_MS) {
         triggerStun(now);
       }
@@ -5114,7 +5505,7 @@
     // below to include 'training' fixes this while changing nothing about
     // the BOSS MODE behavior itself (identical condition, just also true
     // for the other mode).
-    if (gameState.mode === 'boss' || gameState.mode === 'training') {
+    if (gameState.mode === 'boss' || gameState.mode === 'training' || gameState.mode === 'securityTraining') {
       currentArea = player.y < 0 ? 2 : 1;
       // AREA 1 clear (C-13): the one shared boss fully dissolved while the
       // player happened to be standing in AREA 1's band. boss.state can
@@ -5150,7 +5541,7 @@
     // 'boss', so the EXIT-zone/beginStageTransition() branch stays
     // structurally unreachable in TRAINING (B-5) even with this wider gate;
     // TRAINING only ever gets the plain AREA1<->AREA2 camera-follow.
-    if ((gameState.mode === 'boss' || gameState.mode === 'training') && !stageTransition.active) {
+    if ((gameState.mode === 'boss' || gameState.mode === 'training' || gameState.mode === 'securityTraining') && !stageTransition.active) {
       // SECTION G: AREA 1 + AREA 2's own band is always unlocked now — only
       // the further post-clear bonus space beyond it stays gated.
       const minCameraY = worldScrollUnlocked() ? -H - worldExtraAbove : -H;
@@ -5287,6 +5678,7 @@
     }
 
     updateBarrels(dt, now);
+    updateSecurityRobots(dt, now);
     updateFlashGrenade(dt, now);
     updateScreenFlashes(dt);
     updateStealth(dt, now);
@@ -5489,6 +5881,14 @@
     }
     for (const e of explosions) drawExplosion(e, now);
 
+    // PART 2: SECURITY ROBOT shadows + bodies draw as ordinary ground-layer
+    // objects, same layer as barrels — securityRobots is always empty
+    // outside SECURITY TRAINING (spawnSecurityRobots() is only ever called
+    // from resetModeState() when gameState.mode === 'securityTraining'), so
+    // this is a safe no-op in every other mode (SECTION S).
+    for (const robot of securityRobots) drawSecurityShadow(robot);
+    for (const robot of securityRobots) drawSecurityRobot(robot);
+
     // DARK PHASE screen-darken: drawn HERE — under the bullets/claw attacks/
     // player/boss below, not as a final overlay on top of everything — so it
     // can go near-total-black (see DARKPHASE_OVERLAY_ALPHA) without also
@@ -5523,6 +5923,12 @@
       drawPlayer(now);
       if (bossVisible) drawBoss(now);
     }
+
+    // PART 2: laser beams draw crossing over the player/boss layer, so the
+    // shot itself is never hidden behind either — still world-space (before
+    // the camera-translate restore() below), same origin/endpoint the
+    // damage hitbox already used at fire-time.
+    for (const robot of securityRobots) drawSecurityLaserBeam(robot);
 
     // PART 1: the aim line/reticle draw last among game-world content —
     // strictly above the background, barrels, bullets, claw projectiles,

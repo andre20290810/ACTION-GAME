@@ -806,7 +806,10 @@ body {
    removed #main-menu-screen/#main-menu-panel it replaces) — plain vertical
    text floating directly over the video, with only a thin translucent
    scrim (not opaque) so the footage reads through clearly. */
-#main-menu-overlay {
+/* PART 2 SECTION A: TRAINING's BASIC/SECURITY submenu shares this exact
+   rule with #main-menu-overlay — same plain-text/left-aligned/no-card
+   layout, zero duplicated styling. */
+#main-menu-overlay, #training-select-overlay {
   position: absolute;
   inset: 0;
   display: flex;
@@ -822,7 +825,7 @@ body {
   background: rgba(0, 0, 0, 0.2);
   touch-action: manipulation;
 }
-#main-menu-overlay[hidden] { display: none; }
+#main-menu-overlay[hidden], #training-select-overlay[hidden] { display: none; }
 .main-menu-item {
   font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
   font-weight: 700;
