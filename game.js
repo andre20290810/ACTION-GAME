@@ -4569,7 +4569,6 @@
     barrelLandings.length = 0;
     barrelRestockPending = false;
     barrelRestockRemainingMs = 0;
-    hideRangeUI();
     resetFlashGrenade();
 
     // SECTION B/D/Q (PART 2)/PART 5 SECTION T: SECURITY TRAINING picks a
@@ -5054,10 +5053,6 @@
   function aimStickReset() {
     aimStickTouchId = null;
     aimStickMouseDown = false;
-    // RANGE always hides + resets to default the instant the finger comes
-    // off AIM STICK — regardless of whether a double-tap lock below keeps
-    // the reticle itself showing.
-    hideRangeUI();
     if (performance.now() < aimDoubleTapLockUntil) {
       // A double-tap snap is still locked in — keep the reticle/aim line
       // showing the snapped angle instead of zeroing it on release.
@@ -5078,7 +5073,7 @@
   function handleAimStickMove(clientX, clientY) {
     // SECTION H: AIM STICK is now fully inert during the pre-battle/intro
     // lock window (isBossIntroLocked()) — no facing change, no dotted
-    // trajectory, no RANGE guide, no target lock, no AUTO AIM display.
+    // trajectory, no target lock, no AUTO AIM display.
     // MOVE STICK is the only way to change facing before battle starts
     // (see its own handling in update()). Reverses the previous batch's
     // deliberate AIM-during-intro exception, per this batch's explicit
@@ -5120,7 +5115,6 @@
     const t = e.changedTouches[0];
     aimStickTouchId = t.identifier;
     aimStickActive = true;
-    showRangeUI(); // AIM STICK engaged — RANGE becomes visible/operable
     const rect = aimStickZone.getBoundingClientRect();
     const distFromCenter = Math.hypot(t.clientX - (rect.left + rect.width / 2), t.clientY - (rect.top + rect.height / 2));
     if (tryAimDoubleTap(performance.now(), distFromCenter)) return; // snap already applied
@@ -5151,7 +5145,6 @@
     if (isBossIntroLocked() || player.stunned) return; // SECTION H/C: AIM STICK fully inert pre-battle/during intro, and during STUN
     aimStickMouseDown = true;
     aimStickActive = true;
-    showRangeUI(); // AIM STICK engaged — RANGE becomes visible/operable
     const rect = aimStickZone.getBoundingClientRect();
     const distFromCenter = Math.hypot(e.clientX - (rect.left + rect.width / 2), e.clientY - (rect.top + rect.height / 2));
     if (tryAimDoubleTap(performance.now(), distFromCenter)) return;
@@ -5572,104 +5565,17 @@
   const FIRE_COOLDOWN_MS = 5000;
   const FIRE_POSE_DURATION = 80; // ms — how long the FIRE sprite shows per shot
   const MUZZLE_DIST = SPRITE_DRAW_H * 0.46; // same muzzle offset used previously
-  const AIM_LINE_LEN = 240; // AUTO AIM's reticle-tip search distance — fixed, NOT the player-adjustable RANGE below (keeps existing AUTO AIM target-detection behavior completely unchanged)
-  // ---------- RANGE gauge (aim-guide length only — never bullet distance) ----------
-  // Purely a "where the dotted aim guide/reticle is drawn" control, kept
-  // fully independent of the actual firing angle (AIM STICK) and of
-  // AIM_LINE_LEN's internal AUTO AIM target-search math above. spawnBullet()
-  // never reads this — bullets always fly their existing full lifetime/
-  // stage-bounds distance regardless of what RANGE is set to.
-  const AIM_RANGE_DEFAULT = AIM_LINE_LEN; // 240 — matches today's existing guide length
-  const AIM_RANGE_MIN = AIM_LINE_LEN * 0.40; // 96 — within the requested ~35-45% band
-  const AIM_RANGE_MAX = AIM_LINE_LEN * 1.40; // 336 — within the requested ~130-150% band
-  const RANGE_DEFAULT_FRAC = (AIM_RANGE_DEFAULT - AIM_RANGE_MIN) / (AIM_RANGE_MAX - AIM_RANGE_MIN); // 0.6
-  let aimRangeLen = AIM_RANGE_DEFAULT;
-  let rangeSliderActive = false; // true while the player is actively dragging the RANGE thumb
+  const AIM_LINE_LEN = 240; // AUTO AIM's reticle-tip search distance — fixed (unchanged; keeps existing AUTO AIM target-detection behavior identical)
+  // PART 12 SECTION 12: the RANGE gauge (a player-adjustable vertical slider
+  // that controlled only the dotted aim-guide's drawn length, never bullet
+  // travel distance) has been removed entirely, per spec — the guide now
+  // simply always uses this one fixed length (12-3: "既存defaultまたは適切な
+  // 固定値", matching the RANGE gauge's own former default exactly, so the
+  // guide's everyday look/feel is unchanged). The dotted AIM guide itself
+  // (12-2) is untouched.
+  const AIM_GUIDE_LEN = AIM_LINE_LEN; // 240 — the RANGE gauge's own former default length
   let autoAimLockedPoint = null; // {x,y} of whatever AUTO AIM is currently snapped onto, or null — see updateAutoAim()/performNearestAutoAimSnap()
 
-  // Custom touch-driven vertical control (NOT a native <input type=range>
-  // relying on the browser's own touch-drag support — that turned out to be
-  // unreliable here because of the page-wide touchmove preventDefault()
-  // used to block scroll/zoom, which also suppresses a native slider's own
-  // default drag gesture). Tracked exactly like the AIM/MOVE sticks (own
-  // touch identifier), so it can be operated at the same time as AIM STICK
-  // with real multi-touch, and hidden/shown independently — see
-  // showRangeUI()/hideRangeUI(), wired into the AIM STICK handlers below.
-  const rangeZone = document.getElementById('range-zone');
-  const rangeTrack = document.getElementById('range-track');
-  const rangeThumb = document.getElementById('range-thumb');
-  let rangeTouchId = null;
-  let rangeMouseDown = false;
-
-  function applyRangeFrac(frac) {
-    const clamped = Math.max(0, Math.min(1, frac));
-    aimRangeLen = AIM_RANGE_MIN + clamped * (AIM_RANGE_MAX - AIM_RANGE_MIN);
-    rangeThumb.style.bottom = `${clamped * 100}%`;
-  }
-  applyRangeFrac(RANGE_DEFAULT_FRAC);
-
-  function handleRangeMove(clientY) {
-    const rect = rangeTrack.getBoundingClientRect();
-    // Physically higher on the track = larger RANGE, matching the visual
-    // "fill height" convention of a vertical gauge.
-    applyRangeFrac(1 - (clientY - rect.top) / rect.height);
-    rangeSliderActive = true;
-  }
-
-  // Inline-style overrides below are a deliberate belt-and-suspenders on
-  // top of the .visible class toggle: relying on the class/CSS-transition
-  // alone left a window (confirmed via a stuck AIM-STICK touch id after an
-  // interrupted gesture — see the blur/visibilitychange handler further
-  // below) where the thumb could still be painted after RANGE was supposed
-  // to be gone. Setting opacity/visibility/pointer-events directly always
-  // wins over the stylesheet regardless of any in-flight transition or
-  // compositing state, so "hidden" is unconditionally true the instant
-  // hideRangeUI() runs, on every one of its constituent elements.
-  function showRangeUI() {
-    rangeZone.classList.add('visible');
-    rangeZone.style.opacity = '';
-    rangeZone.style.visibility = '';
-    rangeZone.style.pointerEvents = '';
-  }
-  // Always both hides AND resets to default — RANGE must never sit at
-  // wherever it was last left once the player's finger comes off AIM STICK.
-  function hideRangeUI() {
-    rangeZone.classList.remove('visible');
-    rangeZone.style.opacity = '0';
-    rangeZone.style.visibility = 'hidden';
-    rangeZone.style.pointerEvents = 'none';
-    rangeTouchId = null;
-    rangeMouseDown = false;
-    rangeSliderActive = false;
-    applyRangeFrac(RANGE_DEFAULT_FRAC);
-  }
-
-  rangeZone.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    if (rangeTouchId !== null) return;
-    const t = e.changedTouches[0];
-    rangeTouchId = t.identifier;
-    handleRangeMove(t.clientY);
-  }, { passive: false });
-  rangeZone.addEventListener('touchmove', (e) => {
-    e.preventDefault();
-    for (const t of e.changedTouches) {
-      if (t.identifier === rangeTouchId) handleRangeMove(t.clientY);
-    }
-  }, { passive: false });
-  function rangeTouchEnd(e) {
-    for (const t of e.changedTouches) {
-      if (t.identifier === rangeTouchId) { rangeTouchId = null; rangeSliderActive = false; }
-    }
-  }
-  rangeZone.addEventListener('touchend', rangeTouchEnd, { passive: false });
-  rangeZone.addEventListener('touchcancel', rangeTouchEnd, { passive: false });
-  rangeZone.addEventListener('mousedown', (e) => {
-    rangeMouseDown = true;
-    handleRangeMove(e.clientY);
-  });
-  window.addEventListener('mousemove', (e) => { if (rangeMouseDown) handleRangeMove(e.clientY); });
-  window.addEventListener('mouseup', () => { if (rangeMouseDown) { rangeMouseDown = false; rangeSliderActive = false; } });
   // The replacement RIGHT/FIRE and LEFT/FIRE sprites each have their muzzle
   // flash at a fixed point on screen (measured directly from each asset,
   // individually — NOT a mirrored pair, see the differing DX/DY magnitudes
@@ -5841,13 +5747,8 @@
     get barrelRestockPending() { return barrelRestockPending; },
     get barrelRestockRemainingMs() { return barrelRestockRemainingMs; },
     barrelLandings, spawnFallingBarrels, BARREL_FALL_MS, // debug/verification only
-    get aimRangeLen() { return aimRangeLen; },
-    AIM_RANGE_MIN, AIM_RANGE_MAX, AIM_RANGE_DEFAULT, RANGE_DEFAULT_FRAC,
-    showRangeUI, hideRangeUI, // debug/verification only
-    get rangeZoneVisible() { return rangeZone.classList.contains('visible'); },
+    AIM_GUIDE_LEN, // debug/verification only — PART 12: fixed aim-guide length (RANGE gauge removed)
     get autoAimLockedPoint() { return autoAimLockedPoint; },
-    get rangeSliderActive() { return rangeSliderActive; },
-    set rangeSliderActive(v) { rangeSliderActive = v; }, // debug/verification only
     get aimStickActive() { return aimStickActive; },
     set aimStickActive(v) { aimStickActive = v; }, // debug/verification only
     flashPress, startBossFlashDown, // debug/verification only
@@ -6424,12 +6325,12 @@
   }
 
   // ---------- Aim prediction line: dotted, matches the actual firing angle ----------
-  // Its length is the RANGE gauge's aimRangeLen — a purely visual "where am
-  // I precisely aiming" control, never bullet travel distance (bullets
-  // always fly their own full lifetime regardless — see spawnBullet()).
-  // While AUTO AIM is genuinely locked onto something (and the player isn't
-  // actively dragging the RANGE slider right now), the guide instead snaps
-  // to that target's real distance so the reticle visibly sits on it.
+  // Its length is the fixed AIM_GUIDE_LEN (RANGE gauge removed, PART 12) —
+  // a purely visual "where am I precisely aiming" indicator, never bullet
+  // travel distance (bullets always fly their own full lifetime regardless
+  // — see spawnBullet()). While AUTO AIM is genuinely locked onto
+  // something, the guide instead snaps to that target's real distance so
+  // the reticle visibly sits on it.
   function drawAimLine() {
     if (!aimStickActive) return;
     const angle = getFinalAimAngle();
@@ -6440,8 +6341,8 @@
     // spawn again.
     const muzzle = getMuzzleWorldPosition(angle);
     const bx = muzzle.x, by = muzzle.y;
-    let guideLen = aimRangeLen;
-    if (autoAimActive && autoAimLockedPoint && !rangeSliderActive) {
+    let guideLen = AIM_GUIDE_LEN;
+    if (autoAimActive && autoAimLockedPoint) {
       guideLen = Math.hypot(autoAimLockedPoint.x - bx, autoAimLockedPoint.y - by);
     }
     const ex = bx + Math.cos(angle) * guideLen;
