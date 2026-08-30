@@ -3,7 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>ALEXANDRE - 2D Action Prototype</title>
+<title>DARK OUT</title>
+<meta name="description" content="DARK OUT — a dark 2D action boss-fight prototype.">
+<!-- SECTION B: OGP/Twitter card, using the attached thumbnail as-is (byte-identical copy at assets/branding/dark_out_thumbnail.jpg, never re-cropped/regenerated). -->
+<meta property="og:title" content="DARK OUT">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_thumbnail.jpg">
+<meta property="og:url" content="https://andre20290810.github.io/ACTION-GAME/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="DARK OUT">
+<meta name="twitter:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_thumbnail.jpg">
+<link rel="icon" href="assets/branding/dark_out_thumbnail.jpg" type="image/jpeg">
+<link rel="apple-touch-icon" href="assets/branding/dark_out_thumbnail.jpg">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -17,29 +28,49 @@
   <div id="loading-text">Loading... 0%</div>
 </div>
 
-<!-- SECTION H: OPENING — the official attached video as a muted/loop/
+<!-- SECTION H/D: OPENING — the official attached video as a muted/loop/
      autoplay/playsinline background, sized via object-fit only (the source
-     file itself is never re-encoded/cropped). "DARK OUT" + "TAP TO START"
-     sit on top; the first tap here is also the user-gesture that unlocks
-     Outbreak 1.0 (SECTION T) and advances to MAIN MENU. -->
+     file itself is never re-encoded/cropped). This SAME video keeps
+     playing behind BOTH the "DARK OUT"/"TAP TO START" overlay AND the
+     STORY/TRAINING/SETTING menu overlay that replaces it after the first
+     tap — see #main-menu-overlay below — never a second video element and
+     never a screen swap that would hide it. -->
 <div id="opening-screen" hidden>
   <video id="opening-video" src="assets/video/dark_out_opening.mp4" muted loop autoplay playsinline></video>
   <div id="opening-overlay">
     <div id="opening-title">DARK OUT</div>
     <div id="opening-tap-prompt">TAP TO START</div>
   </div>
+  <!-- SECTION D: deliberately NOT a boxed/paneled menu — plain vertical
+       text directly over the video, so the OPENING footage stays the
+       visual focus. STORY MODE/TRAINING MODE route through the SAME
+       startMode() PAUSE MENU's own buttons already use (no duplicate
+       gameplay wiring); SETTING opens the exact same #setting-panel PAUSE
+       MENU's own SETTING does. -->
+  <div id="main-menu-overlay" hidden>
+    <button class="main-menu-item" id="main-menu-story-btn">STORY MODE</button>
+    <button class="main-menu-item" id="main-menu-training-btn">TRAINING MODE</button>
+    <button class="main-menu-item" id="main-menu-setting-btn">SETTING</button>
+  </div>
 </div>
 
-<!-- SECTION I: MAIN MENU — STORY MODE/TRAINING MODE connect to the SAME
-     startMode() entry points BOSS MODE/TRAINING MODE already use in the
-     PAUSE menu (no duplicate gameplay wiring); SETTING opens the exact same
-     #setting-panel PAUSE MENU's own SETTING does. -->
-<div id="main-menu-screen" hidden>
-  <div id="main-menu-panel">
-    <div id="main-menu-title">DARK OUT</div>
-    <button class="mode-btn" id="main-menu-story-btn">STORY MODE</button>
-    <button class="mode-btn" id="main-menu-training-btn">TRAINING MODE</button>
-    <button class="mode-btn" id="main-menu-setting-btn">SETTING</button>
+<!-- SECTION Q/R: RESULT — shown after GAME CLEAR (see the canvas-drawn
+     "GAME CLEAR!!" overlay in game.js, which plays over the frozen final
+     gameplay frame before this screen replaces it). -->
+<div id="result-screen" hidden>
+  <div id="result-panel">
+    <div id="result-title">RESULT</div>
+    <div class="result-stat"><span class="result-stat-label">PLAY TIME</span><span id="result-play-time" class="result-stat-value"></span></div>
+    <div class="result-stat"><span class="result-stat-label">ACCURACY</span><span id="result-accuracy" class="result-stat-value"></span></div>
+    <div class="result-stat"><span class="result-stat-label">DAMAGE TAKEN</span><span id="result-damage-taken" class="result-stat-value"></span></div>
+    <div class="result-stat"><span class="result-stat-label">RANK</span><span id="result-rank" class="result-stat-value"></span></div>
+    <div id="result-thanks">THANK YOU FOR PLAYING!!</div>
+    <button class="mode-btn" id="result-back-btn">BACK TO TOP MENU</button>
+    <!-- SECTION R-2: no confirmed official ARTIST PAGE URL exists anywhere
+         in this repo (README/comments/meta all checked) — left as a
+         disabled placeholder per spec rather than inventing a URL. See the
+         completion report. -->
+    <button class="mode-btn" id="result-artist-btn" disabled>ARTIST PAGE</button>
   </div>
 </div>
 
@@ -140,14 +171,19 @@
   </div>
 </div>
 
+<!-- SECTION S/T/U: simplified — RESUME/SETTING/QUIT (per spec's own
+     minimum) plus RESTART (still a distinct, non-redundant action: restart
+     THIS run from scratch). The old direct BOSS MODE/TRAINING MODE
+     shortcuts are removed — QUIT -> MAIN MENU is the new way to switch
+     modes, so keeping both would just be a duplicate path per U's own
+     simplification instruction. -->
 <div id="mode-menu">
   <div id="mode-menu-panel">
     <div id="mode-menu-title">PAUSED</div>
-    <button class="mode-btn" id="mode-boss-btn">BOSS MODE</button>
-    <button class="mode-btn" id="mode-training-btn">TRAINING MODE</button>
+    <button class="mode-btn" id="mode-resume-btn">RESUME</button>
     <button class="mode-btn" id="mode-setting-btn">SETTING</button>
     <button class="mode-btn" id="mode-restart-btn">RESTART</button>
-    <button class="mode-btn" id="mode-resume-btn">RESUME</button>
+    <button class="mode-btn" id="mode-quit-btn">QUIT</button>
   </div>
 </div>
 

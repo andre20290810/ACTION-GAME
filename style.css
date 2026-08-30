@@ -71,26 +71,31 @@ body {
   touch-action: none;
 }
 
+/* SECTION S: literally uppercase "PAUSE" (see index.html), made to stand
+   out a bit more than the previous plain gray look via a pale/light blue
+   (never a flashy neon blue) — border/background/size all otherwise
+   unchanged so #pause-zone's layout in CONTROL PANEL is untouched. */
 #pause-button {
   position: absolute;
   inset: 0;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  color: rgba(230, 235, 240, 0.75);
+  background: rgba(170, 210, 235, 0.1);
+  border: 1px solid rgba(170, 210, 235, 0.4);
+  color: rgba(200, 226, 245, 0.92);
   font-family: sans-serif;
-  font-weight: 600;
+  font-weight: 700;
   font-size: 10px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
   outline: none;
   padding: 0;
+  text-shadow: 0 0 6px rgba(170, 210, 235, 0.5);
 }
 
 #pause-button:active,
 #pause-button.active {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(170, 210, 235, 0.22);
 }
 
 /* ---------- CONTROL AREA ----------
@@ -698,22 +703,48 @@ body {
   background: rgba(0, 0, 0, 0.15);
   touch-action: manipulation;
 }
-/* SECTION H: deep vivid red, gothic/ominous — built entirely from system
-   font stacks + CSS layered text-shadow (a soft outer bloom plus a hard
-   dark under-shadow for depth), never a flat "neon sign" single-color
-   glow, and no new font files. */
+/* SECTION D: explicit [hidden] override — #opening-overlay is an ID
+   selector, which otherwise outranks the browser's own default
+   `[hidden]{display:none}` (an attribute selector), so without this rule
+   setting .hidden=true on this element (done by setScreen() when advancing
+   to MAIN MENU) would not actually hide it. Same pattern already used by
+   #loading-screen/#opening-screen/#setting-panel elsewhere in this file. */
+#opening-overlay[hidden] { display: none; }
+
+/* SECTION C: sharp, industrial, futuristic red — styled with the attached
+   mask artwork used purely as a REFERENCE (heavy geometric caps, wide
+   tracking, hard-edged red against black), never a crop/embed of the image
+   itself and never built from a flat single-color "neon tube" glow: the
+   fill is a white-to-red-to-black vertical gradient (clipped to the text)
+   so the letterforms read as lit metal/plating, with a tight red bloom and
+   a slight forward skew for a "sharp" rather than "gothic serif" feel
+   (replacing the previous Georgia/serif treatment). No new font files —
+   built from the existing bold sans-serif system stack only. */
 #opening-title {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-weight: 700;
-  font-size: clamp(40px, 13vw, 72px);
-  letter-spacing: 0.12em;
-  color: #8a0000;
+  font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
+  font-weight: 900;
+  /* Sized to always fit on one line within a narrow portrait viewport
+     (390px-class phones included) with room to spare for the letter-
+     spacing below — #opening-screen clips overflow, so this must never
+     run past the edges the way an unconstrained 15vw/0.16em combination
+     did during verification. */
+  font-size: clamp(30px, 10vw, 72px);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  max-width: 92vw;
+  text-align: center;
+  transform: skewX(-4deg);
+  color: #f4211f;
+  background: linear-gradient(180deg, #ffffff 0%, #ff3a2f 42%, #7a0000 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  -webkit-text-stroke: 1px rgba(15, 0, 0, 0.7);
   text-shadow:
-    0 0 2px #000,
-    0 2px 0 #2a0000,
-    0 0 18px rgba(200, 0, 0, 0.55),
-    0 0 36px rgba(140, 0, 0, 0.35);
-  -webkit-text-stroke: 1px #1a0000;
+    0 0 10px rgba(255, 30, 20, 0.65),
+    0 0 26px rgba(200, 0, 0, 0.4),
+    0 3px 0 rgba(0, 0, 0, 0.8);
 }
 #opening-tap-prompt {
   font-family: sans-serif;
@@ -728,37 +759,122 @@ body {
   50% { opacity: 1; }
 }
 
-#main-menu-screen {
+/* SECTION D: the OPENING video must stay visible and be the focus behind
+   MAIN MENU, so this is deliberately NOT a boxed/paneled screen (unlike the
+   removed #main-menu-screen/#main-menu-panel it replaces) — plain vertical
+   text floating directly over the video, with only a thin translucent
+   scrim (not opaque) so the footage reads through clearly. */
+#main-menu-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 30px;
+  background: rgba(0, 0, 0, 0.2);
+  touch-action: manipulation;
+}
+#main-menu-overlay[hidden] { display: none; }
+.main-menu-item {
+  font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: rgba(235, 235, 238, 0.88);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(230, 60, 50, 0);
+  padding: 4px 10px 8px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 120ms ease, border-color 120ms ease, text-shadow 120ms ease;
+}
+/* Selection state is only a subtle red glow / thin underline / brightness
+   change (SECTION D's own explicit instruction) — never a boxed/panel
+   highlight. */
+.main-menu-item:active {
+  color: #ffffff;
+  border-bottom-color: rgba(230, 60, 50, 0.85);
+  text-shadow: 0 0 14px rgba(230, 40, 30, 0.75);
+}
+
+/* SECTION Q/R: RESULT — a real DOM screen (like MAIN MENU), shown after the
+   canvas-drawn "GAME CLEAR!!" overlay finishes. Kept modest/plain rather
+   than boxy, in the same DARK OUT visual language as the rest of this
+   pass. */
+#result-screen {
   position: fixed;
   inset: 0;
-  z-index: 12;
+  z-index: 13;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #0a0b0c;
 }
-#main-menu-screen[hidden] { display: none; }
-#main-menu-panel {
+#result-screen[hidden] { display: none; }
+#result-panel {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 12px;
-  min-width: 220px;
-  padding: 26px 30px;
+  gap: 14px;
+  min-width: 240px;
+  padding: 10px 20px;
 }
-#main-menu-title {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-weight: 700;
-  font-size: 28px;
-  letter-spacing: 0.1em;
-  color: #8a0000;
-  text-shadow: 0 0 2px #000, 0 0 16px rgba(200, 0, 0, 0.5);
+#result-title {
+  font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
+  font-weight: 900;
+  font-size: 30px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
   text-align: center;
-  margin-bottom: 10px;
+  color: #ffffff;
+  text-shadow: 0 0 12px rgba(230, 30, 20, 0.6);
+  margin-bottom: 6px;
+}
+.result-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding-bottom: 8px;
+}
+.result-stat-label {
+  font-family: sans-serif;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  color: rgba(210, 215, 220, 0.65);
+}
+.result-stat-value {
+  font-family: sans-serif;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.05em;
+  color: #ffffff;
+}
+#result-rank.result-stat-value,
+#result-screen #result-rank {
+  color: #f4211f;
+  text-shadow: 0 0 10px rgba(230, 30, 20, 0.55);
+}
+#result-thanks {
+  font-family: sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.15em;
+  text-align: center;
+  color: rgba(230, 230, 235, 0.8);
+  margin: 8px 0 4px;
+}
+#result-artist-btn[disabled] {
+  opacity: 0.4;
 }
 
 /* SECTION E/I: shared SETTING overlay — its own fixed layer (moved out of
-   #mode-menu so it can also cover #main-menu-screen), above both. */
+   #mode-menu), above both PAUSE MENU and MAIN MENU. */
 #setting-panel {
   position: fixed;
   inset: 0;
@@ -770,14 +886,18 @@ body {
 }
 #setting-panel[hidden] { display: none; }
 
-/* ---------- Mode select / PAUSE menu ---------- */
+/* ---------- Mode select / PAUSE menu ----------
+   SECTION U: moved away from the previous "bank/settings-app" look (a
+   bordered, drop-shadowed card with per-item boxed buttons) — now a dark,
+   semi-transparent full-screen scrim with plain text items directly on it,
+   so the paused gameplay frame underneath stays partially visible. */
 #mode-menu {
   position: fixed;
   inset: 0;
   display: none;
   align-items: center;
   justify-content: center;
-  background: rgba(6, 8, 10, 0.72);
+  background: rgba(4, 5, 6, 0.62);
   z-index: 10;
 }
 #mode-menu.open {
@@ -786,56 +906,61 @@ body {
 #mode-menu-panel {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
+  align-items: center;
+  gap: 22px;
   min-width: 220px;
-  padding: 22px 26px;
-  background: rgba(20, 24, 28, 0.92);
-  border: 1px solid rgba(150, 190, 210, 0.35);
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.4), 0 12px 40px rgba(0,0,0,0.55);
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 #mode-menu-title {
-  color: rgba(190, 220, 235, 0.9);
+  color: rgba(210, 225, 235, 0.75);
   font-family: sans-serif;
   font-weight: 700;
-  font-size: 15px;
-  letter-spacing: 0.25em;
+  font-size: 14px;
+  letter-spacing: 0.35em;
   text-align: center;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .mode-btn {
   font-family: sans-serif;
   font-weight: 600;
-  font-size: 13px;
-  letter-spacing: 0.1em;
-  color: rgba(225, 235, 240, 0.92);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(160, 200, 220, 0.4);
-  padding: 12px 10px;
+  font-size: 15px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(220, 232, 240, 0.85);
+  background: transparent;
+  border: none;
+  padding: 6px 10px;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  transition: color 120ms ease, text-shadow 120ms ease;
 }
 .mode-btn:active {
-  background: rgba(150, 200, 230, 0.22);
+  color: #ffffff;
+  text-shadow: 0 0 10px rgba(200, 220, 235, 0.6);
 }
 #mode-restart-btn {
-  border-color: rgba(230, 190, 120, 0.4);
+  color: rgba(232, 200, 150, 0.85);
+}
+#mode-quit-btn {
+  color: rgba(235, 120, 110, 0.85);
 }
 
-/* SECTION E/I: SETTING panel — same visual language as #mode-menu-panel
-   (this is the one shared settings surface both PAUSE MENU and MAIN MENU
-   open — see #setting-panel's own fixed-overlay rule further down for its
-   outer centering layer). */
+/* SECTION E/I/U: SETTING's own panel, also kept modest (not an oversized
+   card) — a thin border for legibility around the life-option grid only,
+   no heavy drop shadow. Shared by both PAUSE MENU's and MAIN MENU's own
+   SETTING entry points. */
 #setting-panel-inner {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 10px;
-  min-width: 220px;
-  padding: 22px 26px;
-  background: rgba(20, 24, 28, 0.92);
-  border: 1px solid rgba(150, 190, 210, 0.35);
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.4), 0 12px 40px rgba(0,0,0,0.55);
+  min-width: 200px;
+  padding: 16px 18px;
+  background: rgba(14, 16, 18, 0.75);
+  border: 1px solid rgba(150, 190, 210, 0.25);
 }
 #setting-life-label {
   color: rgba(190, 220, 235, 0.75);
@@ -871,5 +996,5 @@ body {
   border-color: rgba(150, 240, 190, 0.85);
 }
 #mode-resume-btn {
-  border-color: rgba(150, 220, 170, 0.4);
+  color: rgba(160, 225, 180, 0.9);
 }

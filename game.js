@@ -67,17 +67,23 @@
   resize();
 
   // ---------- Stage background(s) ----------
-  // Data-driven list so adding another stage later is just one more entry
-  // here — no other code needs to change. Decorative floor art only; no
-  // collision is derived from it. Used for portrait/tall viewports (where
-  // the aspect ratio fits well); landscape keeps the original dark grid
-  // background rather than force-fitting a tall image into a wide screen.
-  // The pre-existing lab floor stays first/default so a fresh page load
-  // looks exactly as it did before this batch (no regression).
+  // SECTION K/L/M: STORY MODE is now a fixed, linear 3-STAGE sequence
+  // (index === ENCOUNTER number - 1, currentStageIndex IS the encounter
+  // index — no separate counter needed), not the previous endless-random-
+  // loop. Each entry's `theme` is assigned by actually inspecting the
+  // existing art (no new backgrounds generated): stage_b (a cracked open
+  // road/tarmac, no walls in frame) is the one plausible OUTDOOR asset;
+  // lab_b03 ("LAB B-03", ceiling-lit corridor) and stage_a (an enclosed
+  // hangar/loading bay, "A-01", walled on both sides) are both INDOOR —
+  // already visually distinct from each other as different source photos,
+  // plus a small per-stage tint (`lightTint`) for extra separation per
+  // M-3. Same data-driven list shape as before, so nothing else needs to
+  // change to add a stage; only the fixed ORDER and the theme/tint fields
+  // are new.
   const STAGES = [
-    { key: 'lab_b03', file: 'assets/stage/lab_b03_floor.png' },
-    { key: 'stage_a', file: 'assets/stage/stage_a_floor.png' },
-    { key: 'stage_b', file: 'assets/stage/stage_b_floor.jpg' },
+    { key: 'stage_b', file: 'assets/stage/stage_b_floor.jpg', theme: 'outdoor', lightTint: 'rgba(0,0,0,0)' },
+    { key: 'lab_b03', file: 'assets/stage/lab_b03_floor.png', theme: 'indoor', lightTint: 'rgba(40,60,90,0.10)' },
+    { key: 'stage_a', file: 'assets/stage/stage_a_floor.png', theme: 'indoor', lightTint: 'rgba(90,60,30,0.10)' },
   ];
   STAGES.forEach((s) => {
     s.img = new Image();
@@ -87,15 +93,6 @@
   });
   let currentStageIndex = 0;
   function currentStage() { return STAGES[currentStageIndex]; }
-  // Picks a stage guaranteed to differ from the one passed in — the EXIT
-  // must never send the player straight back into the same stage they just
-  // cleared (PART 27).
-  function pickRandomOtherStage(excludeIndex) {
-    if (STAGES.length <= 1) return excludeIndex;
-    let idx;
-    do { idx = Math.floor(Math.random() * STAGES.length); } while (idx === excludeIndex);
-    return idx;
-  }
 
   // ---------- Sprite loading ----------
   // Only 4 cardinal directions this asset set: UP (back-facing), DOWN
@@ -670,6 +667,24 @@
   }
   resetPlayerPosition();
 
+  // SECTION H: BOSS mode places the player DIRECTLY at the fixed pre-
+  // battle/intro pose (the same coordinates spawnBoss() itself uses, always
+  // AREA 1) from the very start — never "screen-center, then jump to the
+  // intro pose the instant spawnBoss() fires several seconds later" (the
+  // previous, visibly-inconsistent behavior). TRAINING mode is unaffected
+  // (keeps the plain screen-center default). Safe to call from
+  // resetModeState() before `gameState` exists is NOT a concern here since
+  // this function itself is only ever called later, at runtime — never at
+  // module top-level like the bare resetPlayerPosition() call just above.
+  function resetPlayerToBattlePose() {
+    if (gameState.mode !== 'boss') { resetPlayerPosition(); player.baseDir = 'down'; player.aimOffsetRaw = 0; player.aimOffset = 0; return; }
+    player.x = W * 0.50;
+    player.y = areaTopY(1) + H * 0.80; // mode start / a fresh STAGE transition both always begin in AREA 1
+    player.baseDir = 'up';
+    player.aimOffsetRaw = BASE_ANGLE.up;
+    player.aimOffset = BASE_ANGLE.up;
+  }
+
   // Unconditionally applies a new base facing. PART 9/10: AIM STICK is now
   // an independent 360deg control, so changing baseDir (via MOVE STICK, the
   // only remaining caller of setBaseDir()) no longer touches the AIM
@@ -776,6 +791,8 @@
   // same way the player's ACTION STICK picks a direction bucket
   // (angleToBucket + BASE_ANGLE keys, mapped to the boss's asset names).
   const BOSS_HP_MAX = 5000; // 5x the previous 1000
+  const HUD_BAR_W = 90, HUD_BAR_H = 6; // SECTION E/F/V: shared PLAYER LIFE / BOSS LIFE gauge size — declared early since it's referenced from the window.__game debug-exposure literal further down
+  const HUD_MARGIN_X = 10; // SECTION E/F/V: shared HUD side margin — same early-declaration reason as HUD_BAR_W/HUD_BAR_H above
   const BOSS_SPEED = 78; // px/sec — 60% of the previous 130 (was too fast to react to). Kept as-is: DARK PHASE's STALK/CLOSE-IN/LUNGE/DISENGAGE speeds below are all derived from this and must not drift.
   // PART 29/30: normal CHASE-state movement only, ×0.90 — a separate
   // constant (not a mutation of BOSS_SPEED itself) so DARK PHASE's own
@@ -789,6 +806,22 @@
   const BOSS_ATTACK_REACH = 108; // forward offset of the claw hitbox center
   const BOSS_ATTACK_HIT_RADIUS = 68;
   const BOSS_RECOVER_MS = 350;
+  // SECTION N: per-ENCOUNTER difficulty scaling — currentStageIndex IS the
+  // encounter index (0/1/2), see the STAGES reorder above. Managed through
+  // this one function rather than editing the base constants directly, so
+  // every consumer (movement below, RECOVER's own cooldown) stays in sync
+  // and the base BOSS_SPEED/BOSS_CHASE_SPEED/BOSS_RECOVER_MS constants
+  // remain each ENCOUNTER's true baseline (encounter 1 == the multiplier
+  // 1.00 case, i.e. unchanged from before this section).
+  const BOSS_DIFFICULTY_TABLE = [
+    { movement: 1.00, attackFrequency: 1.00 },
+    { movement: 1.10, attackFrequency: 1.15 },
+    { movement: 1.20, attackFrequency: 1.30 },
+  ];
+  function getBossDifficultyMultiplier(encounterIndex) {
+    const i = Math.max(0, Math.min(BOSS_DIFFICULTY_TABLE.length - 1, encounterIndex));
+    return BOSS_DIFFICULTY_TABLE[i];
+  }
   const BOSS_DEFENSE_MS = 1800;
   const BOSS_HURT_RADIUS = 46; // small torso-only hurtbox, not the full sprite
   const BULLET_DAMAGE = 40;
@@ -826,6 +859,23 @@
   // (see the gate at the bullet/boss collision check) — DARK PHASE's own
   // close-in AI must never be undermined by this.
   const CLOSE_RANGE_SHOT_THRESHOLD = 70; // px, player<->boss distance at/under which a shot counts as point-blank
+  // SECTION I: derived from the ARC CLAW's own actual measured reach —
+  // ARC_CLAW_HIT_HALF_LEN_BACK (= ARC_CLAW_DRAW_LENGTH * 1.0 = 72px, see
+  // its own definition above) is the real distance behind a CLAW's live
+  // tip that still registers a hit, i.e. the genuine "the claw is
+  // guaranteed to connect from here" range — not a value picked by eye.
+  // It lands almost exactly on the pre-existing CLOSE_RANGE_SHOT_THRESHOLD
+  // (70px, the point-blank BULLET counter's own distance), confirming that
+  // constant was already implicitly calibrated to "within the claw's own
+  // physical reach."
+  const BOSS_CLOSE_COUNTER_DISTANCE = ARC_CLAW_HIT_HALF_LEN_BACK;
+  // SECTION J: DARK PHASE guarantee — if ENCOUNTER 2/3 hasn't organically
+  // triggered DARK PHASE (4 AUTO-AIM hits) by the time HP drops to this
+  // fraction, force it right then. Deliberately NOT one of the existing
+  // 70%/40%/10%-remaining THRESHOLD cinematic checkpoints (never collides
+  // with those), positioned comfortably mid-fight so it is guaranteed to
+  // be crossed before the boss can die (HP only ever decreases).
+  const DARK_PHASE_GUARANTEE_HP_FRAC = 0.5;
   const CLOSE_RANGE_COUNTER_INVULN_MS = 300; // GABRIEL's own brief invulnerability after the counter fires
   // ANY 4 valid AUTO-AIM-assisted damage hits (body or weak point, in any
   // boss state — distinct from GUARD BREAK's DEFENSE-only counter) send the
@@ -1113,6 +1163,7 @@
     counterDir: 'south', // 'south'|'north'|'east'|'west' — captured ONCE at COUNTER ATTACK trigger time from the player's position relative to GABRIEL; picks STING (south) vs COUNTER ARC CLAW/STRAIGHT CLAW (north/east/west) — see applyBodyHitToBoss()/bossFrameName()/updateBossStraightClaw()
     counterAttackKind: 'arcClaw', // 'arcClaw'|'straightClaw' — SECTION J: rolled ONCE alongside counterDir, only meaningful when counterDir !== 'south' (south always keeps its own STING)
     autoAimHitStreak: 0, // ANY valid AUTO-AIM-assisted damage hit, body or weak point, regardless of state — see registerGlobalAutoAimHit()
+    darkPhaseTriggeredThisEncounter: false, // SECTION J: reset fresh by spawnBoss() each ENCOUNTER — guarantees ENCOUNTER 2/3 see DARK PHASE at least once (see the guarantee check in updateBoss()), regardless of the player's own AUTO AIM usage
     invulnerableUntil: 0, // legacy field — no longer ever set to a nonzero value (4-hit AUTO AIM now triggers DARK PHASE, not a timed window); left in place harmlessly
     closeRangeInvulnUntil: 0, // set by the POINT-BLANK counter — see triggerCloseRangeCounter()
     teleportElapsed: 0, // dt-driven elapsed ms into the current 'teleport' state — see updateBossTeleport()
@@ -1249,6 +1300,7 @@
     boss.moving = false;
     boss.defenseAimHits = 0;
     boss.autoAimHitStreak = 0;
+    boss.darkPhaseTriggeredThisEncounter = false; // SECTION J: fresh per ENCOUNTER
     boss.invulnerableUntil = 0;
     boss.attackType = 'blade';
     boss.lastAttackType = 'blade';
@@ -1288,18 +1340,24 @@
   // PART 8 / SECTION B: scoped to the whole boss-appearance window — from
   // BOSS MODE start (before spawnBoss() has even fired, boss.spawned still
   // false) through the INTRO cinematic itself — never threshold/dying/dead,
-  // which have always left the player free to move. MOVE/FIRE/DASH/FLASH/
-  // STEALTH are all suppressed for this whole window, so the player can
-  // never walk away from wherever they're standing before battle actually
-  // begins. AIM is the one deliberate exception — see handleAimStickMove(),
-  // which no longer checks this at all, since changing facing never moves
-  // player.x/y.
+  // which have always left the player free to move. MOVE-TRANSLATION/AIM/
+  // FIRE/DASH/FLASH/STEALTH are all suppressed for this whole window, so the
+  // player can never walk away from wherever they're standing (or aim/fire)
+  // before battle actually begins. SECTION H: MOVE STICK is the one allowed
+  // exception, and only for facing (setBaseDir) — see the movement block in
+  // update(), which still blocks actual x/y translation during this lock;
+  // AIM STICK is now fully inert during this window (handleAimStickMove()
+  // and both AIM-stick listeners early-return on this same check).
   function isBossIntroLocked() {
     // SECTION E: LIFE reaching 0 (finite settings only — Infinity never
     // reaches it) reuses this SAME lockout every MOVE/AIM-engage/FIRE/AUTO
     // AIM/DASH/STEALTH/FLASH gate already calls, rather than adding a
     // parallel lock — no big GAME OVER sequence, just player input halting.
     if (player.life <= 0) return true;
+    // SECTION P: freeze input during the post-defeat "GAME CLEAR!!" overlay
+    // window too, for the same reason (no gameplay should proceed while a
+    // terminal screen is about to take over).
+    if (gameClearRemainingMs > 0) return true;
     return gameState.mode === 'boss' && (!boss.spawned || boss.state === 'intro');
   }
 
@@ -1750,8 +1808,12 @@
       // a hit can even land, but DARK PHASE's entry condition must NEVER
       // fire once the death sequence (or any other cinematic) has begun, so
       // this doesn't rely solely on that indirect protection.
-      if (boss.state !== 'flashdown' && boss.state !== 'darkphase' && !bossIsInCinematic()) {
+      // SECTION J: ENCOUNTER 1 (currentStageIndex === 0) never sees DARK
+      // PHASE at all, organic AUTO-AIM trigger included — only ENCOUNTER
+      // 2/3 do.
+      if (currentStageIndex > 0 && boss.state !== 'flashdown' && boss.state !== 'darkphase' && !bossIsInCinematic()) {
         startBossDarkPhase(now);
+        boss.darkPhaseTriggeredThisEncounter = true;
       }
     }
   }
@@ -2067,7 +2129,38 @@
     if (boss.state === 'straightclaw') { updateBossStraightClaw(now); return; }
     if (window.__game.freezeBossAI) return; // debug/verification only
 
+    // SECTION I: close-range COUNTER — reuses the EXISTING 'straightclaw'
+    // COUNTER attack sequence wholesale (same as the DEFENSE-guard-break
+    // trigger just below applyBodyHitToBoss()'s own STRAIGHT_CLAW_TRIGGER_GUARDS
+    // check), just with a different trigger condition: mere proximity
+    // (player standing within a genuine CLAW's own reach — see
+    // BOSS_CLOSE_COUNTER_DISTANCE's derivation above), not a shot count.
+    // Only preempts the three "normal" combat states — chase/attack/
+    // defense — never guardbreak/any cinematic/darkphase/teleport (all
+    // already returned above), so this can never re-trigger every frame
+    // while already in 'straightclaw' (that state's own early-return above
+    // stops this code from running at all until the counter resolves).
+    if ((boss.state === 'chase' || boss.state === 'attack' || boss.state === 'defense') &&
+        Math.hypot(player.x - boss.x, player.y - boss.y) <= BOSS_CLOSE_COUNTER_DISTANCE) {
+      boss.counterDir = DIR_TO_BOSS_KEY[angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x))];
+      boss.counterAttackKind = (boss.counterDir !== 'south' && Math.random() < COUNTER_STRAIGHT_CLAW_PROB)
+        ? 'straightClaw' : 'arcClaw';
+      counterFlashRemainingMs = COUNTER_FLASH_TOTAL_MS;
+      bossEnterState('straightclaw', now);
+      return;
+    }
 
+    // SECTION J: DARK PHASE guarantee for ENCOUNTER 2/3 — if it hasn't
+    // fired organically by the time HP crosses the halfway mark, force it
+    // right here rather than leaving it purely up to whether the player
+    // happens to land 4 AUTO-AIM hits.
+    if (currentStageIndex > 0 && !boss.darkPhaseTriggeredThisEncounter &&
+        boss.hp <= BOSS_HP_MAX * DARK_PHASE_GUARANTEE_HP_FRAC &&
+        (boss.state === 'chase' || boss.state === 'attack' || boss.state === 'defense')) {
+      boss.darkPhaseTriggeredThisEncounter = true;
+      startBossDarkPhase(now);
+      return;
+    }
 
     // STEALTH (PART 16): CHASE's own distance/direction/facing all derive
     // from GABRIEL's current BELIEF about the player's position, not
@@ -2103,8 +2196,12 @@
           const len = Math.hypot(dirX, dirY) || 1;
           dirX /= len; dirY /= len;
         }
-        vx = dirX * BOSS_CHASE_SPEED;
-        vy = dirY * BOSS_CHASE_SPEED;
+        // SECTION N: scaled by the current ENCOUNTER's own movement
+        // multiplier (1.00/1.10/1.20 for encounter 1/2/3) — never mutates
+        // the base BOSS_CHASE_SPEED constant itself.
+        const chaseSpeed = BOSS_CHASE_SPEED * getBossDifficultyMultiplier(currentStageIndex).movement;
+        vx = dirX * chaseSpeed;
+        vy = dirY * chaseSpeed;
         boss.x += vx * dt;
         boss.y += vy * dt;
         boss.moving = true;
@@ -2180,7 +2277,12 @@
         bossEnterState('attack', now);
       }
     } else if (boss.state === 'recover') {
-      if (now - boss.stateEnteredAt >= BOSS_RECOVER_MS) {
+      // SECTION N: higher attackFrequency means a SHORTER recovery (divide,
+      // never multiply) — 1.15x frequency == cooldown / 1.15, exactly as
+      // specified, so difficulty scaling never accidentally slows attacks
+      // down.
+      const recoverMs = BOSS_RECOVER_MS / getBossDifficultyMultiplier(currentStageIndex).attackFrequency;
+      if (now - boss.stateEnteredAt >= recoverMs) {
         bossEnterState('chase', now);
       }
     }
@@ -2244,6 +2346,14 @@
     if (boss.cinematicElapsed >= DYING_DURATION_MS) {
       boss.state = 'dead';
       boss.deadAt = now;
+      // SECTION L-2/O/P: ENCOUNTER 3 (the last STAGE) triggers GAME CLEAR
+      // directly, right as the existing defeat effect finishes — no EXIT
+      // walk for the final encounter (nothing left to walk toward).
+      // ENCOUNTER 1/2 are unaffected: they still use the pre-existing
+      // EXIT-walk -> beginStageTransition() flow untouched.
+      if (gameState.mode === 'boss' && currentStageIndex >= STAGES.length - 1) {
+        triggerGameClear(now);
+      }
     }
   }
 
@@ -2576,14 +2686,30 @@
   };
   let modeStartTime = performance.now();
 
+  // ---------- SECTION Q: RESULT stats ----------
+  // Reset fresh every time STORY MODE actually starts (see startMode()) —
+  // never during TRAINING MODE, which has no RESULT screen at all.
+  let storyStartTime = 0;
+  let storyPausedAccumMs = 0; // total real time spent paused, subtracted from PLAY TIME (Q-1)
+  let pauseStartedAt = 0;
+  let shotsFired = 0, shotsHit = 0; // Q-2: normal FIRE bullets only, never FLASH
+  let totalDamageTaken = 0; // Q-3: accumulated in applyDamageToPlayerLife() regardless of the LIFE setting
+
   function setScreen(next) {
     gameState.screen = next;
     document.getElementById('loading-screen').hidden = next !== 'loading';
-    document.getElementById('opening-screen').hidden = next !== 'opening';
-    document.getElementById('main-menu-screen').hidden = next !== 'mainMenu';
+    // SECTION D: OPENING and MAIN MENU share the SAME #opening-screen
+    // container (and its one persistent <video>) — only which overlay
+    // shows on top of it differs. The video itself is never hidden/
+    // recreated by this toggle.
+    const showOpeningContainer = next === 'opening' || next === 'mainMenu';
+    document.getElementById('opening-screen').hidden = !showOpeningContainer;
+    document.getElementById('opening-overlay').hidden = next !== 'opening';
+    document.getElementById('main-menu-overlay').hidden = next !== 'mainMenu';
+    document.getElementById('result-screen').hidden = next !== 'result';
     // PLAY AREA / CONTROL AREA are only meaningful during actual gameplay —
     // hidden (not just covered) the rest of the time so no stray touch can
-    // reach a control zone underneath LOADING/OPENING/MAIN MENU.
+    // reach a control zone underneath LOADING/OPENING/MAIN MENU/RESULT.
     document.getElementById('play-area').style.display = next === 'gameplay' ? '' : 'none';
     document.getElementById('control-area').style.display = next === 'gameplay' ? '' : 'none';
   }
@@ -2733,16 +2859,20 @@
     const elapsed = now - stageTransition.startedAt;
     if (stageTransition.phase === 'out') {
       if (elapsed < STAGE_FADE_MS) return;
-      currentStageIndex = pickRandomOtherStage(currentStageIndex);
+      // SECTION K/L/O: STORY MODE is now a fixed, linear progression —
+      // always the NEXT stage in order (never random, never repeating).
+      // This is only ever reached on ENCOUNTER 1->2 or 2->3 — ENCOUNTER 3's
+      // own defeat triggers GAME CLEAR directly instead (see
+      // updateBossDying()), so currentStageIndex + 1 is always in range
+      // here.
+      currentStageIndex += 1;
       cameraY = 0;
       // SECTION C: the next stage always starts back at AREA 1, fully
       // closed up again — same two-area structure repeats fresh each time.
       currentArea = 1;
       area1Cleared = false;
       area2Cleared = false;
-      resetPlayerPosition();
-      player.baseDir = 'down';
-      player.aimOffsetRaw = 0; player.aimOffset = 0;
+      resetPlayerToBattlePose(); // SECTION H: same fixed intro pose spawnBoss() itself uses
       bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
       barrels.length = 0;
       barrelLandings.length = 0;
@@ -3290,10 +3420,7 @@
   // mode (bullets, claw projectiles, explosions, boss state/HP, barrels,
   // DASH state) is allowed to survive into the next one.
   function resetModeState() {
-    resetPlayerPosition();
-    player.baseDir = 'down';
-    player.aimOffsetRaw = 0;
-    player.aimOffset = 0;
+    resetPlayerToBattlePose(); // SECTION H: BOSS mode starts directly at the intro pose; TRAINING mode keeps the screen-center default
     player.dashing = false;
     player.knockbackUntil = 0;
     player.lastActivityAt = performance.now();
@@ -3357,6 +3484,14 @@
     gameState.paused = false;
     hideModeMenu();
     setScreen('gameplay'); // SECTION I/J: MAIN MENU's STORY/TRAINING buttons both route through here — a no-op change if already in gameplay (PAUSE's own mode-switch/RESTART)
+    if (mode === 'boss') {
+      // SECTION Q: fresh RESULT stats for every genuinely new STORY run —
+      // RESTART counts as a new attempt too, so it resets these the same
+      // way. TRAINING MODE has no RESULT screen and never touches these.
+      storyStartTime = performance.now();
+      storyPausedAccumMs = 0;
+      shotsFired = 0; shotsHit = 0; totalDamageTaken = 0;
+    }
   }
 
   function releaseAllHeldInputs() {
@@ -3379,6 +3514,7 @@
   function pausePress(e) {
     e.preventDefault();
     gameState.paused = true;
+    pauseStartedAt = performance.now(); // SECTION Q-1: PLAY TIME excludes real time spent paused
     releaseAllHeldInputs();
     showModeMenu();
   }
@@ -3399,8 +3535,6 @@
   });
   window.addEventListener('blur', releaseAllHeldInputs);
 
-  document.getElementById('mode-boss-btn').addEventListener('click', () => startMode('boss'));
-  document.getElementById('mode-training-btn').addEventListener('click', () => startMode('training'));
   // Restarts whichever mode is currently selected, from scratch — startMode()
   // already does a full resetModeState() (player/boss/HP/bullets/blade
   // projectiles/barrels/cinematic+milestone flags/DASH state/AUTO AIM/
@@ -3408,8 +3542,72 @@
   document.getElementById('mode-restart-btn').addEventListener('click', () => startMode(gameState.mode));
   document.getElementById('mode-resume-btn').addEventListener('click', () => {
     gameState.paused = false;
+    storyPausedAccumMs += performance.now() - pauseStartedAt; // SECTION Q-1
     hideModeMenu();
   });
+  // SECTION T: QUIT ends the current STORY/TRAINING session and returns to
+  // MAIN MENU — no page reload (BGM keeps playing uninterrupted, per T-1).
+  // T-2: nothing needs to be explicitly wiped here — update()/draw() both
+  // stop entirely the instant screen leaves 'gameplay' (SECTION J), and the
+  // NEXT startMode() call (whenever STORY/TRAINING is picked again from
+  // MAIN MENU) already runs a full resetModeState() — currentStageIndex,
+  // boss state, bullets, AREA, and every other run-scoped field are always
+  // reset fresh there, so no STORY progress/encounter/stage/area/boss
+  // state ever survives into the next run.
+  document.getElementById('mode-quit-btn').addEventListener('click', () => {
+    gameState.paused = false;
+    hideModeMenu();
+    setScreen('mainMenu');
+  });
+
+  // ---------- SECTION Q/R: RESULT ----------
+  // Every magic number lives HERE, not scattered across the scoring code —
+  // Q-4's own explicit instruction. Each of the 3 metrics contributes an
+  // equally-weighted 0-100 sub-score (never letting TIME alone decide the
+  // rank): PLAY TIME scores linearly between timeGoodSec (full credit) and
+  // timeBadSec (zero credit); DAMAGE TAKEN the same shape between
+  // damageGoodTotal/damageBadTotal; ACCURACY is already a 0-100 percentage.
+  // The mean of the 3 is bucketed by `composite`'s own descending
+  // thresholds into S/A/B/C, falling through to D otherwise.
+  const RESULT_RANK_THRESHOLDS = {
+    timeGoodSec: 300, timeBadSec: 900,
+    damageGoodTotal: 100, damageBadTotal: 1000,
+    composite: { S: 90, A: 75, B: 55, C: 35 },
+  };
+  function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+  function computeResultRank(playTimeSec, accuracyFrac, damageTaken) {
+    const t = RESULT_RANK_THRESHOLDS;
+    const timeScore = clamp01(1 - (playTimeSec - t.timeGoodSec) / (t.timeBadSec - t.timeGoodSec)) * 100;
+    const damageScore = clamp01(1 - (damageTaken - t.damageGoodTotal) / (t.damageBadTotal - t.damageGoodTotal)) * 100;
+    const accuracyScore = accuracyFrac * 100;
+    const composite = (timeScore + damageScore + accuracyScore) / 3;
+    if (composite >= t.composite.S) return 'S';
+    if (composite >= t.composite.A) return 'A';
+    if (composite >= t.composite.B) return 'B';
+    if (composite >= t.composite.C) return 'C';
+    return 'D';
+  }
+  function formatPlayTime(sec) {
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+  function enterResultScreen() {
+    const playTimeSec = Math.max(0, (performance.now() - storyStartTime) - storyPausedAccumMs) / 1000; // Q-1: PAUSE time excluded
+    const accuracyFrac = shotsFired > 0 ? shotsHit / shotsFired : 0; // Q-2
+    const rank = computeResultRank(playTimeSec, accuracyFrac, totalDamageTaken);
+    document.getElementById('result-play-time').textContent = formatPlayTime(playTimeSec);
+    document.getElementById('result-accuracy').textContent = `${Math.round(accuracyFrac * 100)}%`;
+    document.getElementById('result-damage-taken').textContent = Math.round(totalDamageTaken);
+    document.getElementById('result-rank').textContent = rank;
+    setScreen('result');
+  }
+  document.getElementById('result-back-btn').addEventListener('click', () => {
+    setScreen('mainMenu'); // R-1: no reload, BGM keeps playing (never touched here)
+  });
+  // R-2: ARTIST PAGE stays a disabled placeholder — see index.html's own
+  // comment and the completion report; button intentionally has no
+  // click handler while no confirmed official URL exists.
 
   // ---------- SETTING (SECTION E/I) ----------
   // playerMaxLife is the ONE shared piece of settings data — PAUSE MENU's
@@ -3420,7 +3618,7 @@
   // screen actually opened SETTING.
   let playerMaxLife = Infinity;
   const pauseMenuPanel = document.getElementById('mode-menu-panel');
-  const mainMenuPanelEl = document.getElementById('main-menu-panel');
+  const mainMenuPanelEl = document.getElementById('main-menu-overlay');
   const settingPanel = document.getElementById('setting-panel');
   let settingOpenedFrom = 'pause'; // 'pause' | 'mainMenu'
   function openSettingPanel(from) {
@@ -3638,10 +3836,14 @@
   }
 
   function handleAimStickMove(clientX, clientY) {
-    // SECTION B: AIM direction changes are explicitly allowed during the
-    // boss-appearance lock (isBossIntroLocked()) — this never touches
-    // player.x/y, only facing/aimOffset, so it can't let the player walk
-    // away from their locked position.
+    // SECTION H: AIM STICK is now fully inert during the pre-battle/intro
+    // lock window (isBossIntroLocked()) — no facing change, no dotted
+    // trajectory, no RANGE guide, no target lock, no AUTO AIM display.
+    // MOVE STICK is the only way to change facing before battle starts
+    // (see its own handling in update()). Reverses the previous batch's
+    // deliberate AIM-during-intro exception, per this batch's explicit
+    // instruction.
+    if (isBossIntroLocked()) return;
     const rect = aimStickZone.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
@@ -3674,6 +3876,7 @@
   aimStickZone.addEventListener('touchstart', (e) => {
     e.preventDefault();
     if (aimStickTouchId !== null) return;
+    if (isBossIntroLocked()) return; // SECTION H: AIM STICK fully inert pre-battle/during intro
     const t = e.changedTouches[0];
     aimStickTouchId = t.identifier;
     aimStickActive = true;
@@ -3705,6 +3908,7 @@
 
   // Mouse equivalent for desktop/PC testing (drag within the same zone).
   aimStickZone.addEventListener('mousedown', (e) => {
+    if (isBossIntroLocked()) return; // SECTION H: AIM STICK fully inert pre-battle/during intro
     aimStickMouseDown = true;
     aimStickActive = true;
     showRangeUI(); // AIM STICK engaged — RANGE becomes visible/operable
@@ -3945,6 +4149,10 @@
     if (introStartFlashRemainingMs > 0) introStartFlashRemainingMs = Math.max(0, introStartFlashRemainingMs - dt * 1000);
     if (landingRedFlashRemainingMs > 0) landingRedFlashRemainingMs = Math.max(0, landingRedFlashRemainingMs - dt * 1000);
     if (playerHitBlinkRemainingMs > 0) playerHitBlinkRemainingMs = Math.max(0, playerHitBlinkRemainingMs - dt * 1000);
+    if (gameClearRemainingMs > 0) {
+      gameClearRemainingMs = Math.max(0, gameClearRemainingMs - dt * 1000);
+      if (gameClearRemainingMs === 0) enterResultScreen();
+    }
   }
 
   function updateFlashGrenade(dt, now) {
@@ -4278,6 +4486,7 @@
       // to also land on the boss.
       autoAimedBoss: autoAimActive && autoAimTargetIsBoss,
     });
+    shotsFired++; // SECTION Q-2: normal FIRE only — FLASH is a separate mechanic and must never be mixed into ACCURACY
     // No canvas muzzle-flash circle — the FIRE sprites already carry their
     // own baked-in flash art; an extra orange dot on top was redundant.
   }
@@ -4295,6 +4504,18 @@
   const PLAYER_HIT_BLINK_CYCLE_MS = PLAYER_HIT_BLINK_TOTAL_MS / PLAYER_HIT_BLINK_COUNT;
   let playerHitBlinkRemainingMs = 0;
 
+  // SECTION P/Q: GAME CLEAR — a brief screen-space canvas overlay drawn
+  // over the frozen final gameplay frame (never a screen swap, so the last
+  // moment of ENCOUNTER 3 stays visible underneath) after the existing
+  // boss-defeat effect finishes, then RESULT (a real DOM screen, like MAIN
+  // MENU) replaces it. See triggerGameClear() below and its call site in
+  // updateBossDying().
+  const GAME_CLEAR_DISPLAY_MS = 2500;
+  let gameClearRemainingMs = 0;
+  function triggerGameClear(now) {
+    gameClearRemainingMs = GAME_CLEAR_DISPLAY_MS;
+  }
+
   // SECTION E: the ONE place player LIFE is ever reduced. `amount` must
   // always be an EXISTING damage value already computed elsewhere in this
   // file (COUNTER_ATTACK_DAMAGE via player.lastCounterDamage for the
@@ -4311,6 +4532,7 @@
     player.life = Math.max(0, player.life - amount);
     playerHitFlashUntil = now + 150;
     playerHitBlinkRemainingMs = PLAYER_HIT_BLINK_TOTAL_MS;
+    totalDamageTaken += amount; // SECTION Q-3: accumulates the real damage VALUE regardless of the LIFE setting — never zeroed out just because player.life === Infinity
   }
 
   // Exposed for Playwright/manual verification only — not part of gameplay.
@@ -4381,6 +4603,7 @@
     // Debug/verification only — SECTION E (LIFE) / SECTION F (hit-blink).
     applyDamageToPlayerLife,
     get playerMaxLife() { return playerMaxLife; },
+    HUD_BAR_W, HUD_BAR_H, HUD_MARGIN_X, // debug/verification only — SECTION E/F/V
     applyMaxLifeSetting, openSettingPanel, closeSettingPanel,
     get playerHitBlinkRemainingMs() { return playerHitBlinkRemainingMs; },
     PLAYER_HIT_BLINK_COUNT, PLAYER_HIT_BLINK_TOTAL_MS,
@@ -4415,6 +4638,9 @@
     STRAIGHT_CLAW_KNOCKBACK_DISTANCE, STRAIGHT_CLAW_KNOCKBACK_LOCK_MS,
     // Debug/verification only — COUNTER ATTACK direction split (this batch).
     COUNTER_STING_SCALE, COUNTER_WINDUP_SCALE, COUNTER_ARC_CLAW_LIFETIME_MS, COUNTER_DAMAGE_MULTIPLIER, COUNTER_ATTACK_DAMAGE,
+    BOSS_CLOSE_COUNTER_DISTANCE, CLOSE_RANGE_SHOT_THRESHOLD, // debug/verification only — SECTION I
+    DARK_PHASE_GUARANTEE_HP_FRAC, // debug/verification only — SECTION J
+    getBossDifficultyMultiplier, BOSS_DIFFICULTY_TABLE, // debug/verification only — SECTION N
     // Debug/verification only — AREA 1/AREA 2 vertical stage (SECTION C).
     get currentArea() { return currentArea; },
     get area1Cleared() { return area1Cleared; },
@@ -4422,6 +4648,22 @@
     get area2Cleared() { return area2Cleared; },
     set area2Cleared(v) { area2Cleared = v; }, // debug/verification only
     CAMERA_FOLLOW_RATE, areaTopY, clampPlayerToScreen,
+    // Debug/verification only — SECTION K/L/O (3-STAGE/3-encounter STORY
+    // progression) and SECTION P/Q/R (GAME CLEAR / RESULT stats).
+    get gameClearRemainingMs() { return gameClearRemainingMs; },
+    set gameClearRemainingMs(v) { gameClearRemainingMs = v; }, // debug/verification only
+    triggerGameClear, GAME_CLEAR_DISPLAY_MS,
+    get storyStartTime() { return storyStartTime; },
+    set storyStartTime(v) { storyStartTime = v; }, // debug/verification only
+    get storyPausedAccumMs() { return storyPausedAccumMs; },
+    set storyPausedAccumMs(v) { storyPausedAccumMs = v; }, // debug/verification only
+    get shotsFired() { return shotsFired; },
+    set shotsFired(v) { shotsFired = v; }, // debug/verification only
+    get shotsHit() { return shotsHit; },
+    set shotsHit(v) { shotsHit = v; }, // debug/verification only
+    get totalDamageTaken() { return totalDamageTaken; },
+    set totalDamageTaken(v) { totalDamageTaken = v; }, // debug/verification only
+    RESULT_RANK_THRESHOLDS, computeResultRank, formatPlayTime, enterResultScreen,
   };
 
   // ---------- Main loop ----------
@@ -4468,21 +4710,29 @@
     // keep the pressure on by simply re-aiming and firing again the instant
     // the shove itself finishes resolving.
     const knockbackLocked = now < player.knockbackUntil;
-    // PART 8: the boss INTRO cinematic locks MOVE/AIM/FIRE completely — the
-    // player must stay exactly where/how PART 1 placed them (center-bottom,
-    // facing north) for the whole sequence. handleAimStickMove() has its own
-    // matching early-return so AIM can't sneak baseDir changes in around
-    // this per-frame gate either.
+    // PART 8/SECTION H: the boss INTRO cinematic (and the pre-spawn wait
+    // before it — isBossIntroLocked() covers both) locks MOVE translation/
+    // AIM/FIRE/DASH/FLASH/STEALTH completely — the player must stay exactly
+    // where PART 1/spawnBoss() placed them for the whole sequence.
+    // handleAimStickMove() has its own matching early-return so AIM can't
+    // sneak baseDir changes in around this per-frame gate either. SECTION H
+    // reverses the previous exception: AIM STICK is now the one fully inert
+    // control during this window, while MOVE STICK is explicitly still
+    // allowed to change FACING ONLY (never translation, which stays gated
+    // on moveStickPushed below).
     const introLocked = isBossIntroLocked();
 
-    const moveStickPushed = !introLocked && mag > ACTION_STICK_DEADZONE;
+    const moveStickPushedRaw = mag > ACTION_STICK_DEADZONE;
+    const moveStickPushed = !introLocked && moveStickPushedRaw;
     // PART 9/10: facing follows the AIM STICK whenever it's actively
     // engaged (dragging, or a double-tap snap still locked in) — see
     // handleAimStickMove()/performNearestAutoAimSnap(), which update
     // player.baseDir directly. MOVE STICK only drives facing the rest of
-    // the time, exactly as before.
+    // the time, exactly as before. aimEngaged is forced false throughout
+    // introLocked (AIM STICK is inert then), so the facing check below
+    // naturally falls through to MOVE STICK during that window.
     const aimEngaged = !introLocked && (aimStickActive || now < aimDoubleTapLockUntil);
-    if (!aimEngaged && moveStickPushed) {
+    if (!aimEngaged && (moveStickPushed || (introLocked && moveStickPushedRaw))) {
       const moveAngle = Math.atan2(vy, vx);
       setBaseDir(stickAngleToBucket(moveAngle, player.baseDir));
     }
@@ -4661,6 +4911,7 @@
         }
         const bodyHit = !weakPointHit && Math.hypot(b.x - boss.x, b.y - boss.y) <= BOSS_HURT_RADIUS;
         if (weakPointHit || bodyHit) {
+          shotsHit++; // SECTION Q-2: any genuine bullet-vs-boss contact counts toward ACCURACY, regardless of what happens next (point-blank counter/weak point/body damage) — FLASH is a separate mechanic, never counted here
           // POINT-BLANK counter (PART 5): scoped away from DARK PHASE/FLASH
           // DOWN/any cinematic — those are already fully invulnerable (or,
           // for DARK PHASE, deliberately built around GABRIEL closing to
@@ -4861,6 +5112,13 @@
       for (let y = baseDy; y > topLimit; y -= dh) {
         ctx.drawImage(stage.img, dx, y, dw, dh);
       }
+      // SECTION M-3: a small per-stage light tint distinguishes the two
+      // INDOOR stages (lab_b03/stage_a) from each other and from the
+      // OUTDOOR one, using only CSS/Canvas color — no new art.
+      if (stage.lightTint && stage.lightTint !== 'rgba(0,0,0,0)') {
+        ctx.fillStyle = stage.lightTint;
+        ctx.fillRect(0, cameraY, W, H);
+      }
     } else {
       // Landscape (or image not yet loaded): unchanged original background.
       ctx.fillStyle = '#131416';
@@ -4932,12 +5190,20 @@
     // layer entirely and always on top regardless of canvas draw order.
     drawAimLine();
 
-    drawBossHud(now);
-    drawLifeHud(now);
     drawBossFeedback(now);
     drawExitZone(now); // no-op until worldScrollUnlocked() (boss fully dead)
 
     ctx.restore(); // undo the camera translate — everything below is screen-space
+
+    // SECTION V: PLAYER LIFE / BOSS LIFE / "BOSS: GABRIEL" are pure HUD —
+    // drawn AFTER the camera-translate restore() above, so they are true
+    // screen-space and can never drift with cameraY (AREA1<->AREA2 scroll,
+    // or a future stage's own scroll) the way they did before this fix,
+    // when they were mistakenly still inside the world-space translated
+    // block above.
+    drawBossHud(now);
+    drawLifeHud(now);
+    drawBossLifeHud(now);
 
     // Ambient stage lighting: a slow, gentle brightness drift instead of a
     // fixed darkening amount — screen-space and computed independently of
@@ -5028,6 +5294,28 @@
         ctx.fillStyle = `rgba(160,10,10,${BOSS_LANDING_RED_FLASH_ALPHA_MAX})`;
         ctx.fillRect(0, 0, W, H);
       }
+    }
+
+    // SECTION P: "GAME CLEAR!!" — drawn last of all, on top of the frozen
+    // final gameplay frame (and above every other flash above), simple
+    // white/red text per spec rather than a rainbow celebratory effect.
+    if (gameClearRemainingMs > 0) {
+      const elapsed = GAME_CLEAR_DISPLAY_MS - gameClearRemainingMs;
+      const fadeInMs = 300;
+      const alpha = Math.min(1, elapsed / fadeInMs);
+      ctx.fillStyle = `rgba(0,0,0,${0.45 * alpha})`;
+      ctx.fillRect(0, 0, W, H);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 44px "Arial Narrow", Arial, sans-serif';
+      ctx.shadowColor = 'rgba(200,20,20,0.9)';
+      ctx.shadowBlur = 18;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText('GAME CLEAR!!', W / 2, H / 2);
+      ctx.shadowBlur = 0;
+      ctx.restore();
     }
 
     ctx.restore(); // matches the shake-translate ctx.save() at the top of this function
@@ -5735,38 +6023,73 @@
     }
   }
 
+  // SECTION G: called from draw() AFTER the camera-translate restore() —
+  // true screen coordinates, so this is immune to cameraY regardless of
+  // which AREA/STAGE is scrolling underneath it. "BOSS: GABRIEL" only — no
+  // WARNING/BATTLE/ENCOUNTER text — shown at true screen-center only while
+  // GABRIEL has actually landed and is visible (through the walk_south_1
+  // static hold), never lingering into normal battle.
   function drawBossHud(now) {
     if (!boss.spawned) return;
-    // No HP gauge on screen (removed per spec) — HP/damage/kill logic is
-    // all still tracked internally, just not displayed.
-    const barY = Math.max(10, (H * 0.03));
-
-    // SECTION B: "BOSS: GABRIEL" only — no WARNING/BATTLE/ENCOUNTER text.
-    // Shown once GABRIEL has actually landed and is visible, through the
-    // walk_south_1 static hold — a natural window within the existing
-    // intro sequence, without touching any of its phase boundaries.
     if (boss.state === 'intro' && boss.cinematicElapsed >= BOSS_INTRO_SHADOW_END && boss.cinematicElapsed < BOSS_INTRO_SOUTH_IDLE_END) {
       ctx.save();
       ctx.textAlign = 'center';
       ctx.fillStyle = `rgba(255,60,60,${0.55 + 0.45 * Math.abs(Math.sin(now / 150))})`;
       ctx.font = 'bold 20px sans-serif';
-      ctx.fillText(`BOSS: ${boss.name}`, W / 2, barY + 44);
+      ctx.fillText(`BOSS: ${boss.name}`, W / 2, H / 2);
       ctx.restore();
     }
   }
 
-  // SECTION E: minimal LIFE HUD — a single small text label, top-left,
-  // deliberately not a big new gauge (mirrors "no other large new HUD
-  // elements" already applied to the FIRE magazine's own HUD). Shows
-  // `LIFE ∞` at the default setting, or `LIFE current/max` once a finite
-  // max has been chosen via SETTING.
+  // SECTION E/V: PLAYER LIFE HUD — screen-fixed top-left (called AFTER the
+  // camera-translate restore() in draw(), so cameraY can never move it,
+  // fixing the previous bug where it was drawn inside the world-space
+  // block and drifted/vanished on AREA1->AREA2 scroll). Small "LIFE" label
+  // + a thin horizontal gauge — no numeric value ever shown. At the
+  // Infinity setting the gauge is always drawn full; at a finite max it
+  // reflects current/max as a fraction of the same bar width.
   function drawLifeHud(now) {
+    const labelY = Math.max(10, H * 0.03) + 4;
+    const gaugeY = labelY + 12;
+    const x = HUD_MARGIN_X;
     ctx.save();
     ctx.textAlign = 'left';
-    ctx.font = 'bold 13px sans-serif';
+    ctx.font = 'bold 11px sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    const text = player.life === Infinity ? 'LIFE ∞' : `LIFE ${Math.ceil(player.life)}/${playerMaxLife === Infinity ? '∞' : playerMaxLife}`;
-    ctx.fillText(text, 10, Math.max(10, H * 0.03) + 14);
+    ctx.fillText('LIFE', x, labelY + 8);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillRect(x, gaugeY, HUD_BAR_W, HUD_BAR_H);
+    const frac = player.life === Infinity ? 1 : Math.max(0, Math.min(1, player.life / playerMaxLife));
+    ctx.fillStyle = 'rgba(100,220,140,0.9)';
+    ctx.fillRect(x, gaugeY, HUD_BAR_W * frac, HUD_BAR_H);
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, gaugeY + 0.5, HUD_BAR_W - 1, HUD_BAR_H - 1);
+    ctx.restore();
+  }
+
+  // SECTION F/V: BOSS LIFE HUD — screen-fixed top-right, symmetric with
+  // PLAYER LIFE's own design (same bar size/style, mirrored side). No
+  // numeric HP value — HP/damage/kill logic stays fully internal, only the
+  // gauge width communicates it.
+  function drawBossLifeHud(now) {
+    if (!boss.spawned) return;
+    const labelY = Math.max(10, H * 0.03) + 4;
+    const gaugeY = labelY + 12;
+    const x = W - HUD_MARGIN_X - HUD_BAR_W;
+    ctx.save();
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.fillStyle = 'rgba(255,140,140,0.85)';
+    ctx.fillText(boss.name, W - HUD_MARGIN_X, labelY + 8);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillRect(x, gaugeY, HUD_BAR_W, HUD_BAR_H);
+    const frac = Math.max(0, Math.min(1, boss.hp / BOSS_HP_MAX));
+    ctx.fillStyle = 'rgba(225,70,70,0.9)';
+    ctx.fillRect(x, gaugeY, HUD_BAR_W * frac, HUD_BAR_H);
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, gaugeY + 0.5, HUD_BAR_W - 1, HUD_BAR_H - 1);
     ctx.restore();
   }
 
