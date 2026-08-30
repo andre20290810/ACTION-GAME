@@ -403,10 +403,19 @@
   const BARREL_DRAW_H = SPRITE_DRAW_H * 0.30;
   const BARREL_HITBOX_RADIUS = 12; // scaled down to match the smaller draw size
   const BARREL_EXPLOSION_RADIUS = 300; // area-effect range, not tied to the sprite size (3x the previous 100)
+  // SECTION E: always 5 barrels — every spawn/restock site below uses this
+  // one constant instead of the old random 2-4 range. Positions themselves
+  // are still randomized per-barrel every time via pickBarrelSpot().
+  const BARREL_COUNT = 5;
+  // SECTION F: blast knockback for whoever (player and/or boss) is caught
+  // within BARREL_EXPLOSION_RADIUS — separate from damage (applyExplosionDamageToBoss()
+  // above is unaffected). Distance-scaled: full strength at the barrel's
+  // own center, tapering linearly to 0 exactly at the radius edge.
+  const BARREL_EXPLOSION_KNOCKBACK_DISTANCE = 150; // max push, at point-blank — same order of magnitude as the other knockback distances in this file
+  const BARREL_EXPLOSION_KNOCKBACK_SUPPRESS_MS = 260;
   // Ceiling-drop restock: when every barrel on stage is gone, a fresh batch
   // falls in from above instead of the field staying permanently empty.
   const BARREL_RESTOCK_DELAY_MIN_MS = 1000, BARREL_RESTOCK_DELAY_MAX_MS = 2000;
-  const BARREL_RESTOCK_MIN_COUNT = 2, BARREL_RESTOCK_MAX_COUNT = 4;
   const BARREL_FALL_MS = 550; // ceiling -> landing duration
   const BARREL_FALL_HEIGHT = 460; // px above the landing spot the drop starts from (visual only)
 
@@ -502,6 +511,24 @@
   // release's own (unchanged) 0.90.
   const COUNTER_WINDUP_SCALE = COUNTER_STING_SCALE * 1.10;
   const COUNTER_ARC_CLAW_LIFETIME_MS = ARC_CLAW_LIFETIME_MS / 2; // "2x speed" = half the normal travel time along the SAME bezier geometry — see the 'counterArc' kind in updateArcClawSlashes()
+  // SECTION J: north/east/west COUNTER now rolls between the existing 2x
+  // ARC CLAW and a new STRAIGHT CLAW variant (reusing spawnStraightClaw()'s
+  // own already direction-agnostic straight-line thrust — the same shape
+  // south's STING already uses) — see boss.counterAttackKind, rolled once
+  // alongside counterDir in applyBodyHitToBoss().
+  const COUNTER_STRAIGHT_CLAW_PROB = 0.5;
+  // SECTION K: a short screen flicker on the transition into COUNTER, so
+  // the player gets a clear "this is now the dangerous invulnerable
+  // counter phase" cue — a handful of brief on/off pulses, never a long or
+  // fully-opaque flash (deliberately distinct from U-11's one-shot death
+  // flash and FLASH GRENADE's own screen flash).
+  const COUNTER_FLASH_PULSE_COUNT = 3;
+  const COUNTER_FLASH_ON_MS = 70;
+  const COUNTER_FLASH_OFF_MS = 70;
+  const COUNTER_FLASH_CYCLE_MS = COUNTER_FLASH_ON_MS + COUNTER_FLASH_OFF_MS;
+  const COUNTER_FLASH_TOTAL_MS = COUNTER_FLASH_PULSE_COUNT * COUNTER_FLASH_CYCLE_MS;
+  const COUNTER_FLASH_ALPHA_MAX = 0.38;
+  let counterFlashRemainingMs = 0;
   // COUNTER_DAMAGE_MULTIPLIER/COUNTER_ATTACK_DAMAGE are defined further
   // below, right after BULLET_DAMAGE (the constant they derive from).
 
@@ -651,21 +678,17 @@
     forceSetBaseDir(dir);
   }
 
-  // SECTION C: the walkable world now opens up in TWO stages instead of
-  // one — AREA 1 only (pixel-identical to the original single-screen
-  // clamp) until area1Cleared, then AREA 2's own full band once it is
-  // (C-14/C-15 — the invisible north boundary between the two areas), and
-  // finally the small post-clear EXIT-hunting bonus space beyond AREA 2
-  // once area2Cleared too (worldScrollUnlocked(), unchanged in spirit from
-  // before this batch, just re-gated on the new final win condition).
+  // SECTION G: AREA 1 and AREA 2 are both walkable from the very start of
+  // the game now — area1Cleared is no longer a gate on this clamp at all
+  // (it was the actual mechanism blocking early AREA 2 entry). Only the
+  // small post-clear EXIT-hunting bonus space beyond AREA 2 stays gated on
+  // worldScrollUnlocked() (area2Cleared), unchanged from before.
   function clampPlayerToScreen() {
     const halfW = (SPRITE_DRAW_H * spriteAspect) / 2;
     const halfH = SPRITE_DRAW_H / 2;
-    let topY = halfH; // AREA 1 only — identical to the original pre-stage-system clamp
+    let topY = -H + halfH; // AREA 1 + AREA 2's own full band, open from the start
     if (worldScrollUnlocked()) {
       topY = -H - worldExtraAbove + halfH;
-    } else if (area1Cleared) {
-      topY = -H + halfH;
     }
     player.x = Math.max(halfW, Math.min(W - halfW, player.x));
     player.y = Math.max(topY, Math.min(H - halfH, player.y));
@@ -920,23 +943,55 @@
     { key: 'p30', hpAtOrBelow: BOSS_HP_MAX * 0.70 }, // 30% of max HP lost
   ];
   const THRESHOLD_CINEMATIC_MS = 600;
-  // Death (PART 37-42): DOWN pose held briefly -> gradually blackens ->
-  // the now-black body crumbles into fine dark sand/ash that falls
-  // downward (gravity, not an upward burst) — see buildDyingParticles()/
-  // drawBossDying(). Each phase is its own named constant; DYING_DURATION_MS
-  // is still the one value everything else (updateBossDying()'s exit
-  // check, window.__game's exposed constant) treats as "how long the whole
-  // 'dying' state lasts", just derived from the phases below now instead of
-  // a single flat number.
-  const BOSS_DEFEAT_DOWN_PAUSE_MS = 500;
-  const BOSS_DEFEAT_BLACKEN_MS = 700;
-  const BOSS_DEFEAT_DISINTEGRATE_MS = 1600;
-  const BOSS_DEFEAT_BLACKEN_START = BOSS_DEFEAT_DOWN_PAUSE_MS;
+  // SECTION U: death rework — sharp instant blacken -> the body cracks
+  // apart from several points at once -> fine black/dark-gray shards sweep
+  // away up/upper-right, accelerating as they go -> a brief dim residual
+  // outline -> gone. No pre-blacken hold anymore (the old 500ms DOWN pose
+  // pause read as "mosaic"/sluggish) — blackening starts the instant death
+  // triggers. DYING_DURATION_MS is still the one value everything else
+  // (updateBossDying()'s exit check, window.__game's exposed constant)
+  // treats as "how long the whole 'dying' state lasts".
+  const BOSS_DEFEAT_BLACKEN_MS = 140; // U-3: 100-180ms band — color dies almost instantly
+  const BOSS_DEFEAT_DISINTEGRATE_MS = 860; // U-2: BLACKEN+DISINTEGRATE totals ~1000ms
+  const BOSS_DEFEAT_BLACKEN_START = 0;
   const BOSS_DEFEAT_BLACKEN_END = BOSS_DEFEAT_BLACKEN_START + BOSS_DEFEAT_BLACKEN_MS;
   const DYING_DURATION_MS = BOSS_DEFEAT_BLACKEN_END + BOSS_DEFEAT_DISINTEGRATE_MS;
-  // Fine dark grains fall under a gentle constant acceleration rather than
-  // drifting at a fixed speed — reads as real gravity, not a slow float.
-  const DEFEAT_PARTICLE_GRAVITY = 260; // px/sec^2
+  // U-9: several simultaneous crack origins (shoulder/wing, torso, leg/claw
+  // areas) instead of one single top-to-bottom sweep — a small FIXED set of
+  // relative points (not re-randomized per death) so the pattern still
+  // reads as controlled/consistent rather than a different shape every
+  // time, while still looking like it starts from multiple places at once.
+  const DEATH_CRACK_SEED_FRACS = [
+    { x: 0.28, y: 0.20 }, { x: 0.72, y: 0.18 }, { x: 0.50, y: 0.48 },
+    { x: 0.30, y: 0.80 }, { x: 0.70, y: 0.82 },
+  ];
+  // U-10: outer columns (wings/CLAW reach far to either side of the torso)
+  // dissolve a little later, so the silhouette stays readable longest.
+  const DEATH_OUTER_COLUMN_FRAC = 0.55; // |x - center| beyond this fraction of half-width counts as "outer"
+  const DEATH_OUTER_DELAY_FRAC = 0.16; // added to dissolveAt for outer cells
+  // U-5/U-6: swept away up/upper-right, not falling — angle jitter per
+  // particle, distance grows with localT^EASE_POWER (slow start, fast
+  // finish), no gravity at all anymore.
+  const DEATH_PARTICLE_BASE_ANGLE = -Math.PI / 4; // upper-right
+  const DEATH_PARTICLE_ANGLE_JITTER = 0.9; // +/- radians
+  const DEATH_PARTICLE_EASE_POWER = 2.3;
+  // U-7: most grains small (2-5px diameter == radius 1-2.5), a few larger
+  // elongated shards (6-10px diameter == radius 3-5, drawn as thin rotated
+  // rectangles rather than circles).
+  const DEATH_SHARD_FRAC = 0.14; // fraction of particles rendered as elongated shards
+  // U-8: the last ~250ms holds a faint, low-alpha residual outline of
+  // whatever's left of the silhouette, then snaps off over a brief final
+  // window — never a slow linear fade across the whole tail.
+  const DEATH_RESIDUE_WINDOW_MS = 250;
+  const DEATH_RESIDUE_SNAP_MS = 50;
+  const DEATH_RESIDUE_ALPHA = 0.4;
+  // U-11: a short, sharp one-shot screen flash + shake right as death
+  // triggers — deliberately distinct from COUNTER's own multi-pulse
+  // flicker (COUNTER_FLASH_*) and FLASH GRENADE's screen flash.
+  const DEATH_FLASH_MS = 150;
+  const DEATH_SHAKE_MAG = 10;
+  const DEATH_SHAKE_MS = 200;
+  let deathFlashRemainingMs = 0;
   // Fine sand/ash grain, not blocky squares — small enough that the sampling
   // grid itself reads as smooth erosion rather than visible pixel chunks.
   const DYING_CELL_SIZE = 3; // px, sampled at the cinematic sprite's on-screen size
@@ -1029,7 +1084,8 @@
     weakPointConsecutiveHits: 0, // ANY valid weak-point damage hit (auto-aimed or manual) landed during the current DEFENSE
     consecutiveGuardedShots: 0, // shots successfully BLOCKED (0 damage) during the current DEFENSE — see applyBodyHitToBoss(); resets to 0 on any non-'defense' state transition, same lifecycle as the two counters above
     straightClawHitSpawned: false, // guards the single spawnStraightClaw()/spawnCounterArcClaw() call per 'straightclaw' state — see bossEnterState()/updateBossStraightClaw()
-    counterDir: 'south', // 'south'|'north'|'east'|'west' — captured ONCE at COUNTER ATTACK trigger time from the player's position relative to GABRIEL; picks STING (south) vs COUNTER ARC CLAW (north/east/west) — see applyBodyHitToBoss()/bossFrameName()/updateBossStraightClaw()
+    counterDir: 'south', // 'south'|'north'|'east'|'west' — captured ONCE at COUNTER ATTACK trigger time from the player's position relative to GABRIEL; picks STING (south) vs COUNTER ARC CLAW/STRAIGHT CLAW (north/east/west) — see applyBodyHitToBoss()/bossFrameName()/updateBossStraightClaw()
+    counterAttackKind: 'arcClaw', // 'arcClaw'|'straightClaw' — SECTION J: rolled ONCE alongside counterDir, only meaningful when counterDir !== 'south' (south always keeps its own STING)
     autoAimHitStreak: 0, // ANY valid AUTO-AIM-assisted damage hit, body or weak point, regardless of state — see registerGlobalAutoAimHit()
     invulnerableUntil: 0, // legacy field — no longer ever set to a nonzero value (4-hit AUTO AIM now triggers DARK PHASE, not a timed window); left in place harmlessly
     closeRangeInvulnUntil: 0, // set by the POINT-BLANK counter — see triggerCloseRangeCounter()
@@ -1198,13 +1254,17 @@
     return boss.state === 'intro' || boss.state === 'threshold' || boss.state === 'dying' || boss.state === 'dead';
   }
 
-  // PART 8: scoped to the boss INTRO sequence specifically (not threshold/
-  // dying/dead, which have always left the player free to move) — MOVE/AIM/
-  // FIRE/DASH/FLASH/STEALTH are all suppressed for the whole cinematic, so
-  // the player stays exactly where PART 1 places them, facing north, until
-  // battle actually begins.
+  // PART 8 / SECTION B: scoped to the whole boss-appearance window — from
+  // BOSS MODE start (before spawnBoss() has even fired, boss.spawned still
+  // false) through the INTRO cinematic itself — never threshold/dying/dead,
+  // which have always left the player free to move. MOVE/FIRE/DASH/FLASH/
+  // STEALTH are all suppressed for this whole window, so the player can
+  // never walk away from wherever they're standing before battle actually
+  // begins. AIM is the one deliberate exception — see handleAimStickMove(),
+  // which no longer checks this at all, since changing facing never moves
+  // player.x/y.
   function isBossIntroLocked() {
-    return boss.spawned && boss.state === 'intro';
+    return gameState.mode === 'boss' && (!boss.spawned || boss.state === 'intro');
   }
 
   // Called after any HP reduction. Returns true if the hit was instead
@@ -1245,6 +1305,11 @@
     arcClawSlashes.length = 0; // no lingering attack hazards during the death cinematic
     boss.dyingParticlesBuilt = false;
     boss.dyingParticles = [];
+    // U-11: one short, sharp impact moment right as death triggers — a
+    // one-shot white flash + brief shake, distinct from COUNTER's own
+    // multi-pulse flicker.
+    triggerScreenShake(now, DEATH_SHAKE_MAG, DEATH_SHAKE_MS);
+    deathFlashRemainingMs = DEATH_FLASH_MS;
     bossEnterState('dying', now);
   }
 
@@ -1718,15 +1783,20 @@
     }
     const incomingFrom = OPPOSITE_COMPASS[velocityToCompass(bulletVx, bulletVy)];
     if (boss.state === 'defense') {
+      // SECTION D: a normal player shot must NEVER reach `boss.hp -=` while
+      // DEFENSE holds, autoAimed or not — every body hit here is blocked.
+      // An autoAimed hit still counts toward GUARD BREAK (registerDefenseAimHit()/
+      // registerGlobalAutoAimHit()) exactly as before; only the HP damage
+      // itself (the actual defense-bypass bug) is removed. A non-autoAimed
+      // hit still counts toward the separate STRAIGHT CLAW guard-streak,
+      // exactly as before.
       boss.defenseDir = incomingFrom;
+      spawnDefenseRicochet(now, bulletX, bulletY, bulletVx, bulletVy);
       if (autoAimed) {
-        boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
-        if (checkBossHpMilestones(now)) return; // death or a threshold cinematic took over
-        bossDamageBlinkStartAt = now; // "valid hit" feedback — same as a real weak-point hit, not a ricochet
-        if (autoAimed) { registerDefenseAimHit(now); registerGlobalAutoAimHit(now); }
+        registerDefenseAimHit(now);
+        registerGlobalAutoAimHit(now);
         return;
       }
-      spawnDefenseRicochet(now, bulletX, bulletY, bulletVx, bulletVy);
       // STRAIGHT CLAW counter (A-2/A-3): counts CONSECUTIVE genuinely-blocked
       // shots (0 damage) during DEFENSE — a real-damage hit anywhere below
       // resets this to 0 via bossEnterState()'s own state !== 'defense'
@@ -1741,6 +1811,11 @@
         // variant plays. 'down'/'up'/'left'/'right' -> DIR_TO_BOSS_KEY's own
         // south/north/west/east naming, same mapping used everywhere else.
         boss.counterDir = DIR_TO_BOSS_KEY[angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x))];
+        // SECTION J: north/east/west roll between the 2x ARC CLAW and the
+        // new STRAIGHT CLAW variant; south always keeps its own STING.
+        boss.counterAttackKind = (boss.counterDir !== 'south' && Math.random() < COUNTER_STRAIGHT_CLAW_PROB)
+          ? 'straightClaw' : 'arcClaw';
+        counterFlashRemainingMs = COUNTER_FLASH_TOTAL_MS; // SECTION K: brief screen flicker on the transition into COUNTER
         bossEnterState('straightclaw', now); // takes priority over normal AI/DEFENSE's own exit timing
       }
       return;
@@ -1883,7 +1958,11 @@
     // attack window's own duration also depends on the variant, since the
     // COUNTER ARC CLAW's travel time is intentionally half of STING's.
     const isSouth = boss.counterDir === 'south';
-    const attackWindowMs = isSouth ? STRAIGHT_CLAW_ATTACK_MS : COUNTER_ARC_CLAW_LIFETIME_MS;
+    // SECTION J: north/east/west now use whichever sub-variant was rolled
+    // at trigger time (boss.counterAttackKind) — south always keeps its own
+    // STING regardless of that field.
+    const usesStraightClaw = isSouth || boss.counterAttackKind === 'straightClaw';
+    const attackWindowMs = usesStraightClaw ? STRAIGHT_CLAW_ATTACK_MS : COUNTER_ARC_CLAW_LIFETIME_MS;
     // A-7/A-9: windup shows straight_claw_windup.png with zero damage/hit/
     // knockback for STRAIGHT_CLAW_WINDUP_MS; the player may move freely.
     // Exactly once, at the windup->release instant, lock the attack's
@@ -1895,6 +1974,12 @@
       boss.straightClawHitSpawned = true;
       if (isSouth) {
         spawnStraightClaw(now, { x: boss.x, y: boss.y }, getBossTargetPos(now));
+      } else if (usesStraightClaw) {
+        // J-3: north/east/west's own STRAIGHT CLAW originates from
+        // GABRIEL's per-direction claw joint (getClawOrigin() — the SAME
+        // origin point normal ARC CLAW SLASH attacks already use), not the
+        // raw body center STING uses for its front-facing pose.
+        spawnStraightClaw(now, getClawOrigin(), getBossTargetPos(now));
       } else {
         spawnCounterArcClaw(now, getClawOrigin(), getBossTargetPos(now));
       }
@@ -2529,7 +2614,7 @@
       bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
       barrels.length = 0;
       barrelLandings.length = 0;
-      spawnBarrels(2 + Math.floor(Math.random() * 3));
+      spawnBarrels(BARREL_COUNT);
       spawnBoss(now); // fresh full-HP boss; plays the existing shake/silence/shadow/landing/south-idle/south-attack intro
       stageTransition.phase = 'in';
       stageTransition.startedAt = now;
@@ -2749,6 +2834,27 @@
         Math.hypot(barrel.x - boss.x, barrel.y - boss.y) <= BARREL_EXPLOSION_RADIUS + BOSS_HURT_RADIUS) {
       applyExplosionDamageToBoss(BARREL_DAMAGE, now);
     }
+    // SECTION F: knockback is entirely separate from damage above — it
+    // applies to the player AND the boss purely by blast-radius proximity,
+    // never gated on defense/invulnerability the way damage is (or isn't).
+    // Reuses the existing player-knockback primitive; the boss has no
+    // pre-existing one, so it's pushed directly (the per-frame CHASE-state
+    // clamp elsewhere already keeps boss.x/y on-stage the very next frame).
+    const distToPlayer = Math.hypot(player.x - barrel.x, player.y - barrel.y);
+    if (distToPlayer <= BARREL_EXPLOSION_RADIUS) {
+      const strength = 1 - distToPlayer / BARREL_EXPLOSION_RADIUS;
+      const angle = Math.atan2(player.y - barrel.y, player.x - barrel.x) || -Math.PI / 2;
+      applyPlayerKnockbackAlongAngle(angle, BARREL_EXPLOSION_KNOCKBACK_DISTANCE * strength, BARREL_EXPLOSION_KNOCKBACK_SUPPRESS_MS, now);
+    }
+    if (boss.spawned && !bossIsInCinematic() && boss.state !== 'darkphase' && boss.state !== 'teleport' && boss.state !== 'straightclaw') {
+      const distToBoss = Math.hypot(boss.x - barrel.x, boss.y - barrel.y);
+      if (distToBoss <= BARREL_EXPLOSION_RADIUS) {
+        const strength = 1 - distToBoss / BARREL_EXPLOSION_RADIUS;
+        const angle = Math.atan2(boss.y - barrel.y, boss.x - barrel.x) || -Math.PI / 2;
+        boss.x += Math.cos(angle) * BARREL_EXPLOSION_KNOCKBACK_DISTANCE * strength;
+        boss.y += Math.sin(angle) * BARREL_EXPLOSION_KNOCKBACK_DISTANCE * strength;
+      }
+    }
     // No more per-barrel respawn timer here (old TRAINING-only behavior) —
     // restocking is now unified for both modes in updateBarrels() below,
     // triggered once every barrel is gone, so the two paths can never
@@ -2783,8 +2889,7 @@
       barrelRestockRemainingMs -= dt * 1000;
       if (barrelRestockRemainingMs <= 0) {
         barrelRestockPending = false;
-        const count = BARREL_RESTOCK_MIN_COUNT + Math.floor(Math.random() * (BARREL_RESTOCK_MAX_COUNT - BARREL_RESTOCK_MIN_COUNT + 1));
-        spawnFallingBarrels(count, now);
+        spawnFallingBarrels(BARREL_COUNT, now); // SECTION E-1: restock is always a fresh, freshly-randomized set of 5
       }
     }
   }
@@ -2955,8 +3060,14 @@
     // No lock-on target at all during any cinematic (intro/threshold/dying)
     // or once truly dead — bossIsInCinematic() covers all four. TELEPORT
     // (PART 7) is the same: GABRIEL isn't visually present, so there's
-    // nothing for AUTO AIM to snap onto until it reappears.
-    if (boss.spawned && (bossIsInCinematic() || boss.state === 'teleport' || boss.state === 'straightclaw')) return { primary: null, secondary: null };
+    // nothing for AUTO AIM to snap onto until it reappears. SECTION I:
+    // 'straightclaw' (COUNTER) is now allowed to fall through to the
+    // ordinary body-target branch below — this is the FLASH-cancel target,
+    // and I-2 explicitly asks for the same AUTO LOCK assist there too, not
+    // just DEFENSE/DARK PHASE. isAimingAtBoss()'s own raw-ray check for
+    // this state is unaffected either way — the magnet only makes it
+    // easier to line up, never bypasses that check.
+    if (boss.spawned && (bossIsInCinematic() || boss.state === 'teleport')) return { primary: null, secondary: null };
     // DEFENSE: the forehead weak point takes priority over the body — only
     // fall back to the body center if the weak point itself isn't in range
     // (or doesn't exist at all for the current defenseDir, e.g. NORTH).
@@ -3078,6 +3189,7 @@
     boss.consecutiveGuardedShots = 0; // STRAIGHT CLAW guard counter — explicit RESTART reset (A-4)
     boss.straightClawHitSpawned = false;
     boss.counterDir = 'south';
+    boss.counterAttackKind = 'arcClaw';
     player.lastCounterDamage = 0;
     resetStealth(); // RESTART/mode switch ends STEALTH and its cooldown outright — the only two things allowed to (PART 21)
 
@@ -3098,7 +3210,7 @@
     barrelLandings.length = 0;
     barrelRestockPending = false;
     barrelRestockRemainingMs = 0;
-    spawnBarrels(2 + Math.floor(Math.random() * 3)); // 2-4
+    spawnBarrels(BARREL_COUNT);
     hideRangeUI();
     resetFlashGrenade();
   }
@@ -3338,7 +3450,10 @@
   }
 
   function handleAimStickMove(clientX, clientY) {
-    if (isBossIntroLocked()) return; // PART 8: facing must stay exactly where the intro placed it
+    // SECTION B: AIM direction changes are explicitly allowed during the
+    // boss-appearance lock (isBossIntroLocked()) — this never touches
+    // player.x/y, only facing/aimOffset, so it can't let the player walk
+    // away from their locked position.
     const rect = aimStickZone.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
@@ -3611,6 +3726,15 @@
   // since flashPress() is idempotent (a second call just sees the
   // cooldown already started and returns immediately).
   flashZone.addEventListener('pointerdown', flashPress);
+
+  // SECTION K/U-11: two more countdown-driven one-shot screen overlays,
+  // ticked the same dt-driven way as FLASH GRENADE's own screen flash right
+  // below (so both correctly freeze during PAUSE instead of continuing to
+  // animate off a raw, ever-advancing timestamp) — drawn in draw().
+  function updateScreenFlashes(dt) {
+    if (counterFlashRemainingMs > 0) counterFlashRemainingMs = Math.max(0, counterFlashRemainingMs - dt * 1000);
+    if (deathFlashRemainingMs > 0) deathFlashRemainingMs = Math.max(0, deathFlashRemainingMs - dt * 1000);
+  }
 
   function updateFlashGrenade(dt, now) {
     if (flashCooldownRemainingMs > 0) {
@@ -3949,7 +4073,7 @@
     player, boss, playerHitCount: 0,
     applyBodyHitToBoss, applyWeakPointHitToBoss, applyExplosionDamageToBoss, bossEnterState,
     getWeakPointScreenPos, arcClawSlashes, spawnArcClawSlash,
-    gameState, barrels, explosions, bullets, spawnBarrels, startMode,
+    gameState, barrels, explosions, bullets, spawnBarrels, startMode, explodeBarrel, // debug/verification only — SECTION F
     get autoAimActive() { return autoAimActive; },
     getAutoAimTargetPoint, // debug/verification only
     get autoAimTargetIsBoss() { return autoAimTargetIsBoss; },
@@ -4017,9 +4141,12 @@
     get bossDamageBlinkStartAt() { return bossDamageBlinkStartAt; },
     BOSS_DAMAGE_BLINK_COUNT, BOSS_DAMAGE_BLINK_TOTAL_MS, BOSS_HIT_TINT_MS,
     BOSS_CHASE_SPEED, BOSS_SPEED,
-    // Debug/verification only — GABRIEL defeat sequence (PART 37-42).
-    BOSS_DEFEAT_DOWN_PAUSE_MS, BOSS_DEFEAT_BLACKEN_MS, BOSS_DEFEAT_DISINTEGRATE_MS,
+    // Debug/verification only — GABRIEL defeat sequence (SECTION U rework).
+    BOSS_DEFEAT_BLACKEN_MS, BOSS_DEFEAT_DISINTEGRATE_MS,
     BOSS_DEFEAT_BLACKEN_START, BOSS_DEFEAT_BLACKEN_END,
+    get deathFlashRemainingMs() { return deathFlashRemainingMs; },
+    get counterFlashRemainingMs() { return counterFlashRemainingMs; },
+    get boss_counterAttackKind() { return boss.counterAttackKind; }, // debug/verification only — SECTION J
     // Debug/verification only — walk-cycle timing (north/south walk frame replacement batch).
     WALK_FRAME_PERIOD_MS, SOUTH_WALK_FRAME_PERIOD_MS,
     // Debug/verification only — STRAIGHT CLAW counterattack (SECTION A).
@@ -4142,17 +4269,18 @@
       if (!area1Cleared && boss.state === 'dead' && currentArea === 1) {
         area1Cleared = true;
       }
-      // AREA 1 -> AREA 2 (C-15/C-16/C-17): the moment the player actually
-      // walks north past the seam (world Y 0) for the first time after
-      // AREA 1 is cleared, activate AREA 2 exactly once — a fresh boss
-      // (C-19: the same GABRIEL, no new AI needed) spawns with its own
-      // full intro, inactive until this very moment (C-18) since nothing
-      // above ever calls spawnBoss() for AREA 2 before the player arrives.
-      if (area1Cleared && !area2Activated && player.y < 0) {
+      // AREA 1 -> AREA 2 (C-15/C-16/C-17, opened up by SECTION G): the
+      // moment the player actually walks north past the seam (world Y 0)
+      // for the first time — no longer gated on AREA 1 being cleared first
+      // — activate AREA 2 exactly once — a fresh boss (C-19: the same
+      // GABRIEL, no new AI needed) spawns with its own full intro, inactive
+      // until this very moment (C-18) since nothing above ever calls
+      // spawnBoss() for AREA 2 before the player arrives.
+      if (!area2Activated && player.y < 0) {
         area2Activated = true;
         bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
         spawnBoss(now); // currentArea is already 2 here, so this spawns/positions relative to AREA 2's own band
-        spawnBarrels(2 + Math.floor(Math.random() * 3));
+        spawnBarrels(BARREL_COUNT);
       }
       // AREA 2 clear (C-20): its own boss fully dissolved -> the existing
       // EXIT/stage-transition machinery (unchanged) takes over from here.
@@ -4169,10 +4297,9 @@
     // player must physically walk into that zone themselves, exactly as
     // before this batch.
     if (gameState.mode === 'boss' && !stageTransition.active) {
-      let minCameraY;
-      if (worldScrollUnlocked()) minCameraY = -H - worldExtraAbove;
-      else if (area1Cleared) minCameraY = -H;
-      else minCameraY = 0; // AREA 1 only — camera stays pinned exactly like the original single-screen layout
+      // SECTION G: AREA 1 + AREA 2's own band is always unlocked now — only
+      // the further post-clear bonus space beyond it stays gated.
+      const minCameraY = worldScrollUnlocked() ? -H - worldExtraAbove : -H;
       const targetCameraY = Math.max(minCameraY, Math.min(0, player.y - H * 0.6));
       // Exponential smoothing (C-9): closes (1 - e^(-RATE*dt)) of the
       // remaining distance each frame — framerate-independent, and fast
@@ -4288,6 +4415,7 @@
 
     updateBarrels(dt, now);
     updateFlashGrenade(dt, now);
+    updateScreenFlashes(dt);
     updateStealth(dt, now);
     updateBoss(dt, now);
     updateArcClawSlashes(now);
@@ -4387,15 +4515,16 @@
     const ex = bx + Math.cos(angle) * guideLen;
     const ey = by + Math.sin(angle) * guideLen;
 
-    // PART 15-18 / SECTION 9-13: whenever the current AIM target IS
-    // GABRIEL (isAimingAtBoss() — DARK PHASE's head, a normal/COUNTER body
-    // lock, or COUNTER's raw-aim-ray check), red means EXACTLY "a FLASH
-    // thrown right now would hit" — canFlashTarget() is the SAME predicate
-    // flashPress() checks, so the two can never disagree. Aimed at
-    // something else entirely (a barrel, or nothing) keeps the original,
-    // unrelated AUTO AIM red/white feedback — FLASH has no opinion there.
-    const aimedAtBoss = isAimingAtBoss();
-    const isLocked = aimedAtBoss ? canFlashTarget() : autoAimActive;
+    // SECTION H: red now means EXACTLY ONE thing, unconditionally — "a
+    // FLASH thrown right now would hit" — canFlashTarget() is the SAME
+    // predicate flashPress() checks, so the two can never disagree, in ANY
+    // situation. Previously, aiming at something other than GABRIEL (a
+    // barrel, or nothing) fell back to the plain AUTO AIM magnet flag,
+    // which could be true with no relation to FLASH at all (e.g. locked
+    // onto a barrel) — that's exactly the "red but FLASH can't fire" bug
+    // this section reports. There is no more such fallback: a barrel/no
+    // lock now always reads as the ordinary white line.
+    const isLocked = canFlashTarget();
     ctx.save();
     ctx.strokeStyle = isLocked ? 'rgba(255,90,80,0.6)' : 'rgba(255,255,255,0.55)';
     ctx.lineWidth = 2;
@@ -4575,6 +4704,28 @@
       ctx.fillRect(0, 0, W, H);
     }
 
+    // SECTION K: a few short on/off pulses the instant COUNTER (invulnerable
+    // STRAIGHT CLAW) begins — moderate alpha, never fully opaque, so it
+    // never blocks the in-canvas HUD/warning text (and CONTROL AREA is a
+    // separate DOM region below the canvas, so it can never reach that
+    // either).
+    if (counterFlashRemainingMs > 0) {
+      const elapsedIntoFlash = COUNTER_FLASH_TOTAL_MS - counterFlashRemainingMs;
+      const cyclePos = elapsedIntoFlash % COUNTER_FLASH_CYCLE_MS;
+      if (cyclePos < COUNTER_FLASH_ON_MS) {
+        ctx.fillStyle = `rgba(255,255,255,${COUNTER_FLASH_ALPHA_MAX})`;
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    // U-11: one short, sharp white flash right as GABRIEL's death triggers —
+    // a single decaying pulse, distinct from COUNTER's multi-pulse flicker.
+    if (deathFlashRemainingMs > 0) {
+      const alpha = Math.min(1, deathFlashRemainingMs / DEATH_FLASH_MS);
+      ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+
     ctx.restore(); // matches the shake-translate ctx.save() at the top of this function
 
     // Expired explosion effects are pruned here rather than in update(),
@@ -4585,122 +4736,81 @@
     }
   }
 
-  // ---------- STEALTH metallic-blue-tint compositing ----------
+  // ---------- STEALTH colorless space-distortion compositing ----------
   // No new image files, and the real sprite files on disk are never
   // touched — this draws WHATEVER sprite drawPlayer() would normally show
-  // (movement/DASH/FIRE/idle, any of the 4 directions) through an offscreen
-  // canvas: (1) draw the sprite normally, (2) tint ONLY its own already-
-  // opaque pixels a cold metallic blue via `source-atop` (a no-op
-  // everywhere the sprite itself is transparent, so the surrounding
-  // canvas/background is never touched), (3) add a fine per-pixel noise
-  // texture — also confined to the sprite's own opaque pixels via the same
-  // source-atop trick — regenerated every STEALTH_NOISE_PERIOD_MS so it
-  // reads as "the cloaking surface is faintly glitching", not a smooth
-  // color, (4) draw that composited result onto the main canvas at a
-  // reduced globalAlpha. Both the tint strength and the alpha are blended
-  // by `strength` (0-1, from getStealthEffectStrength()) so STEALTH's
-  // ~150ms start/end fade reads as a smooth color+alpha shift, never a
-  // snap — see drawPlayer() below for where `strength` comes from.
-  const stealthCompositeCanvas = document.createElement('canvas');
-  const stealthCompositeCtx = stealthCompositeCanvas.getContext('2d');
-  const STEALTH_TINT_RGB = '110, 175, 230'; // metallic/cold blue — PART 32 replaces the old neon green entirely
-  const STEALTH_TINT_MAX_ALPHA = 0.72; // strong enough to read as a clear metallic-blue tint at full strength, still sheer enough that armor/face detail shows through (never a flat single-color silhouette)
-  // 20 percentage points more transparent than the previous 0.60 (not a
-  // fixed value) — Math.max(0, previous - 0.20), per instruction.
-  const STEALTH_ALPHA_ACTIVE_PREVIOUS = 0.60;
-  const STEALTH_ALPHA_ACTIVE = Math.max(0, STEALTH_ALPHA_ACTIVE_PREVIOUS - 0.20);
-  const STEALTH_NOISE_PERIOD_MS = 90; // how often the noise speckle pattern re-rolls — a short period, not a per-frame flicker
-  const STEALTH_NOISE_COUNT = 16; // small grain count per refresh, kept light on CPU/GPU
-  // Faint optical-camouflage-style outline glow, layered on top of the
-  // existing body tint (not a replacement for it) — a canvas shadowBlur/
-  // shadowColor halo drawn around the sprite's own opaque silhouette, kept
-  // deliberately subtle (moderate blur radius, capped alpha) so it never
-  // reads as neon or blows out into flat white.
-  const STEALTH_GLOW_COLOR_RGB = '150, 205, 255'; // slightly brighter/cooler than the body tint, so the glow reads as light coming FROM the silhouette, not just more of the same fill
-  const STEALTH_GLOW_BLUR_PX = 12;
-  const STEALTH_GLOW_ALPHA_MAX = 0.65; // capped well under 1 — a faint halo, never a solid white/blue blob
-  let stealthNoiseAt = -Infinity;
-  let stealthNoiseSpecks = [];
+  // (movement/DASH/FIRE/idle, any of the 4 directions), reworked as of
+  // SECTION O: no color tint/glow of any kind anymore (blue, or
+  // anything else) — STEALTH is now a colorless "optical camouflage" look:
+  // (1) the player sprite itself draws at a reduced, neutral alpha, no
+  // recolor at all, and (2) the background immediately behind/around the
+  // silhouette visibly warps, as if a transparent body were bending the
+  // space there (heat-haze/refraction style) — built entirely from
+  // existing canvas drawImage() ops (no getImageData/putImageData, so it
+  // stays hardware-accelerated and cheap): the already-rendered main
+  // canvas content right where the player is about to be drawn is copied
+  // into an offscreen buffer in thin horizontal strips, each strip offset
+  // sideways by a small sine wave (a different phase per strip, animated
+  // over time), then that warped copy is masked to the player's own
+  // opaque silhouette (destination-in against the sprite) and painted back
+  // over the same spot — so only the area the body actually occupies
+  // reads as distorted, not a plain rectangle.
+  const stealthDistortCanvas = document.createElement('canvas');
+  const stealthDistortCtx = stealthDistortCanvas.getContext('2d');
+  const stealthMaskCanvas = document.createElement('canvas');
+  const stealthMaskCtx = stealthMaskCanvas.getContext('2d');
+  // 5 more percentage points of transparency than the previous 0.40 —
+  // Math.max(0, previous - 0.05), per instruction.
+  const STEALTH_ALPHA_ACTIVE_PREVIOUS = 0.40;
+  const STEALTH_ALPHA_ACTIVE = Math.max(0, STEALTH_ALPHA_ACTIVE_PREVIOUS - 0.05);
+  const STEALTH_DISTORT_STRIPS = 14;
+  const STEALTH_DISTORT_AMPLITUDE_PX = 3.5; // max sideways displacement per strip, at full strength
+  const STEALTH_DISTORT_PERIOD_MS = 650; // one full wave cycle
   // Debug/verification only — declared after window.__game's own literal
   // above, so appended here rather than inside it (same pattern as
   // window.__game.playerFrame below).
   window.__game.STEALTH_ALPHA_ACTIVE = STEALTH_ALPHA_ACTIVE;
   window.__game.STEALTH_ALPHA_ACTIVE_PREVIOUS = STEALTH_ALPHA_ACTIVE_PREVIOUS;
-  window.__game.STEALTH_TINT_RGB = STEALTH_TINT_RGB;
-  window.__game.STEALTH_GLOW_COLOR_RGB = STEALTH_GLOW_COLOR_RGB;
-  window.__game.STEALTH_GLOW_BLUR_PX = STEALTH_GLOW_BLUR_PX;
-  window.__game.STEALTH_GLOW_ALPHA_MAX = STEALTH_GLOW_ALPHA_MAX;
 
-  function rollStealthNoise(cw, ch) {
-    const specks = [];
-    for (let i = 0; i < STEALTH_NOISE_COUNT; i++) {
-      const bright = Math.random() < 0.55;
-      specks.push({
-        x: Math.random() * cw,
-        y: Math.random() * ch,
-        size: 1 + Math.random() * 1.4, // 1-2.4px — fine grain, never blocky
-        bright,
-        alpha: bright ? 0.22 + Math.random() * 0.30 : 0.18 + Math.random() * 0.24,
-      });
-    }
-    // A single short horizontal scanline glitch, only some rolls — a subtle
-    // flicker accent, not a constant strobing bar.
-    if (Math.random() < 0.4) {
-      const ly = Math.random() * ch;
-      const lw = ch > 0 ? (cw * (0.2 + Math.random() * 0.35)) : 0;
-      const lx = Math.random() * Math.max(1, cw - lw);
-      specks.push({ scanline: true, x: lx, y: ly, w: lw, alpha: 0.14 + Math.random() * 0.16 });
-    }
-    return specks;
-  }
-
-  function drawPlayerWithStealthTint(img, dx, dy, w, h, strength, now) {
+  function drawPlayerStealthed(img, dx, dy, w, h, strength, now) {
     const cw = Math.max(1, Math.round(w));
     const ch = Math.max(1, Math.round(h));
-    if (stealthCompositeCanvas.width !== cw || stealthCompositeCanvas.height !== ch) {
-      stealthCompositeCanvas.width = cw;
-      stealthCompositeCanvas.height = ch;
+    if (stealthDistortCanvas.width !== cw || stealthDistortCanvas.height !== ch) {
+      stealthDistortCanvas.width = cw;
+      stealthDistortCanvas.height = ch;
+      stealthMaskCanvas.width = cw;
+      stealthMaskCanvas.height = ch;
     }
-    if (now - stealthNoiseAt >= STEALTH_NOISE_PERIOD_MS) {
-      stealthNoiseAt = now;
-      stealthNoiseSpecks = rollStealthNoise(cw, ch);
+    // Sample whatever is already drawn on the main canvas right behind the
+    // player, sliced into thin horizontal strips each nudged sideways by a
+    // sine wave — a lightweight heat-haze/refraction wave, GPU-composited
+    // (drawImage from the live canvas element, never a per-pixel JS read).
+    const dctx = stealthDistortCtx;
+    dctx.clearRect(0, 0, cw, ch);
+    const stripH = ch / STEALTH_DISTORT_STRIPS;
+    for (let i = 0; i < STEALTH_DISTORT_STRIPS; i++) {
+      const sy = i * stripH;
+      const wave = Math.sin((now / STEALTH_DISTORT_PERIOD_MS) * Math.PI * 2 + i * 0.9) * STEALTH_DISTORT_AMPLITUDE_PX * strength;
+      dctx.drawImage(ctx.canvas, dx, dy + sy, cw, stripH + 1, wave, sy, cw, stripH + 1);
     }
-    const sctx = stealthCompositeCtx;
-    sctx.clearRect(0, 0, cw, ch);
-    sctx.globalCompositeOperation = 'source-over';
-    sctx.drawImage(img, 0, 0, cw, ch);
-    sctx.globalCompositeOperation = 'source-atop';
-    sctx.fillStyle = `rgba(${STEALTH_TINT_RGB}, ${STEALTH_TINT_MAX_ALPHA * strength})`;
-    sctx.fillRect(0, 0, cw, ch);
-    // Fine noise texture (source-atop keeps it confined to the sprite's own
-    // opaque pixels — it can never bleed onto the background), scaled by
-    // the same fade `strength` so it never appears before/after the color
-    // tint itself does.
-    for (const s of stealthNoiseSpecks) {
-      const a = s.alpha * strength;
-      if (a <= 0) continue;
-      if (s.scanline) {
-        sctx.fillStyle = `rgba(215,235,255,${a})`;
-        sctx.fillRect(s.x, s.y, s.w, 1);
-      } else {
-        sctx.fillStyle = s.bright ? `rgba(205,225,255,${a})` : `rgba(5,12,28,${a})`;
-        sctx.fillRect(s.x, s.y, s.size, s.size);
-      }
-    }
-    sctx.globalCompositeOperation = 'source-over';
+    // Mask the warped copy to the player's own silhouette, so only the
+    // body's own shape reads as distorted, never a plain rectangle.
+    const mctx = stealthMaskCtx;
+    mctx.clearRect(0, 0, cw, ch);
+    mctx.drawImage(dctx.canvas, 0, 0);
+    mctx.globalCompositeOperation = 'destination-in';
+    mctx.drawImage(img, 0, 0, cw, ch);
+    mctx.globalCompositeOperation = 'source-over';
 
+    // Paint the masked, warped patch back over the player's own on-screen
+    // position (replacing what's directly there with a subtly-shifted
+    // version of itself), then the plain sprite on top at reduced,
+    // perfectly neutral alpha — no recolor, no glow, no outline.
+    ctx.drawImage(stealthMaskCanvas, dx, dy, w, h);
     ctx.save();
     // 1 at strength=0 (fully normal/opaque) -> STEALTH_ALPHA_ACTIVE at strength=1.
     ctx.globalAlpha = 1 - (1 - STEALTH_ALPHA_ACTIVE) * strength;
-    // Faint outline glow: shadowBlur/shadowColor build a halo from the
-    // sprite's own opaque silhouette (canvas shadow follows alpha, not a
-    // separate shape) — scaled by `strength` so it fades in/out with
-    // everything else and never appears as a snap. Cleared automatically
-    // by ctx.restore() below, so normal (non-STEALTH) draws are never
-    // affected — see PART 4/B-4: no residue once STEALTH ends.
-    ctx.shadowColor = `rgba(${STEALTH_GLOW_COLOR_RGB}, ${STEALTH_GLOW_ALPHA_MAX * strength})`;
-    ctx.shadowBlur = STEALTH_GLOW_BLUR_PX * strength;
-    ctx.drawImage(stealthCompositeCanvas, dx, dy, w, h);
+    ctx.drawImage(img, dx, dy, w, h);
     ctx.restore();
   }
 
@@ -4755,7 +4865,7 @@
       // picked the FIRE/DASH sprite and this only changes HOW it's drawn.
       const stealthStrength = getStealthEffectStrength(now);
       if (stealthStrength > 0) {
-        drawPlayerWithStealthTint(img, dx, dy, drawW, drawH, stealthStrength, now);
+        drawPlayerStealthed(img, dx, dy, drawW, drawH, stealthStrength, now);
       } else {
         ctx.drawImage(img, dx, dy, drawW, drawH);
       }
@@ -5006,15 +5116,43 @@
     const bottomY = boss.introTargetY + BOSS_DRAW_H / 2;
 
     if (elapsed >= BOSS_INTRO_SILENCE_END && elapsed < BOSS_INTRO_SHADOW_END) {
-      const img = bossSprites.south_idle;
-      if (img && img.complete && img.naturalWidth > 0) {
-        const scale = SOUTH_WALK_SCALE; // south_idle's own established display scale — same size it lands at
-        const w = BOSS_DRAW_W * scale, h = BOSS_DRAW_H * scale;
-        const t = (elapsed - BOSS_INTRO_SILENCE_END) / BOSS_INTRO_SHADOW_REVEAL_MS;
-        drawBossSilhouette(img, boss.x - w / 2, bottomY - h, w, h, t);
+      // SECTION A: a ground shadow marks the landing spot while GABRIEL
+      // drops in from directly above using the existing DOWN/CINEMATIC
+      // pose (getCinematicImageInfo() — same image/anchor formula
+      // drawBossThreshold()/drawBossDying() already use) — no new art, no
+      // AI regeneration. The shadow itself reuses the same growing/
+      // darkening ellipse technique already used for barrel landings.
+      const cin = getCinematicImageInfo();
+      const t = (elapsed - BOSS_INTRO_SILENCE_END) / BOSS_INTRO_SHADOW_REVEAL_MS;
+      const shadowT = Math.min(1, t * 1.15); // reaches full darkness a hair before the landing instant, not exactly at it
+      ctx.save();
+      ctx.globalAlpha = 0.4 * shadowT;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(boss.x, bottomY, cin.w * 0.30 * shadowT, cin.w * 0.30 * shadowT * 0.3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      if (cin.img.complete && cin.img.naturalWidth > 0) {
+        const fallT = t * t; // ease-in — accelerating fall, not a linear slide
+        const restDrawY = boss.y - cin.h / 2 + cin.offY; // same resting anchor drawBossThreshold()/drawBossDying() use
+        const startDrawY = -cin.h - H * 0.35; // comfortably off the top of PLAY AREA at t=0
+        const drawY = startDrawY + (restDrawY - startDrawY) * fallT;
+        ctx.drawImage(cin.img, boss.x - cin.w / 2 + cin.offX, drawY, cin.w, cin.h);
       }
-    } else if (elapsed >= BOSS_INTRO_SHADOW_END && elapsed < BOSS_INTRO_SOUTH_IDLE_END) {
-      const img = bossSprites.south_idle;
+    } else if (elapsed >= BOSS_INTRO_SHADOW_END && elapsed < BOSS_INTRO_POST_PAUSE_END) {
+      // Landed instantly at BOSS_INTRO_SHADOW_END (the landing shake fires
+      // from updateBossIntro() at this same instant) — held on the same
+      // DOWN pose through the shake and the pause that follows, right up
+      // until the walk-frame switch below.
+      const cin = getCinematicImageInfo();
+      if (cin.img.complete && cin.img.naturalWidth > 0) {
+        ctx.drawImage(cin.img, boss.x - cin.w / 2 + cin.offX, boss.y - cin.h / 2 + cin.offY, cin.w, cin.h);
+      }
+    } else if (elapsed >= BOSS_INTRO_POST_PAUSE_END && elapsed < BOSS_INTRO_SOUTH_IDLE_END) {
+      // SECTION A/B: walk_south_1 — the south walk cycle's own first frame,
+      // held perfectly STATIC (never advancing through frames 2/3) —
+      // replaces the old south_idle hold here.
+      const img = bossSprites.walk_south_1;
       if (img && img.complete && img.naturalWidth > 0) {
         const scale = SOUTH_WALK_SCALE;
         const w = BOSS_DRAW_W * scale, h = BOSS_DRAW_H * scale;
@@ -5142,46 +5280,62 @@
         cells.push({ gx, gy });
       }
     }
-    let maxRow = 1;
-    for (const c of cells) maxRow = Math.max(maxRow, c.gy);
 
     const particles = cells.map((c) => {
-      // PART 39/40: dissolve order now follows the real silhouette's own
-      // rows top-to-bottom (rowFrac 0 at the very top, 1 at the feet) —
-      // NOT distance-from-center — so the body visibly crumbles from the
-      // head down, matching "上から下へ崩壊", with a little per-grain
-      // jitter so the boundary reads as ragged erosion, not a hard line.
-      const rowFrac = c.gy / maxRow;
-      const dissolveAt = Math.max(0, Math.min(0.85, rowFrac * 0.70 + Math.random() * 0.25));
-      // PART 41: mostly straight down (gravity), only a little left/right
-      // scatter — the opposite of the old mostly-upward burst.
-      const angle = Math.PI / 2 + (Math.random() - 0.5) * 1.0;
-      // PART 41: black to dark-gray grains — not the sprite's own sampled
-      // color — since by the time anything is falling, the body itself has
+      const xFrac = cols > 1 ? c.gx / (cols - 1) : 0.5;
+      const yFrac = rows > 1 ? c.gy / (rows - 1) : 0.5;
+      // U-9: distance to the NEAREST of a few fixed crack-origin points
+      // (shoulder/wing, torso, leg/CLAW areas) — cells near any one of them
+      // start dissolving first, so the body visibly cracks apart from
+      // several places at once rather than one single top-to-bottom sweep.
+      // A little per-cell jitter keeps each boundary ragged, not a hard edge.
+      let minD = Infinity;
+      for (const seed of DEATH_CRACK_SEED_FRACS) {
+        const d = Math.hypot(xFrac - seed.x, (yFrac - seed.y) * 1.3);
+        if (d < minD) minD = d;
+      }
+      const spreadFrac = Math.min(1, minD / 0.62);
+      let dissolveAt = Math.max(0, Math.min(0.72, spreadFrac * 0.55 + Math.random() * 0.22));
+      // U-10: the wings/CLAW reach far to either side of the torso —
+      // pushing their outer columns' dissolve a little later keeps the
+      // silhouette recognizable the longest.
+      const colFrac = Math.abs(xFrac - 0.5) * 2;
+      if (colFrac > DEATH_OUTER_COLUMN_FRAC) {
+        dissolveAt = Math.min(0.9, dissolveAt + DEATH_OUTER_DELAY_FRAC + Math.random() * 0.05);
+      }
+      // U-5: swept away up/upper-right (never straight down), with a
+      // per-particle angle jitter so it reads as organic, not a fan.
+      const angle = DEATH_PARTICLE_BASE_ANGLE + (Math.random() - 0.5) * DEATH_PARTICLE_ANGLE_JITTER;
+      // Black to dark-gray grains — not the sprite's own sampled color —
+      // since by the time anything is breaking off, the body itself has
       // already fully blackened (see drawBossBlackenTint()/BOSS_DEFEAT_
       // BLACKEN_* above).
       const shade = Math.floor(Math.random() * 34);
+      const isShard = Math.random() < DEATH_SHARD_FRAC;
       return {
         gx: c.gx, gy: c.gy,
         color: `rgba(${shade},${shade},${shade},`,
         dissolveAt,
         angle,
-        speed: 10 + Math.random() * 26,
+        maxDist: 60 + Math.random() * 110, // U-6: total travel distance, reached via an ease-in curve below — not a fixed px/sec speed
         spin: (Math.random() - 0.5) * 4,
-        grain: 0.55 + Math.random() * 1.1, // fine sand-grain radius, px — independent of the sampling cell size
+        isShard,
+        // U-7: most grains small (radius 1-2.5 == 2-5px diameter); a few
+        // larger elongated shards (radius 3-5 == 6-10px diameter).
+        grain: isShard ? (3 + Math.random() * 2) : (1 + Math.random() * 1.5),
+        shardLen: isShard ? (6 + Math.random() * 8) : 0,
       };
     });
     boss.dyingParticles = particles;
     boss.dyingParticlesBuilt = true;
   }
 
-  // PART 37-42: DOWN pose (static, full color) -> gradual blackening
-  // (drawBossBlackenTint()) -> real particle disintegration of the now-
-  // black silhouette, its pieces falling downward under gravity — not a
-  // plain opacity fade in place, and not an upward burst. The intact
-  // (blackened) sprite is drawn first each frame, then every already-
-  // dissolved cell is punched out of it (destination-out) and redrawn as a
-  // separate falling fragment, so the body visibly comes apart in pieces.
+  // SECTION U: instant blacken -> the body cracks apart from several points
+  // at once -> fine shards sweep up/upper-right, accelerating -> a brief
+  // dim residual outline -> gone. The intact (blackened) sprite is drawn
+  // first each frame, then every already-dissolved cell is punched out of
+  // it (destination-out) and redrawn as a separate departing fragment, so
+  // the body visibly comes apart in pieces rather than fading in place.
   function drawBossDying(now) {
     if (!boss.dyingParticlesBuilt) buildDyingParticles();
     const dyingDrawCin = getCinematicImageInfo(); // same boss.downFacing as buildDyingParticles() used — stable for the whole sequence
@@ -5190,14 +5344,9 @@
     const drawX = boss.x - dyingDrawCin.w / 2 + dyingDrawCin.offX;
     const drawY = boss.y - dyingDrawCin.h / 2 + dyingDrawCin.offY;
 
-    if (elapsed < BOSS_DEFEAT_BLACKEN_START) {
-      // PART 38: a brief static hold on the ordinary, full-color DOWN pose
-      // before anything starts changing.
-      ctx.drawImage(dyingDrawCin.img, drawX, drawY, dyingDrawCin.w, dyingDrawCin.h);
-      return;
-    }
     if (elapsed < BOSS_DEFEAT_BLACKEN_END) {
-      // PART 39: normal color -> near-black, staged.
+      // U-1/U-3: normal color -> near-black in one sharp beat — no static
+      // full-color hold beforehand anymore.
       const blackT = (elapsed - BOSS_DEFEAT_BLACKEN_START) / BOSS_DEFEAT_BLACKEN_MS;
       drawBossBlackenTint(dyingDrawCin.img, drawX, drawY, dyingDrawCin.w, dyingDrawCin.h, blackT);
       return;
@@ -5206,8 +5355,22 @@
     const disintegrateElapsed = elapsed - BOSS_DEFEAT_BLACKEN_END;
     const frac = Math.min(1, disintegrateElapsed / BOSS_DEFEAT_DISINTEGRATE_MS);
 
+    // U-8: full alpha until the final residue window, then a low constant
+    // "afterimage" alpha for a short stretch, then a quick snap to gone —
+    // never one long linear fade across the whole tail.
+    const residueWindowFrac = DEATH_RESIDUE_WINDOW_MS / BOSS_DEFEAT_DISINTEGRATE_MS;
+    const residueSnapFrac = DEATH_RESIDUE_SNAP_MS / BOSS_DEFEAT_DISINTEGRATE_MS;
+    let silhouetteAlpha = 1;
+    if (frac > 1 - residueWindowFrac) {
+      const intoResidue = frac - (1 - residueWindowFrac);
+      const snapStart = residueWindowFrac - residueSnapFrac;
+      silhouetteAlpha = intoResidue < snapStart
+        ? DEATH_RESIDUE_ALPHA
+        : DEATH_RESIDUE_ALPHA * Math.max(0, 1 - (intoResidue - snapStart) / residueSnapFrac);
+    }
+
     ctx.save();
-    ctx.globalAlpha = frac > 0.85 ? Math.max(0, (1 - frac) / 0.15) : 1;
+    ctx.globalAlpha = silhouetteAlpha;
     drawBossSilhouette(dyingDrawCin.img, drawX, drawY, dyingDrawCin.w, dyingDrawCin.h, 1); // fully blackened by now
     ctx.globalCompositeOperation = 'destination-out';
     ctx.globalAlpha = 1;
@@ -5218,29 +5381,34 @@
     ctx.globalCompositeOperation = 'source-over';
     ctx.restore();
 
-    // Fine sand/ash grains, not squares — each one a tiny circle falling
-    // under gravity (accelerating, not a fixed drift speed) and shrinking
-    // slightly as it fades. Deliberately NOT a plain opacity fade in place:
-    // position genuinely falls (dx/dy below) and the underlying sprite is
-    // actually punched out (above) as each grain releases.
-    const disintegrateSec = BOSS_DEFEAT_DISINTEGRATE_MS / 1000;
+    // U-5/U-6/U-7: fine black/dark-gray grains (a few larger elongated
+    // shards) swept away up/upper-right, accelerating via an ease-in curve
+    // (slow start, fast finish) — never falling, never a fixed drift speed.
     for (const p of boss.dyingParticles) {
       if (frac < p.dissolveAt) continue;
       const localT = Math.min(1, (frac - p.dissolveAt) / Math.max(0.05, 1 - p.dissolveAt));
-      const driftSec = (frac - p.dissolveAt) * disintegrateSec;
-      const dx = Math.cos(p.angle) * p.speed * driftSec;
-      const dy = Math.sin(p.angle) * p.speed * driftSec + 0.5 * DEFEAT_PARTICLE_GRAVITY * driftSec * driftSec;
+      const dist = p.maxDist * Math.pow(localT, DEATH_PARTICLE_EASE_POWER);
+      const dx = Math.cos(p.angle) * dist;
+      const dy = Math.sin(p.angle) * dist;
       const alpha = Math.max(0, 1 - localT);
+      if (alpha <= 0.02) continue;
       const px = drawX + p.gx * DYING_CELL_SIZE + DYING_CELL_SIZE / 2 + dx;
       const py = drawY + p.gy * DYING_CELL_SIZE + DYING_CELL_SIZE / 2 + dy;
-      const r = p.grain * (1 - localT * 0.5);
-      if (r <= 0.05) continue;
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.fillStyle = p.color + '1)';
-      ctx.beginPath();
-      ctx.arc(px, py, r, 0, Math.PI * 2);
-      ctx.fill();
+      if (p.isShard) {
+        ctx.translate(px, py);
+        ctx.rotate(p.angle + p.spin * localT);
+        ctx.fillRect(-p.shardLen / 2, -p.grain / 2, p.shardLen, p.grain);
+      } else {
+        const r = p.grain * (1 - localT * 0.3);
+        if (r > 0.05) {
+          ctx.beginPath();
+          ctx.arc(px, py, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
       ctx.restore();
     }
   }
@@ -5289,14 +5457,26 @@
     drawDefenseRicochets(now);
   }
 
+  // SECTION N: reads the SAME (orientation: landscape) media feature
+  // style.css's #landscape-block-overlay keys off of, so the visual
+  // overlay and this gameplay freeze can never disagree about which
+  // orientation is currently active.
+  function isLandscapeBlocked() {
+    return !!(window.matchMedia && window.matchMedia('(orientation: landscape)').matches);
+  }
+
   function loop(now) {
     const dt = Math.min((now - lastTime) / 1000, 0.05);
     lastTime = now;
-    update(dt, now);
-    draw(now);
+    // lastTime still advances every frame either way, so dt is never a
+    // huge catch-up jump the instant play resumes back in portrait.
+    if (!isLandscapeBlocked()) {
+      update(dt, now);
+      draw(now);
+    }
     requestAnimationFrame(loop);
   }
 
-  spawnBarrels(2 + Math.floor(Math.random() * 3)); // initial BOSS MODE barrels (2-4)
+  spawnBarrels(BARREL_COUNT); // initial BOSS MODE barrels
   requestAnimationFrame((t) => { lastTime = t; requestAnimationFrame(loop); });
 })();

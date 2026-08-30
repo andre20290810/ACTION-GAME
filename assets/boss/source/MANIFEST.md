@@ -1,4 +1,4 @@
-# Boss character asset manifest — all 27 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9 + batch 10 + batch 11 + batch 12) plus batch 13/14/15/16's replacement/addition images (tracked in their own build-meta JSON files, listed inline below)
+# Boss character asset manifest — all 27 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9 + batch 10 + batch 11 + batch 12) plus batch 13/14/15/16/17's replacement/addition images (tracked in their own build-meta JSON files, listed inline below)
 
 All 27 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
@@ -735,3 +735,40 @@ separate windup-only scale constant:
   crop/resize/transparent-padding/alpha-cleanup/edge-cleanup/source-rect-
   adjustment/scale-adjustment/offset-adjustment/anchor-adjustment, applied
   to the attached source images themselves.
+
+Batch 17 — south COUNTER STING top-edge fix (no new source images; rebuilt
+from the same `straight_claw_release_raw.png` used in batches 15/16):
+
+- Real-device feedback reported the STING release image's TOP edge (the
+  flared wing crest above the head) was clipped, in addition to the
+  left/right clipping already fixed in batch 16. Root cause: batch 16's
+  scale (0.514362, matching the shared 770px front-facing body-span
+  reference used by every other GABRIEL front pose) implies a total
+  top-of-wingcrest-to-feet span of ~1031px — taller than the entire fixed
+  920px-tall boss canvas at ANY vertical position, so no repositioning
+  alone could avoid clipping the top at that scale; batch 16's own
+  clip_top_px=138 was papering over exactly this.
+  `COUNTER_STING_SCALE` (the runtime 0.90 draw-time multiplier) is
+  untouched — only the internal composition scale used when baking this
+  one PNG changed, per instruction ("must fix the draw region/bounding
+  box, not shrink the existing runtime scale as a shortcut").
+- Measured the raw source's real opaque bounding box directly (after
+  re-applying the established un-premultiply-against-white fix):
+  left=3, right=1256, top=11, bottom=2016 (native 1260x2020). Solved for
+  the largest scale that (a) keeps feet_bottom_y anchored at the same
+  899.5 target every other south-facing pose shares (no anchor jump) and
+  (b) leaves at least a 10px transparent margin above the topmost opaque
+  pixel: scale=0.443640897755611 (down from batch 16's 0.514362 — the claw
+  and body read a little smaller within the canvas than the other
+  front-facing poses, an unavoidable consequence of this one pose's
+  unusually tall wing crest relative to its own body, given cropping was
+  explicitly forbidden and the canvas height is fixed).
+- Re-centered horizontally using the same full-opaque-bbox-balanced method
+  batch 16 introduced (not the single head-center landmark): paste_x
+  recomputed at the new scale to 70.73, landing the bbox at
+  left=72/right=628 (700-wide canvas, ~72px margin each side).
+- Verified the full rebuilt canvas: opaque bbox left=72 right=628 top=10
+  bottom=899 — comfortably inside the 700x920 canvas on every edge,
+  confirmed against both a white and dark background composite (no
+  residual fringe from the un-premultiply fix, no clipping anywhere).
+- `straight_claw_windup.png` is untouched.

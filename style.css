@@ -117,7 +117,15 @@ body {
   background: #0c0d0f;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   padding: 10px max(14px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
-  touch-action: pan-y;
+  /* SECTION L: was pan-y — still lets a drag on the gaps between controls
+     scroll the page like before, but "manipulation" additionally tells the
+     browser this whole region's gestures are handled (pan + pinch, no
+     double-tap-to-zoom), which is what actually stops a fast double-tap
+     anywhere in CONTROL AREA (including the gaps, not just the individual
+     stick/button zones below, which were already touch-action:none) from
+     triggering Safari's page zoom. Page scroll outside CONTROL AREA is
+     untouched (html/body's own pan-y is unrelated to this element). */
+  touch-action: manipulation;
 }
 
 /* MOVE + AIM side by side (PART 2) — same flex row, same align-items:center
@@ -541,11 +549,60 @@ body {
   #flash-zone, #stealth-zone, #dash-zone, #fire-zone { width: 44px; height: 44px; }
 }
 
-/* Portrait: width is the scarce dimension here (not height) — MOVE/AIM
-   (72px), RANGE (100px-tall track) and the button grid (48px cells)
-   already use their smaller base sizes above (no override needed), which
-   is what keeps the left+center+right total narrow enough to fit a
-   ~360-390px-wide phone. */
+/* SECTION M: portrait — height is the scarce dimension here (landscape
+   already gets its own enlarging overrides above), so CONTROL AREA's own
+   padding/gaps were carrying a lot of dead vertical space that PLAY AREA
+   could otherwise use. Tightens padding/gaps only — MOVE/AIM and the
+   button grid's own footprint is NOT shrunk (M-2 explicitly forbids
+   smaller touch targets); the button grid actually grows a couple px into
+   the space the tighter gaps free up, and FIRE keeps its own established
+   bigger-than-its-neighbors visual treatment (unchanged, from its own
+   #fire-button rule above) within the same uniform grid cell size as the
+   other three. */
+@media (orientation: portrait) {
+  #control-area {
+    gap: 6px;
+    padding: 6px max(12px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  }
+  #control-left { gap: 5px; }
+  #button-grid { grid-template-columns: repeat(2, 50px); grid-template-rows: repeat(2, 50px); gap: 6px; }
+  #flash-zone, #stealth-zone, #dash-zone, #fire-zone { width: 50px; height: 50px; }
+  #range-zone { width: 48px; gap: 4px; }
+}
+
+/* SECTION N: landscape stages aren't finished yet — block play until they
+   are, without touching any of the underlying landscape CSS/AREA system
+   above (kept for future reuse, per instruction). Pure media-query driven
+   (no JS polling needed to decide visibility) so it's always in perfect
+   sync with the actual device orientation; game.js's own render loop reads
+   the SAME (orientation: landscape) media feature via matchMedia() to
+   freeze update()/draw() while this is shown, and resumes instantly (no
+   reload) the moment the query stops matching. z-index clears #mode-menu's
+   own 10 so this covers the PAUSE menu too — everything genuinely stops. */
+#landscape-block-overlay {
+  display: none;
+}
+@media (orientation: landscape) {
+  #landscape-block-overlay {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    align-items: center;
+    justify-content: center;
+    background: rgba(6, 8, 10, 0.97);
+    padding: 24px;
+  }
+}
+#landscape-block-message {
+  color: rgba(225, 235, 240, 0.92);
+  font-family: sans-serif;
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: 0.05em;
+  text-align: center;
+  max-width: 320px;
+}
 
 /* ---------- Mode select / PAUSE menu ---------- */
 #mode-menu {

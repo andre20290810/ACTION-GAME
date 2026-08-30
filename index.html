@@ -88,6 +88,14 @@
   </div>
 </div>
 
+<!-- SECTION N: landscape stages aren't ready yet — this pure-CSS overlay
+     (see style.css's own (orientation: landscape) media query) blocks play
+     until the device is portrait again; game.js's render loop freezes in
+     sync via the same media feature. -->
+<div id="landscape-block-overlay">
+  <div id="landscape-block-message">縦画面でプレイしてください</div>
+</div>
+
 <script src="game.js"></script>
 </body>
 </html>
