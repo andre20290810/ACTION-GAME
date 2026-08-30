@@ -1,4 +1,4 @@
-# Boss character asset manifest — all 27 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9 + batch 10 + batch 11 + batch 12) plus batch 13/14/15's replacement/addition images (tracked in their own build-meta JSON files, listed inline below)
+# Boss character asset manifest — all 27 source images (batch 1 + batch 2 + batch 3 + batch 4 + batch 5 + batch 6 + batch 7 + batch 8 + batch 9 + batch 10 + batch 11 + batch 12) plus batch 13/14/15/16's replacement/addition images (tracked in their own build-meta JSON files, listed inline below)
 
 All 27 files below are byte-identical copies of the originally attached
 images (verified by md5) — no crop/resize/flip/regeneration applied to
@@ -640,3 +640,98 @@ work plus this same turn's STEALTH visual and 2-area stage changes:
   boss state (`boss.state === 'straightclaw'`) with its own dedicated
   timing/hitbox/knockback constants (see `game.js`'s `STRAIGHT_CLAW_*`
   constants and `updateBossStraightClaw()`/`spawnStraightClaw()`).
+
+Batch 16 — GABRIEL north defense replacement, south walk restored to 3
+frames, STING release edge-clip fix, north COUNTER windup swap, and a
+separate windup-only scale constant:
+
+- NORTH DEFENSE: 1 new source image (`north_defense_raw.png`, 1280x1910,
+  no white/black-fringe alpha bug found, used as-is) replaces
+  `assets/boss/defense_north.png` only — `north_idle`/`north_walk_*` are
+  untouched. Landmark-matched against the PRE-replacement `defense_north.png`'s
+  own measured body span/head/feet (re-derived via a narrow ±column band
+  around canvas-center chosen specifically to land on the head crown while
+  avoiding the wing spikes on both sides of this symmetric back-view pose —
+  a wider band first mis-caught a spike). scale=0.4566294919454771,
+  paste_offset=(58,30), no clipping needed.
+- SOUTH WALK: reverted from batch 14's 2-frame `walk_south_1/2.png` back to
+  a 3-frame cycle. 3 new source images (`south_walk_frame1/2/3_raw.png`,
+  1205x1780 / 1166x1709 / 1130x1737) replace `walk_south_1/2/3.png` (the
+  `walk_south_3` entry, present on disk but unreferenced since batch 14, is
+  wired back into `BOSS_FRAME_FILES`). All 3 raw sources carried a
+  black-background-composite alpha bug (the mirror image of the more common
+  white-composite one — brightness rises from ~13 near alpha 0 toward
+  ~85-95 near full alpha instead of being flat) and were fixed with the
+  matching un-premultiply-against-black formula
+  (`rgb / max(alpha/255, epsilon)`, clipped to 0-255) before compositing.
+  Landmark priority follows this batch's own instruction order: primary
+  alignment anchor is each frame's own camera-left knee (native pixel
+  coords frame1=(615,1170) frame2=(585,1100) frame3=(535,1110), located by
+  iterative manual marker placement since the robe visually merges both
+  legs at knee height, defeating automated column-centroid detection),
+  secondarily the shared ground/feet-bottom-y and head-top-y targets
+  (matched to the pre-replacement south_walk/south_idle reference: body
+  span 770, feet_bottom_y 899.5) — each frame gets its own individually
+  tuned scale (0.4895/0.4920/0.4898) since the 3 source photos aren't at
+  the same apparent character size. Final per-frame paste offsets: frame1
+  (3,30), frame2 (16,61), frame3 (42,50) — chosen so all 3 frames' knee
+  canvas-x positions land within ~4px of each other. Verified via anaglyph
+  silhouette-diff overlays showing solid full-overlap across head/torso/
+  waist/upper-legs between consecutive frames, differences confined to
+  outer limbs/hem/wingtips (genuine walk-cycle motion only). Animation is a
+  plain forward loop (1 -> 2 -> 3 -> 1 -> ...), not ping-pong, on
+  `SOUTH_WALK_FRAME_PERIOD_MS = WALK_FRAME_PERIOD_MS * 1.15` (batch 14's
+  `* 2.3` slowdown, added to compensate for having only 2 frames, is no
+  longer appropriate now that 3 real frames exist). NORTH's own walk
+  period/logic is untouched.
+- STING RELEASE EDGE-CLIP FIX: `straight_claw_release.png` rebuilt again
+  from the SAME `straight_claw_release_raw.png` used in batch 15 (which
+  still needed its white-composite un-premultiply fix re-applied — the fix
+  was only ever baked into the shipped PNG, not the raw source). Root
+  cause of the reported edge cutoff: batch 15 centered this asset on its
+  `head_center_x` landmark, but this pose's claw reaches much further to
+  one side than its wing reaches to the other, so a landmark-centered
+  placement pushed the claw tip past the fixed 700px canvas edge
+  (recomputed: old paste_x=85 would place the right edge at ~731.6, ~31.6px
+  past the 700-wide canvas — confirmed the real-device report was
+  accurate). Fixed by centering on the FULL opaque-pixel bounding box's
+  balanced left/right margins instead of the single head-center landmark
+  (`paste_x = (700 - (bbox_right+bbox_left)*scale)/2`), at the SAME
+  scale=0.514362 as before (COUNTER_STING_SCALE=0.90 unchanged, per
+  instruction not to shrink further) — new paste_x=26. Top-crop
+  (clip_top=138) is unchanged from batch 15 and still keeps the claw's own
+  topmost point well clear of the crop line. `straight_claw_windup.png` is
+  byte-identical to batch 15 — not touched.
+- COUNTER WINDUP +10% SCALE: rather than baking a larger size into
+  `straight_claw_windup.png`'s pixels (which would be inconsistent with
+  every other "N% larger/smaller" adjustment in this project, all
+  implemented as a runtime draw-time multiplier), added a new independent
+  constant `COUNTER_WINDUP_SCALE = COUNTER_STING_SCALE * 1.10` (0.99) used
+  only for the windup-phase sprite; `COUNTER_STING_SCALE` (0.90) is
+  unchanged and still used only for the release-phase sprite. Both scale
+  from the sprite's own bottom edge (`dy = bottomY - h`), so ground-anchor
+  is preserved automatically for any scale change.
+- NORTH COUNTER WINDUP SWAP: for `boss.counterDir === 'north'` only, the
+  windup-phase frame now returns `'north_idle'` instead of the shared
+  `straight_claw_windup` sprite (`bossFrameName()`'s `'straightclaw'`
+  branch) — south/east/west continue sharing the one windup image
+  unchanged. Everything else about north COUNTER (5-block trigger,
+  invulnerability, 2x ARC CLAW speed, damage-only-on-hit, 1.3x multiplier,
+  FLASH-cancel->flashdown) is untouched.
+- AIM muzzle-origin calibration fix (unrelated to the image work above,
+  same batch): `MUZZLE_OFFSETS.right`/`.left` (the fixed-point offsets used
+  only for east/west, since north/south already use the angle-based radial
+  `MUZZLE_DIST` formula) were re-measured directly against the actual
+  opaque-pixel bounding box of the currently-shipped `right_aim.png`/
+  `left_aim.png` sprites — the previous values read a few px past the
+  visible barrel tip (`right: dx 0.503->0.459, dy -0.253->-0.287`; `left:
+  dx -0.506->-0.450, dy -0.321->-0.315`, all as a fraction of
+  `SPRITE_DRAW_H`). `getMuzzleWorldPosition()` was already the single
+  shared function used by both `spawnBullet()` and `drawAimLine()` before
+  this batch — no architectural change was needed, only this numeric
+  recalibration.
+- No AI generation/regeneration/completion/alternate-pose-generation/
+  mirror-substitution/design-change was used anywhere in this batch — only
+  crop/resize/transparent-padding/alpha-cleanup/edge-cleanup/source-rect-
+  adjustment/scale-adjustment/offset-adjustment/anchor-adjustment, applied
+  to the attached source images themselves.

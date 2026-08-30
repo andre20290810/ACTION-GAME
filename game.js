@@ -205,9 +205,10 @@
     attack_east_release: 'attack_east_release',
     preattack_south: 'attack_south_release',
     defense_south: 'defense', defense_north: 'defense_north', defense_east: 'defense_east', defense_west: 'defense_west',
-    // SOUTH is a 2-frame cycle now (see south_walk3_build_meta.json) — the
-    // old walk_south_3.png file is left on disk but no longer loaded here.
-    walk_south_1: 'walk_south_1', walk_south_2: 'walk_south_2',
+    // SOUTH is a 3-frame cycle again (real-device feedback on the earlier
+    // 2-frame version) — see game.js's own SOUTH_WALK_FRAME_PERIOD_MS
+    // comment and this batch's south walk asset replacement.
+    walk_south_1: 'walk_south_1', walk_south_2: 'walk_south_2', walk_south_3: 'walk_south_3',
     // NORTH (3-frame) / EAST (2-frame) / WEST (2-frame) walk cycles —
     // fully wired in bossFrameName() below. Supersedes the old single-frame
     // walk_east.png/walk_west.png pair (which had its content swapped from
@@ -488,7 +489,18 @@
   // applyBodyHitToBoss(). When the player is north/east/west instead, the
   // counter reuses the EXISTING per-direction ARC CLAW SLASH attack pose
   // and geometry (no new images), just at double speed.
-  const COUNTER_STING_SCALE = 0.90; // real-device feedback: straight_claw_windup/release read too large — 10% smaller, applied to BOTH so windup->release still shows no size jump
+  // COUNTER_STING_SCALE: the south-direction STING release image's own
+  // render scale — real-device feedback said it read too large, 10%
+  // smaller. Kept as-is (A-4: this batch's edge-clipping fix must not
+  // shrink it further to "solve" the clipping).
+  const COUNTER_STING_SCALE = 0.90;
+  // COUNTER_WINDUP_SCALE: the shared windup telegraph pose (south/east/west
+  // — north instead shows north_idle, see bossFrameName()) got its OWN
+  // separate real-device complaint of reading too SMALL, opposite of
+  // release's — "current display scale x1.10" = COUNTER_STING_SCALE*1.10,
+  // not a fresh 1.10 off the unscaled source, and explicitly independent of
+  // release's own (unchanged) 0.90.
+  const COUNTER_WINDUP_SCALE = COUNTER_STING_SCALE * 1.10;
   const COUNTER_ARC_CLAW_LIFETIME_MS = ARC_CLAW_LIFETIME_MS / 2; // "2x speed" = half the normal travel time along the SAME bezier geometry — see the 'counterArc' kind in updateArcClawSlashes()
   // COUNTER_DAMAGE_MULTIPLIER/COUNTER_ATTACK_DAMAGE are defined further
   // below, right after BULLET_DAMAGE (the constant they derive from).
@@ -826,13 +838,13 @@
   const DARKPHASE_DISENGAGE_CURVE_RAD = 40 * Math.PI / 180;
   const DARKPHASE_STALK_MIN_DIST = 200, DARKPHASE_STALK_MAX_DIST = 420; // keeps STALK's lateral drift within a believable "circling" band
   const WALK_FRAME_PERIOD_MS = 260; // NORTH (3-frame wrap) / EAST / WEST (2-frame alternation) walk-cycle period
-  // SOUTH alone gets its own, slower period — it now has only 2 walk
-  // frames (see BOSS_FRAME_FILES/south_walk3_build_meta.json). Alternating
-  // just 2 static-photo poses reads as a binary on/off flicker rather than
-  // a walk with no 3rd frame to smooth the transition, and real-device
-  // testing confirmed 1.5x was still too fast to read as walking rather
-  // than shimmying — raised further to 2.3x (~600ms/frame).
-  const SOUTH_WALK_FRAME_PERIOD_MS = WALK_FRAME_PERIOD_MS * 2.3;
+  // SOUTH is back to a 3-frame cycle (new walk_south_1/2/3 art, this
+  // batch) — the earlier 2-frame version's much slower period (2.3x) was
+  // specifically compensating for a fast on/off binary flicker with no 3rd
+  // frame to smooth the transition; with all 3 frames restored, a period
+  // close to the shared baseline reads naturally again. Kept a hair slower
+  // than NORTH/EAST/WEST (1.15x) rather than identical, per instruction.
+  const SOUTH_WALK_FRAME_PERIOD_MS = WALK_FRAME_PERIOD_MS * 1.15;
   // Was a small decorative sine bounce added back when NORTH had no real
   // walk art of its own (a stand-in for motion). Real NORTH walk art
   // (walk_north_1/2/3) now supplies its own genuine per-frame motion, and
@@ -3883,9 +3895,21 @@
   // used to (drawAimLine() previously had its own separate, always-radial
   // calculation, which for RIGHT/LEFT — the only two with a non-radial,
   // fixed-point muzzle — did not match where the bullet actually came from).
+  // SECTION I: re-measured directly against the CURRENTLY shipped
+  // right_aim.png/left_aim.png (the sprite actually shown while the AIM
+  // STICK is held without FIRE, which is most of the time this offset is
+  // visible) — found the rightmost/leftmost opaque pixel (the gun's own
+  // muzzle/suppressor tip) and converted through the exact same
+  // draw-time transform drawPlayer() applies (drawH=SPRITE_DRAW_H,
+  // scale=drawH/nativeH, drawW=nativeW*scale, center-anchored both axes).
+  // The previous values read a few px further OUT than the visible barrel
+  // tip (verified on-screen: the dashed guide started just past the
+  // muzzle, in open air) — most likely tuned against right_fire.png's own
+  // muzzle-FLASH graphic, which extends past the true muzzle opening,
+  // rather than the plain barrel tip.
   const MUZZLE_OFFSETS = {
-    right: { dx: SPRITE_DRAW_H * 0.503, dy: SPRITE_DRAW_H * -0.253 },
-    left: { dx: SPRITE_DRAW_H * -0.506, dy: SPRITE_DRAW_H * -0.321 },
+    right: { dx: SPRITE_DRAW_H * 0.459, dy: SPRITE_DRAW_H * -0.287 },
+    left: { dx: SPRITE_DRAW_H * -0.450, dy: SPRITE_DRAW_H * -0.315 },
     // south/north (down/up): no dedicated fixed-muzzle art — the generic
     // MUZZLE_DIST radial offset (rotates with the live aim angle) is
     // already correct and already shared identically by both call sites.
@@ -4002,7 +4026,7 @@
     STRAIGHT_CLAW_TRIGGER_GUARDS, STRAIGHT_CLAW_WINDUP_MS, STRAIGHT_CLAW_ATTACK_MS, STRAIGHT_CLAW_RECOVERY_MS,
     STRAIGHT_CLAW_KNOCKBACK_DISTANCE, STRAIGHT_CLAW_KNOCKBACK_LOCK_MS,
     // Debug/verification only — COUNTER ATTACK direction split (this batch).
-    COUNTER_STING_SCALE, COUNTER_ARC_CLAW_LIFETIME_MS, COUNTER_DAMAGE_MULTIPLIER, COUNTER_ATTACK_DAMAGE,
+    COUNTER_STING_SCALE, COUNTER_WINDUP_SCALE, COUNTER_ARC_CLAW_LIFETIME_MS, COUNTER_DAMAGE_MULTIPLIER, COUNTER_ATTACK_DAMAGE,
     // Debug/verification only — AREA 1/AREA 2 vertical stage (SECTION C).
     get currentArea() { return currentArea; },
     get area1Cleared() { return area1Cleared; },
@@ -4745,15 +4769,22 @@
   // ---------- Boss rendering ----------
   function bossFrameName(now) {
     if (boss.state === 'straightclaw') {
-      // The windup telegraph is shared by every direction (only 1 windup
-      // image exists, and it's just a generic "charging up" pose). What
-      // changes is the RELEASE/recovery pose: boss.counterDir === 'south'
+      // The windup telegraph is shared by south/east/west (only 1 windup
+      // image exists, and it's just a generic "charging up" pose) — but
+      // NORTH's own windup uses the EXISTING north_idle image instead
+      // (SECTION B): the shared windup pose is a front-facing crouch built
+      // to face the player, which looks backwards when GABRIEL's back is
+      // to them (player north of it), so north_idle (already correctly
+      // anchored/scaled) reads naturally there instead. What changes AFTER
+      // windup is the RELEASE/recovery pose: boss.counterDir === 'south'
       // keeps the original front-facing STING pose (straight_claw_release);
       // north/east/west instead reuse the EXISTING per-direction ARC CLAW
       // SLASH attack pose (SECTION 4) — the STING pose only reads correctly
       // when GABRIEL is facing the player, i.e. player south of it.
       const elapsed = now - boss.stateEnteredAt;
-      if (elapsed < STRAIGHT_CLAW_WINDUP_MS) return 'straight_claw_windup';
+      if (elapsed < STRAIGHT_CLAW_WINDUP_MS) {
+        return boss.counterDir === 'north' ? 'north_idle' : 'straight_claw_windup';
+      }
       if (boss.counterDir === 'north') return 'attack_north';
       if (boss.counterDir === 'east') return 'attack_east_release';
       if (boss.counterDir === 'west') return 'attack_west_release';
@@ -4787,10 +4818,13 @@
     const key = DIR_TO_BOSS_KEY[boss.dir]; // north | south | east | west
     if (key === 'south') {
       if (!boss.moving) return 'south_idle';
-      // 2-frame alternation (1->2->1->2...) at SOUTH_WALK_FRAME_PERIOD_MS
-      // (~50% slower than WALK_FRAME_PERIOD_MS, since only 2 frames exist
-      // now — see BOSS_FRAME_FILES/south_walk3_build_meta.json).
-      return (Math.floor(now / SOUTH_WALK_FRAME_PERIOD_MS) % 2 === 0) ? 'walk_south_1' : 'walk_south_2';
+      // Plain 3-frame wrap (1 -> 2 -> 3 -> 1 -> ...), never ping-pong — same
+      // pattern as NORTH's own cycle just below, on SOUTH_WALK_FRAME_PERIOD_MS
+      // (a hair slower than the shared WALK_FRAME_PERIOD_MS).
+      const frame = Math.floor(now / SOUTH_WALK_FRAME_PERIOD_MS) % 3;
+      if (frame === 0) return 'walk_south_1';
+      if (frame === 1) return 'walk_south_2';
+      return 'walk_south_3';
     }
     if (key === 'north') {
       if (!boss.moving) return 'north_idle';
@@ -4851,17 +4885,18 @@
     else if (name === 'north_idle' || name === 'walk_north_1' || name === 'walk_north_2' || name === 'walk_north_3') scale = NORTH_IDLE_SCALE;
     else if (name === 'attack_north') scale = NORTH_ATTACK_SCALE;
     else if (name === 'attack_south_release') scale = SOUTH_ATTACK_SCALE;
-    // SECTION 3: real-device feedback said the STING windup/release images
-    // read too large — 10% smaller (COUNTER_STING_SCALE), applied to BOTH
-    // so the windup->release transition still shows no size jump. Scaling
-    // via this same shared mechanism scales from the sprite's own BOTTOM
-    // edge (see the comment above), so the ground anchor/attack position
-    // are unaffected — only the drawn height/width shrink. attack_north/
-    // attack_east_release/attack_west_release (shown instead of these for
-    // a north/east/west COUNTER ATTACK — see bossFrameName()) keep their
-    // own existing scale untouched, matching how they already look during
-    // a normal ARC CLAW SLASH attack.
-    else if (name === 'straight_claw_windup' || name === 'straight_claw_release') scale = COUNTER_STING_SCALE;
+    // COUNTER windup/release now use DIFFERENT scales — real-device
+    // feedback said windup read too small and release too large, in
+    // opposite directions. Scaling via this same shared mechanism scales
+    // from the sprite's own BOTTOM edge (see the comment above), so the
+    // ground anchor/attack position are unaffected either way — only the
+    // drawn height/width change. attack_north/attack_east_release/
+    // attack_west_release and north_idle (all shown instead of these for a
+    // north/east/west COUNTER ATTACK — see bossFrameName()) keep their own
+    // existing scale untouched, matching how they already look during a
+    // normal ARC CLAW SLASH attack or normal idle.
+    else if (name === 'straight_claw_windup') scale = COUNTER_WINDUP_SCALE;
+    else if (name === 'straight_claw_release') scale = COUNTER_STING_SCALE;
     if (img && img.complete && img.naturalWidth > 0) {
       const w = BOSS_DRAW_W * scale, h = BOSS_DRAW_H * scale;
       const bottomY = boss.y + BOSS_DRAW_H / 2 + bounce;
