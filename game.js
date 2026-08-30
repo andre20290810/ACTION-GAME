@@ -35,7 +35,6 @@
   // boss-death check.
   let currentArea = 1;
   let area1Cleared = false;
-  let area2Activated = false;
   let area2Cleared = false;
   // Exponential smoothing rate, in 1/seconds (not a plain per-frame
   // fraction) so the follow speed stays consistent regardless of frame
@@ -630,6 +629,14 @@
     // (darkphase, attack, teleport, ...) is left completely alone.
     stealthUntil: -Infinity,
     stealthStartedAt: -Infinity, // for the ~150ms fade-in/out — see getStealthVisualAlpha()
+    // SECTION D: 30-shot FIRE magazine, infinite reserve — see FIRE_MAG_SIZE/
+    // FIRE_COOLDOWN_MS and the ammo decrement/cooldown logic in update().
+    ammo: 30,
+    ammoCooldownRemainingMs: 0, // dt-driven (not a `now` deadline) so it correctly freezes during PAUSE, same pattern as the other countdown timers in this file
+    // SECTION E: formal LIFE stat, default Infinity (never reduced by
+    // attacks at that setting — see applyDamageToPlayerLife()). Max is
+    // chosen via the PAUSE MENU / MAIN MENU SETTING (playerMaxLife below).
+    life: Infinity,
   };
 
   // PART 12/14: the ONE final-angle computation every aim/fire-direction
@@ -836,30 +843,27 @@
   // stay clearly visible. Not literal 255 alpha (never an instant pure-
   // black cut, and a hair of the background stays technically present).
   const DARKPHASE_OVERLAY_ALPHA = 0.97;
-  // DARK PHASE AI (see updateBossDarkPhase() and its 6 per-substate helper
-  // functions below) — a STALK -> CLOSE IN -> PAUSE -> LUNGE -> ARC CLAW ->
-  // DISENGAGE loop, replacing a plain straight-line approach/retreat so
-  // GABRIEL never magnet-homes onto the player: boss.x/y genuinely move
-  // (not just a VFX) at a DIFFERENT speed per phase, curving in from an
-  // angle rather than beelining, with a short telegraph pause before each
-  // burst-speed strike.
-  const DARKPHASE_STALK_SPEED = BOSS_SPEED * 0.40; // slow — a distant, wary drift, not an approach
-  const DARKPHASE_CLOSEIN_SPEED = BOSS_SPEED * 0.90; // medium — genuinely closing the gap, but not yet the strike itself
-  const DARKPHASE_LUNGE_SPEED = BOSS_SPEED * 2.4; // fast — the one moment that should feel sudden
-  const DARKPHASE_DISENGAGE_SPEED = BOSS_SPEED * 0.90; // medium — same pace as CLOSE IN, just outbound
-  const DARKPHASE_ATTACK_RANGE = BOSS_ATTACK_RANGE; // distance at which LUNGE ends and ARC CLAW SLASH actually fires
-  // CLOSE IN ends (PAUSE begins) once within this distance — deliberately
-  // wider than DARKPHASE_ATTACK_RANGE so LUNGE always has a real, visible
-  // burst of distance left to cover, rather than firing from wherever
-  // CLOSE IN happened to stop.
-  const DARKPHASE_PAUSE_TRIGGER_RANGE = DARKPHASE_ATTACK_RANGE * 2.2;
-  const DARKPHASE_STALK_MS_MIN = 900, DARKPHASE_STALK_MS_MAX = 1700; // randomized so STALK never reads as a fixed-timer tick
-  const DARKPHASE_PAUSE_MS_MIN = 100, DARKPHASE_PAUSE_MS_MAX = 250; // the "it's coming" telegraph beat, per spec
-  const DARKPHASE_DISENGAGE_MS_MIN = 650, DARKPHASE_DISENGAGE_MS_MAX = 1000;
-  const DARKPHASE_LUNGE_TIMEOUT_MS = 1500; // safety: if the player somehow outruns LUNGE, bail back to CLOSE IN rather than firing from far away
-  const DARKPHASE_CLOSEIN_CURVE_RAD = 55 * Math.PI / 180; // how far CLOSE IN's path starts curving away from a straight line to the player
-  const DARKPHASE_DISENGAGE_CURVE_RAD = 40 * Math.PI / 180;
-  const DARKPHASE_STALK_MIN_DIST = 200, DARKPHASE_STALK_MAX_DIST = 420; // keeps STALK's lateral drift within a believable "circling" band
+  // DARK PHASE AI (SECTION C rebuild) — GABRIEL relocates to a new random
+  // spot, vanishes completely (no sprite/hitbox/mask/target at all) for
+  // DARK_PHASE_HIDDEN_MS, then the direction-appropriate mask reappears at
+  // that new spot at a slightly larger runtime scale, holds for a
+  // DARK_PHASE_MASK_TELEGRAPH_MS telegraph, fires 2-3 CLAW attacks (existing
+  // ARC CLAW SLASH/CLAW STING geometry, reused as-is) spaced by
+  // DARK_PHASE_CLAW_INTERVAL_MS, then vanishes and repeats indefinitely.
+  // Replaces the previous STALK/CLOSE IN/PAUSE/LUNGE/ARC CLAW/DISENGAGE
+  // chase-and-strike loop entirely — see updateBossDarkPhase() below.
+  const DARK_PHASE_HIDDEN_MS = 3000; // fully invisible/untargetable window, per spec
+  const DARK_PHASE_MASK_TELEGRAPH_MS = 1000; // named per spec — mask visible, no attack yet
+  const DARK_PHASE_CLAW_INTERVAL_MS = 550; // gap AFTER each claw's own lifetime finishes, before the next fires — keeps every attack individually visible/dodgeable
+  const DARK_PHASE_MASK_SCALE_BOOST = 1.03; // runtime-only ×1.03 on top of the existing DARKPHASE_SCALE — never baked into the source image
+  // Minimum straight-line distance a new relocate position must keep from
+  // the PREVIOUS one, so the loop never reads as a near-repeat/fixed spot.
+  // Sized to comfortably fit the valid on-stage relocate box on the
+  // smallest supported portrait canvas (see pickDarkPhaseRelocatePosition's
+  // own margins) — a `from` point at the box's center can still always
+  // reach a corner at least this far away.
+  const DARK_PHASE_MIN_RELOCATE_DISTANCE = 180;
+  const DARKPHASE_ATTACK_RANGE = BOSS_ATTACK_RANGE; // kept: still the distance the reused CLAW attacks are authored around
   const WALK_FRAME_PERIOD_MS = 260; // NORTH (3-frame wrap) / EAST / WEST (2-frame alternation) walk-cycle period
   // SOUTH is back to a 3-frame cycle (new walk_south_1/2/3 art, this
   // batch) — the earlier 2-frame version's much slower period (2.3x) was
@@ -909,7 +913,7 @@
   const BOSS_INTRO_INITIAL_SHAKE_MS = 1200;
   const BOSS_INTRO_SILENCE_MS = 2000;
   const BOSS_INTRO_SHADOW_REVEAL_MS = 1800;
-  const BOSS_INTRO_LANDING_SHAKE_MS = 700;
+  const BOSS_INTRO_LANDING_SHAKE_MS = 450; // SECTION S: within the requested 350-500ms band
   const BOSS_INTRO_POST_LANDING_PAUSE_MS = 1800;
   const BOSS_INTRO_SOUTH_IDLE_MS = 1000;
   const BOSS_INTRO_SOUTH_ATTACK_MS = 800;
@@ -930,7 +934,30 @@
   // normal hit-shake (compare BOSS_HIT_TINT-adjacent shakes elsewhere, all
   // magnitude 2.5-8); the landing shake matches it for an equally hard hit.
   const BOSS_INTRO_SHAKE_MAG = 16;
-  const BOSS_INTRO_LANDING_SHAKE_MAG = 16;
+  const BOSS_INTRO_LANDING_SHAKE_MAG = 18; // SECTION S: clearly stronger than a normal hit-shake for the hardest impact of the sequence
+  // SECTION R: a short, distinct screen flicker the instant the real BOSS
+  // INTRO trigger fires (AREA1 only, once — spawnBoss() itself, thanks to
+  // SECTION A's fix, is now the single true encounter trigger) — separate
+  // state/timer from every other flash in this file (COUNTER's own
+  // flicker, BOSS defeat's flash, and this section's own landing flash)
+  // so none of them can stomp on each other.
+  const BOSS_INTRO_START_FLASH_PULSES = 3;
+  const BOSS_INTRO_START_FLASH_ON_MS = 80;
+  const BOSS_INTRO_START_FLASH_OFF_MS = 80;
+  const BOSS_INTRO_START_FLASH_CYCLE_MS = BOSS_INTRO_START_FLASH_ON_MS + BOSS_INTRO_START_FLASH_OFF_MS;
+  const BOSS_INTRO_START_FLASH_TOTAL_MS = BOSS_INTRO_START_FLASH_PULSES * BOSS_INTRO_START_FLASH_CYCLE_MS; // 480ms, within the requested 300-500ms band
+  const BOSS_INTRO_START_FLASH_ALPHA_MAX = 0.5; // white/pale-gray, never fully opaque
+  let introStartFlashRemainingMs = 0;
+  // SECTION S: a short red flicker exactly when the DOWN sprite reaches the
+  // ground (BOSS_INTRO_SHADOW_END — the same instant the existing landing
+  // shake above already fires from), on its own separate timer.
+  const BOSS_LANDING_RED_FLASH_PULSES = 3;
+  const BOSS_LANDING_RED_FLASH_ON_MS = 70;
+  const BOSS_LANDING_RED_FLASH_OFF_MS = 70;
+  const BOSS_LANDING_RED_FLASH_CYCLE_MS = BOSS_LANDING_RED_FLASH_ON_MS + BOSS_LANDING_RED_FLASH_OFF_MS;
+  const BOSS_LANDING_RED_FLASH_TOTAL_MS = BOSS_LANDING_RED_FLASH_PULSES * BOSS_LANDING_RED_FLASH_CYCLE_MS; // 420ms
+  const BOSS_LANDING_RED_FLASH_ALPHA_MAX = 0.35;
+  let landingRedFlashRemainingMs = 0;
   // HP-threshold reactions: keyed by CUMULATIVE damage taken this life,
   // expressed as the HP value at/below which that much damage has landed
   // (HP only ever decreases, so this is equivalent and simpler than
@@ -1076,10 +1103,9 @@
     attackFiresImmediately: false, // true when ATTACK arrived via PRE_ATTACK/forced-counter (blade fires on entry, no extra windup)
     attackType: 'blade', // 'blade' (existing melee swing) | 'arcClaw' (ARC CLAW SLASH) | 'clawSting' (CLAW STING) — chosen in enterAttackSequence()
     lastAttackType: 'blade', // tracks the previous attack so neither special attack can fire twice in a row
-    darkPhaseArcAttackKind: 'slash', // 'slash' | 'sting' — which claw attack DARK PHASE's own 'arcclaw' sub-state fires, chosen fresh each time LUNGE ends
+    darkPhaseArcAttackKind: 'slash', // 'slash' | 'sting' — which claw attack the current DARK PHASE strike uses, re-rolled fresh each individual claw
     chaseBackoffUntil: 0,
     deadAt: 0,
-    warningUntil: 0,
     defenseAimHits: 0, // valid AUTO-AIM-assisted hits landed during the current DEFENSE
     weakPointConsecutiveHits: 0, // ANY valid weak-point damage hit (auto-aimed or manual) landed during the current DEFENSE
     consecutiveGuardedShots: 0, // shots successfully BLOCKED (0 damage) during the current DEFENSE — see applyBodyHitToBoss(); resets to 0 on any non-'defense' state transition, same lifecycle as the two counters above
@@ -1108,13 +1134,18 @@
     revealedShotX: null,
     revealedShotY: null,
     darkPhaseAttackTimer: 0, // dt-driven sub-phase timer, meaning depends on darkPhaseSubState — see updateBossDarkPhase()
-    darkPhaseSubState: 'stalk', // 'stalk'|'closein'|'pause'|'lunge'|'arcclaw'|'disengage' — see updateBossDarkPhase()
-    darkPhaseSign: 1, // ±1, re-rolled each STALK/CLOSE IN/DISENGAGE entry — which side GABRIEL curves in/out from, so it never reads as a straight magnet-line
-    darkPhaseCloseInStartDist: 0, // distance-to-player captured at CLOSE IN entry, used to fade the curve out as it closes in
-    darkPhasePauseMs: 0, // randomized 100-250ms telegraph duration for the current PAUSE
-    darkPhaseDisengageMs: 0, // randomized duration for the current DISENGAGE
-    darkPhaseStalkMs: 0, // randomized 900-1700ms duration for the current STALK — set fresh in startBossDarkPhase()/updateBossDarkPhaseDisengage()
-    darkPhaseLungeElapsed: 0, // safety timeout accumulator for LUNGE — see DARKPHASE_LUNGE_TIMEOUT_MS
+    // SECTION C rebuild: 'hidden' (fully invisible/untargetable) ->
+    // 'telegraph' (mask visible, no attack yet) -> 'attacking' (firing the
+    // planned 2-3 CLAW attacks) -> back to 'hidden' at a new position,
+    // forever. Defaults to 'attacking' (a visible, targetable placeholder)
+    // so tests/tools that force boss.state='darkphase' directly without
+    // going through startBossDarkPhase() still see a normal, aimable mask —
+    // a genuine entry always explicitly sets this to 'hidden' first.
+    darkPhaseSubState: 'attacking',
+    darkPhasePrevX: 0, darkPhasePrevY: 0, // the position relocated FROM, so the next relocate can enforce DARK_PHASE_MIN_RELOCATE_DISTANCE from it
+    darkPhaseClawsPlannedCount: 2, // 2 or 3, re-rolled 50/50 each time ATTACKING begins
+    darkPhaseClawsFiredCount: 0,
+    darkPhaseCurrentClawLifetimeMs: 0, // the just-fired claw's own lifetime, so ATTACKING knows how long to wait (+ DARK_PHASE_CLAW_INTERVAL_MS) before the next one
     // Cinematic sequence state (intro / HP threshold / death) — see the
     // "Boss cinematic sequences" constants above and startBossThreshold(),
     // startBossDying(), updateBossIntro/Threshold/Dying(), drawBoss*().
@@ -1216,7 +1247,6 @@
     boss.downFacing = 'south'; // fresh spawn always has no prior facing yet — default SOUTH per spec
     boss.defenseDir = 'south';
     boss.moving = false;
-    boss.warningUntil = now + 1500;
     boss.defenseAimHits = 0;
     boss.autoAimHitStreak = 0;
     boss.invulnerableUntil = 0;
@@ -1244,6 +1274,7 @@
     player.aimOffsetRaw = BASE_ANGLE.up;
     player.aimOffset = BASE_ANGLE.up;
     triggerScreenShake(now, BOSS_INTRO_SHAKE_MAG, BOSS_INTRO_INITIAL_SHAKE_MS); // PART 4: the initial shake starts immediately, right as the intro begins
+    introStartFlashRemainingMs = BOSS_INTRO_START_FLASH_TOTAL_MS; // SECTION R: the real BOSS INTRO trigger — spawnBoss() only ever fires once, in AREA1
 
     // BOSS MODE only ever shows this — TRAINING MODE never calls
     // spawnBoss() at all, so it never plays.
@@ -1264,6 +1295,11 @@
   // which no longer checks this at all, since changing facing never moves
   // player.x/y.
   function isBossIntroLocked() {
+    // SECTION E: LIFE reaching 0 (finite settings only — Infinity never
+    // reaches it) reuses this SAME lockout every MOVE/AIM-engage/FIRE/AUTO
+    // AIM/DASH/STEALTH/FLASH gate already calls, rather than adding a
+    // parallel lock — no big GAME OVER sequence, just player input halting.
+    if (player.life <= 0) return true;
     return gameState.mode === 'boss' && (!boss.spawned || boss.state === 'intro');
   }
 
@@ -1321,177 +1357,139 @@
   // — DARK PHASE must stay a valid AUTO AIM target (it just takes 0 damage),
   // and FLASH GRENADE must stay usable during it. Has NO timeout of its
   // own — see startBossFlashDown() below for the only way out.
+  // SECTION C: reuses pickTeleportDestination()'s own safe-coordinate method
+  // (stage margins, isNearUIZone, barrel clearance, player clearance) so a
+  // DARK PHASE relocate is validated exactly the same way TELEPORT's own
+  // reappear point already is — never off-screen, never inside a wall/UI
+  // margin, never on top of a barrel, never too close to the player — plus
+  // an extra check against `fromX/fromY` (the position being relocated FROM)
+  // so consecutive relocations never land near-identical spots.
+  function pickDarkPhaseRelocatePosition(fromX, fromY) {
+    const marginX = BOSS_DRAW_W * 0.6;
+    const marginTop = H * 0.22;
+    const marginBottom = H * 0.30;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const x = marginX + Math.random() * (W - marginX * 2);
+      const y = marginTop + Math.random() * (H - marginTop - marginBottom);
+      if (isNearUIZone(x, y)) continue;
+      if (Math.hypot(x - player.x, y - player.y) < TELEPORT_MIN_DIST_FROM_PLAYER) continue;
+      if (Math.hypot(x - fromX, y - fromY) < DARK_PHASE_MIN_RELOCATE_DISTANCE) continue;
+      let tooCloseToBarrel = false;
+      for (const b of barrels) {
+        if ((b.alive || b.falling) && Math.hypot(x - b.x, y - b.y) < BARREL_DRAW_H * 2) { tooCloseToBarrel = true; break; }
+      }
+      if (tooCloseToBarrel) continue;
+      return { x, y };
+    }
+    // Fallback (all attempts collided, e.g. a very small screen or a very
+    // crowded barrel layout): rather than a single fixed-angle projection
+    // that clamping could undercut back toward `from`, pick whichever
+    // corner of the valid on-stage box is actually farthest from `from` —
+    // guaranteed to already be in-bounds, and the best achievable
+    // separation this box allows.
+    const corners = [
+      { x: marginX, y: marginTop },
+      { x: W - marginX, y: marginTop },
+      { x: marginX, y: H - marginBottom },
+      { x: W - marginX, y: H - marginBottom },
+    ];
+    let best = corners[0], bestDist = -1;
+    for (const c of corners) {
+      const d = Math.hypot(c.x - fromX, c.y - fromY);
+      if (d > bestDist) { bestDist = d; best = c; }
+    }
+    return best;
+  }
+
   function startBossDarkPhase(now) {
     arcClawSlashes.length = 0; // no lingering attacks from before DARK PHASE began
+    boss.darkPhasePrevX = boss.x;
+    boss.darkPhasePrevY = boss.y;
+    const dest = pickDarkPhaseRelocatePosition(boss.x, boss.y);
+    boss.x = dest.x;
+    boss.y = dest.y;
     boss.darkPhaseAttackTimer = 0;
-    boss.darkPhaseLungeElapsed = 0;
-    boss.darkPhaseSign = Math.random() < 0.5 ? 1 : -1;
-    boss.darkPhaseStalkMs = DARKPHASE_STALK_MS_MIN + Math.random() * (DARKPHASE_STALK_MS_MAX - DARKPHASE_STALK_MS_MIN);
-    boss.darkPhaseSubState = 'stalk'; // always starts by warily drifting, never mid-slash/mid-lunge
+    boss.darkPhaseClawsFiredCount = 0;
+    boss.darkPhaseSubState = 'hidden'; // fully invisible/untargetable for DARK_PHASE_HIDDEN_MS, per spec
     bossEnterState('darkphase', now);
   }
 
-  // DARK PHASE AI: STALK -> CLOSE IN -> PAUSE -> LUNGE -> ARC CLAW ->
-  // DISENGAGE -> (back to STALK), completely distinct from normal CHASE/
-  // ATTACK/DEFENSE. GABRIEL's own x/y genuinely move (not just a VFX), and
-  // deliberately never point straight at the player every frame — each
-  // phase either moves laterally, curves in from a fixed-at-entry side, or
-  // (LUNGE only) beelines for a short, fast, clearly-telegraphed burst —
-  // so the whole loop reads as "being stalked" rather than a magnet or a
-  // stationary turret. See the per-phase helpers just below for exactly
-  // what each one does.
-  //   stalk    -> slow lateral drift around the player (a rough orbiting
-  //               band, not a fixed radius), for a randomized duration
-  //   closein  -> medium-speed approach along a curve that starts wide (the
-  //               fixed-at-entry darkPhaseSign chooses which side) and
-  //               straightens out as GABRIEL closes in, ending once within
-  //               DARKPHASE_PAUSE_TRIGGER_RANGE
-  //   pause    -> a brief (100-250ms) full stop — the eye's own telegraph
-  //               beat, with a temporary brightness boost (see
-  //               drawBossDarkPhase()) — before the strike
-  //   lunge    -> a short, fast, DIRECT burst (no curve) until within
-  //               DARKPHASE_ATTACK_RANGE, which is when SLASH or STING
-  //               actually fires (picked fresh each time, see
-  //               boss.darkPhaseArcAttackKind) — so the attack always fires
-  //               from genuinely close range, by construction
-  //   arcclaw  -> hold position for the chosen attack's own lifetime (SLASH:
-  //               ARC_CLAW_LIFETIME_MS, STING: CLAW_STING_LIFETIME_MS — the
-  //               existing attack fully owns its own hit timing either way,
-  //               see updateArcClawSlashes())
-  //   disengage-> pull back at an angle (not a straight retreat) for a
-  //               randomized duration, then loop back to STALK
-  // No DEFENSE, no melee, no 3WAY BLADE (removed entirely, PART 9) — ARC
-  // CLAW SLASH and CLAW STING are the only attacks this loop ever calls,
-  // forever, until FLASH GRENADE ends DARK PHASE (see startBossFlashDown()
-  // below).
-  function updateBossDarkPhaseStalk(dt, now) {
-    // STEALTH (PART 19): DARK PHASE's own AI is no exception — every
-    // sub-state here reads GABRIEL's current belief, not necessarily the
-    // player's live position, while STEALTH is active.
+  function isDarkPhaseHidden() {
+    return boss.state === 'darkphase' && boss.darkPhaseSubState === 'hidden';
+  }
+
+  // Fires ONE CLAW attack (SLASH or STING, 50/50, reusing the existing
+  // ARC CLAW SLASH / CLAW STING geometry wholesale) from GABRIEL's current
+  // (mask-visible) position, and records its lifetime so the ATTACKING
+  // sub-state below knows how long to hold before the next one/the loop end.
+  function fireDarkPhaseClaw(now) {
     const targetPos = getBossTargetPos(now);
-    const dx = targetPos.x - boss.x, dy = targetPos.y - boss.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    const perpAngle = Math.atan2(dy, dx) + boss.darkPhaseSign * (Math.PI / 2);
-    let vx = Math.cos(perpAngle), vy = Math.sin(perpAngle);
-    // Mild radial correction keeps STALK orbiting a believable band instead
-    // of wandering arbitrarily far or crowding the player — blended in
-    // alongside the lateral component, never replacing it, so GABRIEL is
-    // still always drifting sideways rather than pointing straight at/away
-    // from the player.
-    if (dist > DARKPHASE_STALK_MAX_DIST) { vx += (dx / dist) * 0.6; vy += (dy / dist) * 0.6; }
-    else if (dist < DARKPHASE_STALK_MIN_DIST) { vx -= (dx / dist) * 0.6; vy -= (dy / dist) * 0.6; }
-    const len = Math.hypot(vx, vy) || 1;
-    boss.x += (vx / len) * DARKPHASE_STALK_SPEED * dt;
-    boss.y += (vy / len) * DARKPHASE_STALK_SPEED * dt;
-    boss.moving = true;
+    boss.dir = angleToBucket(Math.atan2(targetPos.y - boss.y, targetPos.x - boss.x));
+    boss.darkPhaseArcAttackKind = Math.random() < 0.5 ? 'slash' : 'sting';
+    if (boss.darkPhaseArcAttackKind === 'sting') {
+      spawnClawSting(now, getClawOrigin(), targetPos);
+      boss.darkPhaseCurrentClawLifetimeMs = CLAW_STING_LIFETIME_MS;
+    } else {
+      spawnArcClawSlash(now);
+      boss.darkPhaseCurrentClawLifetimeMs = ARC_CLAW_LIFETIME_MS;
+    }
+  }
+
+  // SECTION C rebuild — HIDDEN -> TELEGRAPH -> ATTACKING -> (relocate) ->
+  // HIDDEN, forever, until FLASH GRENADE ends DARK PHASE (see
+  // startBossFlashDown()). GABRIEL never chases/approaches during this
+  // loop — every position change is an instant relocate between cycles;
+  // the only motion in-frame is the reused CLAW attacks themselves.
+  //   hidden    -> no sprite, no hitbox, no FLASH target at all, for
+  //                DARK_PHASE_HIDDEN_MS
+  //   telegraph -> the direction-appropriate mask reappears at the new
+  //                (already relocated) position, scaled by
+  //                DARK_PHASE_MASK_SCALE_BOOST, fully FLASH-targetable, for
+  //                DARK_PHASE_MASK_TELEGRAPH_MS before any attack fires
+  //   attacking -> fires 2 or 3 CLAW attacks (50/50, re-rolled each cycle),
+  //                each one's own lifetime plus DARK_PHASE_CLAW_INTERVAL_MS
+  //                separating it from the next, still fully FLASH-targetable
+  // Once the planned claw count is reached, the mask disappears immediately
+  // and GABRIEL relocates to a new position (never near-repeating the one
+  // just vacated) and the whole loop restarts from HIDDEN.
+  function updateBossDarkPhase(dt, now) {
+    boss.moving = false; // never chases/approaches in this rebuild — see comment above
     boss.darkPhaseAttackTimer += dt * 1000;
-    if (boss.darkPhaseAttackTimer >= boss.darkPhaseStalkMs) {
-      boss.darkPhaseAttackTimer = 0;
-      boss.darkPhaseSign = Math.random() < 0.5 ? 1 : -1; // re-rolled for the upcoming CLOSE IN curve side
-      boss.darkPhaseCloseInStartDist = dist;
-      boss.darkPhaseSubState = 'closein';
-    }
-  }
-
-  function updateBossDarkPhaseCloseIn(dt, now) {
-    const targetPos = getBossTargetPos(now);
-    const dx = targetPos.x - boss.x, dy = targetPos.y - boss.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    const toPlayerAngle = Math.atan2(dy, dx);
-    // t=1 at CLOSE IN's own start (full curve), fading to 0 as it closes —
-    // an approach that visibly bends in from the side rather than a
-    // straight line, without ever refusing to actually make progress.
-    const t = Math.max(0, Math.min(1, dist / (boss.darkPhaseCloseInStartDist || dist)));
-    const moveAngle = toPlayerAngle + boss.darkPhaseSign * DARKPHASE_CLOSEIN_CURVE_RAD * t;
-    boss.x += Math.cos(moveAngle) * DARKPHASE_CLOSEIN_SPEED * dt;
-    boss.y += Math.sin(moveAngle) * DARKPHASE_CLOSEIN_SPEED * dt;
-    boss.moving = true;
-    if (dist <= DARKPHASE_PAUSE_TRIGGER_RANGE) {
-      boss.darkPhaseSubState = 'pause';
-      boss.darkPhaseAttackTimer = 0;
-      boss.darkPhasePauseMs = DARKPHASE_PAUSE_MS_MIN + Math.random() * (DARKPHASE_PAUSE_MS_MAX - DARKPHASE_PAUSE_MS_MIN);
-    }
-  }
-
-  function updateBossDarkPhasePause(dt, now) {
-    boss.moving = false; // a genuine full stop — the "it's coming" telegraph beat
-    boss.darkPhaseAttackTimer += dt * 1000;
-    if (boss.darkPhaseAttackTimer >= boss.darkPhasePauseMs) {
-      boss.darkPhaseAttackTimer = 0;
-      boss.darkPhaseLungeElapsed = 0;
-      boss.darkPhaseSubState = 'lunge';
-    }
-  }
-
-  function updateBossDarkPhaseLunge(dt, now) {
-    const targetPos = getBossTargetPos(now);
-    const dx = targetPos.x - boss.x, dy = targetPos.y - boss.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    boss.x += (dx / dist) * DARKPHASE_LUNGE_SPEED * dt;
-    boss.y += (dy / dist) * DARKPHASE_LUNGE_SPEED * dt;
-    boss.moving = true;
-    if (dist <= DARKPHASE_ATTACK_RANGE) {
-      // Only ever reached here, genuinely close — see the range check
-      // above — so neither SLASH nor STING can ever fire from far away.
-      // DARK PHASE's attack set is SLASH + STING only (PART 8/11) — picked
-      // fresh each time LUNGE ends, so it's never the same twice running.
-      boss.dir = angleToBucket(Math.atan2(dy, dx));
-      boss.darkPhaseSubState = 'arcclaw';
-      boss.darkPhaseAttackTimer = 0;
-      boss.moving = false;
-      boss.darkPhaseArcAttackKind = Math.random() < 0.5 ? 'slash' : 'sting';
-      if (boss.darkPhaseArcAttackKind === 'sting') {
-        spawnClawSting(now, getClawOrigin(), getBossTargetPos(now));
-      } else {
-        spawnArcClawSlash(now);
+    if (boss.darkPhaseSubState === 'hidden') {
+      if (boss.darkPhaseAttackTimer >= DARK_PHASE_HIDDEN_MS) {
+        boss.darkPhaseAttackTimer = 0;
+        boss.darkPhaseSubState = 'telegraph';
       }
       return;
     }
-    boss.darkPhaseLungeElapsed += dt * 1000;
-    if (boss.darkPhaseLungeElapsed > DARKPHASE_LUNGE_TIMEOUT_MS) {
-      // Safety: the player outran the burst — fall back to CLOSE IN rather
-      // than firing from a distance the attack was never meant to cover.
-      boss.darkPhaseLungeElapsed = 0;
-      boss.darkPhaseCloseInStartDist = dist;
-      boss.darkPhaseSubState = 'closein';
+    if (boss.darkPhaseSubState === 'telegraph') {
+      if (boss.darkPhaseAttackTimer >= DARK_PHASE_MASK_TELEGRAPH_MS) {
+        boss.darkPhaseAttackTimer = 0;
+        boss.darkPhaseClawsPlannedCount = Math.random() < 0.5 ? 2 : 3;
+        boss.darkPhaseClawsFiredCount = 0;
+        boss.darkPhaseSubState = 'attacking';
+        fireDarkPhaseClaw(now);
+        boss.darkPhaseClawsFiredCount = 1;
+      }
+      return;
     }
-  }
-
-  function updateBossDarkPhaseArcClaw(dt, now) {
-    boss.moving = false;
-    boss.darkPhaseAttackTimer += dt * 1000;
-    const lifetime = boss.darkPhaseArcAttackKind === 'sting' ? CLAW_STING_LIFETIME_MS : ARC_CLAW_LIFETIME_MS;
-    if (boss.darkPhaseAttackTimer >= lifetime) {
+    // 'attacking'
+    const waitMs = boss.darkPhaseCurrentClawLifetimeMs + DARK_PHASE_CLAW_INTERVAL_MS;
+    if (boss.darkPhaseAttackTimer >= waitMs) {
       boss.darkPhaseAttackTimer = 0;
-      boss.darkPhaseSign = Math.random() < 0.5 ? 1 : -1; // re-rolled for the upcoming DISENGAGE angle
-      boss.darkPhaseDisengageMs = DARKPHASE_DISENGAGE_MS_MIN + Math.random() * (DARKPHASE_DISENGAGE_MS_MAX - DARKPHASE_DISENGAGE_MS_MIN);
-      boss.darkPhaseSubState = 'disengage';
-    }
-  }
-
-  function updateBossDarkPhaseDisengage(dt, now) {
-    const targetPos = getBossTargetPos(now);
-    const dx = targetPos.x - boss.x, dy = targetPos.y - boss.y;
-    const awayAngle = Math.atan2(-dy, -dx) + boss.darkPhaseSign * DARKPHASE_DISENGAGE_CURVE_RAD;
-    boss.x += Math.cos(awayAngle) * DARKPHASE_DISENGAGE_SPEED * dt;
-    boss.y += Math.sin(awayAngle) * DARKPHASE_DISENGAGE_SPEED * dt;
-    boss.moving = true;
-    boss.darkPhaseAttackTimer += dt * 1000;
-    if (boss.darkPhaseAttackTimer >= boss.darkPhaseDisengageMs) {
-      boss.darkPhaseAttackTimer = 0;
-      boss.darkPhaseStalkMs = DARKPHASE_STALK_MS_MIN + Math.random() * (DARKPHASE_STALK_MS_MAX - DARKPHASE_STALK_MS_MIN);
-      boss.darkPhaseSubState = 'stalk';
-    }
-  }
-
-  function updateBossDarkPhase(dt, now) {
-    switch (boss.darkPhaseSubState) {
-      case 'closein': updateBossDarkPhaseCloseIn(dt, now); break;
-      case 'pause': updateBossDarkPhasePause(dt, now); break;
-      case 'lunge': updateBossDarkPhaseLunge(dt, now); break;
-      case 'arcclaw': updateBossDarkPhaseArcClaw(dt, now); break;
-      case 'disengage': updateBossDarkPhaseDisengage(dt, now); break;
-      default: updateBossDarkPhaseStalk(dt, now); break; // 'stalk'
+      if (boss.darkPhaseClawsFiredCount < boss.darkPhaseClawsPlannedCount) {
+        fireDarkPhaseClaw(now);
+        boss.darkPhaseClawsFiredCount++;
+      } else {
+        // Cycle complete: mask disappears immediately, relocate, loop back
+        // to HIDDEN.
+        boss.darkPhasePrevX = boss.x;
+        boss.darkPhasePrevY = boss.y;
+        const dest = pickDarkPhaseRelocatePosition(boss.x, boss.y);
+        boss.x = dest.x;
+        boss.y = dest.y;
+        boss.darkPhaseSubState = 'hidden';
+      }
     }
   }
 
@@ -1504,7 +1502,11 @@
   // 1152x1728 source canvas) scaled by DARKPHASE_SCALE and re-centered
   // onto the boss's current on-screen position.
   function getDarkPhaseHeadScreenPos() {
-    const scale = (BOSS_DRAW_H * DARKPHASE_SCALE) / DARKPHASE_EYES_SOURCE_H;
+    // SECTION C: DARK_PHASE_MASK_SCALE_BOOST (x1.03) is folded in here so
+    // the FLASH/head-target anchor always matches the mask's actual
+    // on-screen size — never baked into the source image, purely a runtime
+    // multiplier on this same projection.
+    const scale = (BOSS_DRAW_H * DARKPHASE_SCALE * DARK_PHASE_MASK_SCALE_BOOST) / DARKPHASE_EYES_SOURCE_H;
     return {
       x: boss.x + (DARKPHASE_HEAD_CANVAS_X - DARKPHASE_EYES_SOURCE_W / 2) * scale,
       y: boss.y + (DARKPHASE_HEAD_CANVAS_Y - DARKPHASE_EYES_SOURCE_H / 2) * scale,
@@ -1518,6 +1520,9 @@
   // varies continuously as it approaches/retreats. `along < 0` rejects a
   // head that's behind the player (aiming the wrong way entirely).
   function isAimedAtDarkPhaseHead() {
+    // SECTION C: no target at all while fully hidden — FLASH must be
+    // completely non-functional (no lock, cannot succeed) during that window.
+    if (isDarkPhaseHidden()) return false;
     const head = getDarkPhaseHeadScreenPos();
     const angle = getFinalAimAngle();
     const dirX = Math.cos(angle), dirY = Math.sin(angle);
@@ -2144,7 +2149,7 @@
           if (!isPlayerInvulnerable() && hd <= BOSS_ATTACK_HIT_RADIUS + PLAYER_HIT_RADIUS) {
             boss.attackHitApplied = true;
             window.__game.playerHitCount++;
-            playerHitFlashUntil = now + 150;
+            applyDamageToPlayerLife(now, BULLET_DAMAGE); // SECTION E: no existing damage number for the plain melee swing — BULLET_DAMAGE is the codebase's one other real "per-hit" constant, reused rather than inventing a new one
             const pushLen = 18;
             player.x += Math.cos(facing) * pushLen;
             player.y += Math.sin(facing) * pushLen;
@@ -2187,14 +2192,17 @@
       boss.dir = angleToBucket(Math.atan2(vy, vx));
     }
 
-    // SECTION C: clamp relative to the CURRENT area's own screen-sized band
-    // (areaTopY(currentArea) .. +H), not always the original [0,H] — without
-    // this, an AREA 2 boss (whose Y sits around -H+something) would get
-    // pulled straight back down into AREA 1's band by this same clamp every
-    // single frame during CHASE movement.
-    const areaTop = areaTopY(currentArea);
+    // SECTION A (rework): clamp against the FULL combined AREA1+AREA2 band
+    // (areaTopY(2)..areaTopY(1)+H, i.e. -H..H) — the boss is the same
+    // persistent entity across the whole continuous 2-screen-tall stage,
+    // so its own valid range must never depend on `currentArea` (which
+    // only tracks the PLAYER's live position). The old code clamped
+    // relative to `areaTopY(currentArea)`, so the instant the player alone
+    // crossed the AREA1/AREA2 seam, the boss's own clamp bounds jumped by a
+    // full screen height and could snap it to a completely different
+    // absolute position it was never actually near.
     boss.x = Math.max(BOSS_DRAW_W * 0.3, Math.min(W - BOSS_DRAW_W * 0.3, boss.x));
-    boss.y = Math.max(areaTop + BOSS_DRAW_H * 0.3, Math.min(areaTop + H - BOSS_DRAW_H * 0.3, boss.y));
+    boss.y = Math.max(-H + BOSS_DRAW_H * 0.3, Math.min(H - BOSS_DRAW_H * 0.3, boss.y));
   }
 
   // BOSS MODE start (PART 1-8): initial violent shake -> silence -> shadow
@@ -2210,6 +2218,7 @@
     if (elapsed >= BOSS_INTRO_SHADOW_END && !boss.introLandingTriggered) {
       boss.introLandingTriggered = true;
       triggerScreenShake(now, BOSS_INTRO_LANDING_SHAKE_MAG, BOSS_INTRO_LANDING_SHAKE_MS);
+      landingRedFlashRemainingMs = BOSS_LANDING_RED_FLASH_TOTAL_MS; // SECTION S: same instant the DOWN sprite reaches the ground
     }
     if (elapsed >= INTRO_TOTAL_MS) {
       bossEnterState('chase', now); // PART 7: battle begins the instant the south attack telegraph finishes
@@ -2443,15 +2452,20 @@
             Math.abs(localY) <= halfWidth + PLAYER_HIT_RADIUS) {
           s.hasHit = true; // at most one damage instance per slash, ever
           window.__game.playerHitCount++;
-          playerHitFlashUntil = now + 150;
-          // SECTION 6/7: this is the ONLY place either COUNTER variant ever
+          // SECTION 6/7/E: this is the ONLY place either COUNTER variant ever
           // "damages" the player — purely a genuine hitbox-overlap check
-          // above (never an automatic hit on COUNTER start/trigger). No
-          // LIFE/HP stat exists yet to actually subtract from, so this is
-          // just recorded as a future-system placeholder.
-          if (isStraightClaw || isCounterArc) {
+          // above (never an automatic hit on COUNTER start/trigger).
+          // COUNTER hits reuse the existing COUNTER_ATTACK_DAMAGE value;
+          // every other claw-family hit (plain ARC CLAW SLASH/STING, DARK
+          // PHASE's reused claws) has no existing damage number of its own,
+          // so BULLET_DAMAGE — the same reused fallback as the plain melee
+          // swing above — applies instead. Either way this now actually
+          // reduces LIFE (at finite settings) via applyDamageToPlayerLife().
+          const isCounterHit = isStraightClaw || isCounterArc;
+          if (isCounterHit) {
             player.lastCounterDamage = COUNTER_ATTACK_DAMAGE;
           }
+          applyDamageToPlayerLife(now, isCounterHit ? COUNTER_ATTACK_DAMAGE : BULLET_DAMAGE);
           // A-13/A-14: knocks the player away FROM GABRIEL (along the same
           // straight line the attack travelled), a clearly-visible distance,
           // clamped within PLAY AREA/world bounds by
@@ -2548,11 +2562,130 @@
   }
 
   // ---------- Game mode / PAUSE ----------
+  // SECTION J: `screen` is the top-level boot/loading/opening/mainMenu/
+  // gameplay state — deliberately separate from `mode` (BOSS/TRAINING,
+  // meaningful only once screen==='gameplay') and from `paused` (only
+  // meaningful during gameplay too). update()/draw() both early-return
+  // unless screen==='gameplay' (see the game loop below), so nothing in
+  // the gameplay world ever ticks in the background during OPENING/MAIN
+  // MENU/LOADING — SECTION J's own requirement.
   const gameState = {
     mode: 'boss', // 'boss' | 'training'
     paused: false, // game starts running in BOSS MODE, same as before PAUSE existed
+    screen: 'boot', // 'boot' | 'loading' | 'opening' | 'mainMenu' | 'gameplay'
   };
   let modeStartTime = performance.now();
+
+  function setScreen(next) {
+    gameState.screen = next;
+    document.getElementById('loading-screen').hidden = next !== 'loading';
+    document.getElementById('opening-screen').hidden = next !== 'opening';
+    document.getElementById('main-menu-screen').hidden = next !== 'mainMenu';
+    // PLAY AREA / CONTROL AREA are only meaningful during actual gameplay —
+    // hidden (not just covered) the rest of the time so no stray touch can
+    // reach a control zone underneath LOADING/OPENING/MAIN MENU.
+    document.getElementById('play-area').style.display = next === 'gameplay' ? '' : 'none';
+    document.getElementById('control-area').style.display = next === 'gameplay' ? '' : 'none';
+  }
+
+  // ---------- SECTION T: game-wide BGM (Outbreak 1.0) ----------
+  // Exactly ONE Audio instance for the entire session — created once here,
+  // never recreated by any screen/mode/PAUSE transition below. Filename
+  // normalized for URL-safety (spaces/dots in "Outbreak 1.0" -> underscores).
+  const bgmAudio = new Audio('assets/audio/outbreak_1_0.mp3');
+  bgmAudio.loop = true; // T-5: loop forever
+  bgmAudio.preload = 'auto';
+  // T-10: no on/off toggle in SETTING this turn (always-on) — but kept as a
+  // named, setting-shaped constant so a future volume control is a one-line
+  // change rather than a new plumbing job.
+  const BGM_VOLUME = 0.6;
+  bgmAudio.volume = BGM_VOLUME;
+  let bgmStarted = false;
+  // T-2/T-3: iOS Safari (and other browsers) block audio-with-sound
+  // autoplay before a user gesture — OPENING's video stays muted-autoplay
+  // (silent either way, per the source file's own lack of an audio track —
+  // see MANIFEST notes), and the FIRST "TAP TO START" tap is the gesture
+  // that unlocks and starts this <audio> element. T-6: bgmStarted guards
+  // against ever calling this a second time / creating a second instance.
+  function startBgmOnce() {
+    if (bgmStarted) return;
+    bgmStarted = true;
+    bgmAudio.play().catch(() => {
+      // Extremely defensive only — if the browser still rejected this
+      // direct-gesture play() call, allow exactly one more attempt on the
+      // NEXT tap rather than leaving BGM silent for the rest of the session.
+      bgmStarted = false;
+    });
+  }
+
+  // ---------- SECTION G: LOADING screen ----------
+  // Genuine asset-driven progress — every target below reflects real
+  // load/readiness state already tracked elsewhere in this file (spritesReady/
+  // spritesTotal, bossSpritesReady/BOSS_FRAME_FILES, STAGES[i].ready, plus
+  // polling .complete on the handful of images that don't have their own
+  // ready-counter) or the browser's own readyState for the OPENING video/
+  // BGM audio — polled on an interval rather than time-based, and never
+  // reports 100% until every one of them is actually true.
+  // Safety ceiling only — real completion is still what normally ends
+  // LOADING (see tick() below). Guards against an indefinite hang if a
+  // single asset's readiness event never fires for reasons outside this
+  // code's control (e.g. a flaky connection, or a browser/OS media-codec
+  // gap on the device itself) — never a substitute for genuine progress
+  // tracking, which is why it's set generously high and only ever matters
+  // in a genuine worst case.
+  const LOADING_MAX_WAIT_MS = 12000;
+
+  function initLoadingSequence() {
+    setScreen('loading');
+    const loadingText = document.getElementById('loading-text');
+    const openingVideoEl = document.getElementById('opening-video');
+    const loadingStartedAt = performance.now();
+    function computeProgress() {
+      const targets = [
+        spritesReady >= spritesTotal, // player AIM/FIRE sprite grid
+        dashSprites.right.complete && dashSprites.left.complete && dashSprites.up.complete && dashSprites.down.complete,
+        relaxedSprite.down.complete,
+        Object.values(walkSprites).every((set) => set.every((img) => img.complete)),
+        STAGES[0].ready, // initial stage background
+        bossSpritesReady >= Object.keys(BOSS_FRAME_FILES).length, // primary STORY-MODE-start boss art
+        cinematicPoseImg.complete && cinematicPoseBackImg.complete,
+        // HAVE_METADATA+, OR the browser has already reported a decode
+        // error for it (readyState can never advance further at that
+        // point — waiting any longer would just hang LOADING forever) —
+        // T-9: metadata/playable state counts as loaded, full download
+        // not required.
+        openingVideoEl.readyState >= 1 || !!openingVideoEl.error,
+        bgmAudio.readyState >= 1 || !!bgmAudio.error, // T-9: same rule for the BGM file
+      ];
+      return { loaded: targets.filter(Boolean).length, total: targets.length };
+    }
+    function tick() {
+      const { loaded, total } = computeProgress();
+      loadingText.textContent = `Loading... ${Math.floor((loaded / total) * 100)}%`;
+      if (loaded >= total || performance.now() - loadingStartedAt > LOADING_MAX_WAIT_MS) { setScreen('opening'); return; }
+      setTimeout(tick, 100);
+    }
+    tick();
+  }
+
+  // ---------- SECTION H: OPENING (tap-to-start) ----------
+  const openingOverlayEl = document.getElementById('opening-overlay');
+  function onOpeningTap(e) {
+    e.preventDefault();
+    if (gameState.screen !== 'opening') return; // guards against a stray double-fire (touchstart + mousedown) doing this twice
+    startBgmOnce(); // T-3: this exact tap is the user-gesture unlock
+    setScreen('mainMenu');
+  }
+  openingOverlayEl.addEventListener('touchstart', onOpeningTap, { passive: false });
+  openingOverlayEl.addEventListener('mousedown', onOpeningTap);
+
+  // ---------- SECTION I: MAIN MENU ----------
+  // STORY MODE / TRAINING MODE route through the EXACT SAME startMode()
+  // PAUSE MENU's own BOSS MODE/TRAINING MODE buttons already use — no
+  // duplicate gameplay wiring. SETTING is wired earlier, alongside PAUSE
+  // MENU's own SETTING button (openSettingPanel('mainMenu')).
+  document.getElementById('main-menu-story-btn').addEventListener('click', () => startMode('boss'));
+  document.getElementById('main-menu-training-btn').addEventListener('click', () => startMode('training'));
 
   // ---------- Stage world / camera / EXIT (PART 21-29) ----------
   // Before the boss is fully defeated (state 'dead', not merely HP<=0 and
@@ -2606,7 +2739,6 @@
       // closed up again — same two-area structure repeats fresh each time.
       currentArea = 1;
       area1Cleared = false;
-      area2Activated = false;
       area2Cleared = false;
       resetPlayerPosition();
       player.baseDir = 'down';
@@ -3082,6 +3214,8 @@
     // body position, not the head, which is why the magnet used to visibly
     // pull the reticle toward the wrong spot during DARK PHASE).
     if (boss.spawned && boss.state === 'darkphase') {
+      // SECTION C: no magnet target at all while fully hidden.
+      if (isDarkPhaseHidden()) return { primary: null, secondary: null };
       return { primary: getDarkPhaseHeadScreenPos(), secondary: null };
     }
     if (boss.spawned && boss.state !== 'dead') {
@@ -3164,6 +3298,8 @@
     player.knockbackUntil = 0;
     player.lastActivityAt = performance.now();
     player.relaxed = false;
+    player.ammo = FIRE_MAG_SIZE;
+    player.ammoCooldownRemainingMs = 0;
 
     bullets.length = 0;
     arcClawSlashes.length = 0;
@@ -3175,8 +3311,8 @@
     boss.attackType = 'blade';
     boss.lastAttackType = 'blade';
     boss.darkPhaseAttackTimer = 0;
-    boss.darkPhaseSubState = 'stalk';
-    boss.darkPhaseLungeElapsed = 0;
+    boss.darkPhaseSubState = 'attacking'; // matches the object literal's own default placeholder
+    boss.darkPhaseClawsFiredCount = 0;
     darkPhaseOverlayAlpha = 0; // RESTART snaps the dark overlay off instantly — no lingering fade
     boss.closeRangeInvulnUntil = 0;
     boss.teleportElapsed = 0;
@@ -3191,6 +3327,7 @@
     boss.counterDir = 'south';
     boss.counterAttackKind = 'arcClaw';
     player.lastCounterDamage = 0;
+    player.life = playerMaxLife; // SECTION E/I: applied at game start, per spec — reads the SAME setting SETTING/PAUSE MENU both write
     resetStealth(); // RESTART/mode switch ends STEALTH and its cooldown outright — the only two things allowed to (PART 21)
 
     // Stage world/camera/EXIT (PART 21-29) — a RESTART or mode switch always
@@ -3203,7 +3340,6 @@
     // back up (C-28).
     currentArea = 1;
     area1Cleared = false;
-    area2Activated = false;
     area2Cleared = false;
 
     modeStartTime = performance.now();
@@ -3220,6 +3356,7 @@
     resetModeState();
     gameState.paused = false;
     hideModeMenu();
+    setScreen('gameplay'); // SECTION I/J: MAIN MENU's STORY/TRAINING buttons both route through here — a no-op change if already in gameplay (PAUSE's own mode-switch/RESTART)
   }
 
   function releaseAllHeldInputs() {
@@ -3234,7 +3371,10 @@
 
   const modeMenu = document.getElementById('mode-menu');
   function showModeMenu() { modeMenu.classList.add('open'); }
-  function hideModeMenu() { modeMenu.classList.remove('open'); }
+  function hideModeMenu() {
+    modeMenu.classList.remove('open');
+    closeSettingPanel(); // always resets back to the main PAUSE panel for next time it opens
+  }
 
   function pausePress(e) {
     e.preventDefault();
@@ -3269,6 +3409,54 @@
   document.getElementById('mode-resume-btn').addEventListener('click', () => {
     gameState.paused = false;
     hideModeMenu();
+  });
+
+  // ---------- SETTING (SECTION E/I) ----------
+  // playerMaxLife is the ONE shared piece of settings data — PAUSE MENU's
+  // own SETTING button and MAIN MENU's SETTING button both open this exact
+  // same #setting-panel DOM and read/write this exact same variable, never
+  // a separate copy each. settingOpenedFrom remembers which menu's own
+  // panel to hide/restore around it, so BACK always returns to whichever
+  // screen actually opened SETTING.
+  let playerMaxLife = Infinity;
+  const pauseMenuPanel = document.getElementById('mode-menu-panel');
+  const mainMenuPanelEl = document.getElementById('main-menu-panel');
+  const settingPanel = document.getElementById('setting-panel');
+  let settingOpenedFrom = 'pause'; // 'pause' | 'mainMenu'
+  function openSettingPanel(from) {
+    settingOpenedFrom = from || (gameState.screen === 'mainMenu' ? 'mainMenu' : 'pause');
+    if (settingOpenedFrom === 'mainMenu') mainMenuPanelEl.hidden = true;
+    else pauseMenuPanel.hidden = true;
+    settingPanel.hidden = false;
+    updateSettingLifeButtons();
+  }
+  function closeSettingPanel() {
+    settingPanel.hidden = true;
+    if (settingOpenedFrom === 'mainMenu') mainMenuPanelEl.hidden = false;
+    else pauseMenuPanel.hidden = false;
+  }
+  function updateSettingLifeButtons() {
+    document.querySelectorAll('.life-option-btn').forEach((btn) => {
+      const v = btn.dataset.life === 'infinity' ? Infinity : Number(btn.dataset.life);
+      btn.classList.toggle('selected', v === playerMaxLife);
+    });
+  }
+  function applyMaxLifeSetting(value) {
+    playerMaxLife = value;
+    // Applied at game start (per spec) — also applied immediately to the
+    // CURRENT run so choosing it mid-PAUSE isn't silently deferred, capped
+    // to the new max the same way a real HP system would.
+    player.life = playerMaxLife === Infinity ? Infinity : Math.min(player.life, playerMaxLife);
+    updateSettingLifeButtons();
+  }
+  document.getElementById('mode-setting-btn').addEventListener('click', () => openSettingPanel('pause'));
+  document.getElementById('main-menu-setting-btn').addEventListener('click', () => openSettingPanel('mainMenu'));
+  document.getElementById('setting-back-btn').addEventListener('click', closeSettingPanel);
+  document.querySelectorAll('.life-option-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const v = btn.dataset.life === 'infinity' ? Infinity : Number(btn.dataset.life);
+      applyMaxLifeSetting(v);
+    });
   });
 
   // ---------- ACTION STICK (movement + base facing) ----------
@@ -3375,7 +3563,7 @@
     // or reticle, since this is a deliberate "snap to whatever is
     // actually closest to me" gesture, not a proximity-to-cursor magnet.
     const candidates = [];
-    if (boss.spawned && !bossIsInCinematic() && boss.state !== 'teleport') {
+    if (boss.spawned && !bossIsInCinematic() && boss.state !== 'teleport' && !isDarkPhaseHidden()) {
       if (boss.state === 'defense') {
         const wp = getWeakPointScreenPos(boss.defenseDir);
         candidates.push({ x: wp ? wp.x : boss.x, y: wp ? wp.y : boss.y, isBoss: true });
@@ -3570,6 +3758,26 @@
   const fireButton = document.getElementById('fire-button');
   let fireHeld = false;
 
+  // SECTION D: 30-shot magazine HUD — ammo count text + cooldown ring,
+  // same visual language/mechanism as the STEALTH cooldown ring (an SVG
+  // circle whose stroke-dashoffset is driven from JS every frame).
+  const fireAmmoLabel = document.getElementById('fire-ammo-label');
+  const fireRingProgress = document.getElementById('fire-ring-progress');
+  const FIRE_RING_R = 44;
+  const FIRE_RING_CIRCUMFERENCE = 2 * Math.PI * FIRE_RING_R;
+  fireRingProgress.style.strokeDasharray = `${FIRE_RING_CIRCUMFERENCE}`;
+
+  function updateFireHud() {
+    fireAmmoLabel.textContent = `${player.ammo} / ∞`;
+    // 0% right at depletion, 100% once fully recovered; sits at "full ring"
+    // (ready) whenever the magazine isn't currently depleted/cooling down.
+    const readyFrac = player.ammoCooldownRemainingMs > 0
+      ? 1 - player.ammoCooldownRemainingMs / FIRE_COOLDOWN_MS
+      : 1;
+    fireRingProgress.style.strokeDashoffset = `${FIRE_RING_CIRCUMFERENCE * (1 - readyFrac)}`;
+    fireButton.classList.toggle('depleted', player.ammoCooldownRemainingMs > 0);
+  }
+
   function fireStart(e) {
     e.preventDefault();
     fireHeld = true;
@@ -3734,6 +3942,9 @@
   function updateScreenFlashes(dt) {
     if (counterFlashRemainingMs > 0) counterFlashRemainingMs = Math.max(0, counterFlashRemainingMs - dt * 1000);
     if (deathFlashRemainingMs > 0) deathFlashRemainingMs = Math.max(0, deathFlashRemainingMs - dt * 1000);
+    if (introStartFlashRemainingMs > 0) introStartFlashRemainingMs = Math.max(0, introStartFlashRemainingMs - dt * 1000);
+    if (landingRedFlashRemainingMs > 0) landingRedFlashRemainingMs = Math.max(0, landingRedFlashRemainingMs - dt * 1000);
+    if (playerHitBlinkRemainingMs > 0) playerHitBlinkRemainingMs = Math.max(0, playerHitBlinkRemainingMs - dt * 1000);
   }
 
   function updateFlashGrenade(dt, now) {
@@ -3901,6 +4112,11 @@
   const bullets = [];
   const BULLET_SPEED = 620;
   const FIRE_INTERVAL = 170; // ms
+  // SECTION D: 30-shot magazine, infinite reserve ammo. No manual reload —
+  // the only way back to a full magazine is the automatic post-depletion
+  // cooldown below.
+  const FIRE_MAG_SIZE = 30;
+  const FIRE_COOLDOWN_MS = 5000;
   const FIRE_POSE_DURATION = 80; // ms — how long the FIRE sprite shows per shot
   const MUZZLE_DIST = SPRITE_DRAW_H * 0.46; // same muzzle offset used previously
   const AIM_LINE_LEN = 240; // AUTO AIM's reticle-tip search distance — fixed, NOT the player-adjustable RANGE below (keeps existing AUTO AIM target-detection behavior completely unchanged)
@@ -4068,12 +4284,43 @@
 
   let playerHitFlashUntil = 0;
 
+  // SECTION F: brief on/off blink of the PLAYER'S OWN SPRITE ONLY (never
+  // the whole screen — that's the separate playerHitFlashUntil red tint
+  // above, kept as-is) on any actual hit, even under infinite LIFE. Ticked
+  // in updateScreenFlashes(dt) alongside the other countdown timers so it
+  // freezes correctly during PAUSE; consumed in drawPlayer() by simply
+  // skipping that frame's draw call during each cycle's "off" half.
+  const PLAYER_HIT_BLINK_COUNT = 3;
+  const PLAYER_HIT_BLINK_TOTAL_MS = 300; // within the requested ~200-350ms band
+  const PLAYER_HIT_BLINK_CYCLE_MS = PLAYER_HIT_BLINK_TOTAL_MS / PLAYER_HIT_BLINK_COUNT;
+  let playerHitBlinkRemainingMs = 0;
+
+  // SECTION E: the ONE place player LIFE is ever reduced. `amount` must
+  // always be an EXISTING damage value already computed elsewhere in this
+  // file (COUNTER_ATTACK_DAMAGE via player.lastCounterDamage for the
+  // COUNTER family, BULLET_DAMAGE — the codebase's one other real "one hit
+  // unit" constant — for every other player-damaging attack) — never a
+  // newly-invented number. At player.life === Infinity (the default), the
+  // subtraction below is a no-op by IEEE-754 arithmetic (Infinity - X stays
+  // Infinity for any finite X), so this can be called unconditionally on
+  // every hit without a separate isFinite() branch for the damage itself —
+  // only the hit-feedback (blink + the pre-existing red screen tint +
+  // whatever knockback the caller already applies) needs to keep firing
+  // regardless of the LIFE setting, per spec.
+  function applyDamageToPlayerLife(now, amount) {
+    player.life = Math.max(0, player.life - amount);
+    playerHitFlashUntil = now + 150;
+    playerHitBlinkRemainingMs = PLAYER_HIT_BLINK_TOTAL_MS;
+  }
+
   // Exposed for Playwright/manual verification only — not part of gameplay.
   window.__game = {
     player, boss, playerHitCount: 0,
     applyBodyHitToBoss, applyWeakPointHitToBoss, applyExplosionDamageToBoss, bossEnterState,
     getWeakPointScreenPos, arcClawSlashes, spawnArcClawSlash,
     gameState, barrels, explosions, bullets, spawnBarrels, startMode, explodeBarrel, // debug/verification only — SECTION F
+    // Debug/verification only — SECTION G/H/I/J/T (LOADING/OPENING/MAIN MENU/BGM).
+    setScreen, bgmAudio, startBgmOnce, BGM_VOLUME,
     get autoAimActive() { return autoAimActive; },
     getAutoAimTargetPoint, // debug/verification only
     get autoAimTargetIsBoss() { return autoAimTargetIsBoss; },
@@ -4105,8 +4352,11 @@
     get autoAimLockedPoint() { return autoAimLockedPoint; },
     get rangeSliderActive() { return rangeSliderActive; },
     set rangeSliderActive(v) { rangeSliderActive = v; }, // debug/verification only
+    get aimStickActive() { return aimStickActive; },
+    set aimStickActive(v) { aimStickActive = v; }, // debug/verification only
     flashPress, startBossFlashDown, // debug/verification only
     get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
+    FIRE_MAG_SIZE, FIRE_COOLDOWN_MS, // debug/verification only — SECTION D
     set flashCooldownRemainingMs(v) { flashCooldownRemainingMs = v; }, // debug/verification only
     get flashGrenade() { return flashGrenade; },
     get flashScreenFlashRemainingMs() { return flashScreenFlashRemainingMs; },
@@ -4116,23 +4366,32 @@
     STEALTH_DURATION_MS, STEALTH_COOLDOWN_MS,
     get stealthCooldownRemainingMs() { return stealthCooldownRemainingMs; },
     set stealthCooldownRemainingMs(v) { stealthCooldownRemainingMs = v; },
-    // Debug/verification only — DARK PHASE.
+    // Debug/verification only — DARK PHASE (SECTION C rebuild).
     startBossDarkPhase, registerGlobalAutoAimHit, getDarkPhaseHeadScreenPos, isAimedAtDarkPhaseHead,
+    isDarkPhaseHidden, pickDarkPhaseRelocatePosition,
     get darkPhaseOverlayAlpha() { return darkPhaseOverlayAlpha; },
     AUTO_AIM_INVULN_HITS, DARKPHASE_FADE_MS, DARKPHASE_OVERLAY_ALPHA,
-    DARKPHASE_ATTACK_RANGE, DARKPHASE_PAUSE_TRIGGER_RANGE, DARKPHASE_HEAD_HIT_RADIUS,
-    DARKPHASE_STALK_SPEED, DARKPHASE_CLOSEIN_SPEED, DARKPHASE_LUNGE_SPEED, DARKPHASE_DISENGAGE_SPEED,
-    DARKPHASE_STALK_MS_MIN, DARKPHASE_STALK_MS_MAX, DARKPHASE_PAUSE_MS_MIN, DARKPHASE_PAUSE_MS_MAX,
-    DARKPHASE_DISENGAGE_MS_MIN, DARKPHASE_DISENGAGE_MS_MAX, DARKPHASE_LUNGE_TIMEOUT_MS,
+    DARKPHASE_ATTACK_RANGE, DARKPHASE_HEAD_HIT_RADIUS,
+    DARK_PHASE_HIDDEN_MS, DARK_PHASE_MASK_TELEGRAPH_MS, DARK_PHASE_CLAW_INTERVAL_MS,
+    DARK_PHASE_MASK_SCALE_BOOST, DARK_PHASE_MIN_RELOCATE_DISTANCE,
     isDarkPhaseFlashLocked, // debug/verification only
     canFlashTarget, isAimingAtBoss, isAimedAtBossBody, // debug/verification only — SECTION 9/10/11
     // Debug/verification only — boss INTRO sequence (PART 1-8).
     spawnBoss, isBossIntroLocked,
+    // Debug/verification only — SECTION E (LIFE) / SECTION F (hit-blink).
+    applyDamageToPlayerLife,
+    get playerMaxLife() { return playerMaxLife; },
+    applyMaxLifeSetting, openSettingPanel, closeSettingPanel,
+    get playerHitBlinkRemainingMs() { return playerHitBlinkRemainingMs; },
+    PLAYER_HIT_BLINK_COUNT, PLAYER_HIT_BLINK_TOTAL_MS,
     BOSS_INTRO_INITIAL_SHAKE_MS, BOSS_INTRO_SILENCE_MS, BOSS_INTRO_SHADOW_REVEAL_MS,
     BOSS_INTRO_LANDING_SHAKE_MS, BOSS_INTRO_POST_LANDING_PAUSE_MS, BOSS_INTRO_SOUTH_IDLE_MS,
     BOSS_INTRO_SOUTH_ATTACK_MS,
     BOSS_INTRO_SHAKE_END, BOSS_INTRO_SILENCE_END, BOSS_INTRO_SHADOW_END,
     BOSS_INTRO_LANDING_SHAKE_END, BOSS_INTRO_POST_PAUSE_END, BOSS_INTRO_SOUTH_IDLE_END,
+    // Debug/verification only — SECTION R/S screen flash timings.
+    BOSS_INTRO_START_FLASH_TOTAL_MS, BOSS_INTRO_START_FLASH_ALPHA_MAX,
+    BOSS_LANDING_RED_FLASH_TOTAL_MS, BOSS_LANDING_RED_FLASH_ALPHA_MAX,
     get screenShakeMag() { return screenShakeMag; },
     get screenShakeUntil() { return screenShakeUntil; },
     // Debug/verification only — unified muzzle/aim (PART 9-14).
@@ -4146,6 +4405,8 @@
     BOSS_DEFEAT_BLACKEN_START, BOSS_DEFEAT_BLACKEN_END,
     get deathFlashRemainingMs() { return deathFlashRemainingMs; },
     get counterFlashRemainingMs() { return counterFlashRemainingMs; },
+    get introStartFlashRemainingMs() { return introStartFlashRemainingMs; }, // debug/verification only — SECTION R
+    get landingRedFlashRemainingMs() { return landingRedFlashRemainingMs; }, // debug/verification only — SECTION S
     get boss_counterAttackKind() { return boss.counterAttackKind; }, // debug/verification only — SECTION J
     // Debug/verification only — walk-cycle timing (north/south walk frame replacement batch).
     WALK_FRAME_PERIOD_MS, SOUTH_WALK_FRAME_PERIOD_MS,
@@ -4158,7 +4419,6 @@
     get currentArea() { return currentArea; },
     get area1Cleared() { return area1Cleared; },
     set area1Cleared(v) { area1Cleared = v; }, // debug/verification only
-    get area2Activated() { return area2Activated; },
     get area2Cleared() { return area2Cleared; },
     set area2Cleared(v) { area2Cleared = v; }, // debug/verification only
     CAMERA_FOLLOW_RATE, areaTopY, clampPlayerToScreen,
@@ -4177,6 +4437,7 @@
       // runs so a freshly-spawned boss's own intro timer can start advancing
       // during the fade-in, exactly like a normal BOSS MODE start.
       updateBoss(dt, now);
+      updateScreenFlashes(dt); // SECTION R/S: intro-start/landing flashes must keep ticking here too, not just in the normal post-intro path below
       return;
     }
     if (boss.state === 'intro') {
@@ -4187,6 +4448,11 @@
       // pauses for those — see bossIsInCinematic() usage elsewhere), so
       // this early-return only applies to 'intro'.
       updateBoss(dt, now);
+      // SECTION R/S: both new intro flashes fire and must animate/decay
+      // WHILE boss.state === 'intro' (that's the whole point — they mark the
+      // intro trigger and the landing moment), so this early-return path
+      // must tick them too, not just the normal non-intro path further down.
+      updateScreenFlashes(dt);
       return;
     }
 
@@ -4247,43 +4513,39 @@
     // Clamp to screen bounds (keep character fully visible)
     clampPlayerToScreen();
 
-    // SECTION C: `currentArea` tracks the player's LIVE position every
-    // frame (not just a one-time flag) purely so barrel-spawn margins
-    // (pickBarrelSpot()) always match whichever band the player is
-    // actually standing in, even if they wander back south into AREA 1
-    // after AREA 2 has opened up — area2Activated (below) is the real
-    // one-time "has AREA 2's own boss been spawned yet" gate.
+    // SECTION A (rework): AREA 1 + AREA 2 are ONE continuous 2-screen-tall
+    // stage, not two separate encounters — `currentArea` only ever tracks
+    // the player's LIVE position (purely for barrel-spawn margins/HUD
+    // composition), it is never a boss-encounter trigger. The one and only
+    // BOSS INTRO happens once, from the initial BOSS_SPAWN_DELAY_MS timer
+    // in updateBoss() (spawnBoss() is called from there, always while
+    // currentArea is still 1) — crossing into AREA 2 is a pure world/camera
+    // position change with NO side effects on boss/player state, no
+    // re-spawn, no screen shake, no bullet/barrel reset. The boss itself is
+    // the same persistent entity across the whole combined world — see its
+    // own CHASE-state clamp below, which no longer snaps it to whichever
+    // area the PLAYER currently stands in.
     // SECTION 15-18: this whole AREA 1/AREA 2 system was previously gated
     // on `H >= W` (portrait only) — but style.css itself documents that
     // "this game is primarily played in landscape" (PART 17), so on a real
-    // device in its actual primary orientation, currentArea/area1Cleared/
-    // area2Activated never updated at all and the stage never appeared as
-    // 2 areas, no matter how thoroughly a portrait-viewport test verified
-    // the underlying logic. The camera-scroll math itself (cameraY, the
+    // device in its actual primary orientation, currentArea/area1Cleared
+    // never updated at all and the stage never appeared as 2 areas, no
+    // matter how thoroughly a portrait-viewport test verified the
+    // underlying logic. The camera-scroll math itself (cameraY, the
     // "cover"-style background tiling below) has no dependency on aspect
     // ratio, so removing the orientation restriction is enough — it now
     // runs identically in landscape and portrait.
     if (gameState.mode === 'boss') {
       currentArea = player.y < 0 ? 2 : 1;
-      // AREA 1 clear (C-13): its own boss fully dissolved.
+      // AREA 1 clear (C-13): the one shared boss fully dissolved while the
+      // player happened to be standing in AREA 1's band.
       if (!area1Cleared && boss.state === 'dead' && currentArea === 1) {
         area1Cleared = true;
       }
-      // AREA 1 -> AREA 2 (C-15/C-16/C-17, opened up by SECTION G): the
-      // moment the player actually walks north past the seam (world Y 0)
-      // for the first time — no longer gated on AREA 1 being cleared first
-      // — activate AREA 2 exactly once — a fresh boss (C-19: the same
-      // GABRIEL, no new AI needed) spawns with its own full intro, inactive
-      // until this very moment (C-18) since nothing above ever calls
-      // spawnBoss() for AREA 2 before the player arrives.
-      if (!area2Activated && player.y < 0) {
-        area2Activated = true;
-        bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
-        spawnBoss(now); // currentArea is already 2 here, so this spawns/positions relative to AREA 2's own band
-        spawnBarrels(BARREL_COUNT);
-      }
-      // AREA 2 clear (C-20): its own boss fully dissolved -> the existing
-      // EXIT/stage-transition machinery (unchanged) takes over from here.
+      // AREA 2 clear (C-20): same boss, same 'dead' state, just read while
+      // the player is standing in AREA 2's band instead (e.g. they walk up
+      // to it after the kill) -> the existing EXIT/stage-transition
+      // machinery (unchanged) takes over from here.
       if (!area2Cleared && boss.state === 'dead' && currentArea === 2) {
         area2Cleared = true;
       }
@@ -4316,14 +4578,31 @@
       cameraY = 0;
     }
 
+    // SECTION D: 30-shot magazine cooldown ticks down here every frame
+    // (dt-driven, so it correctly freezes during PAUSE like every other
+    // countdown in this file) — once it reaches 0, the magazine auto-resets
+    // to a full FIRE_MAG_SIZE and FIRE works again, with no manual reload.
+    if (player.ammoCooldownRemainingMs > 0) {
+      player.ammoCooldownRemainingMs = Math.max(0, player.ammoCooldownRemainingMs - dt * 1000);
+      if (player.ammoCooldownRemainingMs === 0) player.ammo = FIRE_MAG_SIZE;
+    }
+    updateFireHud();
+
     // Firing — direction comes from getFinalAimAngle() (the AIM STICK's own
     // absolute angle while aiming, else the current base facing), never
     // from movement. Suppressed entirely during knockbackLocked, same as
-    // MOVE/AIM.
-    const wantsFire = isFiringHeld;
+    // MOVE/AIM. SECTION D: also suppressed while the magazine is empty and
+    // cooling down — never bypasses AIM/muzzle/trajectory/AUTO AIM, purely
+    // an extra gate in front of the existing fire trigger.
+    const wantsFire = isFiringHeld && player.ammo > 0;
     if (wantsFire && now - lastFireTime >= FIRE_INTERVAL) {
       lastFireTime = now;
       spawnBullet();
+      player.ammo--;
+      if (player.ammo <= 0) {
+        player.ammo = 0;
+        player.ammoCooldownRemainingMs = FIRE_COOLDOWN_MS;
+      }
       // STEALTH reveal (PART 17/18/20): firing — manual or AUTO-AIM-assisted,
       // no distinction — reveals the player's CURRENT position to GABRIEL
       // for the rest of this STEALTH window, without ending STEALTH itself
@@ -4367,8 +4646,9 @@
       let consumed = false;
       // TELEPORT (PART 7): GABRIEL isn't drawn and has no physical presence
       // at all for the whole sequence — bullets simply pass through, same
-      // as if it weren't spawned.
-      if (boss.spawned && boss.state !== 'dead' && boss.state !== 'teleport') {
+      // as if it weren't spawned. SECTION C: DARK PHASE's own fully-hidden
+      // window is the same — no hitbox at all until the mask reappears.
+      if (boss.spawned && boss.state !== 'dead' && boss.state !== 'teleport' && !isDarkPhaseHidden()) {
         // Genuine physical hitbox overlap only — never inferred from "same
         // direction as the sprite". getWeakPointScreenPos returns null for
         // a direction with no visible eye (NORTH), so a bullet can never
@@ -4653,6 +4933,7 @@
     drawAimLine();
 
     drawBossHud(now);
+    drawLifeHud(now);
     drawBossFeedback(now);
     drawExitZone(now); // no-op until worldScrollUnlocked() (boss fully dead)
 
@@ -4724,6 +5005,29 @@
       const alpha = Math.min(1, deathFlashRemainingMs / DEATH_FLASH_MS);
       ctx.fillStyle = `rgba(255,255,255,${alpha})`;
       ctx.fillRect(0, 0, W, H);
+    }
+
+    // SECTION R: a few white/pale-gray pulses the instant the real BOSS
+    // INTRO trigger fires (AREA1 only) — its own timer, independent of
+    // every other flash here.
+    if (introStartFlashRemainingMs > 0) {
+      const elapsedIntoFlash = BOSS_INTRO_START_FLASH_TOTAL_MS - introStartFlashRemainingMs;
+      const cyclePos = elapsedIntoFlash % BOSS_INTRO_START_FLASH_CYCLE_MS;
+      if (cyclePos < BOSS_INTRO_START_FLASH_ON_MS) {
+        ctx.fillStyle = `rgba(235,235,240,${BOSS_INTRO_START_FLASH_ALPHA_MAX})`;
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    // SECTION S: a few red pulses the instant GABRIEL's DOWN sprite reaches
+    // the ground — its own timer, independent of every other flash here.
+    if (landingRedFlashRemainingMs > 0) {
+      const elapsedIntoFlash = BOSS_LANDING_RED_FLASH_TOTAL_MS - landingRedFlashRemainingMs;
+      const cyclePos = elapsedIntoFlash % BOSS_LANDING_RED_FLASH_CYCLE_MS;
+      if (cyclePos < BOSS_LANDING_RED_FLASH_ON_MS) {
+        ctx.fillStyle = `rgba(160,10,10,${BOSS_LANDING_RED_FLASH_ALPHA_MAX})`;
+        ctx.fillRect(0, 0, W, H);
+      }
     }
 
     ctx.restore(); // matches the shake-translate ctx.save() at the top of this function
@@ -4863,8 +5167,20 @@
       // fade-out strength is above 0. Firing or DASHing during STEALTH
       // never reverts to the plain draw call, since `img` above already
       // picked the FIRE/DASH sprite and this only changes HOW it's drawn.
+      // SECTION F: on an actual hit, a brief on/off blink of the sprite
+      // itself (never a whole-screen effect — see playerHitFlashUntil's own
+      // separate red tint above for that). During each "on" pulse, draw the
+      // PLAIN full-opacity sprite even if STEALTH would otherwise dim/
+      // distort it — guarantees the blink stays visible/legible no matter
+      // STEALTH's current state, without changing STEALTH's own rendering
+      // path at all between pulses (it resumes exactly where it left off).
+      let hitBlinkPulseOn = false;
+      if (playerHitBlinkRemainingMs > 0) {
+        const elapsedIntoBlink = PLAYER_HIT_BLINK_TOTAL_MS - playerHitBlinkRemainingMs;
+        hitBlinkPulseOn = (elapsedIntoBlink % PLAYER_HIT_BLINK_CYCLE_MS) < PLAYER_HIT_BLINK_CYCLE_MS / 2;
+      }
       const stealthStrength = getStealthEffectStrength(now);
-      if (stealthStrength > 0) {
+      if (stealthStrength > 0 && !hitBlinkPulseOn) {
         drawPlayerStealthed(img, dx, dy, drawW, drawH, stealthStrength, now);
       } else {
         ctx.drawImage(img, dx, dy, drawW, drawH);
@@ -5210,38 +5526,44 @@
     }
   }
 
-  // DARK PHASE: GABRIEL's body is intentionally never drawn here — no
-  // silhouette, no outline of any color, nothing that could read as a
-  // white/gray halo. Only the direction-appropriate head image (see
-  // assets/boss/darkphase_heads_build_meta.json — each one alpha-cropped
-  // straight out of its own attached photo, never a Canvas-drawn design),
-  // positioned via getDarkPhaseHeadScreenPos()'s same scale/anchor so it
-  // always sits exactly on top of boss.x/boss.y as the STALK/CLOSE IN/
-  // PAUSE/LUNGE/DISENGAGE AI actually moves them (see updateBossDarkPhase()
-  // and its per-substate helpers) — a real head creeping through the dark,
-  // not a static effect. During the brief PAUSE telegraph beat right before
-  // LUNGE, the SAME image is drawn through a temporary brightness filter —
+  // DARK PHASE (SECTION C rebuild): GABRIEL's body is intentionally never
+  // drawn here — no silhouette, no outline of any color, nothing that could
+  // read as a white/gray halo. During the fully-hidden sub-state, NOTHING is
+  // drawn at all — no sprite, no mask, no hint of position. Once the mask
+  // reappears (telegraph/attacking), only the direction-appropriate head
+  // image (see assets/boss/darkphase_heads_build_meta.json — each one
+  // alpha-cropped straight out of its own attached photo, never a
+  // Canvas-drawn design) is drawn, at DARK_PHASE_MASK_SCALE_BOOST on top of
+  // its normal display size, positioned via getDarkPhaseHeadScreenPos()'s
+  // same (boost-inclusive) scale/anchor so drawing and the FLASH hit-test
+  // can never drift apart. A gentle brightness pulse marks the TELEGRAPH
+  // window specifically (the "it's coming" beat before the claws start) —
   // a pixel-value rescale, never a new shape or an added light source. The
   // screen-darken overlay itself is drawn separately, UNDER the
   // player/bullets/this head (see draw()), so it can go near-total-black
   // without also hiding anything that must stay visible — see
   // darkPhaseOverlayAlpha/updateDarkPhaseOverlay().
   function drawBossDarkPhase(now) {
+    if (isDarkPhaseHidden()) return; // no sprite, no hitbox, no mask at all during this window
     const anchor = getDarkPhaseHeadScreenPos(); // same single anchor point for every direction — never moves independently of this
     const dirKey = DIR_TO_BOSS_KEY[boss.dir]; // 'north' | 'south' | 'east' | 'west'
     const img = darkPhaseHeadImgs[dirKey];
     const m = DARKPHASE_HEAD_METRICS[dirKey];
     if (!img || !m || !img.complete || img.naturalWidth <= 0) return;
     ctx.save();
-    if (boss.darkPhaseSubState === 'pause') ctx.filter = 'brightness(1.45)';
+    if (boss.darkPhaseSubState === 'telegraph') ctx.filter = `brightness(${1 + 0.35 * Math.abs(Math.sin(now / 130))})`;
     // Anchor on the image's OWN eye/head-center offset (not its bbox
     // center), so the visible eye (or, for north's eyeless back-of-head
     // photo, its equivalent head-center point) lands exactly on the same
     // point isAimedAtDarkPhaseHead() checks against, whichever direction is
-    // showing.
-    const drawX = anchor.x - m.eyeOffsetScaledX;
-    const drawY = anchor.y - m.eyeOffsetScaledY;
-    ctx.drawImage(img, drawX, drawY, m.displayW, m.displayH);
+    // showing. Both the drawn size and this offset are scaled by
+    // DARK_PHASE_MASK_SCALE_BOOST together, so the whole head display grows
+    // uniformly rather than just shifting position.
+    const boostedW = m.displayW * DARK_PHASE_MASK_SCALE_BOOST;
+    const boostedH = m.displayH * DARK_PHASE_MASK_SCALE_BOOST;
+    const drawX = anchor.x - m.eyeOffsetScaledX * DARK_PHASE_MASK_SCALE_BOOST;
+    const drawY = anchor.y - m.eyeOffsetScaledY * DARK_PHASE_MASK_SCALE_BOOST;
+    ctx.drawImage(img, drawX, drawY, boostedW, boostedH);
     ctx.restore();
   }
 
@@ -5416,20 +5738,36 @@
   function drawBossHud(now) {
     if (!boss.spawned) return;
     // No HP gauge on screen (removed per spec) — HP/damage/kill logic is
-    // all still tracked internally, just not displayed. The WARNING banner
-    // is a spawn cue, not a gauge, so it stays.
+    // all still tracked internally, just not displayed.
     const barY = Math.max(10, (H * 0.03));
 
-    if (now < boss.warningUntil) {
+    // SECTION B: "BOSS: GABRIEL" only — no WARNING/BATTLE/ENCOUNTER text.
+    // Shown once GABRIEL has actually landed and is visible, through the
+    // walk_south_1 static hold — a natural window within the existing
+    // intro sequence, without touching any of its phase boundaries.
+    if (boss.state === 'intro' && boss.cinematicElapsed >= BOSS_INTRO_SHADOW_END && boss.cinematicElapsed < BOSS_INTRO_SOUTH_IDLE_END) {
       ctx.save();
       ctx.textAlign = 'center';
       ctx.fillStyle = `rgba(255,60,60,${0.55 + 0.45 * Math.abs(Math.sin(now / 150))})`;
       ctx.font = 'bold 20px sans-serif';
-      ctx.fillText('WARNING', W / 2, barY + 44);
-      ctx.font = 'bold 14px sans-serif';
-      ctx.fillText(`${boss.name} DETECTED`, W / 2, barY + 64);
+      ctx.fillText(`BOSS: ${boss.name}`, W / 2, barY + 44);
       ctx.restore();
     }
+  }
+
+  // SECTION E: minimal LIFE HUD — a single small text label, top-left,
+  // deliberately not a big new gauge (mirrors "no other large new HUD
+  // elements" already applied to the FIRE magazine's own HUD). Shows
+  // `LIFE ∞` at the default setting, or `LIFE current/max` once a finite
+  // max has been chosen via SETTING.
+  function drawLifeHud(now) {
+    ctx.save();
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    const text = player.life === Infinity ? 'LIFE ∞' : `LIFE ${Math.ceil(player.life)}/${playerMaxLife === Infinity ? '∞' : playerMaxLife}`;
+    ctx.fillText(text, 10, Math.max(10, H * 0.03) + 14);
+    ctx.restore();
   }
 
   // Small, non-intrusive combat feedback: a metallic spark + ricochet on a
@@ -5470,13 +5808,17 @@
     lastTime = now;
     // lastTime still advances every frame either way, so dt is never a
     // huge catch-up jump the instant play resumes back in portrait.
-    if (!isLandscapeBlocked()) {
+    // SECTION J: the gameplay world (update()/draw(), which together own
+    // the canvas, boss AI, bullets, etc.) only ever ticks while
+    // screen==='gameplay' — LOADING/OPENING/MAIN MENU are plain DOM/CSS,
+    // so there's nothing running in the background under them.
+    if (!isLandscapeBlocked() && gameState.screen === 'gameplay') {
       update(dt, now);
       draw(now);
     }
     requestAnimationFrame(loop);
   }
 
-  spawnBarrels(BARREL_COUNT); // initial BOSS MODE barrels
   requestAnimationFrame((t) => { lastTime = t; requestAnimationFrame(loop); });
+  initLoadingSequence();
 })();

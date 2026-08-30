@@ -8,6 +8,61 @@
 </head>
 <body>
 
+<!-- SECTION G: full-blackout LOADING screen — shown first, on top of
+     everything, until every asset genuine-load-tracked in game.js
+     (initLoadingSequence()) is confirmed drawable/playable. Never a fake
+     time-based bar: the percentage text is driven from a real loaded/total
+     asset count. -->
+<div id="loading-screen">
+  <div id="loading-text">Loading... 0%</div>
+</div>
+
+<!-- SECTION H: OPENING — the official attached video as a muted/loop/
+     autoplay/playsinline background, sized via object-fit only (the source
+     file itself is never re-encoded/cropped). "DARK OUT" + "TAP TO START"
+     sit on top; the first tap here is also the user-gesture that unlocks
+     Outbreak 1.0 (SECTION T) and advances to MAIN MENU. -->
+<div id="opening-screen" hidden>
+  <video id="opening-video" src="assets/video/dark_out_opening.mp4" muted loop autoplay playsinline></video>
+  <div id="opening-overlay">
+    <div id="opening-title">DARK OUT</div>
+    <div id="opening-tap-prompt">TAP TO START</div>
+  </div>
+</div>
+
+<!-- SECTION I: MAIN MENU — STORY MODE/TRAINING MODE connect to the SAME
+     startMode() entry points BOSS MODE/TRAINING MODE already use in the
+     PAUSE menu (no duplicate gameplay wiring); SETTING opens the exact same
+     #setting-panel PAUSE MENU's own SETTING does. -->
+<div id="main-menu-screen" hidden>
+  <div id="main-menu-panel">
+    <div id="main-menu-title">DARK OUT</div>
+    <button class="mode-btn" id="main-menu-story-btn">STORY MODE</button>
+    <button class="mode-btn" id="main-menu-training-btn">TRAINING MODE</button>
+    <button class="mode-btn" id="main-menu-setting-btn">SETTING</button>
+  </div>
+</div>
+
+<!-- SECTION E/I: the ONE shared SETTING surface — opened by either PAUSE
+     MENU's or MAIN MENU's own SETTING button (see openSettingPanel() in
+     game.js), so the underlying data (playerMaxLife) can never diverge
+     between the two entry points. Lives outside both menus so it can
+     overlay either one. -->
+<div id="setting-panel" hidden>
+  <div id="setting-panel-inner">
+    <div id="mode-menu-title">SETTING</div>
+    <div id="setting-life-label">MAX LIFE</div>
+    <div id="setting-life-options">
+      <button class="life-option-btn" data-life="100">100</button>
+      <button class="life-option-btn" data-life="200">200</button>
+      <button class="life-option-btn" data-life="300">300</button>
+      <button class="life-option-btn" data-life="500">500</button>
+      <button class="life-option-btn" data-life="infinity">&infin;</button>
+    </div>
+    <button class="mode-btn" id="setting-back-btn">BACK</button>
+  </div>
+</div>
+
 <!-- PLAY AREA: the game viewport only. Canvas coordinates (W/H in game.js)
      are derived from THIS element's own rendered size, never from
      window.innerWidth/innerHeight — CONTROL AREA below is a separate
@@ -72,7 +127,14 @@
         <button id="dash-button" aria-label="DASH">DASH</button>
       </div>
       <div id="fire-zone">
-        <button id="fire-button" aria-label="FIRE">FIRE</button>
+        <button id="fire-button" aria-label="FIRE">
+          <svg id="fire-cooldown-ring" viewBox="0 0 100 100" aria-hidden="true">
+            <circle class="fire-ring-bg" cx="50" cy="50" r="44"></circle>
+            <circle id="fire-ring-progress" cx="50" cy="50" r="44"></circle>
+          </svg>
+          <span id="fire-label">FIRE</span>
+          <span id="fire-ammo-label">30 / &infin;</span>
+        </button>
       </div>
     </div>
   </div>
@@ -83,6 +145,7 @@
     <div id="mode-menu-title">PAUSED</div>
     <button class="mode-btn" id="mode-boss-btn">BOSS MODE</button>
     <button class="mode-btn" id="mode-training-btn">TRAINING MODE</button>
+    <button class="mode-btn" id="mode-setting-btn">SETTING</button>
     <button class="mode-btn" id="mode-restart-btn">RESTART</button>
     <button class="mode-btn" id="mode-resume-btn">RESUME</button>
   </div>
