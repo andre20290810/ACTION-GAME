@@ -67,10 +67,10 @@
   resize();
 
   // ---------- Stage background(s) ----------
-  // SECTION K/L/M: STORY MODE is now a fixed, linear 3-STAGE sequence
-  // (index === ENCOUNTER number - 1, currentStageIndex IS the encounter
-  // index — no separate counter needed), not the previous endless-random-
-  // loop. Each entry's `theme` is assigned by actually inspecting the
+  // SECTION K/L/M: this array holds only GABRIEL's 3 encounter backgrounds,
+  // indexed by `bossEncounterIndex` (0-2) — see STORY_STAGE_PLAN/SECTION Q
+  // further below for how STORY MODE's now-10-STAGE sequence maps onto this.
+  // Each entry's `theme` is assigned by actually inspecting the
   // existing art (no new backgrounds generated): stage_b (a cracked open
   // road/tarmac, no walls in frame) is the one plausible OUTDOOR asset;
   // lab_b03 ("LAB B-03", ceiling-lit corridor) and stage_a (an enclosed
@@ -91,7 +91,36 @@
     s.img.onload = () => { s.ready = true; };
     s.img.src = s.file;
   });
-  let currentStageIndex = 0;
+  // PART 5 SECTION E/T: STORY MODE is now a fixed, data-driven 10-STAGE
+  // sequence — this ONE table (never scattered if/else) is the single
+  // source of truth for what each STORY STAGE position is. `currentStageIndex`
+  // (0-9) is the raw STORY STAGE POSITION; it must NEVER be read as if it
+  // were the GABRIEL encounter number — `bossEncounterIndex` (0-2, SECTION Q)
+  // is the ONLY thing GABRIEL difficulty/DARK PHASE/forced-STUN/barrel-count/
+  // GAME CLEAR logic may key off. STAGES[] above (3 backgrounds) is indexed
+  // by `bossEncounterIndex`, keeping each encounter's existing visual
+  // identity (SECTION S-4).
+  const STORY_STAGE_PLAN = [
+    { type: 'drone', speedMult: 1.0 },                       // STAGE 1
+    { type: 'drone', speedMult: 1.0 },                       // STAGE 2
+    { type: 'drone', speedMult: 1.0 },                       // STAGE 3
+    { type: 'boss', encounterIndex: 0 },                     // STAGE 4: GABRIEL ENCOUNTER 1
+    { type: 'drone', speedMult: 1.3 },                       // STAGE 5
+    { type: 'drone', speedMult: 1.3 },                       // STAGE 6
+    { type: 'boss', encounterIndex: 1 },                     // STAGE 7: GABRIEL ENCOUNTER 2 (DARK PHASE, 3 BARREL)
+    { type: 'drone', speedMult: 1.5 },                       // STAGE 8
+    { type: 'drone', speedMult: 1.5 },                       // STAGE 9
+    { type: 'boss', encounterIndex: 2, final: true },        // STAGE 10: GABRIEL ENCOUNTER 3, FINAL, 0 BARREL + 3 DRONE
+  ];
+  // SECTION K/X: per-ENCOUNTER barrel count, indexed by bossEncounterIndex —
+  // ENCOUNTER1=5, ENCOUNTER2=3 (down from 5), ENCOUNTER3=0 (replaced by the
+  // FINAL STAGE's 3 DRONEs instead, SECTION M-5).
+  const BOSS_ENCOUNTER_BARREL_COUNTS = [5, 3, 0];
+  let currentStageIndex = 0; // 0-9: raw STORY STAGE position (SECTION Q — NEVER the encounter index)
+  let bossEncounterIndex = 0; // 0-2: which GABRIEL encounter this is (SECTION Q — the ONLY thing encounter-specific logic may key off)
+  // SECTION S: DRONE-only STORY stages reuse TRAINING_BACKGROUNDS (below) —
+  // this index is re-picked fresh every time a drone-type STAGE is entered.
+  let storyDroneBgIndex = 0;
 
   // SECTION D: TRAINING MODE's own separate background pool — the 5
   // attached FIELD images, used exactly as provided (no AI regeneration/
@@ -132,7 +161,35 @@
   function currentStage() {
     if (gameState.mode === 'training') return TRAINING_BACKGROUNDS[basicTrainingBgIndex];
     if (gameState.mode === 'securityTraining') return TRAINING_BACKGROUNDS[securityTrainingBgIndex];
-    return STAGES[currentStageIndex];
+    // SECTION S: a DRONE-type STORY STAGE reads from the same TRAINING
+    // background pool (never STAGES[], which is GABRIEL-encounter-only).
+    const plan = STORY_STAGE_PLAN[currentStageIndex];
+    if (plan && plan.type === 'drone') return TRAINING_BACKGROUNDS[storyDroneBgIndex];
+    return STAGES[bossEncounterIndex];
+  }
+
+  // PART 5 SECTION Q/T: the ONLY 3 helpers anything should ever use to ask
+  // "what kind of STORY STAGE is this" — every DRONE-related system
+  // (spawn/update/draw/FIRE-hit/EXIT-unlock/STUN/barrel-count) reads
+  // STORY_STAGE_PLAN[currentStageIndex] through these, never `boss.*`
+  // (PART 6 SECTION A-2: DRONE systems must stay fully independent of
+  // GABRIEL's own visibility/state), and never a raw stage-position number
+  // compared directly (SECTION Q-4's own named bug class).
+  function isStoryDroneStage() {
+    if (gameState.mode !== 'boss') return false;
+    const plan = STORY_STAGE_PLAN[currentStageIndex];
+    return !!plan && plan.type === 'drone';
+  }
+  function isFinalStoryStage() {
+    if (gameState.mode !== 'boss') return false;
+    const plan = STORY_STAGE_PLAN[currentStageIndex];
+    return !!plan && plan.type === 'boss' && plan.final === true;
+  }
+  // Gates every DRONE update/draw/FIRE-hit system: SECURITY TRAINING always,
+  // plus any STORY STAGE that has DRONEs present at all (every DRONE-type
+  // STAGE, and the FINAL STAGE alongside GABRIEL).
+  function isSecurityDroneSystemActive() {
+    return gameState.mode === 'securityTraining' || isStoryDroneStage() || isFinalStoryStage();
   }
 
   // ---------- Sprite loading ----------
@@ -877,7 +934,6 @@
   // speeds above stay completely untouched. Player MOVE speed is now 192
   // (240×0.80) vs this 70.2, still comfortably faster than GABRIEL.
   const BOSS_CHASE_SPEED = BOSS_SPEED * 0.90;
-  const BOSS_SPAWN_DELAY_MS = 5000;
   const BOSS_ATTACK_RANGE = 130; // distance at which CHASE -> ATTACK
   const BOSS_ATTACK_WINDUP_MS = 400;
   const BOSS_ATTACK_ACTIVE_MS = 150;
@@ -998,10 +1054,14 @@
   // BOSS INTRO/BOSS HUD/DARK PHASE are structurally impossible here with no
   // extra guard needed (SECTION S).
   // PART 4 SECTION B: retired the old free/random per-session robot count —
-  // placement is now a fixed, regular 3-per-AREA layout (B-2), never a
-  // random 4-6 scatter.
+  // placement was a fixed, regular 3-per-AREA layout (B-2). PART 5 SECTION
+  // C then retired THIS fixed count in turn — each AREA now independently
+  // rolls its own count from SECURITY_DRONE_COUNT_CHOICES (3/5/7) via
+  // pickSecurityDroneCount(); these two constants are kept only as the
+  // legacy "3-per-AREA" reference point (still exposed for debug/
+  // verification) and are no longer read by any spawn path.
   const SECURITY_ROBOTS_PER_AREA = 3;
-  const SECURITY_ROBOT_COUNT = SECURITY_ROBOTS_PER_AREA * 2; // 3 in AREA1 + 3 in AREA2 = 6 total per STAGE
+  const SECURITY_ROBOT_COUNT = SECURITY_ROBOTS_PER_AREA * 2; // legacy reference only — 3+3 was the PART 4 fixed count
   const SECURITY_ROBOT_MIN_SPACING = 130; // px between any two robots' patrol CENTERS
   const SECURITY_TELEGRAPH_MS = 450; // SECTION M: 300-600ms band, default ~450ms — unchanged from PART 2
   const SECURITY_LASER_VISUAL_MS = 220; // cosmetic beam-display duration after firing (SECTION M — no re-tracking during this window) — unchanged from PART 2
@@ -1088,7 +1148,42 @@
   securityRobotImgs.east.src = 'assets/security/security_robot_east.png';
   let securityRobots = [];
   let securityAttackSlotsInUse = 0;
-  // ================= END PART 2 constants (state machine/logic further below) =================
+
+  // ================= PART 5 SECTION A: DRONE behavior profiles =================
+  // Every DRONE is assigned exactly one of these 4 named profiles at spawn
+  // (never re-rolled mid-life) — NORMAL/FAST_PATROL/FAST_SEARCH multiply the
+  // existing random base patrol/scan speed (SECURITY_PATROL_SPEED_*/
+  // SECURITY_SCAN_SPEED_*) picked per-robot exactly as before; CENTER_SCANNER
+  // instead gets its own dedicated center-stop state machine (SECTION B)
+  // layered on top of the same base speeds, so its own multiplier entry here
+  // stays neutral (1.0/1.0) by design.
+  const SECURITY_BEHAVIOR_TYPES = ['NORMAL', 'FAST_PATROL', 'FAST_SEARCH', 'CENTER_SCANNER'];
+  const SECURITY_BEHAVIOR_MULTIPLIERS = {
+    NORMAL: { patrol: 1.0, scan: 1.0 },
+    FAST_PATROL: { patrol: 1.5, scan: 1.0 },
+    FAST_SEARCH: { patrol: 1.0, scan: 1.5 },
+    CENTER_SCANNER: { patrol: 1.0, scan: 1.0 },
+  };
+  // ================= PART 5 SECTION B: CENTER SCANNER state machine =================
+  // patrol -> returningToCenter -> centerScan -> patrol. CENTER_SCAN_SLOW_
+  // FACTOR (B-4) is applied ON TOP OF whatever scanSpeed this robot was
+  // already given (base random × TYPE multiplier × the current STORY STAGE's
+  // own speed multiplier, SECTION J-4/L-3) — so a CENTER SCANNER always
+  // reads as slower than its OWN normal SEARCH speed, at any stage.
+  const CENTER_SCAN_SLOW_FACTOR = 0.5;
+  const CENTER_SCAN_DURATION_MIN_MS = 1500, CENTER_SCAN_DURATION_MAX_MS = 3000; // B-6
+  const CENTER_SCAN_RETURN_SPEED = 50; // px/s while walking back to patrolCenterX
+  const CENTER_SCAN_COOLDOWN_MIN_MS = 3000, CENTER_SCAN_COOLDOWN_MAX_MS = 6500; // time spent patrolling between center-stop trips — randomized per robot so trips never globally sync (B-6)
+  // ================= PART 5 SECTION C: randomized DRONE count per AREA =================
+  const SECURITY_DRONE_COUNT_CHOICES = [3, 5, 7];
+  // ================= PART 5 SECTION N: FINAL STAGE's own DRONE spec =================
+  // N-1: fixed at exactly 3, never drawn from the 3/5/7 pool above. N-6:
+  // its own distinct, explicitly-named multiplier — defaults to 1.0 and
+  // deliberately does NOT inherit STAGE 8/9's 1.5x (STORY_STAGE_PLAN's own
+  // `speedMult` field further below is never read for the FINAL entry).
+  const FINAL_STAGE_DRONE_COUNT = 3;
+  const FINAL_STAGE_DRONE_SPEED_MULTIPLIER = 1.0;
+  // ================= END PART 2/5 constants (state machine/logic further below) =================
 
   // Minimum straight-line distance a new relocate position must keep from
   // the PREVIOUS one, so the loop never reads as a near-repeat/fixed spot.
@@ -1703,17 +1798,18 @@
     boss.darkPhaseClawsFiredCount = 0;
     boss.darkPhaseSubState = 'hidden'; // fully invisible/untargetable for DARK_PHASE_HIDDEN_MS, per spec
     bossEnterState('darkphase', now);
-    // SECTION J: ENCOUNTER 3 (currentStageIndex===2, the last STAGE) forces
-    // STUN the instant DARK PHASE transitions in — J-5's own explicit
-    // "on transition, not on every loop" wording is satisfied for free
-    // here, since startBossDarkPhase() only ever runs once per DARK PHASE
-    // entry (the hidden->telegraph->attacking loop inside
-    // updateBossDarkPhase() never calls this function again until the next
-    // FULL DARK PHASE entry). J-4: skipped outright if already stunned, so
-    // this can never re-flash/double-STUN a player who is already in that
-    // state for some other reason (idle watchdog, a previous ENCOUNTER 3
-    // DARK PHASE loop, etc).
-    if (currentStageIndex === 2 && !player.stunned) {
+    // SECTION J (PART 5 SECTION Q/R/W-5: now keyed off bossEncounterIndex,
+    // never the raw STORY STAGE position): ENCOUNTER 3 forces STUN the
+    // instant DARK PHASE transitions in — J-5's own explicit "on
+    // transition, not on every loop" wording is satisfied for free here,
+    // since startBossDarkPhase() only ever runs once per DARK PHASE entry
+    // (the hidden->telegraph->attacking loop inside updateBossDarkPhase()
+    // never calls this function again until the next FULL DARK PHASE
+    // entry). J-4: skipped outright if already stunned, so this can never
+    // re-flash/double-STUN a player who is already in that state for some
+    // other reason (idle watchdog, a previous ENCOUNTER 3 DARK PHASE loop,
+    // etc).
+    if (bossEncounterIndex === 2 && !player.stunned) {
       encounter3StunFlashRemainingMs = ENCOUNTER3_STUN_FLASH_TOTAL_MS;
       triggerStun(now);
     }
@@ -2055,10 +2151,10 @@
       // a hit can even land, but DARK PHASE's entry condition must NEVER
       // fire once the death sequence (or any other cinematic) has begun, so
       // this doesn't rely solely on that indirect protection.
-      // SECTION J: ENCOUNTER 1 (currentStageIndex === 0) never sees DARK
-      // PHASE at all, organic AUTO-AIM trigger included — only ENCOUNTER
-      // 2/3 do.
-      if (currentStageIndex > 0 && boss.state !== 'flashdown' && boss.state !== 'darkphase' && !bossIsInCinematic()) {
+      // SECTION J (PART 5 SECTION Q/R keyed off bossEncounterIndex now):
+      // ENCOUNTER 1 never sees DARK PHASE at all, organic AUTO-AIM trigger
+      // included — only ENCOUNTER 2/3 do.
+      if (bossEncounterIndex > 0 && boss.state !== 'flashdown' && boss.state !== 'darkphase' && !bossIsInCinematic()) {
         startBossDarkPhase(now);
         boss.darkPhaseTriggeredThisEncounter = true;
       }
@@ -2359,10 +2455,13 @@
 
   function updateBoss(dt, now) {
     if (gameState.mode !== 'boss') return; // TRAINING MODE never spawns a boss
-    if (!boss.spawned) {
-      if (now - modeStartTime >= BOSS_SPAWN_DELAY_MS) spawnBoss(now);
-      return;
-    }
+    // PART 5 SECTION T: GABRIEL is now always spawned explicitly, the
+    // instant a boss-type STORY_STAGE_PLAN entry is entered (see
+    // enterStoryStage()) — there is no longer a delay-timer auto-spawn (the
+    // old BOSS_SPAWN_DELAY_MS mechanism), since STAGE 0 is now always a
+    // DRONE-type STAGE under the fixed plan and would otherwise spawn
+    // GABRIEL into a supposedly boss-free STAGE once the old timer elapsed.
+    if (!boss.spawned) return;
     if (boss.state === 'dead') return;
     // Cinematic sequences each own their own progression/timing entirely —
     // see updateBossIntro/Threshold/Dying() — and never fall through to the
@@ -2401,7 +2500,7 @@
     // fired organically by the time HP crosses the halfway mark, force it
     // right here rather than leaving it purely up to whether the player
     // happens to land 4 AUTO-AIM hits.
-    if (currentStageIndex > 0 && !boss.darkPhaseTriggeredThisEncounter &&
+    if (bossEncounterIndex > 0 && !boss.darkPhaseTriggeredThisEncounter &&
         boss.hp <= BOSS_HP_MAX * DARK_PHASE_GUARANTEE_HP_FRAC &&
         (boss.state === 'chase' || boss.state === 'attack' || boss.state === 'defense')) {
       boss.darkPhaseTriggeredThisEncounter = true;
@@ -2446,7 +2545,7 @@
         // SECTION N: scaled by the current ENCOUNTER's own movement
         // multiplier (1.00/1.10/1.20 for encounter 1/2/3) — never mutates
         // the base BOSS_CHASE_SPEED constant itself.
-        const chaseSpeed = BOSS_CHASE_SPEED * getBossDifficultyMultiplier(currentStageIndex).movement;
+        const chaseSpeed = BOSS_CHASE_SPEED * getBossDifficultyMultiplier(bossEncounterIndex).movement;
         vx = dirX * chaseSpeed;
         vy = dirY * chaseSpeed;
         boss.x += vx * dt;
@@ -2528,7 +2627,7 @@
       // never multiply) — 1.15x frequency == cooldown / 1.15, exactly as
       // specified, so difficulty scaling never accidentally slows attacks
       // down.
-      const recoverMs = BOSS_RECOVER_MS / getBossDifficultyMultiplier(currentStageIndex).attackFrequency;
+      const recoverMs = BOSS_RECOVER_MS / getBossDifficultyMultiplier(bossEncounterIndex).attackFrequency;
       if (now - boss.stateEnteredAt >= recoverMs) {
         bossEnterState('chase', now);
       }
@@ -2606,12 +2705,14 @@
     if (boss.cinematicElapsed >= DYING_DURATION_MS) {
       boss.state = 'dead';
       boss.deadAt = now;
-      // SECTION L-2/O/P: ENCOUNTER 3 (the last STAGE) triggers GAME CLEAR
+      // SECTION L-2/O/P (PART 5 SECTION U-4: now keyed off the STORY_STAGE_
+      // PLAN entry's own `final` flag, never a raw stage-position/STAGES.
+      // length comparison): the FINAL GABRIEL ENCOUNTER triggers GAME CLEAR
       // directly, right as the existing defeat effect finishes — no EXIT
       // walk for the final encounter (nothing left to walk toward).
       // ENCOUNTER 1/2 are unaffected: they still use the pre-existing
       // EXIT-walk -> beginStageTransition() flow untouched.
-      if (gameState.mode === 'boss' && currentStageIndex >= STAGES.length - 1) {
+      if (isFinalStoryStage()) {
         triggerGameClear(now);
       }
     }
@@ -2944,7 +3045,6 @@
     paused: false, // game starts running in BOSS MODE, same as before PAUSE existed
     screen: 'boot', // 'boot' | 'loading' | 'opening' | 'mainMenu' | 'gameplay'
   };
-  let modeStartTime = performance.now();
 
   // ---------- SECTION Q: RESULT stats ----------
   // Reset fresh every time STORY MODE actually starts (see startMode()) —
@@ -3117,6 +3217,10 @@
   function worldScrollUnlocked() {
     // SECTION 15-18: no longer restricted to portrait (H >= W) — see the
     // matching note above the currentArea/area1Cleared block in update().
+    // PART 5 SECTION G/U: a DRONE-only STORY STAGE is never kill-gated —
+    // its EXIT is open immediately, exactly like TRAINING's own always-open
+    // EXIT below — so this only checks area2Cleared for GABRIEL-type STAGES.
+    if (isStoryDroneStage()) return gameState.mode === 'boss' && !stageTransition.active;
     return gameState.mode === 'boss' && area2Cleared && !stageTransition.active;
   }
   // PART 4 SECTION K/L: TRAINING's own equivalent of worldScrollUnlocked()
@@ -3188,6 +3292,55 @@
     // — STUN is already fully disabled for both TRAINING modes (SECTION A).
   }
 
+  // PART 5 SECTION S: picks a fresh STORY DRONE-stage background, avoiding
+  // an exact repeat of the immediately-preceding one when the pool allows
+  // it (S-3) — the same pattern advanceTrainingStage() already uses above,
+  // kept as its own small helper here since STORY's own index
+  // (storyDroneBgIndex) is entirely independent of TRAINING's.
+  function pickFreshStoryDroneBackground() {
+    const pool = TRAINING_BACKGROUNDS;
+    if (pool.length <= 1) return;
+    const prevIndex = storyDroneBgIndex;
+    let nextIndex = prevIndex;
+    while (nextIndex === prevIndex) nextIndex = Math.floor(Math.random() * pool.length);
+    storyDroneBgIndex = nextIndex;
+  }
+
+  // PART 5 SECTION T: the ONE place that enters whatever STORY_STAGE_PLAN
+  // [currentStageIndex] describes, fully fresh — used by BOTH a brand-new
+  // STORY run (resetModeState()) and every stage-transition advance
+  // (updateStageTransition() above), so there is exactly one
+  // implementation of "what does entering STORY STAGE N actually do"
+  // (never scattered if/else — SECTION T's own explicit requirement).
+  function enterStoryStage(now) {
+    const plan = STORY_STAGE_PLAN[currentStageIndex];
+    bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
+    barrels.length = 0;
+    barrelLandings.length = 0;
+    barrelRestockPending = false;
+    barrelRestockRemainingMs = 0;
+    if (plan.type === 'drone') {
+      // SECTION F-6/F-8/X-1: no GABRIEL, no BOSS INTRO, zero barrels.
+      boss.spawned = false;
+      boss.state = 'inactive';
+      spawnBarrels(0);
+      pickFreshStoryDroneBackground(); // SECTION S-1
+      populateSecurityDroneAreas(securityRobots, plan.speedMult); // SECTION F-1/F-2/F-3/J/L: per-AREA 3/5/7, this STAGE's own speed multiplier baked in
+      securityAttackSlotsInUse = 0;
+    } else { // 'boss': a GABRIEL ENCOUNTER
+      bossEncounterIndex = plan.encounterIndex; // SECTION Q: the ONLY place this is ever set
+      spawnBarrels(BOSS_ENCOUNTER_BARREL_COUNTS[bossEncounterIndex]); // SECTION K/X
+      if (plan.final) {
+        spawnBoss(now); // SECTION M: GABRIEL must exist before N-3's "avoid GABRIEL's own body" placement check can read boss.x/y
+        spawnFinalStageDrones(); // SECTION M/N: 3 randomly-placed DRONEs alongside GABRIEL
+      } else {
+        securityRobots.length = 0;
+        securityAttackSlotsInUse = 0;
+        spawnBoss(now);
+      }
+    }
+  }
+
   function updateStageTransition(now) {
     if (!stageTransition.active) return;
     const elapsed = now - stageTransition.startedAt;
@@ -3196,12 +3349,13 @@
       if (gameState.mode === 'training' || gameState.mode === 'securityTraining') {
         advanceTrainingStage(now);
       } else {
-        // SECTION K/L/O: STORY MODE is now a fixed, linear progression —
-        // always the NEXT stage in order (never random, never repeating).
-        // This is only ever reached on ENCOUNTER 1->2 or 2->3 — ENCOUNTER 3's
-        // own defeat triggers GAME CLEAR directly instead (see
-        // updateBossDying()), so currentStageIndex + 1 is always in range
-        // here.
+        // PART 5 SECTION T/U: STORY MODE now advances through the fixed,
+        // data-driven STORY_STAGE_PLAN (10 STAGES) — this is reached from a
+        // DRONE-type STAGE's own EXIT (SECTION G) just as often as from a
+        // non-FINAL GABRIEL ENCOUNTER's defeat (SECTION U-3); the FINAL
+        // ENCOUNTER's own defeat triggers GAME CLEAR directly instead (see
+        // updateBossDying()/isFinalStoryStage()), so currentStageIndex + 1
+        // is always in range here.
         currentStageIndex += 1;
         cameraY = 0;
         // SECTION C: the next stage always starts back at AREA 1, fully
@@ -3210,11 +3364,7 @@
         area1Cleared = false;
         area2Cleared = false;
         resetPlayerToBattlePose(); // SECTION H: same fixed intro pose spawnBoss() itself uses
-        bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
-        barrels.length = 0;
-        barrelLandings.length = 0;
-        spawnBarrels(BARREL_COUNT);
-        spawnBoss(now); // fresh full-HP boss; plays the existing shake/silence/shadow/landing/south-idle/south-attack intro
+        enterStoryStage(now);
       }
       stageTransition.phase = 'in';
       stageTransition.startedAt = now;
@@ -3492,9 +3642,11 @@
     // (G-1) — without this guard, spawning 0 barrels there would read as
     // "all barrels destroyed" below and schedule an auto-restock of a
     // fresh BARREL_COUNT batch, directly contradicting G-3's "何回移動して
-    // もbarrelが復活・生成されないこと". STORY MODE and BASIC TRAINING are
-    // both unaffected (G-2).
-    if (gameState.mode === 'securityTraining') return;
+    // もbarrelが復活・生成されないこと". PART 5 SECTION F-8/X-1/M-4: the same
+    // applies to every DRONE-only STORY STAGE and to the FINAL STAGE (0
+    // barrels there too, replaced by 3 DRONEs). GABRIEL-type STORY STAGEs
+    // and BASIC TRAINING are both unaffected (G-2).
+    if (gameState.mode === 'securityTraining' || isStoryDroneStage() || isFinalStoryStage()) return;
     let pendingCount = 0;
     for (const b of barrels) {
       if (b.falling) {
@@ -3569,50 +3721,146 @@
 
   const SECURITY_SCAN_AXES = ['horizontal', 'vertical'];
 
-  // SECTION E/F/H/Q: reset-then-repopulate, mirroring spawnBarrels()'s own
-  // pattern — called fresh from resetModeState() on every SECURITY TRAINING
-  // session start AND every RESTART, so every robot's position/patrol/scan/
-  // HP/state is always fully re-randomized from scratch (Q-1). Each robot's
-  // scanAxis (I-5) and every other randomized trait (F-4/J-4) is picked
-  // ONCE here and never changed again for that robot's lifetime. PART 4
-  // SECTION B/J: now spawns SECURITY_ROBOTS_PER_AREA robots into EACH of
-  // AREA1 and AREA2 (not one pooled random count across the whole world).
+  // PART 5 SECTION A-2: picks one behavior TYPE per DRONE in a batch of
+  // `count`, guaranteeing the batch is never all-identical (A-2's own
+  // explicit "動きが速いDRONE・SEARCHだけ速いDRONE・通常DRONE・中央停止scanner
+  // が混在するように") whenever count >= 2 — a single-DRONE batch has no
+  // "mixed" concept to satisfy, so it's left alone.
+  function pickSecurityBehaviorTypes(count) {
+    const types = [];
+    for (let i = 0; i < count; i++) {
+      types.push(SECURITY_BEHAVIOR_TYPES[Math.floor(Math.random() * SECURITY_BEHAVIOR_TYPES.length)]);
+    }
+    if (count >= 2 && types.every((t) => t === types[0])) {
+      let alt = types[0];
+      while (alt === types[0]) alt = SECURITY_BEHAVIOR_TYPES[Math.floor(Math.random() * SECURITY_BEHAVIOR_TYPES.length)];
+      types[Math.floor(Math.random() * count)] = alt;
+    }
+    return types;
+  }
+
+  // SECTION A-3/J-3/L-3: builds one fresh DRONE object — behaviorType's own
+  // TYPE multiplier and the current STORY STAGE's own speedMult (1.0 for
+  // SECURITY TRAINING and every non-STORY caller) are both baked directly
+  // into patrolSpeed/scanSpeed ONCE here (never re-looked-up per frame), and
+  // compose multiplicatively exactly as specified (base random × TYPE ×
+  // STAGE). scanSpeed keeps meaning "this robot's own normal SEARCH speed"
+  // for its whole life — CENTER SCANNER's own slow centerScan sweep
+  // (SECTION B) derives its speed from this same field at read-time
+  // (× CENTER_SCAN_SLOW_FACTOR), so the STAGE multiplier is automatically
+  // folded into its slow speed too (J-4/L-4) without being stored twice.
+  function buildSecurityDrone(x, y, behaviorType, speedMult) {
+    const mult = SECURITY_BEHAVIOR_MULTIPLIERS[behaviorType];
+    const patrolDir = Math.random() < 0.5 ? 1 : -1;
+    const basePatrolSpeed = SECURITY_PATROL_SPEED_MIN + Math.random() * (SECURITY_PATROL_SPEED_MAX - SECURITY_PATROL_SPEED_MIN);
+    const baseScanSpeed = SECURITY_SCAN_SPEED_MIN + Math.random() * (SECURITY_SCAN_SPEED_MAX - SECURITY_SCAN_SPEED_MIN);
+    return {
+      x, y, // y is this robot's fixed row — only x ever changes (F: left/right only)
+      patrolCenterX: x,
+      patrolRange: SECURITY_PATROL_RANGE_MIN + Math.random() * (SECURITY_PATROL_RANGE_MAX - SECURITY_PATROL_RANGE_MIN),
+      patrolSpeed: basePatrolSpeed * mult.patrol * speedMult,
+      patrolDir,
+      dir: patrolDir > 0 ? 'east' : 'west', // F-6
+      hp: SECURITY_DRONE_HP,
+      hitFlashStartAt: -Infinity, // SECTION E: independent per-robot damage-blink state
+      behaviorType, // PART 5 SECTION A: fixed for life, chosen once here
+      // SECTION I: fixed for this robot's whole lifetime, chosen once here.
+      scanAxis: SECURITY_SCAN_AXES[Math.floor(Math.random() * SECURITY_SCAN_AXES.length)],
+      // SECTION K-1: the scan's own origin is bound to the PATROL CENTER
+      // (never the drone's live, constantly-moving x) so the SHADOW can
+      // never be left behind in an unrelated spot as the drone patrols.
+      scanCenterX: x,
+      scanCenterY: y,
+      scanRange: SECURITY_SCAN_RANGE_MIN + Math.random() * (SECURITY_SCAN_RANGE_MAX - SECURITY_SCAN_RANGE_MIN),
+      scanSpeed: baseScanSpeed * mult.scan * speedMult,
+      scanOffset: (Math.random() * 2 - 1) * SECURITY_SCAN_RANGE_MIN, // J-4: desynced starting phase
+      scanDir: Math.random() < 0.5 ? 1 : -1,
+      state: 'watching',
+      telegraphElapsedMs: 0,
+      cooldownRemainingMs: 0,
+      lockedTargetX: 0, lockedTargetY: 0,
+      laserOriginX: 0, laserOriginY: 0, laserEndX: 0, laserEndY: 0,
+      laserRemainingMs: 0,
+      // PART 5 SECTION B: CENTER SCANNER's own center-stop state machine —
+      // null/inert for every other TYPE (their movement branch below never
+      // reads these fields at all).
+      moveState: behaviorType === 'CENTER_SCANNER' ? 'patrol' : null,
+      centerScanCooldownRemainingMs: behaviorType === 'CENTER_SCANNER'
+        ? (CENTER_SCAN_COOLDOWN_MIN_MS + Math.random() * (CENTER_SCAN_COOLDOWN_MAX_MS - CENTER_SCAN_COOLDOWN_MIN_MS))
+        : 0,
+      centerScanDurationMs: 0,
+      centerScanRemainingMs: 0,
+    };
+  }
+
+  // PART 5 SECTION C: each AREA independently rolls its own DRONE count from
+  // exactly {3,5,7} (C-1) — securityDroneRowY()'s existing (count+1)-segment
+  // formula already generalizes to any of these with no changes needed
+  // (C-3).
+  function pickSecurityDroneCount() {
+    return SECURITY_DRONE_COUNT_CHOICES[Math.floor(Math.random() * SECURITY_DRONE_COUNT_CHOICES.length)];
+  }
+
+  // Shared by SECURITY TRAINING and every STORY DRONE-type STAGE: builds a
+  // full fresh 2-AREA population into `into` (mutated in place, mirroring
+  // spawnBarrels()'s own reset-then-repopulate pattern) — each AREA's own
+  // count and behavior-TYPE mix are rolled independently (C-1/C-2/A-2).
+  function populateSecurityDroneAreas(into, speedMult) {
+    into.length = 0;
+    for (const area of [1, 2]) {
+      const count = pickSecurityDroneCount();
+      const types = pickSecurityBehaviorTypes(count);
+      for (let i = 0; i < count; i++) {
+        const y = securityDroneRowY(area, i, count);
+        const x = pickSecurityDroneCenterX(into, area, y);
+        into.push(buildSecurityDrone(x, y, types[i], speedMult));
+      }
+    }
+  }
+
+  // SECTION D: SECURITY TRAINING's own spawn/re-roll entry point — called
+  // fresh from resetModeState() on every session start AND every RESTART,
+  // and again from advanceTrainingStage() on every AREA2 EXIT (D-2: count,
+  // behavior profile, patrol/scan speed, and scanAxis are ALL re-rolled,
+  // never carried over), so every robot's full state is always brand new.
+  // SECURITY TRAINING's own speedMult is always 1.0 (D-3: no STORY STAGE
+  // multiplier applies here).
   function spawnSecurityRobots() {
+    populateSecurityDroneAreas(securityRobots, 1.0);
+    securityAttackSlotsInUse = 0;
+  }
+
+  // PART 5 SECTION M/N: the FINAL STAGE's own distinct 3-DRONE placement —
+  // fixed count (N-1, never the 3/5/7 pool), genuinely random (x,y) within
+  // AREA1's own band (N-2, not the regular Y-even-spacing rows every other
+  // DRONE stage uses), avoiding the player's spawn point, GABRIEL's own
+  // body, UI zones, and DRONE-DRONE overlap (N-3). TYPE is randomly chosen
+  // per-DRONE from all 4 existing types (N-5); speedMult is the FINAL
+  // STAGE's own dedicated constant, never STAGE 8/9's 1.5x (N-6).
+  function spawnFinalStageDrones() {
     securityRobots.length = 0;
     securityAttackSlotsInUse = 0;
-    for (const area of [1, 2]) {
-      for (let i = 0; i < SECURITY_ROBOTS_PER_AREA; i++) {
-        const y = securityDroneRowY(area, i, SECURITY_ROBOTS_PER_AREA);
-        const x = pickSecurityDroneCenterX(securityRobots, area, y);
-        const patrolDir = Math.random() < 0.5 ? 1 : -1;
-        securityRobots.push({
-          x, y, // y is this robot's fixed row — only x ever changes (F: left/right only)
-          patrolCenterX: x,
-          patrolRange: SECURITY_PATROL_RANGE_MIN + Math.random() * (SECURITY_PATROL_RANGE_MAX - SECURITY_PATROL_RANGE_MIN),
-          patrolSpeed: SECURITY_PATROL_SPEED_MIN + Math.random() * (SECURITY_PATROL_SPEED_MAX - SECURITY_PATROL_SPEED_MIN),
-          patrolDir,
-          dir: patrolDir > 0 ? 'east' : 'west', // F-6
-          hp: SECURITY_DRONE_HP,
-          hitFlashStartAt: -Infinity, // SECTION E: independent per-robot damage-blink state
-          // SECTION I: fixed for this robot's whole lifetime, chosen once here.
-          scanAxis: SECURITY_SCAN_AXES[Math.floor(Math.random() * SECURITY_SCAN_AXES.length)],
-          // SECTION K-1: the scan's own origin is bound to the PATROL CENTER
-          // (never the drone's live, constantly-moving x) so the SHADOW can
-          // never be left behind in an unrelated spot as the drone patrols.
-          scanCenterX: x,
-          scanCenterY: y,
-          scanRange: SECURITY_SCAN_RANGE_MIN + Math.random() * (SECURITY_SCAN_RANGE_MAX - SECURITY_SCAN_RANGE_MIN),
-          scanSpeed: SECURITY_SCAN_SPEED_MIN + Math.random() * (SECURITY_SCAN_SPEED_MAX - SECURITY_SCAN_SPEED_MIN),
-          scanOffset: (Math.random() * 2 - 1) * SECURITY_SCAN_RANGE_MIN, // J-4: desynced starting phase
-          scanDir: Math.random() < 0.5 ? 1 : -1,
-          state: 'watching',
-          telegraphElapsedMs: 0,
-          cooldownRemainingMs: 0,
-          lockedTargetX: 0, lockedTargetY: 0,
-          laserOriginX: 0, laserOriginY: 0, laserEndX: 0, laserEndY: 0,
-          laserRemainingMs: 0,
-        });
+    const areaTop = areaTopY(1);
+    const marginX = SECURITY_ROBOT_DRAW_D * 3;
+    const marginTop = areaTop + H * 0.22, marginBottom = areaTop + H - H * 0.22;
+    for (let i = 0; i < FINAL_STAGE_DRONE_COUNT; i++) {
+      let x = W * 0.5, y = (marginTop + marginBottom) / 2;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const cx = marginX + Math.random() * (W - marginX * 2);
+        const cy = marginTop + Math.random() * (marginBottom - marginTop);
+        if (isNearUIZone(cx, cy - areaTop)) continue;
+        if (Math.hypot(cx - player.x, cy - player.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue; // N-3: clear of the player's own spawn point
+        if (Math.hypot(cx - boss.x, cy - boss.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue; // N-3: clear of GABRIEL's own body
+        let tooClose = false;
+        for (const r of securityRobots) {
+          if (Math.hypot(cx - r.patrolCenterX, cy - r.y) < SECURITY_ROBOT_MIN_SPACING) { tooClose = true; break; } // N-3: DRONE-DRONE overlap
+        }
+        if (tooClose) continue;
+        x = cx; y = cy;
+        break;
       }
+      const behaviorType = SECURITY_BEHAVIOR_TYPES[Math.floor(Math.random() * SECURITY_BEHAVIOR_TYPES.length)]; // N-5
+      securityRobots.push(buildSecurityDrone(x, y, behaviorType, FINAL_STAGE_DRONE_SPEED_MULTIPLIER));
     }
   }
 
@@ -3741,6 +3989,22 @@
       // only ever pushes cosmetic particles and (optionally) a screen
       // shake; it has no damage/knockback code path to opt out of.
       spawnExplosionVisual(robot.x, robot.y, now);
+      // PART 5 SECTION O / PART 6 SECTION D: ONLY in the FINAL STAGE, this
+      // same death-explosion also damages GABRIEL if it's within the
+      // EXISTING boss-facing barrel-explosion radius — reusing
+      // BARREL_DAMAGE_BOSS/BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS verbatim
+      // (O-2/O-3, never an invented value) and routing through the SAME
+      // applyExplosionDamageToBoss() choke-point the barrel path already
+      // uses (O-9: never a bypassing `boss.hp -=`) — which already fully
+      // respects DEFENSE-bypass-but-DARK-PHASE/teleport/straightclaw/
+      // cinematic-immunity exactly like barrels do (O-8, PART 6 D-2/D-3),
+      // and never touches position/velocity, so there is inherently no
+      // GABRIEL knockback (O-5), no player damage/knockback (O-6), and no
+      // effect whatsoever on any OTHER drone (O-7/no chain-explosion).
+      if (isFinalStoryStage() && boss.spawned &&
+          Math.hypot(robot.x - boss.x, robot.y - boss.y) <= BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS + BOSS_HURT_RADIUS) {
+        applyExplosionDamageToBoss(BARREL_DAMAGE_BOSS, now);
+      }
     } else {
       // SECTION E: a non-lethal hit starts this DRONE's own independent
       // blink — see drawSecurityRobot()'s use of hitFlashStartAt below.
@@ -3759,8 +4023,70 @@
   // 'watching' it stops re-checking the shadow entirely until it returns to
   // 'watching' — this is what keeps standing in the same shadow every frame
   // from spamming infinite attack-requests (I-2, unchanged from PART 2).
+  // PART 5 SECTION B: CENTER SCANNER's own center-stop movement branch —
+  // patrol (normal left/right + scan ping-pong, identical to every other
+  // TYPE) -> returningToCenter (walks back toward patrolCenterX) ->
+  // centerScan (B-3: fully stationary, SOUTH sprite, B-4: scanSpeed slowed
+  // ×CENTER_SCAN_SLOW_FACTOR, B-5: same shadow size/dimensions, untouched)
+  // -> patrol (B-7: resumes facing WEST/EAST). Only ever called while NOT
+  // lockedOn (see updateSecurityRobots() below) — a threat-state interrupt
+  // simply freezes whatever moveState this robot was in, exactly like every
+  // other TYPE's patrol already freezes on detection (B-8: the shadow/
+  // detection/telegraph/laser state machine itself is entirely unaffected
+  // by moveState and keeps running as normal in every branch below).
+  function updateCenterScannerMovement(robot, dt) {
+    switch (robot.moveState) {
+      case 'returningToCenter': {
+        const dx = robot.patrolCenterX - robot.x;
+        const step = CENTER_SCAN_RETURN_SPEED * dt;
+        if (Math.abs(dx) <= step) {
+          robot.x = robot.patrolCenterX;
+          robot.moveState = 'centerScan';
+          robot.centerScanDurationMs = CENTER_SCAN_DURATION_MIN_MS + Math.random() * (CENTER_SCAN_DURATION_MAX_MS - CENTER_SCAN_DURATION_MIN_MS); // B-6: randomized, desynced per robot
+          robot.centerScanRemainingMs = robot.centerScanDurationMs;
+          robot.dir = 'south'; // B-3
+        } else {
+          robot.x += Math.sign(dx) * step;
+          robot.dir = dx > 0 ? 'east' : 'west';
+          robot.scanOffset += robot.scanDir * robot.scanSpeed * dt;
+          if (robot.scanOffset >= robot.scanRange) { robot.scanOffset = robot.scanRange; robot.scanDir = -1; }
+          else if (robot.scanOffset <= -robot.scanRange) { robot.scanOffset = -robot.scanRange; robot.scanDir = 1; }
+        }
+        break;
+      }
+      case 'centerScan': {
+        robot.dir = 'south'; // B-3: fully stationary, SOUTH sprite
+        const slowSpeed = robot.scanSpeed * CENTER_SCAN_SLOW_FACTOR; // B-4 (STAGE multiplier already folded into scanSpeed itself — J-4/L-4)
+        robot.scanOffset += robot.scanDir * slowSpeed * dt; // B-5: scanRange/radii untouched — only the sweep speed slows
+        if (robot.scanOffset >= robot.scanRange) { robot.scanOffset = robot.scanRange; robot.scanDir = -1; }
+        else if (robot.scanOffset <= -robot.scanRange) { robot.scanOffset = -robot.scanRange; robot.scanDir = 1; }
+        robot.centerScanRemainingMs -= dt * 1000;
+        if (robot.centerScanRemainingMs <= 0) {
+          robot.moveState = 'patrol'; // B-7
+          robot.patrolDir = Math.random() < 0.5 ? 1 : -1;
+          robot.dir = robot.patrolDir > 0 ? 'east' : 'west';
+          robot.centerScanCooldownRemainingMs = CENTER_SCAN_COOLDOWN_MIN_MS + Math.random() * (CENTER_SCAN_COOLDOWN_MAX_MS - CENTER_SCAN_COOLDOWN_MIN_MS);
+        }
+        break;
+      }
+      default: { // 'patrol' — identical left/right + scan ping-pong as every other TYPE
+        robot.x += robot.patrolDir * robot.patrolSpeed * dt;
+        if (robot.x >= robot.patrolCenterX + robot.patrolRange) { robot.x = robot.patrolCenterX + robot.patrolRange; robot.patrolDir = -1; }
+        else if (robot.x <= robot.patrolCenterX - robot.patrolRange) { robot.x = robot.patrolCenterX - robot.patrolRange; robot.patrolDir = 1; }
+        robot.x = Math.max(SECURITY_ROBOT_DRAW_D, Math.min(W - SECURITY_ROBOT_DRAW_D, robot.x));
+        robot.dir = robot.patrolDir > 0 ? 'east' : 'west';
+        robot.scanOffset += robot.scanDir * robot.scanSpeed * dt;
+        if (robot.scanOffset >= robot.scanRange) { robot.scanOffset = robot.scanRange; robot.scanDir = -1; }
+        else if (robot.scanOffset <= -robot.scanRange) { robot.scanOffset = -robot.scanRange; robot.scanDir = 1; }
+        robot.centerScanCooldownRemainingMs -= dt * 1000;
+        if (robot.centerScanCooldownRemainingMs <= 0) robot.moveState = 'returningToCenter';
+        break;
+      }
+    }
+  }
+
   function updateSecurityRobots(dt, now) {
-    if (gameState.mode !== 'securityTraining') return;
+    if (!isSecurityDroneSystemActive()) return;
     for (const robot of securityRobots) {
       if (robot.hp <= 0) continue; // SECTION E-4: a dead DRONE does nothing at all — no movement, scan, detection, telegraph, or laser
       // SECTION F/M-4: the DRONE "locks on" and stops its own left/right
@@ -3771,7 +4097,9 @@
       // whole scene visibly "holds" on the moment of detection rather than
       // continuing to drift underneath it.
       const lockedOn = robot.state === 'detected' || robot.state === 'telegraph' || robot.state === 'attack';
-      if (!lockedOn) {
+      if (!lockedOn && robot.behaviorType === 'CENTER_SCANNER') {
+        updateCenterScannerMovement(robot, dt);
+      } else if (!lockedOn) {
         robot.x += robot.patrolDir * robot.patrolSpeed * dt;
         if (robot.x >= robot.patrolCenterX + robot.patrolRange) {
           robot.x = robot.patrolCenterX + robot.patrolRange;
@@ -3842,15 +4170,19 @@
   // SECTION H/L: the new searchlight SHADOW — a wide, short, soft-edged
   // oval/capsule (retiring PART 2's thin directional rectangle — SECTION G)
   // drawn from the SAME getSecurityShadowCenter()/radii the hitbox above
-  // uses, so visual and hitbox can never disagree (L-1). Deliberately never
-  // a red laser-sight look, never a flashy glow, never a solid opaque shape.
+  // uses, so visual and hitbox can never disagree (L-1). PART 6 SECTION E:
+  // recolored from dark/black to a translucent WHITE searchlight — shape/
+  // size/blur are all otherwise completely unchanged (E-2/E-5); applies
+  // identically to every DRONE in every mode/STAGE, including CENTER
+  // SCANNER's own centerScan sweep (SECTION G — never a separate color for
+  // that TYPE).
   function drawSecurityShadow(robot) {
     if (robot.hp <= 0) return; // E-4: dead DRONEs cast no shadow
     const c = getSecurityShadowCenter(robot);
     ctx.save();
     ctx.filter = 'blur(3px)';
     ctx.globalAlpha = (robot.state === 'detected' || robot.state === 'telegraph' || robot.state === 'attack') ? 0.75 : 0.6;
-    ctx.fillStyle = '#050608';
+    ctx.fillStyle = 'rgba(255,255,255,1)'; // PART 6 SECTION E-3/E-4: white base tone, translucency via globalAlpha (~0.6-0.75, within the suggested 0.55-0.70 band at rest)
     ctx.beginPath();
     ctx.ellipse(c.x, c.y, SECURITY_SHADOW_RADIUS_X, SECURITY_SHADOW_RADIUS_Y, 0, 0, Math.PI * 2);
     ctx.fill();
@@ -4224,6 +4556,7 @@
     // Stage world/camera/EXIT (PART 21-29) — a RESTART or mode switch always
     // returns to the first/default stage with the world fully closed back up.
     currentStageIndex = 0;
+    bossEncounterIndex = 0; // PART 5 SECTION Q: fresh per STORY run, same as currentStageIndex
     cameraY = 0;
     stageTransition.active = false;
     stageTransition.phase = null;
@@ -4233,25 +4566,32 @@
     area1Cleared = false;
     area2Cleared = false;
 
-    modeStartTime = performance.now();
     barrelLandings.length = 0;
     barrelRestockPending = false;
     barrelRestockRemainingMs = 0;
-    // PART 4 SECTION G: SECURITY TRAINING spawns zero barrels — STORY MODE
-    // and BASIC TRAINING both keep the existing BARREL_COUNT (5) (G-1/G-2).
-    spawnBarrels(gameState.mode === 'securityTraining' ? 0 : BARREL_COUNT);
     hideRangeUI();
     resetFlashGrenade();
 
-    // SECTION B/D/Q (PART 2): SECURITY TRAINING picks a fresh background and
-    // fully re-spawns its robots (positions/directions/state/cooldowns) on
-    // every session start AND every RESTART — never carried over from a
-    // previous run. Leaving the mode clears robot state so it can never be
-    // drawn/updated/collide with anything outside SECURITY TRAINING (S).
+    // SECTION B/D/Q (PART 2)/PART 5 SECTION T: SECURITY TRAINING picks a
+    // fresh background and fully re-spawns its robots (positions/
+    // directions/state/behavior profiles/cooldowns) on every session start
+    // AND every RESTART — never carried over from a previous run. STORY
+    // MODE always restarts at STORY_STAGE_PLAN[0] (always a DRONE-type
+    // STAGE under the fixed plan) via the SAME plan-aware enterStoryStage()
+    // the stage-transition advance uses (SECTION T's own "one central
+    // implementation" requirement) — it handles its own barrels/DRONEs/
+    // GABRIEL spawn. BASIC TRAINING keeps the existing BARREL_COUNT (5) and
+    // never touches securityRobots at all (G-1/G-2/PART3 SECTION S).
     if (gameState.mode === 'securityTraining') {
       securityTrainingBgIndex = Math.floor(Math.random() * TRAINING_BACKGROUNDS.length);
+      spawnBarrels(0);
       spawnSecurityRobots();
+    } else if (gameState.mode === 'boss') {
+      securityRobots.length = 0;
+      securityAttackSlotsInUse = 0;
+      enterStoryStage(performance.now());
     } else {
+      spawnBarrels(BARREL_COUNT);
       securityRobots.length = 0;
       securityAttackSlotsInUse = 0;
     }
@@ -5626,6 +5966,22 @@
     SECURITY_SCAN_RANGE_MIN, SECURITY_SCAN_RANGE_MAX, SECURITY_SCAN_SPEED_MIN, SECURITY_SCAN_SPEED_MAX,
     SECURITY_DRONE_HP, SECURITY_DRONE_HIT_RADIUS, SECURITY_DRONE_DEATH_MS,
     SECURITY_ROBOT_DRAW_SCALE, SECURITY_DRONE_HIT_TINT_MS, SECURITY_DRONE_HIT_BLINK_COUNT, SECURITY_DRONE_HIT_BLINK_TOTAL_MS,
+    // Debug/verification only — PART 5: DRONE behavior profiles, CENTER
+    // SCANNER, 3/5/7 count randomization, STORY_STAGE_PLAN/bossEncounterIndex
+    // separation, FINAL STAGE DRONEs, DRONE-explosion-damages-GABRIEL.
+    SECURITY_BEHAVIOR_TYPES, SECURITY_BEHAVIOR_MULTIPLIERS,
+    CENTER_SCAN_SLOW_FACTOR, CENTER_SCAN_DURATION_MIN_MS, CENTER_SCAN_DURATION_MAX_MS,
+    CENTER_SCAN_RETURN_SPEED, CENTER_SCAN_COOLDOWN_MIN_MS, CENTER_SCAN_COOLDOWN_MAX_MS,
+    SECURITY_DRONE_COUNT_CHOICES, FINAL_STAGE_DRONE_COUNT, FINAL_STAGE_DRONE_SPEED_MULTIPLIER,
+    pickSecurityBehaviorTypes, buildSecurityDrone, pickSecurityDroneCount,
+    populateSecurityDroneAreas, spawnFinalStageDrones, updateCenterScannerMovement,
+    STORY_STAGE_PLAN, BOSS_ENCOUNTER_BARREL_COUNTS,
+    get bossEncounterIndex() { return bossEncounterIndex; },
+    set bossEncounterIndex(v) { bossEncounterIndex = v; }, // debug/verification only
+    get storyDroneBgIndex() { return storyDroneBgIndex; },
+    set storyDroneBgIndex(v) { storyDroneBgIndex = v; }, // debug/verification only
+    isStoryDroneStage, isFinalStoryStage, isSecurityDroneSystemActive,
+    enterStoryStage, pickFreshStoryDroneBackground,
   };
 
   // ---------- Main loop ----------
@@ -5771,9 +6127,10 @@
     // stage, not two separate encounters — `currentArea` only ever tracks
     // the player's LIVE position (purely for barrel-spawn margins/HUD
     // composition), it is never a boss-encounter trigger. The one and only
-    // BOSS INTRO happens once, from the initial BOSS_SPAWN_DELAY_MS timer
-    // in updateBoss() (spawnBoss() is called from there, always while
-    // currentArea is still 1) — crossing into AREA 2 is a pure world/camera
+    // BOSS INTRO happens once per GABRIEL ENCOUNTER, from enterStoryStage()'s
+    // own direct spawnBoss() call the instant a boss-type STORY_STAGE_PLAN
+    // entry is entered (always while currentArea is still 1) — crossing
+    // into AREA 2 is a pure world/camera
     // position change with NO side effects on boss/player state, no
     // re-spawn, no screen shake, no bullet/barrel reset. The boss itself is
     // the same persistent entity across the whole combined world — see its
@@ -5969,11 +6326,12 @@
           }
         }
       }
-      // PART 3 SECTION E: normal FIRE hitting a DRONE — gated on the mode
-      // itself (never just on securityRobots happening to be non-empty) so
-      // this stays structurally impossible in STORY MODE (SECTION S), same
-      // as every other SECURITY TRAINING-only system in this file.
-      if (!consumed && gameState.mode === 'securityTraining') {
+      // PART 3 SECTION E: normal FIRE hitting a DRONE — gated on
+      // isSecurityDroneSystemActive() (PART 5) rather than just
+      // securityRobots happening to be non-empty, so this stays
+      // structurally impossible outside SECURITY TRAINING, STORY's
+      // DRONE-type STAGEs, and the FINAL STAGE (SECTION S).
+      if (!consumed && isSecurityDroneSystemActive()) {
         for (const robot of securityRobots) {
           if (robot.hp <= 0) continue;
           if (Math.hypot(b.x - robot.x, b.y - robot.y) <= SECURITY_DRONE_HIT_RADIUS) {
