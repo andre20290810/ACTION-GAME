@@ -634,6 +634,13 @@
     // attacks at that setting — see applyDamageToPlayerLife()). Max is
     // chosen via the PAUSE MENU / MAIN MENU SETTING (playerMaxLife below).
     life: Infinity,
+    // SECTION C (STUN feature, distinct from the SECTION A root-cause fix
+    // below): a genuine status-effect flag, separate from isBossIntroLocked()
+    // — it never gets that lock's own "MOVE STICK still changes facing"
+    // carve-out, since STUN is meant to be a total lockout of MOVE/AIM/FIRE/
+    // DASH/FLASH/STEALTH (PAUSE stays usable). See triggerStun()/the PAUSE
+    // MENU "Reboot The Control Pannel" handler for how it's set/cleared.
+    stunned: false,
   };
 
   // PART 12/14: the ONE final-angle computation every aim/fire-direction
@@ -793,6 +800,22 @@
   const BOSS_HP_MAX = 5000; // 5x the previous 1000
   const HUD_BAR_W = 90, HUD_BAR_H = 6; // SECTION E/F/V: shared PLAYER LIFE / BOSS LIFE gauge size — declared early since it's referenced from the window.__game debug-exposure literal further down
   const HUD_MARGIN_X = 10; // SECTION E/F/V: shared HUD side margin — same early-declaration reason as HUD_BAR_W/HUD_BAR_H above
+  // SECTION B: CONTROL RECOVERY WATCHDOG — a defensive mechanism, wholly
+  // separate from the STUN game mechanic itself (see triggerStun() and
+  // SECTION I's own explicit independence requirement). lastPlayerInputAt
+  // is bumped by every real MOVE/AIM/FIRE/DASH/FLASH/STEALTH input (never
+  // by PAUSE) — see update()'s movement block and the DASH/FLASH/STEALTH
+  // press handlers. Declared early for the same window.__game-literal
+  // forward-reference reason as HUD_BAR_W above.
+  let lastPlayerInputAt = 0;
+  const CONTROL_WATCHDOG_IDLE_MS = 4000;
+  // SECTION D: how fast the orange STUN LIFE bar pulses — within the
+  // requested 500-700ms band, deliberately NOT a fast/flashy blink.
+  const STUN_LIFE_PULSE_MS = 600;
+  // SECTION M/N: the one confirmed official artist page URL (provided
+  // directly this turn) — used by both GAME OVER and RESULT's own ARTIST
+  // PAGE links, so it only ever needs updating in one place.
+  const ARTIST_PAGE_URL = 'https://www.tunecore.co.jp/artists?id=1140292&utm_source=ig&utm_medium=social&utm_content=link_in_bio&fbclid=PAdGRleAUBDaFwZG9mAmZkaWQWUNfnDNp7K4OsR1rDORVcLG0AXA4O12V4dG4DYWVtAjExAHNydGMGYXBwX2lkDzEyNDAyNDU3NDI4NzQxNAABpwXbm4sakBiMJ9ZlYKC8rJYDSVbb6nyHcFcsnqaYmSRyGKJCnX_N71DFNmgD_aem_YS0e_NpMoesX0DHRet6cWQ';
   const BOSS_SPEED = 78; // px/sec — 60% of the previous 130 (was too fast to react to). Kept as-is: DARK PHASE's STALK/CLOSE-IN/LUNGE/DISENGAGE speeds below are all derived from this and must not drift.
   // PART 29/30: normal CHASE-state movement only, ×0.90 — a separate
   // constant (not a mutation of BOSS_SPEED itself) so DARK PHASE's own
@@ -1008,6 +1031,18 @@
   const BOSS_LANDING_RED_FLASH_TOTAL_MS = BOSS_LANDING_RED_FLASH_PULSES * BOSS_LANDING_RED_FLASH_CYCLE_MS; // 420ms
   const BOSS_LANDING_RED_FLASH_ALPHA_MAX = 0.35;
   let landingRedFlashRemainingMs = 0;
+  // SECTION J: ENCOUNTER 3's forced-STUN red flash — its OWN separate
+  // timer/state, deliberately never sharing landingRedFlashRemainingMs (or
+  // any other existing flash) so the two can never compete or get confused
+  // with each other. J-3: ~3 pulses, same on/off cadence as the landing
+  // flash above for visual consistency.
+  const ENCOUNTER3_STUN_FLASH_PULSES = 3;
+  const ENCOUNTER3_STUN_FLASH_ON_MS = 90;
+  const ENCOUNTER3_STUN_FLASH_OFF_MS = 90;
+  const ENCOUNTER3_STUN_FLASH_CYCLE_MS = ENCOUNTER3_STUN_FLASH_ON_MS + ENCOUNTER3_STUN_FLASH_OFF_MS;
+  const ENCOUNTER3_STUN_FLASH_TOTAL_MS = ENCOUNTER3_STUN_FLASH_PULSES * ENCOUNTER3_STUN_FLASH_CYCLE_MS; // 540ms
+  const ENCOUNTER3_STUN_FLASH_ALPHA_MAX = 0.45;
+  let encounter3StunFlashRemainingMs = 0;
   // HP-threshold reactions: keyed by CUMULATIVE damage taken this life,
   // expressed as the HP value at/below which that much damage has landed
   // (HP only ever decreases, so this is equivalent and simpler than
@@ -1349,16 +1384,37 @@
   // AIM STICK is now fully inert during this window (handleAimStickMove()
   // and both AIM-stick listeners early-return on this same check).
   function isBossIntroLocked() {
-    // SECTION E: LIFE reaching 0 (finite settings only — Infinity never
-    // reaches it) reuses this SAME lockout every MOVE/AIM-engage/FIRE/AUTO
-    // AIM/DASH/STEALTH/FLASH gate already calls, rather than adding a
-    // parallel lock — no big GAME OVER sequence, just player input halting.
+    // SECTION A (root-cause fix, this turn): LIFE reaching 0 on a finite
+    // setting used to rely on THIS check alone to halt input — forever,
+    // completely silently, since no GAME OVER screen existed to ever move
+    // gameState.screen away from 'gameplay' again. That silent permanent
+    // lock is the actual bug behind "operations become impossible during
+    // DARK PHASE" (DARK PHASE's own CLAW barrage is simply the single
+    // highest-damage, hardest-to-avoid attack pattern, so LIFE most often
+    // actually reached 0 while DARK PHASE happened to be active — the bug
+    // itself was never DARK-PHASE-specific). Fixed for real by giving
+    // LIFE=0 a proper terminal screen (see triggerGameOver(), called from
+    // applyDamageToPlayerLife()) instead of leaving it to this flag alone.
+    // The check below is kept as a harmless defense-in-depth belt-and-
+    // suspenders (by the time it could matter, gameState.screen has
+    // already left 'gameplay' and update() has stopped running entirely,
+    // so this line is not the thing doing the real work anymore).
     if (player.life <= 0) return true;
     // SECTION P: freeze input during the post-defeat "GAME CLEAR!!" overlay
     // window too, for the same reason (no gameplay should proceed while a
     // terminal screen is about to take over).
     if (gameClearRemainingMs > 0) return true;
     return gameState.mode === 'boss' && (!boss.spawned || boss.state === 'intro');
+  }
+
+  // SECTION C/I: STUN is a genuine, separate status effect (never folded
+  // into isBossIntroLocked() itself) because that lock's own MOVE-STICK-
+  // still-changes-facing carve-out (SECTION H) must NOT apply to STUN —
+  // STUN blocks MOVE completely, no exceptions. Kept as its own tiny
+  // predicate purely so every gate below reads the same way regardless of
+  // which lock is in effect.
+  function isStunLocked() {
+    return player.stunned;
   }
 
   // Called after any HP reduction. Returns true if the hit was instead
@@ -1470,6 +1526,20 @@
     boss.darkPhaseClawsFiredCount = 0;
     boss.darkPhaseSubState = 'hidden'; // fully invisible/untargetable for DARK_PHASE_HIDDEN_MS, per spec
     bossEnterState('darkphase', now);
+    // SECTION J: ENCOUNTER 3 (currentStageIndex===2, the last STAGE) forces
+    // STUN the instant DARK PHASE transitions in — J-5's own explicit
+    // "on transition, not on every loop" wording is satisfied for free
+    // here, since startBossDarkPhase() only ever runs once per DARK PHASE
+    // entry (the hidden->telegraph->attacking loop inside
+    // updateBossDarkPhase() never calls this function again until the next
+    // FULL DARK PHASE entry). J-4: skipped outright if already stunned, so
+    // this can never re-flash/double-STUN a player who is already in that
+    // state for some other reason (idle watchdog, a previous ENCOUNTER 3
+    // DARK PHASE loop, etc).
+    if (currentStageIndex === 2 && !player.stunned) {
+      encounter3StunFlashRemainingMs = ENCOUNTER3_STUN_FLASH_TOTAL_MS;
+      triggerStun(now);
+    }
   }
 
   function isDarkPhaseHidden() {
@@ -2707,9 +2777,10 @@
     document.getElementById('opening-overlay').hidden = next !== 'opening';
     document.getElementById('main-menu-overlay').hidden = next !== 'mainMenu';
     document.getElementById('result-screen').hidden = next !== 'result';
+    document.getElementById('game-over-screen').hidden = next !== 'gameover';
     // PLAY AREA / CONTROL AREA are only meaningful during actual gameplay —
     // hidden (not just covered) the rest of the time so no stray touch can
-    // reach a control zone underneath LOADING/OPENING/MAIN MENU/RESULT.
+    // reach a control zone underneath LOADING/OPENING/MAIN MENU/RESULT/GAME OVER.
     document.getElementById('play-area').style.display = next === 'gameplay' ? '' : 'none';
     document.getElementById('control-area').style.display = next === 'gameplay' ? '' : 'none';
   }
@@ -3445,6 +3516,7 @@
     boss.teleportElapsed = 0;
     boss.teleportDest = null;
     teleportBlackoutAlpha = 0; // RESTART snaps the WEAK-POINT-SPAM teleport blackout off instantly too
+    encounter3StunFlashRemainingMs = 0; // SECTION J: RESTART/mode switch snaps this off instantly too
     boss.lastKnownPlayerX = 0;
     boss.lastKnownPlayerY = 0;
     boss.revealedShotX = null;
@@ -3455,6 +3527,8 @@
     boss.counterAttackKind = 'arcClaw';
     player.lastCounterDamage = 0;
     player.life = playerMaxLife; // SECTION E/I: applied at game start, per spec — reads the SAME setting SETTING/PAUSE MENU both write
+    player.stunned = false; // SECTION C: RESTART/mode switch always starts un-stunned
+    lastPlayerInputAt = performance.now(); // SECTION B: fresh grace period for the watchdog on every new run
     resetStealth(); // RESTART/mode switch ends STEALTH and its cooldown outright — the only two things allowed to (PART 21)
 
     // Stage world/camera/EXIT (PART 21-29) — a RESTART or mode switch always
@@ -3504,8 +3578,81 @@
     aimStickReset();
   }
 
+  // SECTION B/I: a low-level input-state normalizer, DELIBERATELY separate
+  // from the STUN game mechanic itself — this function NEVER reads or
+  // writes player.stunned. It's called from two independent places: (1)
+  // the CONTROL WATCHDOG below, right before it hands off to triggerStun()
+  // when it either times out on player silence or catches an actual
+  // internal-state contradiction, and (2) the PAUSE MENU's own "Reboot The
+  // Control Pannel" click handler. Per SECTION I's own explicit
+  // requirement, merely calling this must never by itself clear STUN —
+  // only the two triggerStun()/reboot call sites ever touch player.stunned.
+  function recoverControlState() {
+    actionStickReset(); // B-4: MOVE stick neutral + movement vector zero
+    aimDoubleTapLockUntil = 0; // force aimStickReset() below to take its "not locked" branch, so AIM truly goes neutral regardless of a live double-tap lock
+    aimStickReset(); // B-4: AIM stick neutral, aimStickActive false, RANGE guide hidden
+    fireHeld = false; // B-4: FIRE held state cleared
+    fireButton.classList.remove('active');
+    keys.fire = false; // keyboard test-fallback FIRE, same reasoning
+    dashButton.classList.remove('active'); // B-4: DASH buffered/pressed visual state cleared
+    // FLASH/STEALTH have no persistent "held" flag to clear (both are
+    // momentary presses gated purely by their own cooldown timers, which
+    // already re-evaluate every frame — B-4's "control disabled状態の
+    // 再評価" is naturally satisfied by that existing per-frame tick, e.g.
+    // updateFireHud()/the FLASH+STEALTH ring updates elsewhere in draw()).
+  }
+
+  // SECTION B-2/C-3 item 2: a cheap, defensive invariant check — NOT a fix
+  // for any bug actually reproduced during this turn's investigation (see
+  // SECTION A's own findings), but a guard against a genuinely corrupted
+  // internal state (e.g. a future regression) that recoverControlState()
+  // above can safely normalize. Each condition below checks for a
+  // combination that can never legitimately occur through normal input.
+  function detectControlStateCorruption() {
+    // A nonzero MOVE STICK vector can only ever come from an actual held
+    // touch/mouse-down on it (see handleActionStickMove()) — never
+    // legitimate with no owning touch identifier.
+    if ((actionStickVec.x !== 0 || actionStickVec.y !== 0) && actionStickTouchId === null) return true;
+    // aimStickActive can only legitimately be true while an actual
+    // touch/mouse is down on the AIM STICK, or while a double-tap snap is
+    // still locked in (aimStickReset()'s own carve-out) — anything else is
+    // a stuck flag.
+    if (aimStickActive && aimStickTouchId === null && !aimStickMouseDown && performance.now() >= aimDoubleTapLockUntil) return true;
+    return false;
+  }
+
+  // SECTION C/I: the ONLY function that ever sets player.stunned = true —
+  // called from the CONTROL WATCHDOG (idle timeout or detected corruption)
+  // and from the ENCOUNTER 3 DARK-PHASE-entry forced trigger (SECTION J).
+  // Always normalizes the raw input state first (recoverControlState()) so
+  // STUN always begins from a clean slate, regardless of what triggered it.
+  function triggerStun(now) {
+    recoverControlState();
+    player.stunned = true;
+    updateStunVisuals();
+  }
+
+  const pauseButtonEl = document.getElementById('pause-button');
+  const controlBlackoutOverlay = document.getElementById('control-blackout-overlay');
+  // SECTION E/F: reflects player.stunned into the DOM — called every frame
+  // from update() (so it stays live during normal gameplay) and also
+  // explicitly right after every place player.stunned changes outside of
+  // update()'s own tick (triggerStun() above, and the REBOOT handler below,
+  // which fires while gameState.paused is true and update() isn't running
+  // at all).
+  function updateStunVisuals() {
+    controlBlackoutOverlay.hidden = !player.stunned; // E-1: never removed from the DOM, just hidden/shown
+    pauseButtonEl.classList.toggle('stunned', player.stunned); // SECTION F
+  }
+
   const modeMenu = document.getElementById('mode-menu');
-  function showModeMenu() { modeMenu.classList.add('open'); }
+  const modeRebootBtn = document.getElementById('mode-reboot-btn');
+  function showModeMenu() {
+    modeMenu.classList.add('open');
+    // SECTION G-3: hidden whenever NOT currently stunned — only ever shown
+    // (bottom-most, per G-2's markup order) while player.stunned is true.
+    modeRebootBtn.hidden = !player.stunned;
+  }
   function hideModeMenu() {
     modeMenu.classList.remove('open');
     closeSettingPanel(); // always resets back to the main PAUSE panel for next time it opens
@@ -3543,6 +3690,7 @@
   document.getElementById('mode-resume-btn').addEventListener('click', () => {
     gameState.paused = false;
     storyPausedAccumMs += performance.now() - pauseStartedAt; // SECTION Q-1
+    lastPlayerInputAt = performance.now(); // SECTION B/L: fresh grace period — real wall-clock time spent paused must never count toward the watchdog's idle timer
     hideModeMenu();
   });
   // SECTION T: QUIT ends the current STORY/TRAINING session and returns to
@@ -3557,6 +3705,31 @@
   document.getElementById('mode-quit-btn').addEventListener('click', () => {
     gameState.paused = false;
     hideModeMenu();
+    setScreen('mainMenu');
+  });
+
+  // SECTION H: the ONLY place player.stunned is ever cleared — a distinct,
+  // explicit user action, independent from recoverControlState() (see that
+  // function's own comment / SECTION I). Exact H-1 order: normalize raw
+  // input state, clear the flag, reset the watchdog's grace period, then
+  // refresh the DOM-facing visuals (CONTROL PANEL blackout / PAUSE button
+  // color) — LIFE HUD's own orange/pulse styling self-corrects on the next
+  // canvas draw() call purely by reading player.stunned, no separate step
+  // needed for it. H-2/H-3: deliberately touches NOTHING else — boss HP,
+  // player LIFE, stage/encounter/AREA, and DARK PHASE state are all left
+  // exactly as they were; this is not RESTART.
+  modeRebootBtn.addEventListener('click', () => {
+    recoverControlState();
+    player.stunned = false;
+    lastPlayerInputAt = performance.now();
+    updateStunVisuals();
+    modeRebootBtn.hidden = true;
+  });
+
+  // SECTION M-4: same QUIT semantics as mode-quit-btn above — no reload,
+  // BGM keeps playing (bgmAudio is untouched here), and the next startMode()
+  // call runs its own full resetModeState() so nothing carries over.
+  document.getElementById('game-over-quit-btn').addEventListener('click', () => {
     setScreen('mainMenu');
   });
 
@@ -3843,7 +4016,7 @@
     // (see its own handling in update()). Reverses the previous batch's
     // deliberate AIM-during-intro exception, per this batch's explicit
     // instruction.
-    if (isBossIntroLocked()) return;
+    if (isBossIntroLocked() || player.stunned) return;
     const rect = aimStickZone.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
@@ -3876,7 +4049,7 @@
   aimStickZone.addEventListener('touchstart', (e) => {
     e.preventDefault();
     if (aimStickTouchId !== null) return;
-    if (isBossIntroLocked()) return; // SECTION H: AIM STICK fully inert pre-battle/during intro
+    if (isBossIntroLocked() || player.stunned) return; // SECTION H/C: AIM STICK fully inert pre-battle/during intro, and during STUN
     const t = e.changedTouches[0];
     aimStickTouchId = t.identifier;
     aimStickActive = true;
@@ -3908,7 +4081,7 @@
 
   // Mouse equivalent for desktop/PC testing (drag within the same zone).
   aimStickZone.addEventListener('mousedown', (e) => {
-    if (isBossIntroLocked()) return; // SECTION H: AIM STICK fully inert pre-battle/during intro
+    if (isBossIntroLocked() || player.stunned) return; // SECTION H/C: AIM STICK fully inert pre-battle/during intro, and during STUN
     aimStickMouseDown = true;
     aimStickActive = true;
     showRangeUI(); // AIM STICK engaged — RANGE becomes visible/operable
@@ -4017,7 +4190,8 @@
 
   function dashButtonPress(e) {
     e.preventDefault();
-    if (isBossIntroLocked()) return; // PART 8
+    if (isBossIntroLocked() || player.stunned) return; // PART 8 / SECTION C
+    lastPlayerInputAt = performance.now(); // SECTION B: DASH counts as combat input for the watchdog
     dashButton.classList.add('active');
     const now = performance.now();
     const knockbackLockedNow = now < player.knockbackUntil;
@@ -4085,8 +4259,10 @@
   function flashPress(e) {
     if (e) e.preventDefault();
     if (gameState.paused) return;
+    if (player.stunned) return; // SECTION C: FLASH is one of the 6 controls STUN blocks — flashDisabledByCinematic() doesn't cover this on its own
     if (flashCooldownRemainingMs > 0) return; // cooldown active: nothing happens at all, not even feedback
     if (!boss.spawned || flashDisabledByCinematic()) return;
+    lastPlayerInputAt = performance.now(); // SECTION B: FLASH counts as combat input for the watchdog
     // SECTION 11: COUNTER ATTACK (boss.state === 'straightclaw') is the one
     // state where the distance requirement is deliberately skipped — the
     // player must be able to punish it from anywhere, not just from
@@ -4148,6 +4324,7 @@
     if (deathFlashRemainingMs > 0) deathFlashRemainingMs = Math.max(0, deathFlashRemainingMs - dt * 1000);
     if (introStartFlashRemainingMs > 0) introStartFlashRemainingMs = Math.max(0, introStartFlashRemainingMs - dt * 1000);
     if (landingRedFlashRemainingMs > 0) landingRedFlashRemainingMs = Math.max(0, landingRedFlashRemainingMs - dt * 1000);
+    if (encounter3StunFlashRemainingMs > 0) encounter3StunFlashRemainingMs = Math.max(0, encounter3StunFlashRemainingMs - dt * 1000);
     if (playerHitBlinkRemainingMs > 0) playerHitBlinkRemainingMs = Math.max(0, playerHitBlinkRemainingMs - dt * 1000);
     if (gameClearRemainingMs > 0) {
       gameClearRemainingMs = Math.max(0, gameClearRemainingMs - dt * 1000);
@@ -4253,10 +4430,11 @@
   function stealthPress(e) {
     if (e) e.preventDefault();
     if (gameState.paused) return;
-    if (isBossIntroLocked()) return; // PART 8
+    if (isBossIntroLocked() || player.stunned) return; // PART 8 / SECTION C
     if (stealthCooldownRemainingMs > 0) return; // cooldown active: nothing happens at all, not even feedback
     if (performance.now() < player.stealthUntil) return; // already active
     const now = performance.now();
+    lastPlayerInputAt = now; // SECTION B: STEALTH counts as combat input for the watchdog
     stealthCooldownRemainingMs = STEALTH_COOLDOWN_MS; // starts the instant activation is accepted, per spec
     player.stealthUntil = now + STEALTH_DURATION_MS;
     player.stealthStartedAt = now;
@@ -4533,6 +4711,27 @@
     playerHitFlashUntil = now + 150;
     playerHitBlinkRemainingMs = PLAYER_HIT_BLINK_TOTAL_MS;
     totalDamageTaken += amount; // SECTION Q-3: accumulates the real damage VALUE regardless of the LIFE setting — never zeroed out just because player.life === Infinity
+    // SECTION A/M (root-cause fix, this turn): LIFE reaching 0 on a finite
+    // setting (Infinity can never satisfy this) used to leave the player
+    // stuck in isBossIntroLocked()'s own silent permanent lock forever, with
+    // no GAME OVER screen ever existing to move on from it — see
+    // isBossIntroLocked()'s own comment for the full root-cause writeup.
+    // Fixed by transitioning to a real terminal screen the instant it
+    // happens, which also immediately halts update()/draw() entirely (see
+    // loop()'s own screen==='gameplay' gate) — boss AI/projectiles/input
+    // all stop in the same instant, satisfying M-2 for free.
+    if (player.life <= 0 && gameState.mode === 'boss' && gameState.screen === 'gameplay') {
+      triggerGameOver(now);
+    }
+  }
+
+  // SECTION M: a real DOM screen (like RESULT/MAIN MENU), NOT a canvas
+  // overlay on the frozen frame the way GAME CLEAR is — GAME CLEAR needed
+  // that overlay approach specifically so the last moment of victory stays
+  // visible; GAME OVER has no such requirement and the spec calls for an
+  // immediate, complete stop instead.
+  function triggerGameOver(now) {
+    setScreen('gameover');
   }
 
   // Exposed for Playwright/manual verification only — not part of gameplay.
@@ -4664,6 +4863,16 @@
     get totalDamageTaken() { return totalDamageTaken; },
     set totalDamageTaken(v) { totalDamageTaken = v; }, // debug/verification only
     RESULT_RANK_THRESHOLDS, computeResultRank, formatPlayTime, enterResultScreen,
+    // Debug/verification only — SECTION A (root-cause fix)/B (watchdog)/C
+    // (STUN)/G-H-I (REBOOT)/J (ENCOUNTER 3 forced STUN)/M (GAME OVER).
+    isStunLocked, recoverControlState, detectControlStateCorruption, triggerStun,
+    updateStunVisuals, triggerGameOver,
+    get lastPlayerInputAt() { return lastPlayerInputAt; },
+    set lastPlayerInputAt(v) { lastPlayerInputAt = v; }, // debug/verification only
+    CONTROL_WATCHDOG_IDLE_MS, STUN_LIFE_PULSE_MS, ARTIST_PAGE_URL,
+    get encounter3StunFlashRemainingMs() { return encounter3StunFlashRemainingMs; },
+    set encounter3StunFlashRemainingMs(v) { encounter3StunFlashRemainingMs = v; }, // debug/verification only
+    ENCOUNTER3_STUN_FLASH_TOTAL_MS,
   };
 
   // ---------- Main loop ----------
@@ -4721,18 +4930,26 @@
     // allowed to change FACING ONLY (never translation, which stays gated
     // on moveStickPushed below).
     const introLocked = isBossIntroLocked();
+    // SECTION C: STUN blocks MOVE completely — unlike introLocked, it never
+    // gets the "MOVE STICK still changes facing" carve-out below, so it's
+    // tracked as its own flag rather than folded into introLocked itself
+    // (see isStunLocked()'s own comment for why).
+    const stunLocked = isStunLocked();
+    const anyMoveLock = introLocked || stunLocked;
 
     const moveStickPushedRaw = mag > ACTION_STICK_DEADZONE;
-    const moveStickPushed = !introLocked && moveStickPushedRaw;
+    const moveStickPushed = !anyMoveLock && moveStickPushedRaw;
     // PART 9/10: facing follows the AIM STICK whenever it's actively
     // engaged (dragging, or a double-tap snap still locked in) — see
     // handleAimStickMove()/performNearestAutoAimSnap(), which update
     // player.baseDir directly. MOVE STICK only drives facing the rest of
     // the time, exactly as before. aimEngaged is forced false throughout
-    // introLocked (AIM STICK is inert then), so the facing check below
+    // anyMoveLock (AIM STICK is inert then), so the facing check below
     // naturally falls through to MOVE STICK during that window.
-    const aimEngaged = !introLocked && (aimStickActive || now < aimDoubleTapLockUntil);
-    if (!aimEngaged && (moveStickPushed || (introLocked && moveStickPushedRaw))) {
+    const aimEngaged = !anyMoveLock && (aimStickActive || now < aimDoubleTapLockUntil);
+    // SECTION H's facing-only exception is introLocked-only — STUN (E-3)
+    // blocks MOVE STICK entirely, with no facing carve-out.
+    if (!aimEngaged && (moveStickPushed || (introLocked && !stunLocked && moveStickPushedRaw))) {
       const moveAngle = Math.atan2(vy, vx);
       setBaseDir(stickAngleToBucket(moveAngle, player.baseDir));
     }
@@ -4752,7 +4969,34 @@
     // (see above); does not touch an already-in-progress DASH (a self-
     // contained burst — see PART 21, which instead stops a NEW dash from
     // starting while this is true).
-    const isFiringHeld = !knockbackLocked && !introLocked && !moving && (fireHeld || keys.fire);
+    const isFiringHeld = !knockbackLocked && !anyMoveLock && !moving && (fireHeld || keys.fire);
+
+    // SECTION B: any genuine, currently-engaged MOVE/AIM/FIRE input counts
+    // as combat activity for the watchdog — DASH/FLASH/STEALTH (momentary
+    // presses) bump this at their own press handlers instead. Deliberately
+    // NOT gated on anyMoveLock/isFiringHeld — holding a control during a
+    // lock (e.g. absent-mindedly holding MOVE through BOSS INTRO) still
+    // proves the player is present, so it should still count.
+    if (moveStickPushedRaw || aimStickActive || fireHeld || keys.fire) {
+      lastPlayerInputAt = now;
+    }
+
+    // SECTION B/C/L: CONTROL RECOVERY WATCHDOG. Reaching this line already
+    // rules out LOADING/OPENING/MAIN MENU/SETTING/RESULT/GAME OVER/
+    // landscape-block (update() only runs on screen==='gameplay' and
+    // !isLandscapeBlocked(), see loop()) and PAUSE/STAGE TRANSITION/BOSS
+    // INTRO (each returns out of update() before this point) — the
+    // remaining exclusions (GAME CLEAR, already-STUNned) are checked
+    // explicitly below. "battle active" is interpreted as boss spawned and
+    // not mid-cinematic (threshold/dying/dead), since the player has
+    // nothing to meaningfully react to otherwise.
+    if (gameState.mode === 'boss' && boss.spawned && !bossIsInCinematic() &&
+        !player.stunned && gameClearRemainingMs <= 0) {
+      if (detectControlStateCorruption() || now - lastPlayerInputAt >= CONTROL_WATCHDOG_IDLE_MS) {
+        triggerStun(now);
+      }
+    }
+    updateStunVisuals(); // keeps the CONTROL PANEL blackout / PAUSE button color live every frame
 
     updateDash(now); // may override player.x for the duration of a DASH
     if (!player.dashing && moving && !knockbackLocked) {
@@ -5292,6 +5536,18 @@
       const cyclePos = elapsedIntoFlash % BOSS_LANDING_RED_FLASH_CYCLE_MS;
       if (cyclePos < BOSS_LANDING_RED_FLASH_ON_MS) {
         ctx.fillStyle = `rgba(160,10,10,${BOSS_LANDING_RED_FLASH_ALPHA_MAX})`;
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    // SECTION J: ~3 red pulses the instant ENCOUNTER 3's DARK PHASE forces
+    // STUN — its own timer, independent of every other flash here (never
+    // shared with landingRedFlashRemainingMs above).
+    if (encounter3StunFlashRemainingMs > 0) {
+      const elapsedIntoFlash = ENCOUNTER3_STUN_FLASH_TOTAL_MS - encounter3StunFlashRemainingMs;
+      const cyclePos = elapsedIntoFlash % ENCOUNTER3_STUN_FLASH_CYCLE_MS;
+      if (cyclePos < ENCOUNTER3_STUN_FLASH_ON_MS) {
+        ctx.fillStyle = `rgba(200,10,10,${ENCOUNTER3_STUN_FLASH_ALPHA_MAX})`;
         ctx.fillRect(0, 0, W, H);
       }
     }
@@ -6055,16 +6311,43 @@
     ctx.save();
     ctx.textAlign = 'left';
     ctx.font = 'bold 11px sans-serif';
+    // SECTION D: STUN styling — P-1: this applies even at LIFE=Infinity,
+    // since it keys off player.stunned, never off the LIFE value itself.
+    // A slow, smooth breathing alpha (never a harsh fast blink), shared by
+    // the LIFE bar's own fill and the separate STUN status gauge below it
+    // so the two read as one connected effect, within the requested
+    // 500-700ms band (STUN_LIFE_PULSE_MS).
+    const stunned = player.stunned;
+    const pulseAlpha = stunned
+      ? 0.6 + 0.4 * (0.5 + 0.5 * Math.sin((now / STUN_LIFE_PULSE_MS) * Math.PI * 2))
+      : 1;
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.fillText('LIFE', x, labelY + 8);
+    if (stunned) {
+      // D-3: the small "STUN" text alongside the usual "LIFE" label.
+      ctx.fillStyle = `rgba(255,150,40,${pulseAlpha})`;
+      ctx.fillText('STUN', x + 34, labelY + 8);
+    }
     ctx.fillStyle = 'rgba(255,255,255,0.15)';
     ctx.fillRect(x, gaugeY, HUD_BAR_W, HUD_BAR_H);
     const frac = player.life === Infinity ? 1 : Math.max(0, Math.min(1, player.life / playerMaxLife));
-    ctx.fillStyle = 'rgba(100,220,140,0.9)';
+    // D-1: the LIFE bar itself turns orange while stunned (replacing the
+    // normal green fill) — D-2's pulse is folded into this same fillStyle.
+    ctx.fillStyle = stunned ? `rgba(255,150,30,${pulseAlpha})` : 'rgba(100,220,140,0.9)';
     ctx.fillRect(x, gaugeY, HUD_BAR_W * frac, HUD_BAR_H);
     ctx.strokeStyle = 'rgba(255,255,255,0.3)';
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, gaugeY + 0.5, HUD_BAR_W - 1, HUD_BAR_H - 1);
+    if (stunned) {
+      // D-4: a thin, separate status gauge directly under the LIFE bar —
+      // this is NOT a LIFE value (always full-width) — purely a "currently
+      // STUNned" indicator, kept visually attached to the same HUD block
+      // (same x/width, orange, pulsing in sync with the bar above it).
+      const stunGaugeY = gaugeY + HUD_BAR_H + 3;
+      const stunGaugeH = 3;
+      ctx.fillStyle = `rgba(255,150,30,${pulseAlpha})`;
+      ctx.fillRect(x, stunGaugeY, HUD_BAR_W, stunGaugeH);
+    }
     ctx.restore();
   }
 

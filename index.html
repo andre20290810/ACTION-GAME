@@ -66,11 +66,23 @@
     <div class="result-stat"><span class="result-stat-label">RANK</span><span id="result-rank" class="result-stat-value"></span></div>
     <div id="result-thanks">THANK YOU FOR PLAYING!!</div>
     <button class="mode-btn" id="result-back-btn">BACK TO TOP MENU</button>
-    <!-- SECTION R-2: no confirmed official ARTIST PAGE URL exists anywhere
-         in this repo (README/comments/meta all checked) — left as a
-         disabled placeholder per spec rather than inventing a URL. See the
-         completion report. -->
-    <button class="mode-btn" id="result-artist-btn" disabled>ARTIST PAGE</button>
+    <!-- SECTION N: the official ARTIST PAGE URL was provided this turn —
+         enabled as a real external link (never window.open()'d from JS),
+         target="_blank" + rel="noopener noreferrer" per spec. -->
+    <a class="mode-btn" id="result-artist-btn" href="https://www.tunecore.co.jp/artists?id=1140292&amp;utm_source=ig&amp;utm_medium=social&amp;utm_content=link_in_bio&amp;fbclid=PAdGRleAUBDaFwZG9mAmZkaWQWUNfnDNp7K4OsR1rDORVcLG0AXA4O12V4dG4DYWVtAjExAHNydGMGYXBwX2lkDzEyNDAyNDU3NDI4NzQxNAABpwXbm4sakBiMJ9ZlYKC8rJYDSVbb6nyHcFcsnqaYmSRyGKJCnX_N71DFNmgD_aem_YS0e_NpMoesX0DHRet6cWQ" target="_blank" rel="noopener noreferrer">ARTIST PAGE</a>
+  </div>
+</div>
+
+<!-- SECTION M: GAME OVER — a real DOM screen (unlike GAME CLEAR's canvas
+     overlay-on-frozen-frame), entered the instant PLAYER LIFE reaches 0 on
+     a finite setting (see triggerGameOver() in game.js). Reaching this
+     screen immediately halts update()/draw() (loop() only runs while
+     screen==='gameplay'), so boss AI/projectiles/input all stop at once. -->
+<div id="game-over-screen" hidden>
+  <div id="game-over-panel">
+    <div id="game-over-title">GAME OVER</div>
+    <button class="mode-btn" id="game-over-quit-btn">QUIT</button>
+    <a class="mode-btn" id="game-over-artist-btn" href="https://www.tunecore.co.jp/artists?id=1140292&amp;utm_source=ig&amp;utm_medium=social&amp;utm_content=link_in_bio&amp;fbclid=PAdGRleAUBDaFwZG9mAmZkaWQWUNfnDNp7K4OsR1rDORVcLG0AXA4O12V4dG4DYWVtAjExAHNydGMGYXBwX2lkDzEyNDAyNDU3NDI4NzQxNAABpwXbm4sakBiMJ9ZlYKC8rJYDSVbb6nyHcFcsnqaYmSRyGKJCnX_N71DFNmgD_aem_YS0e_NpMoesX0DHRet6cWQ" target="_blank" rel="noopener noreferrer">ARTIST PAGE</a>
   </div>
 </div>
 
@@ -169,6 +181,16 @@
       </div>
     </div>
   </div>
+
+  <!-- SECTION E: STUN's "CONTROL PANEL blackout" — an overlay covering
+       ONLY #control-area (MOVE/AIM/FIRE/DASH/FLASH/STEALTH), toggled by
+       game.js while player.stunned is true. Deliberately never removes the
+       buttons underneath from the DOM (E-1) — #pause-zone/#pause-button
+       live entirely outside #control-area, in #play-area, so PAUSE stays
+       reachable throughout (E-3) without any special-casing here. -->
+  <div id="control-blackout-overlay" hidden>
+    <div id="control-blackout-message">Reboot The Control Pannel!!</div>
+  </div>
 </div>
 
 <!-- SECTION S/T/U: simplified — RESUME/SETTING/QUIT (per spec's own
@@ -184,6 +206,10 @@
     <button class="mode-btn" id="mode-setting-btn">SETTING</button>
     <button class="mode-btn" id="mode-restart-btn">RESTART</button>
     <button class="mode-btn" id="mode-quit-btn">QUIT</button>
+    <!-- SECTION G: only ever shown while player.stunned is true (toggled by
+         game.js's showModeMenu() call site) — always the bottom-most item,
+         below the 4 always-present ones above. -->
+    <button class="mode-btn" id="mode-reboot-btn" hidden>Reboot The Control Pannel</button>
   </div>
 </div>
 

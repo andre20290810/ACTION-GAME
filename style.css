@@ -98,6 +98,20 @@ body {
   background: rgba(170, 210, 235, 0.22);
 }
 
+/* SECTION F: PAUSE turns red while player.stunned is true, reverting to
+   the normal pale blue above the instant STUN clears (F-1) — toggled via
+   the "stunned" class in game.js's updateStunVisuals(), never a separate
+   element. */
+#pause-button.stunned {
+  background: rgba(235, 70, 60, 0.16);
+  border-color: rgba(235, 90, 80, 0.55);
+  color: rgba(255, 210, 205, 0.95);
+  text-shadow: 0 0 6px rgba(235, 70, 60, 0.6);
+}
+#pause-button.stunned:active {
+  background: rgba(235, 70, 60, 0.3);
+}
+
 /* ---------- CONTROL AREA ----------
    A separate DOM region in normal document flow BELOW #play-area — never
    an absolute/fixed overlay on top of the game view (PART 1/2/9). Visually
@@ -112,6 +126,7 @@ body {
    (left), RANGE (center), the FLASH/STEALTH/DASH/FIRE 2x2 grid (right)
    (PART 6/8). */
 #control-area {
+  position: relative; /* SECTION E: anchors #control-blackout-overlay's absolute inset:0 */
   flex: 0 0 auto;
   width: 100%;
   display: flex;
@@ -418,6 +433,33 @@ body {
   font-weight: normal;
   letter-spacing: 0;
   opacity: 0.9;
+}
+
+/* SECTION E: STUN's CONTROL PANEL blackout — covers ONLY #control-area
+   (its own position:relative anchors this), toggled by game.js's
+   updateStunVisuals() via the "hidden" attribute. A real, opaque-ish black
+   layer physically sitting on top of MOVE/AIM/FIRE/DASH/FLASH/STEALTH
+   (E-3), but never removes them from the DOM (E-1) — #pause-zone lives
+   outside #control-area entirely, so PAUSE is never covered by this. */
+#control-blackout-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 4, 5, 0.94);
+  touch-action: none;
+}
+#control-blackout-overlay[hidden] { display: none; }
+#control-blackout-message {
+  font-family: sans-serif;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  color: rgba(255, 150, 40, 0.9);
+  padding: 0 24px;
 }
 
 #stealth-button {
@@ -769,9 +811,14 @@ body {
   inset: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  /* SECTION O: left-aligned instead of centered — O-2's own safe margin
+     (5-10vw on a 390px-class portrait phone) keeps it clear of the screen
+     edge; vertical centering (justify-content) is untouched, only the
+     horizontal placement changes. */
+  align-items: flex-start;
   justify-content: center;
   gap: 30px;
+  padding-left: 8vw;
   background: rgba(0, 0, 0, 0.2);
   touch-action: manipulation;
 }
@@ -782,6 +829,7 @@ body {
   font-size: 20px;
   letter-spacing: 0.3em;
   text-transform: uppercase;
+  text-align: left; /* O-3 */
   color: rgba(235, 235, 238, 0.88);
   background: transparent;
   border: none;
@@ -869,8 +917,38 @@ body {
   color: rgba(230, 230, 235, 0.8);
   margin: 8px 0 4px;
 }
-#result-artist-btn[disabled] {
-  opacity: 0.4;
+/* SECTION M: GAME OVER — a real DOM screen (never a canvas overlay on the
+   frozen frame, unlike GAME CLEAR), entered the instant PLAYER LIFE hits 0
+   on a finite setting. Same restrained white/red/black DARK OUT language
+   as RESULT — no cheap rainbow effects, per the spec's own instruction. */
+#game-over-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 13;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a0b0c;
+}
+#game-over-screen[hidden] { display: none; }
+#game-over-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+  min-width: 220px;
+  padding: 10px 20px;
+}
+#game-over-title {
+  font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
+  font-weight: 900;
+  font-size: 34px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  text-align: center;
+  color: #ffffff;
+  text-shadow: 0 0 14px rgba(230, 30, 20, 0.65);
+  margin-bottom: 10px;
 }
 
 /* SECTION E/I: shared SETTING overlay — its own fixed layer (moved out of
@@ -929,6 +1007,7 @@ body {
   font-size: 15px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
+  text-decoration: none; /* SECTION N: this class is now also used on <a> elements (RESULT/GAME OVER's own ARTIST PAGE links) */
   color: rgba(220, 232, 240, 0.85);
   background: transparent;
   border: none;
@@ -946,6 +1025,20 @@ body {
 }
 #mode-quit-btn {
   color: rgba(235, 120, 110, 0.85);
+}
+
+/* SECTION G: only ever visible while player.stunned is true (see
+   showModeMenu() in game.js) — red, bold (heavier than the other .mode-btn
+   items' own 600 weight), with a gentle blink (never a harsh strobe). */
+#mode-reboot-btn {
+  color: #ff4a3c;
+  font-weight: 800;
+  animation: mode-reboot-blink 900ms ease-in-out infinite;
+}
+#mode-reboot-btn[hidden] { display: none; }
+@keyframes mode-reboot-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 /* SECTION E/I/U: SETTING's own panel, also kept modest (not an oversized
