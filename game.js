@@ -723,16 +723,20 @@
   // battle/intro pose (the same coordinates spawnBoss() itself uses, always
   // AREA 1) from the very start — never "screen-center, then jump to the
   // intro pose the instant spawnBoss() fires several seconds later" (the
-  // previous, visibly-inconsistent behavior). TRAINING mode is unaffected
-  // (keeps the plain screen-center default). Safe to call from
+  // previous, visibly-inconsistent behavior). PART 3 SECTION P: BASIC
+  // TRAINING and SECURITY TRAINING now start at this exact same position/
+  // facing too — investigation found no other system depended on TRAINING's
+  // previous separate "screen-center, facing down" default (it was simply
+  // never asked to match STORY's own pose until now), so unifying it here
+  // is safe and keeps the single source of truth P-1 asks for rather than
+  // duplicating these coordinates anywhere else. Safe to call from
   // resetModeState() before `gameState` exists is NOT a concern here since
   // this function itself is only ever called later, at runtime — never at
   // module top-level like the bare resetPlayerPosition() call just above.
   function resetPlayerToBattlePose() {
-    if (gameState.mode !== 'boss') { resetPlayerPosition(); player.baseDir = 'down'; player.aimOffsetRaw = 0; player.aimOffset = 0; return; }
     player.x = W * 0.50;
     player.y = areaTopY(1) + H * 0.80; // mode start / a fresh STAGE transition both always begin in AREA 1
-    player.baseDir = 'up';
+    player.baseDir = 'up'; // P-2: facing north, same as STORY's BOSS battle pose
     player.aimOffsetRaw = BASE_ANGLE.up;
     player.aimOffset = BASE_ANGLE.up;
   }
@@ -975,26 +979,42 @@
   const DARK_PHASE_CLAW_INTERVAL_MS = 550; // gap AFTER each claw's own lifetime finishes, before the next fires — keeps every attack individually visible/dodgeable
   const DARK_PHASE_MASK_SCALE_BOOST = 1.03; // runtime-only ×1.03 on top of the existing DARKPHASE_SCALE — never baked into the source image
 
-  // ================= PART 2: SECURITY TRAINING / SECURITY ROBOT =================
-  // TRAINING-MODE-ONLY stealth-verification stage. SECURITY ROBOT is a fixed
-  // floor-mounted turret that never moves from its spawn spot (no wall
-  // attachment, no sliding, no player-tracking movement — SECTION E). It
-  // periodically re-picks a facing direction (SOUTH/WEST/EAST) and casts a
-  // matching floor SHADOW; stepping into that SHADOW triggers a telegraphed,
-  // dodgeable laser sniped from the image's own visual center-bottom.
-  // gameState.mode === 'securityTraining' is a mode wholly separate from
-  // 'boss'/'training' — updateBoss() already early-returns for any mode
-  // other than 'boss' (see below), so GABRIEL/BOSS INTRO/BOSS HUD/DARK PHASE
-  // are structurally impossible here with no extra guard needed (SECTION S).
+  // ================= PART 2/3: SECURITY TRAINING / SECURITY ROBOT (DRONE) =================
+  // TRAINING-MODE-ONLY stealth-verification stage. Referred to in the spec
+  // as "DRONE"; kept as the existing `securityRobot*` identifiers in code
+  // (no renaming churn across an already-large system). PART 3 reworked
+  // this from a fixed turret into a destructible, slowly left-right
+  // patrolling enemy with a separate scanning searchlight SHADOW (SECTION
+  // E-L) — see spawnSecurityRobots()/updateSecurityRobots() further below
+  // for the full design writeup. gameState.mode === 'securityTraining' is a
+  // mode wholly separate from 'boss'/'training' — updateBoss() already
+  // early-returns for any mode other than 'boss' (see below), so GABRIEL/
+  // BOSS INTRO/BOSS HUD/DARK PHASE are structurally impossible here with no
+  // extra guard needed (SECTION S).
   const SECURITY_ROBOT_COUNT = 5; // SECTION E: 4-6 robots, 5 is the default
-  const SECURITY_ROBOT_MIN_SPACING = 130; // px between any two robots' fixed spots
-  const SECURITY_DIRECTION_MIN_MS = 800, SECURITY_DIRECTION_MAX_MS = 2000; // SECTION F: independent per-robot facing timer
-  const SECURITY_TELEGRAPH_MS = 450; // SECTION J: 300-600ms band, default ~450ms
-  const SECURITY_LASER_VISUAL_MS = 220; // cosmetic beam-display duration after firing (SECTION L — no re-tracking during this window)
+  const SECURITY_ROBOT_MIN_SPACING = 130; // px between any two robots' patrol CENTERS
+  const SECURITY_TELEGRAPH_MS = 450; // SECTION M: 300-600ms band, default ~450ms — unchanged from PART 2
+  const SECURITY_LASER_VISUAL_MS = 220; // cosmetic beam-display duration after firing (SECTION M — no re-tracking during this window) — unchanged from PART 2
   const SECURITY_LASER_COOLDOWN_MIN_MS = 1000, SECURITY_LASER_COOLDOWN_MAX_MS = 2000; // SECTION O: per-robot cooldown after firing
-  const SECURITY_MAX_SIMULTANEOUS_ATTACKS = 2; // SECTION N: global cap across ALL robots combined
-  const SECURITY_SHADOW_LENGTH = 140; // px the floor SHADOW extends from the robot in its facing direction
-  const SECURITY_SHADOW_WIDTH = 34; // px, perpendicular to the facing direction
+  const SECURITY_MAX_SIMULTANEOUS_ATTACKS = 2; // SECTION O: global cap across ALL robots combined — unchanged from PART 2
+  // SECTION F: slow left-right patrol around a fixed per-robot center — a
+  // per-robot random pick within these bands (F-4) keeps every robot's
+  // motion visibly distinct rather than uniform.
+  const SECURITY_PATROL_RANGE_MIN = 40, SECURITY_PATROL_RANGE_MAX = 90; // px either side of patrolCenterX
+  const SECURITY_PATROL_SPEED_MIN = 18, SECURITY_PATROL_SPEED_MAX = 34; // px/sec — deliberately slow (F-3)
+  // SECTION H/I/J: the new searchlight SHADOW — a horizontal oval/capsule
+  // (never the old thin directional rectangle, which SECTION G explicitly
+  // retires) that itself patrols back and forth along ONE fixed axis
+  // (chosen once per robot at spawn — SECTION I) independently of the
+  // robot's own left-right patrol motion (I-3).
+  const SECURITY_SHADOW_RADIUS_X = 70, SECURITY_SHADOW_RADIUS_Y = 30; // horizontal oval semi-axes — wide and short, never a thin line (H-1)
+  const SECURITY_SCAN_RANGE_MIN = 50, SECURITY_SCAN_RANGE_MAX = 100; // px either side of the scan center (J-4)
+  const SECURITY_SCAN_SPEED_MIN = 20, SECURITY_SCAN_SPEED_MAX = 40; // px/sec — slow enough to visibly react to and dodge (J-3)
+  // SECTION E: DRONE HP — "3〜5発程度" of the existing normal-attack
+  // constant, never an invented arbitrary value.
+  const SECURITY_DRONE_HP = BULLET_DAMAGE * 4;
+  const SECURITY_DRONE_HIT_RADIUS = 20; // bullet-vs-drone collision radius — generous relative to the drone's small ~28px on-screen diameter, same spirit as BOSS_HURT_RADIUS being sized independently of the full sprite
+  const SECURITY_DRONE_DEATH_MS = 350; // lightweight canvas-drawn burst, no new image assets (E-5)
   // SECTION C: on-screen SECURITY ROBOT diameter is derived from GABRIEL's
   // OWN existing DARK PHASE mask size (not an arbitrary new value) — the
   // DARK PHASE "mask" IS the small head sprite drawn by drawBossDarkPhase()
@@ -1031,6 +1051,7 @@
   securityRobotImgs.east.src = 'assets/security/security_robot_east.png';
   let securityRobots = [];
   let securityAttackSlotsInUse = 0;
+  let securityDroneDeathEffects = []; // SECTION E-5: lightweight canvas-only death bursts, independent of securityRobots itself
   // ================= END PART 2 constants (state machine/logic further below) =================
 
   // Minimum straight-line distance a new relocate position must keep from
@@ -1474,6 +1495,22 @@
 
   function bossIsInCinematic() {
     return boss.state === 'intro' || boss.state === 'threshold' || boss.state === 'dying' || boss.state === 'dead';
+  }
+
+  // PART 3 SECTION C: the SAME state checks applyBodyHitToBoss()/
+  // applyExplosionDamageToBoss() already use to actually zero out damage —
+  // reused here verbatim for the BOSS LIFE gauge's "無敵" indicator rather
+  // than inventing a new, separate visual-only heuristic (C-1). 'defense'
+  // (DEFENSE blocks all body-hit HP loss — see applyBodyHitToBoss()),
+  // 'straightclaw' (COUNTER's own invulnerability window), 'darkphase' and
+  // 'teleport' (both explicitly documented as "total damage immunity"
+  // above) are the real damage-zero states; cinematic states
+  // (intro/threshold/dying/dead) and the brief 250ms 'guardbreak' stagger
+  // are deliberately excluded — those aren't the "boss is currently
+  // blocking/evading your hits" mechanic this indicator is about.
+  function isBossDamageImmune() {
+    if (!boss.spawned || bossIsInCinematic()) return false;
+    return boss.state === 'defense' || boss.state === 'straightclaw' || boss.state === 'darkphase' || boss.state === 'teleport';
   }
 
   // PART 8 / SECTION B: scoped to the whole boss-appearance window — from
@@ -2497,6 +2534,19 @@
       landingRedFlashRemainingMs = BOSS_LANDING_RED_FLASH_TOTAL_MS; // SECTION S: same instant the DOWN sprite reaches the ground
     }
     if (elapsed >= INTRO_TOTAL_MS) {
+      // PART 3 SECTION A: the ~9s BOSS INTRO cinematic locks out player
+      // input entirely (see isBossIntroLocked()), but the CONTROL RECOVERY
+      // WATCHDOG's own idle clock (lastPlayerInputAt) was never advanced
+      // during that time — it was last set whenever resetModeState() (or
+      // the player's last real action) happened to run, well before the
+      // intro even started. Since the watchdog is gated on
+      // !bossIsInCinematic(), the very first post-intro tick immediately
+      // reads an idle gap far past CONTROL_WATCHDOG_IDLE_MS and fires an
+      // instant, unearned STUN the moment BATTLE START begins. Resetting
+      // here — at the exact instant the intro ends for EVERY encounter —
+      // guarantees a full, fresh CONTROL_WATCHDOG_IDLE_MS grace window
+      // starting from BATTLE START itself (A-1/A-2/A-3).
+      lastPlayerInputAt = now;
       bossEnterState('chase', now); // PART 7: battle begins the instant the south attack telegraph finishes
     }
   }
@@ -2921,6 +2971,19 @@
       // NEXT tap rather than leaving BGM silent for the rest of the session.
       bgmStarted = false;
     });
+  }
+
+  // PART 3 SECTION D: the ONE shared "return to OPENING/TOP MENU" path —
+  // every existing route that lands back at MAIN MENU from gameplay/GAME
+  // OVER/RESULT goes through this single function instead of a separate
+  // copy-pasted reset in each button handler (D-4). Every OTHER screen
+  // transition (AREA/STAGE change, PAUSE/RESUME, DARK PHASE, GAME CLEAR->
+  // RESULT) calls setScreen() directly and never touches BGM at all, so
+  // those all keep the existing continuous-playback behavior (D-3).
+  function returnToTopMenu() {
+    bgmAudio.currentTime = 0; // D-1/D-2: OPENING/TOP always restarts Outbreak 1.0 from the top
+    bgmAudio.play().catch(() => {}); // defensive only — bgmAudio is already playing in every real route that reaches here
+    setScreen('mainMenu');
   }
 
   // ---------- SECTION G: LOADING screen ----------
@@ -3352,16 +3415,20 @@
     }
   }
 
-  // ================= PART 2: SECURITY ROBOT placement/state/attack =================
+  // ================= PART 2/3: SECURITY ROBOT (DRONE) placement/state/attack =================
 
-  // SECTION E: mirrors pickBarrelSpot()'s own safe-random-placement pattern
+  // SECTION F: mirrors pickBarrelSpot()'s own safe-random-placement pattern
   // (margins, isNearUIZone, minimum-distance checks, 30-attempt retry with a
   // graceful fallback) but spans the FULL 2-area TRAINING world (both AREA1
-  // and AREA2 bands) since robots are placed ONCE per session at fixed
-  // spots, never re-picked relative to whichever area the player currently
-  // stands in.
+  // and AREA2 bands) since robots are placed ONCE per session, at a PATROL
+  // CENTER they then patrol left/right around (never re-picked relative to
+  // whichever area the player currently stands in). marginX is padded out
+  // by the max patrol range so a robot's own back-and-forth swing can't
+  // reach past the world edge in the first place (F-5), on top of the
+  // hard clamp updateSecurityRobots() also applies every frame as a
+  // second, structural guarantee.
   function pickSecurityRobotSpot(existingRobots) {
-    const marginX = SECURITY_ROBOT_DRAW_D * 3;
+    const marginX = SECURITY_ROBOT_DRAW_D * 3 + SECURITY_PATROL_RANGE_MAX;
     const marginTop = H * 0.22;
     const marginBottom = H * 0.22;
     for (let attempt = 0; attempt < 30; attempt++) {
@@ -3373,7 +3440,7 @@
       if (Math.hypot(x - player.x, y - player.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue; // clear of the player's initial spot
       let tooClose = false;
       for (const r of existingRobots) {
-        if (Math.hypot(x - r.x, y - r.y) < SECURITY_ROBOT_MIN_SPACING) { tooClose = true; break; }
+        if (Math.hypot(x - r.patrolCenterX, y - r.y) < SECURITY_ROBOT_MIN_SPACING) { tooClose = true; break; }
       }
       if (tooClose) continue;
       return { x, y };
@@ -3385,25 +3452,40 @@
     return { x: W * (0.25 + 0.5 * Math.random()), y: areaTop + H * 0.5 };
   }
 
-  const SECURITY_DIRECTIONS = ['south', 'west', 'east'];
-  function pickSecurityDirectionChangeAt(now) {
-    return now + SECURITY_DIRECTION_MIN_MS + Math.random() * (SECURITY_DIRECTION_MAX_MS - SECURITY_DIRECTION_MIN_MS);
-  }
+  const SECURITY_SCAN_AXES = ['horizontal', 'vertical'];
 
-  // SECTION E/Q: reset-then-repopulate, mirroring spawnBarrels()'s own
+  // SECTION E/F/H/Q: reset-then-repopulate, mirroring spawnBarrels()'s own
   // pattern — called fresh from resetModeState() on every SECURITY TRAINING
-  // session start AND every RESTART, so robot positions/directions/state are
-  // always fully re-randomized from scratch (Q-1).
+  // session start AND every RESTART, so every robot's position/patrol/scan/
+  // HP/state is always fully re-randomized from scratch (Q-1). Each robot's
+  // scanAxis (I-5) and every other randomized trait (F-4/J-4) is picked
+  // ONCE here and never changed again for that robot's lifetime.
   function spawnSecurityRobots() {
     securityRobots.length = 0;
     securityAttackSlotsInUse = 0;
-    const now = performance.now();
+    securityDroneDeathEffects.length = 0;
     for (let i = 0; i < SECURITY_ROBOT_COUNT; i++) {
       const spot = pickSecurityRobotSpot(securityRobots);
+      const patrolDir = Math.random() < 0.5 ? 1 : -1;
       securityRobots.push({
-        x: spot.x, y: spot.y,
-        dir: SECURITY_DIRECTIONS[Math.floor(Math.random() * SECURITY_DIRECTIONS.length)],
-        dirChangeAt: pickSecurityDirectionChangeAt(now),
+        x: spot.x, y: spot.y, // y is this robot's fixed row — only x ever changes (F: left/right only)
+        patrolCenterX: spot.x,
+        patrolRange: SECURITY_PATROL_RANGE_MIN + Math.random() * (SECURITY_PATROL_RANGE_MAX - SECURITY_PATROL_RANGE_MIN),
+        patrolSpeed: SECURITY_PATROL_SPEED_MIN + Math.random() * (SECURITY_PATROL_SPEED_MAX - SECURITY_PATROL_SPEED_MIN),
+        patrolDir,
+        dir: patrolDir > 0 ? 'east' : 'west', // F-6
+        hp: SECURITY_DRONE_HP,
+        // SECTION I: fixed for this robot's whole lifetime, chosen once here.
+        scanAxis: SECURITY_SCAN_AXES[Math.floor(Math.random() * SECURITY_SCAN_AXES.length)],
+        // SECTION K-1: the scan's own origin is bound to the PATROL CENTER
+        // (never the drone's live, constantly-moving x) so the SHADOW can
+        // never be left behind in an unrelated spot as the drone patrols.
+        scanCenterX: spot.x,
+        scanCenterY: spot.y,
+        scanRange: SECURITY_SCAN_RANGE_MIN + Math.random() * (SECURITY_SCAN_RANGE_MAX - SECURITY_SCAN_RANGE_MIN),
+        scanSpeed: SECURITY_SCAN_SPEED_MIN + Math.random() * (SECURITY_SCAN_SPEED_MAX - SECURITY_SCAN_SPEED_MIN),
+        scanOffset: (Math.random() * 2 - 1) * SECURITY_SCAN_RANGE_MIN, // J-4: desynced starting phase
+        scanDir: Math.random() < 0.5 ? 1 : -1,
         state: 'watching',
         telegraphElapsedMs: 0,
         cooldownRemainingMs: 0,
@@ -3414,24 +3496,33 @@
     }
   }
 
-  // SECTION G: the ONE shared along/across projection used by BOTH the
-  // SHADOW's drawn rectangle (drawSecurityShadow()) AND its detection hitbox
-  // (isPlayerInSecurityShadow()) — so the two can never drift apart. All 3
-  // directions are cardinal (no rotation math needed): SOUTH extends +Y,
-  // WEST extends -X, EAST extends +X, from the robot's own FIXED position.
-  function securityShadowProject(robot, px, py) {
-    const dx = px - robot.x, dy = py - robot.y;
-    if (robot.dir === 'south') return { along: dy, across: dx };
-    if (robot.dir === 'west') return { along: -dx, across: dy };
-    return { along: dx, across: dy }; // east
+  // SECTION H/I/K: the ONE shared function computing the searchlight
+  // SHADOW's current center — used by BOTH its drawn ellipse
+  // (drawSecurityShadow()) AND its detection hitbox
+  // (isPlayerInSecurityShadow()), so the two can never drift apart (L-1).
+  // scanOffset is a simple back-and-forth (ping-pong) displacement along
+  // whichever ONE axis this robot was fixed to at spawn (I-3/I-5) —
+  // entirely independent of the robot's own separate left/right patrol.
+  function getSecurityShadowCenter(robot) {
+    if (robot.scanAxis === 'horizontal') {
+      return { x: robot.scanCenterX + robot.scanOffset, y: robot.scanCenterY };
+    }
+    return { x: robot.scanCenterX, y: robot.scanCenterY + robot.scanOffset }; // vertical
   }
 
-  // SECTION H: detection is the PLAYER overlapping the SHADOW region —
-  // merely colliding with the robot's own body is never checked here.
+  // SECTION H/L: a wide, short, soft-edged OVAL detection area (never the
+  // old thin directional rectangle — SECTION G) — approximated here as a
+  // simple normalized-ellipse containment test, inflated by
+  // PLAYER_HIT_RADIUS on both axes so corner/edge behavior stays generous
+  // and consistent with how every other hitbox in this file already adds
+  // the player's own radius as tolerance (L-2/L-3).
   function isPlayerInSecurityShadow(robot) {
-    const p = securityShadowProject(robot, player.x, player.y);
-    return p.along >= -PLAYER_HIT_RADIUS && p.along <= SECURITY_SHADOW_LENGTH + PLAYER_HIT_RADIUS &&
-      Math.abs(p.across) <= SECURITY_SHADOW_WIDTH / 2 + PLAYER_HIT_RADIUS;
+    const c = getSecurityShadowCenter(robot);
+    const rx = SECURITY_SHADOW_RADIUS_X + PLAYER_HIT_RADIUS;
+    const ry = SECURITY_SHADOW_RADIUS_Y + PLAYER_HIT_RADIUS;
+    const nx = (player.x - c.x) / rx;
+    const ny = (player.y - c.y) / ry;
+    return (nx * nx + ny * ny) <= 1;
   }
 
   // SECTION K: per-direction "visual center-bottom" muzzle point, derived
@@ -3499,26 +3590,80 @@
     }
   }
 
-  // SECTION I: per-robot state machine — watching (direction can still
-  // change; checks shadow overlap) -> detected (one-tick bookkeeping state,
-  // moves on to telegraph on the NEXT tick, never the same frame, so it's
-  // independently observable) -> telegraph (windup; locks the target exactly
-  // once at the end) -> attack (holds the beam visually; damage resolves
-  // once the beam's travel window elapses, not at fire-time — see
-  // resolveSecurityLaserHit()) -> cooldown (per-robot, before returning to
-  // watching). Once a robot leaves 'watching' it stops re-checking the
-  // shadow entirely until it returns to 'watching' — this is what keeps
-  // standing in the same shadow every frame from spamming infinite
-  // attack-requests (I-2).
+  // SECTION E-4/N: applies FIRE damage to one DRONE — the ONE place its HP
+  // ever decreases. On death: cancels any in-flight attack commitment
+  // (releasing its attack slot if one was held — N/SECTION O's max-2 cap
+  // must never leak a permanently-stuck slot), snaps its state to 'dead'
+  // (every update/draw path below early-returns on hp<=0 or state==='dead'),
+  // and spawns a lightweight canvas-only death burst (E-5 — no new image
+  // assets, nothing borrowed from GABRIEL's own much larger dissolve system).
+  function applyDamageToSecurityDrone(robot, now) {
+    if (robot.hp <= 0) return;
+    robot.hp = Math.max(0, robot.hp - BULLET_DAMAGE);
+    if (robot.hp <= 0) {
+      if (robot.state === 'attack') {
+        // N-1: a laser already in flight when its DRONE dies never resolves
+        // (its 'attack'-only draw/resolve checks below stop matching the
+        // instant state flips to 'dead') — the shot is cancelled outright,
+        // but the attack slot it was holding is still explicitly released
+        // here so SECTION O's max-2 cap can never silently leak a slot.
+        securityAttackSlotsInUse = Math.max(0, securityAttackSlotsInUse - 1);
+      }
+      robot.state = 'dead';
+      securityDroneDeathEffects.push({ x: robot.x, y: robot.y, startAt: now });
+    }
+  }
+
+  function updateSecurityDroneDeathEffects(now) {
+    for (let i = securityDroneDeathEffects.length - 1; i >= 0; i--) {
+      if (now - securityDroneDeathEffects[i].startAt >= SECURITY_DRONE_DEATH_MS) securityDroneDeathEffects.splice(i, 1);
+    }
+  }
+
+  // SECTION I: per-robot state machine — watching (patrols left/right,
+  // shadow scans independently, checks shadow overlap) -> detected
+  // (one-tick bookkeeping state, moves on to telegraph on the NEXT tick,
+  // never the same frame, so it's independently observable) -> telegraph
+  // (windup; locks the target exactly once at the end) -> attack (holds the
+  // beam visually; damage resolves once the beam's travel window elapses,
+  // not at fire-time — see resolveSecurityLaserHit()) -> cooldown
+  // (per-robot, before returning to watching). Once a robot leaves
+  // 'watching' it stops re-checking the shadow entirely until it returns to
+  // 'watching' — this is what keeps standing in the same shadow every frame
+  // from spamming infinite attack-requests (I-2, unchanged from PART 2).
   function updateSecurityRobots(dt, now) {
     if (gameState.mode !== 'securityTraining') return;
+    updateSecurityDroneDeathEffects(now);
     for (const robot of securityRobots) {
+      if (robot.hp <= 0) continue; // SECTION E-4: a dead DRONE does nothing at all — no movement, scan, detection, telegraph, or laser
+      // SECTION F/M-4: the DRONE "locks on" and stops its own left/right
+      // patrol the instant it notices the player (detected/telegraph/
+      // attack), facing SOUTH toward them (F-7) — patrol (and its own
+      // east/west sprite) resumes once it's back to watching/cooldown. The
+      // SHADOW's independent scan (SECTION I-3) pauses the same way, so the
+      // whole scene visibly "holds" on the moment of detection rather than
+      // continuing to drift underneath it.
+      const lockedOn = robot.state === 'detected' || robot.state === 'telegraph' || robot.state === 'attack';
+      if (!lockedOn) {
+        robot.x += robot.patrolDir * robot.patrolSpeed * dt;
+        if (robot.x >= robot.patrolCenterX + robot.patrolRange) {
+          robot.x = robot.patrolCenterX + robot.patrolRange;
+          robot.patrolDir = -1;
+        } else if (robot.x <= robot.patrolCenterX - robot.patrolRange) {
+          robot.x = robot.patrolCenterX - robot.patrolRange;
+          robot.patrolDir = 1;
+        }
+        robot.x = Math.max(SECURITY_ROBOT_DRAW_D, Math.min(W - SECURITY_ROBOT_DRAW_D, robot.x)); // F-5: hard world-bounds clamp, independent of patrolRange tuning
+        robot.dir = robot.patrolDir > 0 ? 'east' : 'west'; // F-6
+
+        robot.scanOffset += robot.scanDir * robot.scanSpeed * dt;
+        if (robot.scanOffset >= robot.scanRange) { robot.scanOffset = robot.scanRange; robot.scanDir = -1; }
+        else if (robot.scanOffset <= -robot.scanRange) { robot.scanOffset = -robot.scanRange; robot.scanDir = 1; }
+      } else {
+        robot.dir = 'south'; // F-7
+      }
       switch (robot.state) {
         case 'watching': {
-          if (now >= robot.dirChangeAt) {
-            robot.dir = SECURITY_DIRECTIONS[Math.floor(Math.random() * SECURITY_DIRECTIONS.length)];
-            robot.dirChangeAt = pickSecurityDirectionChangeAt(now);
-          }
           if (isPlayerInSecurityShadow(robot)) {
             robot.state = 'detected';
           }
@@ -3539,10 +3684,9 @@
               robot.state = 'attack';
               fireSecurityLaser(robot, now);
             } else {
-              // SECTION N: no free attack slot — fail safe back to watching
+              // SECTION O: no free attack slot — fail safe back to watching
               // rather than queuing (never spam infinite attack-requests).
               robot.state = 'watching';
-              robot.dirChangeAt = pickSecurityDirectionChangeAt(now);
             }
           }
           break;
@@ -3550,7 +3694,7 @@
         case 'attack': {
           robot.laserRemainingMs -= dt * 1000;
           if (robot.laserRemainingMs <= 0) {
-            resolveSecurityLaserHit(robot, now); // SECTION L: hit-tested here, at beam-resolve time, not at fire-time — see resolveSecurityLaserHit()'s own comment
+            resolveSecurityLaserHit(robot, now); // SECTION M: hit-tested here, at beam-resolve time, not at fire-time — see resolveSecurityLaserHit()'s own comment
             securityAttackSlotsInUse = Math.max(0, securityAttackSlotsInUse - 1);
             robot.state = 'cooldown';
             robot.cooldownRemainingMs = SECURITY_LASER_COOLDOWN_MIN_MS + Math.random() * (SECURITY_LASER_COOLDOWN_MAX_MS - SECURITY_LASER_COOLDOWN_MIN_MS);
@@ -3561,7 +3705,6 @@
           robot.cooldownRemainingMs -= dt * 1000;
           if (robot.cooldownRemainingMs <= 0) {
             robot.state = 'watching';
-            robot.dirChangeAt = pickSecurityDirectionChangeAt(now);
           }
           break;
         }
@@ -3569,28 +3712,26 @@
     }
   }
 
-  // Drawn UNDER the robot body, in the same world space, as a soft dark
-  // elongated shape — deliberately NOT a red laser-sight look, NOT a flashy
-  // glow, and NOT a solid opaque giant rectangle (low alpha + blur instead).
+  // SECTION H/L: the new searchlight SHADOW — a wide, short, soft-edged
+  // oval/capsule (retiring PART 2's thin directional rectangle — SECTION G)
+  // drawn from the SAME getSecurityShadowCenter()/radii the hitbox above
+  // uses, so visual and hitbox can never disagree (L-1). Deliberately never
+  // a red laser-sight look, never a flashy glow, never a solid opaque shape.
   function drawSecurityShadow(robot) {
-    const w = SECURITY_SHADOW_WIDTH, len = SECURITY_SHADOW_LENGTH;
-    let rx, ry, rw, rh;
-    if (robot.dir === 'south') { rx = robot.x - w / 2; ry = robot.y; rw = w; rh = len; }
-    else if (robot.dir === 'west') { rx = robot.x - len; ry = robot.y - w / 2; rw = len; rh = w; }
-    else { rx = robot.x; ry = robot.y - w / 2; rw = len; rh = w; } // east
+    if (robot.hp <= 0) return; // E-4: dead DRONEs cast no shadow
+    const c = getSecurityShadowCenter(robot);
     ctx.save();
-    ctx.filter = 'blur(2px)';
-    // SECTION G: readable against the stage's own dark-but-not-black floor
-    // texture (a plain near-black fill washed out to near-invisibility
-    // there) while staying a soft, non-flashy dark tone — never the
-    // forbidden red laser-sight look or a solid opaque rectangle.
+    ctx.filter = 'blur(3px)';
     ctx.globalAlpha = (robot.state === 'detected' || robot.state === 'telegraph' || robot.state === 'attack') ? 0.75 : 0.6;
     ctx.fillStyle = '#050608';
-    ctx.fillRect(rx, ry, rw, rh);
+    ctx.beginPath();
+    ctx.ellipse(c.x, c.y, SECURITY_SHADOW_RADIUS_X, SECURITY_SHADOW_RADIUS_Y, 0, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
   function drawSecurityRobot(robot) {
+    if (robot.hp <= 0) return; // E-4: dead DRONEs stop drawing entirely
     const img = securityRobotImgs[robot.dir];
     const m = SECURITY_ROBOT_METRICS[robot.dir];
     if (!img.complete || img.naturalWidth === 0) return;
@@ -3613,12 +3754,12 @@
     }
   }
 
-  // SECTION L: straight-line beam from the exact muzzle origin to the exact
+  // SECTION M: straight-line beam from the exact muzzle origin to the exact
   // locked target — the SAME two points fireSecurityLaser() already used
   // for the damage hitbox, so visual and hitbox can never disagree. Fades
   // out over its short cosmetic display window rather than cutting off.
   function drawSecurityLaserBeam(robot) {
-    if (robot.state !== 'attack') return;
+    if (robot.hp <= 0 || robot.state !== 'attack') return; // N: a DRONE killed mid-attack stops drawing its own in-flight beam immediately
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, robot.laserRemainingMs / SECURITY_LASER_VISUAL_MS));
     ctx.strokeStyle = 'rgba(255,60,50,0.9)';
@@ -3629,6 +3770,30 @@
     ctx.moveTo(robot.laserOriginX, robot.laserOriginY);
     ctx.lineTo(robot.laserEndX, robot.laserEndY);
     ctx.stroke();
+    ctx.restore();
+  }
+
+  // SECTION E-5: a lightweight, image-free canvas spark burst — deliberately
+  // NOT reusing GABRIEL's own buildDyingParticles()/drawBossDying() (a much
+  // larger grid-based sand-dissolve system built specifically around the
+  // boss sprite's own dimensions); a small radiating burst is a closer fit
+  // for this tiny ~28px DRONE and needs no new image assets either way.
+  function drawSecurityDroneDeathEffect(e, now) {
+    const t = (now - e.startAt) / SECURITY_DRONE_DEATH_MS;
+    if (t >= 1) return;
+    ctx.save();
+    ctx.globalAlpha = 1 - t;
+    ctx.strokeStyle = 'rgba(255,130,60,0.9)';
+    ctx.lineWidth = 2;
+    const sparkCount = 6;
+    const r = 6 + t * 26;
+    for (let i = 0; i < sparkCount; i++) {
+      const angle = (i / sparkCount) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(e.x, e.y);
+      ctx.lineTo(e.x + Math.cos(angle) * r, e.y + Math.sin(angle) * r);
+      ctx.stroke();
+    }
     ctx.restore();
   }
   // ================= END PART 2 SECURITY ROBOT logic =================
@@ -4145,7 +4310,7 @@
   document.getElementById('mode-quit-btn').addEventListener('click', () => {
     gameState.paused = false;
     hideModeMenu();
-    setScreen('mainMenu');
+    returnToTopMenu(); // PART 3 SECTION D: covers BOSS/TRAINING/SECURITY TRAINING QUIT alike (shared PAUSE MENU button)
   });
 
   // SECTION H: the ONLY place player.stunned is ever cleared — a distinct,
@@ -4167,10 +4332,11 @@
   });
 
   // SECTION M-4: same QUIT semantics as mode-quit-btn above — no reload,
-  // BGM keeps playing (bgmAudio is untouched here), and the next startMode()
-  // call runs its own full resetModeState() so nothing carries over.
+  // and the next startMode() call runs its own full resetModeState() so
+  // nothing carries over. PART 3 SECTION D: now also resets BGM to the top
+  // via the shared returnToTopMenu(), same as every other TOP-bound QUIT.
   document.getElementById('game-over-quit-btn').addEventListener('click', () => {
-    setScreen('mainMenu');
+    returnToTopMenu();
   });
 
   // ---------- SECTION Q/R: RESULT ----------
@@ -4216,7 +4382,7 @@
     setScreen('result');
   }
   document.getElementById('result-back-btn').addEventListener('click', () => {
-    setScreen('mainMenu'); // R-1: no reload, BGM keeps playing (never touched here)
+    returnToTopMenu(); // R-1: no reload; PART 3 SECTION D: BGM now resets to the top here too, same as every other TOP-bound route
   });
   // R-2: ARTIST PAGE stays a disabled placeholder — see index.html's own
   // comment and the completion report; button intentionally has no
@@ -5184,13 +5350,13 @@
     getWeakPointScreenPos, arcClawSlashes, spawnArcClawSlash,
     gameState, barrels, explosions, bullets, spawnBarrels, startMode, explodeBarrel, // debug/verification only — SECTION F
     // Debug/verification only — SECTION G/H/I/J/T (LOADING/OPENING/MAIN MENU/BGM).
-    setScreen, bgmAudio, startBgmOnce, BGM_VOLUME,
+    setScreen, bgmAudio, startBgmOnce, BGM_VOLUME, returnToTopMenu, // returnToTopMenu debug/verification only — PART 3 SECTION D
     get autoAimActive() { return autoAimActive; },
     getAutoAimTargetPoint, // debug/verification only
     get autoAimTargetIsBoss() { return autoAimTargetIsBoss; },
     MUZZLE_DIST, AIM_LINE_LEN, AUTO_AIM_RADIUS,
     // Debug/verification only — boss cinematic sequences.
-    bossIsInCinematic, checkBossHpMilestones, startBossThreshold, startBossDying,
+    bossIsInCinematic, isBossDamageImmune, checkBossHpMilestones, startBossThreshold, startBossDying,
     BOSS_PHASE_THRESHOLDS, INTRO_TOTAL_MS, THRESHOLD_CINEMATIC_MS, DYING_DURATION_MS,
     DEFENSE_GUARD_BREAK_HITS, BARREL_EXPLOSION_RADIUS, BOSS_HURT_RADIUS,
     BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS, BARREL_DAMAGE, BARREL_DAMAGE_BOSS, BARREL_DAMAGE_BOSS_MULTIPLIER, // debug/verification only — SECTION C (this turn)
@@ -5319,19 +5485,23 @@
     get encounter3StunFlashRemainingMs() { return encounter3StunFlashRemainingMs; },
     set encounter3StunFlashRemainingMs(v) { encounter3StunFlashRemainingMs = v; }, // debug/verification only
     ENCOUNTER3_STUN_FLASH_TOTAL_MS,
-    // Debug/verification only — PART 2: SECURITY TRAINING / SECURITY ROBOT.
+    // Debug/verification only — PART 2/3: SECURITY TRAINING / SECURITY ROBOT (DRONE).
     securityRobots, spawnSecurityRobots, pickSecurityRobotSpot,
-    isPlayerInSecurityShadow, securityShadowProject, getSecurityRobotMuzzlePos,
+    isPlayerInSecurityShadow, getSecurityShadowCenter, getSecurityRobotMuzzlePos,
     fireSecurityLaser, resolveSecurityLaserHit, updateSecurityRobots, distanceToSegment,
+    applyDamageToSecurityDrone, get securityDroneDeathEffects() { return securityDroneDeathEffects; },
     get securityAttackSlotsInUse() { return securityAttackSlotsInUse; },
     set securityAttackSlotsInUse(v) { securityAttackSlotsInUse = v; }, // debug/verification only
     get securityTrainingBgIndex() { return securityTrainingBgIndex; },
     set securityTrainingBgIndex(v) { securityTrainingBgIndex = v; }, // debug/verification only
-    SECURITY_ROBOT_COUNT, SECURITY_DIRECTION_MIN_MS, SECURITY_DIRECTION_MAX_MS,
+    SECURITY_ROBOT_COUNT,
     SECURITY_TELEGRAPH_MS, SECURITY_LASER_VISUAL_MS,
     SECURITY_LASER_COOLDOWN_MIN_MS, SECURITY_LASER_COOLDOWN_MAX_MS,
-    SECURITY_MAX_SIMULTANEOUS_ATTACKS, SECURITY_SHADOW_LENGTH, SECURITY_SHADOW_WIDTH,
+    SECURITY_MAX_SIMULTANEOUS_ATTACKS, SECURITY_SHADOW_RADIUS_X, SECURITY_SHADOW_RADIUS_Y,
     SECURITY_ROBOT_DRAW_D, SECURITY_ROBOT_METRICS, SECURITY_ROBOT_MIN_SPACING,
+    SECURITY_PATROL_RANGE_MIN, SECURITY_PATROL_RANGE_MAX, SECURITY_PATROL_SPEED_MIN, SECURITY_PATROL_SPEED_MAX,
+    SECURITY_SCAN_RANGE_MIN, SECURITY_SCAN_RANGE_MAX, SECURITY_SCAN_SPEED_MIN, SECURITY_SCAN_SPEED_MAX,
+    SECURITY_DRONE_HP, SECURITY_DRONE_HIT_RADIUS, SECURITY_DRONE_DEATH_MS,
   };
 
   // ---------- Main loop ----------
@@ -5674,6 +5844,20 @@
           }
         }
       }
+      // PART 3 SECTION E: normal FIRE hitting a DRONE — gated on the mode
+      // itself (never just on securityRobots happening to be non-empty) so
+      // this stays structurally impossible in STORY MODE (SECTION S), same
+      // as every other SECURITY TRAINING-only system in this file.
+      if (!consumed && gameState.mode === 'securityTraining') {
+        for (const robot of securityRobots) {
+          if (robot.hp <= 0) continue;
+          if (Math.hypot(b.x - robot.x, b.y - robot.y) <= SECURITY_DRONE_HIT_RADIUS) {
+            applyDamageToSecurityDrone(robot, now);
+            consumed = true;
+            break;
+          }
+        }
+      }
       if (consumed) bullets.splice(i, 1);
     }
 
@@ -5888,6 +6072,7 @@
     // this is a safe no-op in every other mode (SECTION S).
     for (const robot of securityRobots) drawSecurityShadow(robot);
     for (const robot of securityRobots) drawSecurityRobot(robot);
+    for (const e of securityDroneDeathEffects) drawSecurityDroneDeathEffect(e, now); // PART 3 SECTION E-5
 
     // DARK PHASE screen-darken: drawn HERE — under the bullets/claw attacks/
     // player/boss below, not as a final overlay on top of everything — so it
@@ -6827,11 +7012,6 @@
       : 1;
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.fillText('LIFE', x, labelY + 8);
-    if (stunned) {
-      // D-3: the small "STUN" text alongside the usual "LIFE" label.
-      ctx.fillStyle = `rgba(255,150,40,${pulseAlpha})`;
-      ctx.fillText('STUN', x + 34, labelY + 8);
-    }
     ctx.fillStyle = 'rgba(255,255,255,0.15)';
     ctx.fillRect(x, gaugeY, HUD_BAR_W, HUD_BAR_H);
     const frac = player.life === Infinity ? 1 : Math.max(0, Math.min(1, player.life / playerMaxLife));
@@ -6842,6 +7022,20 @@
     ctx.strokeStyle = 'rgba(255,255,255,0.3)';
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, gaugeY + 0.5, HUD_BAR_W - 1, HUD_BAR_H - 1);
+    if (stunned) {
+      // PART 3 SECTION B: "STUN" now renders INSIDE the LIFE gauge itself
+      // (small black text, centered) instead of as its own separate label
+      // next to "LIFE" — B-1/B-2/B-3. Drawn after the bar fill/stroke above
+      // so it sits on top of the orange fill without being covered by it;
+      // sized to the bar's own height so it never spills outside the gauge.
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `bold ${HUD_BAR_H}px sans-serif`;
+      ctx.fillStyle = '#000000';
+      ctx.fillText('STUN', x + HUD_BAR_W / 2, gaugeY + HUD_BAR_H / 2 + 0.5);
+      ctx.restore();
+    }
     if (stunned) {
       // D-4: a thin, separate status gauge directly under the LIFE bar —
       // this is NOT a LIFE value (always full-width) — purely a "currently
@@ -6877,6 +7071,17 @@
     ctx.strokeStyle = 'rgba(255,255,255,0.3)';
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, gaugeY + 0.5, HUD_BAR_W - 1, HUD_BAR_H - 1);
+    // PART 3 SECTION C: "無敵" — small black, centered inside the gauge —
+    // shown only while isBossDamageImmune() is actually true (the same
+    // condition the real damage code already checks), and disappears the
+    // instant that stops being true (C-4, checked fresh every frame here).
+    if (isBossDamageImmune()) {
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `bold ${HUD_BAR_H}px sans-serif`;
+      ctx.fillStyle = '#000000';
+      ctx.fillText('無敵', x + HUD_BAR_W / 2, gaugeY + HUD_BAR_H / 2 + 0.5);
+    }
     ctx.restore();
   }
 
