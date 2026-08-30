@@ -92,7 +92,39 @@
     s.img.src = s.file;
   });
   let currentStageIndex = 0;
-  function currentStage() { return STAGES[currentStageIndex]; }
+
+  // SECTION D: TRAINING MODE's own separate background pool — the 5
+  // attached FIELD images, used exactly as provided (no AI regeneration/
+  // re-cropping/design changes), kept fully independent of STORY MODE's
+  // STAGES array/currentStageIndex above so TRAINING never shares or
+  // interferes with STORY's 3-stage progression. D-4: registering all 5 in
+  // the pool doesn't require using them all at once — TRAINING_BG_INDEX
+  // just picks which one is currently active (a future SETTING-style
+  // picker could reassign it; not required by this turn's spec).
+  const TRAINING_BACKGROUNDS = [
+    { key: 'cargo_lift_e12_a', file: 'assets/stages/training/cargo_lift_e12_a.jpg' },
+    { key: 'experiment_lab_c09', file: 'assets/stages/training/experiment_lab_c09.jpg' },
+    { key: 'cargo_lift_e12_b', file: 'assets/stages/training/cargo_lift_e12_b.jpg' },
+    { key: 'shelter_b07', file: 'assets/stages/training/shelter_b07.jpg' },
+    { key: 'fortress_a01', file: 'assets/stages/training/fortress_a01.jpg' },
+  ];
+  TRAINING_BACKGROUNDS.forEach((s) => {
+    s.img = new Image();
+    s.ready = false;
+    s.img.onload = () => { s.ready = true; };
+    s.img.src = s.file;
+  });
+  const TRAINING_BG_INDEX = 0; // active pool entry — see comment above
+
+  // SECTION D: the ONE place draw()/barrel-spawn/etc. read "the current
+  // background" from — returns TRAINING's own pool while in TRAINING MODE,
+  // STORY's STAGES otherwise, so every existing caller (draw()'s
+  // currentStage().img/.ready, etc.) picks up the right image with no
+  // further changes needed anywhere else.
+  function currentStage() {
+    if (gameState.mode === 'training') return TRAINING_BACKGROUNDS[TRAINING_BG_INDEX];
+    return STAGES[currentStageIndex];
+  }
 
   // ---------- Sprite loading ----------
   // Only 4 cardinal directions this asset set: UP (back-facing), DOWN
@@ -398,7 +430,14 @@
   // the requested 20-30% band.
   const BARREL_DRAW_H = SPRITE_DRAW_H * 0.30;
   const BARREL_HITBOX_RADIUS = 12; // scaled down to match the smaller draw size
-  const BARREL_EXPLOSION_RADIUS = 300; // area-effect range, not tied to the sprite size (3x the previous 100)
+  const BARREL_EXPLOSION_RADIUS = 300; // area-effect range, not tied to the sprite size (3x the previous 100) — PLAYER's own damage-adjacent knockback AND the boss's own knockback both still key off this exact, unchanged value (SECTION C's spec explicitly forbids touching either)
+  // SECTION C (this turn): a separate, narrower radius for the BOSS's own
+  // explosion DAMAGE reach check only (applyExplosionDamageToBoss() below)
+  // — ~82% of BARREL_EXPLOSION_RADIUS, within the requested 80-85% band.
+  // Every other barrel-explosion effect (PLAYER knockback, BOSS knockback,
+  // the visual explosion itself) still reads BARREL_EXPLOSION_RADIUS above,
+  // completely untouched.
+  const BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS = BARREL_EXPLOSION_RADIUS * 0.82;
   // SECTION E: always 5 barrels — every spawn/restock site below uses this
   // one constant instead of the old random 2-4 range. Positions themselves
   // are still randomized per-barrel every time via pickBarrelSpot().
@@ -3112,6 +3151,17 @@
   const explosions = [];
   const EXPLOSION_DURATION_MS = 600; // 0-100 flash, 100-300 fireball, 300-600 sparks/debris/smoke decay
   const BARREL_DAMAGE = BULLET_DAMAGE * 15; // ~15 normal shots worth, per spec's 10-20x range — unchanged
+  // SECTION C (this turn): BOSS's own explosion damage — investigation
+  // found the boss's blast-damage reach check reused BARREL_EXPLOSION_RADIUS
+  // (300px, defined below), the SAME wide radius used for BOTH player and
+  // boss knockback, making the boss take damage from barrels that were
+  // arguably too far away. Per spec: PLAYER's own radius/damage/knockback
+  // and the BOSS's own knockback must all stay byte-for-byte unchanged —
+  // only the boss's DAMAGE reach narrows (to ~82%, within the requested
+  // 80-85% band) and the boss's damage AMOUNT halves. Both are separate,
+  // boss-damage-only constants so nothing else here needs to change.
+  const BARREL_DAMAGE_BOSS_MULTIPLIER = 0.5;
+  const BARREL_DAMAGE_BOSS = BARREL_DAMAGE * BARREL_DAMAGE_BOSS_MULTIPLIER;
   // Restock state: fires whenever every barrel is gone (none alive, none
   // currently falling in) — a single unified path for BOTH BOSS MODE and
   // TRAINING MODE, replacing the old TRAINING-only per-barrel respawnAt
@@ -3164,8 +3214,8 @@
     // reach check adds BOSS_HURT_RADIUS so it's the boss's hurtbox CIRCLE
     // (not just its exact center point) that has to be within blast range.
     if (boss.spawned && boss.state !== 'dead' &&
-        Math.hypot(barrel.x - boss.x, barrel.y - boss.y) <= BARREL_EXPLOSION_RADIUS + BOSS_HURT_RADIUS) {
-      applyExplosionDamageToBoss(BARREL_DAMAGE, now);
+        Math.hypot(barrel.x - boss.x, barrel.y - boss.y) <= BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS + BOSS_HURT_RADIUS) {
+      applyExplosionDamageToBoss(BARREL_DAMAGE_BOSS, now);
     }
     // SECTION F: knockback is entirely separate from damage above — it
     // applies to the player AND the boss purely by blast-radius proximity,
@@ -3669,18 +3719,39 @@
   pauseZone.addEventListener('touchstart', pausePress, { passive: false });
   pauseZone.addEventListener('mousedown', pausePress);
 
-  // Safety net for the RANGE-thumb-residue bug (PART 3): a touch can be
-  // interrupted (app backgrounded, OS gesture, incoming call) WITHOUT the
-  // specific zone's own touchend/touchcancel ever firing on it — in that
-  // case aimStickTouchId/rangeTouchId stay stuck non-null and RANGE (with
-  // its thumb) never receives its own hide call at all, no matter how
-  // robust hideRangeUI() itself is made. Releasing every held stick/button
-  // whenever the page loses visibility/focus guarantees that stuck state
-  // can never survive past the interruption.
+  // SECTION A: auto-PAUSE on any app/tab/screen interruption — reuses the
+  // EXACT same PAUSE state (gameState.paused/pauseStartedAt/showModeMenu())
+  // pausePress() itself sets, never a parallel pause system. Gated to only
+  // ever fire during genuine active gameplay (A-2): screen!=='gameplay'
+  // already rules out LOADING/OPENING/MAIN MENU/SETTING/GAME OVER/RESULT
+  // (each is its own distinct gameState.screen value); gameState.paused
+  // rules out double-triggering while already paused; isLandscapeBlocked()
+  // and gameClearRemainingMs>0 are checked explicitly since BOTH keep
+  // gameState.screen === 'gameplay' (landscape-block freezes update()/
+  // draw() via loop()'s own guard without changing screen; GAME CLEAR is a
+  // canvas overlay drawn while screen is still 'gameplay', only becoming
+  // 'result' once its own timer finishes — see triggerGameClear()).
+  function autoPauseOnInterruption() {
+    releaseAllHeldInputs(); // existing stuck-input safety net (PART 3) — always runs regardless of screen
+    if (gameState.screen !== 'gameplay') return;
+    if (gameState.paused) return;
+    if (isLandscapeBlocked()) return;
+    if (gameClearRemainingMs > 0) return;
+    gameState.paused = true;
+    pauseStartedAt = performance.now(); // SECTION Q-1, same as pausePress()
+    showModeMenu();
+  }
+  // A-1: visibilitychange (backgrounding the tab/app, screen lock) and
+  // window blur (switching to another app/Safari tab) are the two
+  // minimum-required signals; both now route through the SAME auto-pause
+  // check above instead of only the old stuck-input release. A-3: no
+  // matching "visible again" / "focus" listener is added anywhere — RESUME
+  // is only ever triggered by the player's own tap on the PAUSE MENU's
+  // existing RESUME button, never automatically.
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) releaseAllHeldInputs();
+    if (document.hidden) autoPauseOnInterruption();
   });
-  window.addEventListener('blur', releaseAllHeldInputs);
+  window.addEventListener('blur', autoPauseOnInterruption);
 
   // Restarts whichever mode is currently selected, from scratch — startMode()
   // already does a full resetModeState() (player/boss/HP/bullets/blade
@@ -4750,6 +4821,8 @@
     bossIsInCinematic, checkBossHpMilestones, startBossThreshold, startBossDying,
     BOSS_PHASE_THRESHOLDS, INTRO_TOTAL_MS, THRESHOLD_CINEMATIC_MS, DYING_DURATION_MS,
     DEFENSE_GUARD_BREAK_HITS, BARREL_EXPLOSION_RADIUS, BOSS_HURT_RADIUS,
+    BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS, BARREL_DAMAGE, BARREL_DAMAGE_BOSS, BARREL_DAMAGE_BOSS_MULTIPLIER, // debug/verification only — SECTION C (this turn)
+    TRAINING_BACKGROUNDS, get currentStage() { return currentStage(); }, // debug/verification only — SECTION D (this turn)
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
     STAGES,
     get currentStageIndex() { return currentStageIndex; },
@@ -5029,17 +5102,37 @@
     // "cover"-style background tiling below) has no dependency on aspect
     // ratio, so removing the orientation restriction is enough — it now
     // runs identically in landscape and portrait.
-    if (gameState.mode === 'boss') {
+    // SECTION B (this turn): TRAINING MODE now gets the SAME AREA1+AREA2
+    // world tracking as BOSS MODE — investigation found the player
+    // "disappearing" past AREA1 in TRAINING was never a clamp bug
+    // (clampPlayerToScreen() below already allows the full AREA1+AREA2
+    // band in EVERY mode, ungated on gameState.mode) but a camera bug: the
+    // whole currentArea/cameraY-follow block was gated to `=== 'boss'`
+    // only, so in TRAINING the player's world.y legitimately walked into
+    // AREA2's negative-y band while cameraY stayed pinned at 0 forever —
+    // rendering the player above the visible canvas. Extending both gates
+    // below to include 'training' fixes this while changing nothing about
+    // the BOSS MODE behavior itself (identical condition, just also true
+    // for the other mode).
+    if (gameState.mode === 'boss' || gameState.mode === 'training') {
       currentArea = player.y < 0 ? 2 : 1;
       // AREA 1 clear (C-13): the one shared boss fully dissolved while the
-      // player happened to be standing in AREA 1's band.
+      // player happened to be standing in AREA 1's band. boss.state can
+      // only ever reach 'dead' when gameState.mode === 'boss' (updateBoss()
+      // itself early-returns for every other mode — see its own top-of-
+      // function comment), so this remains structurally unreachable in
+      // TRAINING regardless of the widened gate above — satisfying B-5's
+      // "never connect AREA crossing to boss spawn/stage transition" for
+      // TRAINING without needing a separate mode check here.
       if (!area1Cleared && boss.state === 'dead' && currentArea === 1) {
         area1Cleared = true;
       }
       // AREA 2 clear (C-20): same boss, same 'dead' state, just read while
       // the player is standing in AREA 2's band instead (e.g. they walk up
       // to it after the kill) -> the existing EXIT/stage-transition
-      // machinery (unchanged) takes over from here.
+      // machinery (unchanged) takes over from here. Same B-5 reasoning as
+      // above: unreachable in TRAINING since boss.state never leaves
+      // 'inactive' there.
       if (!area2Cleared && boss.state === 'dead' && currentArea === 2) {
         area2Cleared = true;
       }
@@ -5051,8 +5144,13 @@
     // clamped so it never scrolls past whichever band is currently unlocked
     // (C-10). Reaching the EXIT is never automatic on boss death: the
     // player must physically walk into that zone themselves, exactly as
-    // before this batch.
-    if (gameState.mode === 'boss' && !stageTransition.active) {
+    // before this batch. SECTION B: widened to 'training' for the same
+    // camera-follow fix described above — worldScrollUnlocked() itself
+    // (called just below) still explicitly requires gameState.mode ===
+    // 'boss', so the EXIT-zone/beginStageTransition() branch stays
+    // structurally unreachable in TRAINING (B-5) even with this wider gate;
+    // TRAINING only ever gets the plain AREA1<->AREA2 camera-follow.
+    if ((gameState.mode === 'boss' || gameState.mode === 'training') && !stageTransition.active) {
       // SECTION G: AREA 1 + AREA 2's own band is always unlocked now — only
       // the further post-clear bonus space beyond it stays gated.
       const minCameraY = worldScrollUnlocked() ? -H - worldExtraAbove : -H;
