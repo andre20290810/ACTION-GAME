@@ -80,10 +80,23 @@
   // M-3. Same data-driven list shape as before, so nothing else needs to
   // change to add a stage; only the fixed ORDER and the theme/tint fields
   // are new.
+  // New-turn SECTION 20: index 0 ('stage_b') is no longer reachable in
+  // STORY MODE — its own GABRIEL ENCOUNTER (bossEncounterIndex 0) was
+  // removed from STORY_STAGE_PLAN below. Left in place harmlessly (never
+  // referenced by any current STAGE) rather than removed, since removing it
+  // would shift indices 1/2 and require renumbering bossEncounterIndex
+  // everywhere else — see STORY_STAGE_PLAN's own comment for the full
+  // reasoning.
+  // New-turn SECTION 22/24: floorLeftFrac/floorRightFrac — the walkable
+  // floor's own left/right edges, as a fraction of THIS image's own width
+  // (0=left edge of the image, 1=right edge), measured by visually
+  // inspecting each actual background file. Used only for the AREA1<->AREA2
+  // boundary door-collision fix (SECTION 21-25) — see getAreaBoundaryDoorRangeX().
+  // stage_b has none: it's no longer reachable (SECTION 20 above).
   const STAGES = [
     { key: 'stage_b', file: 'assets/stage/stage_b_floor.jpg', theme: 'outdoor', lightTint: 'rgba(0,0,0,0)' },
-    { key: 'lab_b03', file: 'assets/stage/lab_b03_floor.png', theme: 'indoor', lightTint: 'rgba(40,60,90,0.10)' },
-    { key: 'stage_a', file: 'assets/stage/stage_a_floor.png', theme: 'indoor', lightTint: 'rgba(90,60,30,0.10)' },
+    { key: 'lab_b03', file: 'assets/stage/lab_b03_floor.png', theme: 'indoor', lightTint: 'rgba(40,60,90,0.10)', floorLeftFrac: 0.08, floorRightFrac: 0.92 },
+    { key: 'stage_a', file: 'assets/stage/stage_a_floor.png', theme: 'indoor', lightTint: 'rgba(90,60,30,0.10)', floorLeftFrac: 0.08, floorRightFrac: 0.92 },
   ];
   STAGES.forEach((s) => {
     s.img = new Image();
@@ -100,24 +113,49 @@
   // GAME CLEAR logic may key off. STAGES[] above (3 backgrounds) is indexed
   // by `bossEncounterIndex`, keeping each encounter's existing visual
   // identity (SECTION S-4).
+  // New-turn SECTION 20: the STAGE that used to sit here — { type: 'boss',
+  // encounterIndex: 0 }, GABRIEL ENCOUNTER 1, background STAGES[0]
+  // ('stage_b', assets/stage/stage_b_floor.jpg — the "A-01" floor with the
+  // up-arrow/">>>"/corner hazard-stripe motif) — has been removed from
+  // STORY progression entirely per this turn's request. The array is simply
+  // one entry shorter now (STAGE 5 becomes the new STAGE 4, etc. — pure
+  // array-position renumbering, see the comments below); bossEncounterIndex
+  // itself is deliberately left UNCHANGED at 1/2 for the two remaining
+  // GABRIEL fights (never renumbered to 0/1) so every encounter-specific
+  // system that keys off bossEncounterIndex — STAGES[] background lookup
+  // (currentStage()), BOSS_ENCOUNTER_BARREL_COUNTS, getBossDifficultyMultiplier(),
+  // the ENCOUNTER 2/3 DARK PHASE gate, and the ENCOUNTER 3 forced-STUN check
+  // — needs ZERO changes: they simply never see bossEncounterIndex===0
+  // again. STAGES[0]/BOSS_ENCOUNTER_BARREL_COUNTS[0]/difficulty index 0
+  // become intentionally unreachable configuration, left in place harmlessly
+  // (same convention as this file's other "legacy, no longer set" fields)
+  // rather than renumbered, which would risk touching every one of those
+  // systems for no functional gain.
   const STORY_STAGE_PLAN = [
     { type: 'drone', speedMult: 1.0, fixedCount: 3 },        // STAGE 1: fixed 3 (SECTION B — never randomized)
     { type: 'drone', speedMult: 1.0, fixedCount: 5 },        // STAGE 2: fixed 5
     { type: 'drone', speedMult: 1.0, fixedCount: 7 },        // STAGE 3: fixed 7
-    { type: 'boss', encounterIndex: 0 },                     // STAGE 4: GABRIEL ENCOUNTER 1
-    { type: 'drone', speedMult: 1.3 },                       // STAGE 5 — no fixedCount: 3/5/7 random per AREA, unchanged
-    { type: 'drone', speedMult: 1.3 },                       // STAGE 6
-    { type: 'boss', encounterIndex: 1 },                     // STAGE 7: GABRIEL ENCOUNTER 2 (DARK PHASE, 3 BARREL)
-    { type: 'drone', speedMult: 1.5 },                       // STAGE 8
-    { type: 'drone', speedMult: 1.5 },                       // STAGE 9
-    { type: 'boss', encounterIndex: 2, final: true },        // STAGE 10: GABRIEL ENCOUNTER 3, FINAL, 0 BARREL + 3 DRONE
+    { type: 'drone', speedMult: 1.3 },                       // STAGE 4 (was STAGE 5) — no fixedCount: 3/5/7 random per AREA, unchanged
+    { type: 'drone', speedMult: 1.3 },                       // STAGE 5 (was STAGE 6)
+    { type: 'boss', encounterIndex: 1 },                     // STAGE 6 (was STAGE 7): GABRIEL ENCOUNTER 2 (DARK PHASE, 3 BARREL) — encounterIndex intentionally stays 1, see note above
+    { type: 'drone', speedMult: 1.5 },                       // STAGE 7 (was STAGE 8)
+    { type: 'drone', speedMult: 1.5 },                       // STAGE 8 (was STAGE 9)
+    { type: 'boss', encounterIndex: 2, final: true },        // STAGE 9 (was STAGE 10): GABRIEL ENCOUNTER 3, FINAL, 0 BARREL + 3 DRONE
   ];
   // SECTION K/X: per-ENCOUNTER barrel count, indexed by bossEncounterIndex —
-  // ENCOUNTER1=5, ENCOUNTER2=3 (down from 5), ENCOUNTER3=0 (replaced by the
+  // ENCOUNTER1=5 (this turn: no longer reachable, see SECTION 20 note
+  // above), ENCOUNTER2=3 (down from 5), ENCOUNTER3=0 (replaced by the
   // FINAL STAGE's 3 DRONEs instead, SECTION M-5).
   const BOSS_ENCOUNTER_BARREL_COUNTS = [5, 3, 0];
   let currentStageIndex = 0; // 0-9: raw STORY STAGE position (SECTION Q — NEVER the encounter index)
   let bossEncounterIndex = 0; // 0-2: which GABRIEL encounter this is (SECTION Q — the ONLY thing encounter-specific logic may key off)
+  // New-turn SECTION 3: true once the FINAL STAGE's own one-time 2nd DRONE
+  // wave has been spawned (after the initial 3 are all destroyed) — guards
+  // against ever spawning a 3rd wave, and is reset to false every time the
+  // FINAL STAGE is (re)entered (enterStoryStage()'s own `plan.final` branch),
+  // including via RETRY, so a fresh attempt always starts from "wave 1, not
+  // yet respawned" exactly like a brand-new run.
+  let finalDroneRespawned = false;
   // SECTION S: DRONE-only STORY stages reuse TRAINING_BACKGROUNDS (below) —
   // this index is re-picked fresh every time a drone-type STAGE is entered.
   let storyDroneBgIndex = 0;
@@ -130,12 +168,14 @@
   // the pool doesn't require using them all at once — TRAINING_BG_INDEX
   // just picks which one is currently active (a future SETTING-style
   // picker could reassign it; not required by this turn's spec).
+  // New-turn SECTION 22/24: floorLeftFrac/floorRightFrac — see STAGES[]'s
+  // own comment above for what these mean.
   const TRAINING_BACKGROUNDS = [
-    { key: 'cargo_lift_e12_a', file: 'assets/stages/training/cargo_lift_e12_a.jpg' },
-    { key: 'experiment_lab_c09', file: 'assets/stages/training/experiment_lab_c09.jpg' },
-    { key: 'cargo_lift_e12_b', file: 'assets/stages/training/cargo_lift_e12_b.jpg' },
-    { key: 'shelter_b07', file: 'assets/stages/training/shelter_b07.jpg' },
-    { key: 'fortress_a01', file: 'assets/stages/training/fortress_a01.jpg' },
+    { key: 'cargo_lift_e12_a', file: 'assets/stages/training/cargo_lift_e12_a.jpg', floorLeftFrac: 0.16, floorRightFrac: 0.84 },
+    { key: 'experiment_lab_c09', file: 'assets/stages/training/experiment_lab_c09.jpg', floorLeftFrac: 0.08, floorRightFrac: 0.92 },
+    { key: 'cargo_lift_e12_b', file: 'assets/stages/training/cargo_lift_e12_b.jpg', floorLeftFrac: 0.16, floorRightFrac: 0.84 },
+    { key: 'shelter_b07', file: 'assets/stages/training/shelter_b07.jpg', floorLeftFrac: 0.16, floorRightFrac: 0.84 },
+    { key: 'fortress_a01', file: 'assets/stages/training/fortress_a01.jpg', floorLeftFrac: 0.08, floorRightFrac: 0.92 },
   ];
   TRAINING_BACKGROUNDS.forEach((s) => {
     s.img = new Image();
@@ -167,6 +207,48 @@
     if (plan && plan.type === 'drone') return TRAINING_BACKGROUNDS[storyDroneBgIndex];
     return STAGES[bossEncounterIndex];
   }
+
+  // New-turn SECTION 21-25: the SAME "cover"-scale + horizontal-center
+  // formula draw() already uses to place the current background image —
+  // factored out here so the AREA1<->AREA2 door-collision check
+  // (getAreaBoundaryDoorRangeX() below) can compute the EXACT same
+  // on-screen image bounds draw() renders, rather than a second, potentially
+  // drifting approximation (SECTION 22's own "見た目とコリジョン位置を一致
+  // させる" requirement).
+  function getStageDrawMetrics(stage) {
+    const iw = stage.img.naturalWidth, ih = stage.img.naturalHeight;
+    const scale = Math.max(W / iw, H / ih);
+    const dw = iw * scale, dh = ih * scale;
+    const dx = (W - dw) / 2;
+    const baseDy = (H - dh) / 2;
+    return { iw, ih, scale, dw, dh, dx, baseDy };
+  }
+
+  // New-turn SECTION 21-25: the walkable door opening's world/screen X range
+  // at the AREA1<->AREA2 boundary, derived from the CURRENT background's own
+  // floorLeftFrac/floorRightFrac (a fraction of the image's OWN width —
+  // see STAGES[]/TRAINING_BACKGROUNDS' own comments) mapped through the
+  // SAME dx/dw the image is actually drawn with. Returns null if the image
+  // hasn't loaded yet (fails OPEN — no new collision restriction — rather
+  // than blocking movement against a background that isn't even visible
+  // yet) or declares no floorLeftFrac/floorRightFrac at all (stage_b, which
+  // is no longer reachable in STORY MODE anyway).
+  function getAreaBoundaryDoorRangeX() {
+    const stage = currentStage();
+    if (!stage || !stage.ready || !stage.img.naturalWidth) return null;
+    if (stage.floorLeftFrac === undefined || stage.floorRightFrac === undefined) return null;
+    const m = getStageDrawMetrics(stage);
+    return { left: m.dx + stage.floorLeftFrac * m.dw, right: m.dx + stage.floorRightFrac * m.dw };
+  }
+  // New-turn SECTION 21: how far (in world Y, both directions) around the
+  // exact AREA1<->AREA2 boundary (world Y=0 — see areaTopY()/the
+  // `currentArea = player.y < 0 ? 2 : 1` flip in update()) the door-width
+  // constraint applies. Kept small and symmetric — just enough that normal
+  // per-frame movement speed can never "jump across" the band in one frame
+  // (SECTION 25-4's DASH-through-the-wall check) — outside this band,
+  // AREA1/AREA2's own full-corridor-width movement is completely unchanged
+  // (SECTION 23).
+  const AREA_BOUNDARY_DOOR_BAND = 80;
 
   // PART 5 SECTION Q/T: the ONLY 3 helpers anything should ever use to ask
   // "what kind of STORY STAGE is this" — every DRONE-related system
@@ -581,7 +663,7 @@
   // rotation motion + oriented-rectangle hitbox as CLAW STING above (a new
   // 'straightClaw' kind in the shared arcClawSlashes array), never ARC CLAW
   // SLASH's curved bezier hitbox.
-  const STRAIGHT_CLAW_TRIGGER_GUARDS = 5; // 5th consecutive guarded shot triggers it (1-4 do not)
+  const STRAIGHT_CLAW_TRIGGER_GUARDS = 2; // this turn: was 5 — the 2nd consecutive guarded shot now deterministically triggers it (never a random/probabilistic gate — see applyBodyHitToBoss())
   const STRAIGHT_CLAW_WINDUP_MS = 2000; // straight_claw_windup.png shown; no damage/hit/knockback can occur yet
   const STRAIGHT_CLAW_ATTACK_MS = 400; // straight_claw_release.png shown; the actual straight-line hit travels during this window
   const STRAIGHT_CLAW_RECOVERY_MS = 600; // straight_claw_release.png still shown; no new hit, GABRIEL still invulnerable
@@ -833,6 +915,22 @@
     }
     player.x = Math.max(halfW, Math.min(W - halfW, player.x));
     player.y = Math.max(topY, Math.min(H - halfH, player.y));
+
+    // New-turn SECTION 21-25: right at the AREA1<->AREA2 boundary, only the
+    // door opening drawn in the current background is passable — the rest
+    // of that band is wall. This runs AFTER the full-width horizontal clamp
+    // above, so it can only ever narrow player.x further, never widen it;
+    // away from the boundary band, movement is exactly as before (full
+    // corridor width — SECTION 23, AREA1<->AREA2 crossing itself is
+    // unaffected, only this collision fix is new). Applies identically in
+    // every mode (STORY/BASIC TRAINING/SECURITY TRAINING all share this same
+    // boundary and this same clampPlayerToScreen() call — SECTION 24).
+    if (Math.abs(player.y) <= AREA_BOUNDARY_DOOR_BAND) {
+      const door = getAreaBoundaryDoorRangeX();
+      if (door) {
+        player.x = Math.max(door.left + halfW, Math.min(door.right - halfW, player.x));
+      }
+    }
   }
 
   // ---------- DASH (4 directions, button-triggered, re-triggerable) ----------
@@ -1461,6 +1559,14 @@
     straightClawHitSpawned: false, // guards the single spawnStraightClaw()/spawnCounterArcClaw() call per 'straightclaw' state — see bossEnterState()/updateBossStraightClaw()
     counterDir: 'south', // 'south'|'north'|'east'|'west' — captured ONCE at COUNTER ATTACK trigger time from the player's position relative to GABRIEL; picks STING (south) vs COUNTER ARC CLAW/STRAIGHT CLAW (north/east/west) — see applyBodyHitToBoss()/bossFrameName()/updateBossStraightClaw()
     counterAttackKind: 'arcClaw', // 'arcClaw'|'straightClaw' — SECTION J: rolled ONCE alongside counterDir, only meaningful when counterDir !== 'south' (south always keeps its own STING)
+    // New-turn SECTION 14: true only for a 'straightclaw' COUNTER entered via
+    // the DEFENSE-2-blocked-shots forced trigger (applyBodyHitToBoss()) —
+    // false for every other way 'straightclaw' is entered (the close-range
+    // proximity COUNTER just below it in updateBoss()). Read by
+    // spawnStraightClaw() to mark ONLY that specific projectile as piercing
+    // DASH invulnerability — see arcClawSlashes' own `piercesDashInvulnerability`
+    // field and its one read site in updateArcClawSlashes().
+    isDefenseCounter: false,
     autoAimHitStreak: 0, // ANY valid AUTO-AIM-assisted damage hit, body or weak point, regardless of state — see registerGlobalAutoAimHit()
     darkPhaseTriggeredThisEncounter: false, // SECTION J: reset fresh by spawnBoss() each ENCOUNTER — guarantees ENCOUNTER 2/3 see DARK PHASE at least once (see the guarantee check in updateBoss()), regardless of the player's own AUTO AIM usage
     invulnerableUntil: 0, // legacy field — no longer ever set to a nonzero value (4-hit AUTO AIM now triggers DARK PHASE, not a timed window); left in place harmlessly
@@ -1531,6 +1637,13 @@
     }
     if (state === 'straightclaw') {
       boss.straightClawHitSpawned = false;
+      // New-turn SECTION 14: defaults false on every entry into
+      // 'straightclaw' — the DEFENSE-2-blocked-shots trigger site
+      // (applyBodyHitToBoss()) sets this true immediately after calling
+      // bossEnterState(), so every OTHER entry point (the close-range
+      // proximity COUNTER) naturally stays false without needing its own
+      // explicit reset.
+      boss.isDefenseCounter = false;
     }
     // The GUARD BREAK, weak-point-streak, and guarded-shot counters only
     // ever mean something mid-DEFENSE — reset them the instant any other
@@ -2229,11 +2342,21 @@
         registerGlobalAutoAimHit(now);
         return;
       }
-      // STRAIGHT CLAW counter (A-2/A-3): counts CONSECUTIVE genuinely-blocked
-      // shots (0 damage) during DEFENSE — a real-damage hit anywhere below
-      // resets this to 0 via bossEnterState()'s own state !== 'defense'
-      // guard the instant DEFENSE ends for any other reason, so the same 5
-      // blocks can never be reused across separate DEFENSE windows.
+      // STRAIGHT CLAW counter (A-2/A-3, this turn's SECTION 10/11/15/16):
+      // counts CONSECUTIVE genuinely-blocked shots (0 damage) during DEFENSE
+      // — a real-damage hit anywhere below resets this to 0 via
+      // bossEnterState()'s own state !== 'defense' guard the instant DEFENSE
+      // ends for any other reason, so the same blocks can never be reused
+      // across separate DEFENSE windows (SECTION 15's own "per DEFENSE
+      // session" requirement). STRAIGHT_CLAW_TRIGGER_GUARDS is now 2 (this
+      // turn — was 5): the 2nd consecutive blocked shot deterministically
+      // triggers the counter every time (SECTION 11 — no Math.random() gate
+      // here at all). Once bossEnterState('straightclaw', ...) fires,
+      // boss.state !== 'defense' immediately, so this whole branch can never
+      // run again until a fresh DEFENSE starts — a 3rd/4th shot landing in
+      // the same or a later frame hits the isBossDamageImmune()-style guard
+      // at the top of this function instead, so at most one COUNTER ever
+      // fires per DEFENSE session (SECTION 16).
       boss.consecutiveGuardedShots += 1;
       if (boss.consecutiveGuardedShots >= STRAIGHT_CLAW_TRIGGER_GUARDS) {
         // COUNTER ATTACK direction split (SECTION 2/3/4): captured ONCE,
@@ -2243,12 +2366,20 @@
         // variant plays. 'down'/'up'/'left'/'right' -> DIR_TO_BOSS_KEY's own
         // south/north/west/east naming, same mapping used everywhere else.
         boss.counterDir = DIR_TO_BOSS_KEY[angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x))];
-        // SECTION J: north/east/west roll between the 2x ARC CLAW and the
-        // new STRAIGHT CLAW variant; south always keeps its own STING.
-        boss.counterAttackKind = (boss.counterDir !== 'south' && Math.random() < COUNTER_STRAIGHT_CLAW_PROB)
-          ? 'straightClaw' : 'arcClaw';
+        // SECTION 13: this specific (DEFENSE-block) COUNTER is ALWAYS the
+        // straight CLAW variant, deterministically — never the random
+        // ARC CLAW roll the close-range proximity COUNTER below still uses.
+        // South still renders via its own STING pose (isSouth override in
+        // updateBossStraightClaw()) — already the same "straight line"
+        // attack family, so this is still "a straight CLAW attack" there too.
+        boss.counterAttackKind = 'straightClaw';
         counterFlashRemainingMs = COUNTER_FLASH_TOTAL_MS; // SECTION K: brief screen flicker on the transition into COUNTER
-        bossEnterState('straightclaw', now); // takes priority over normal AI/DEFENSE's own exit timing
+        bossEnterState('straightclaw', now); // takes priority over normal AI/DEFENSE's own exit timing — SECTION 12: GABRIEL is immune to all damage from this exact instant (isBossDamageImmune()/applyExplosionDamageToBoss() both already gate on boss.state==='straightclaw')
+        // SECTION 14: set AFTER bossEnterState() — entering 'straightclaw'
+        // itself resets this to false first (so every OTHER entry point
+        // defaults correctly), so this specific trigger must override it
+        // back to true right here, immediately after.
+        boss.isDefenseCounter = true;
       }
       return;
     }
@@ -2867,6 +2998,13 @@
       p0: origin, p2: { x: endX, y: endY },
       startedAt: now, hasHit: false,
       x: origin.x, y: origin.y, angle: 0, tangentAngle: angle, trail: [],
+      // New-turn SECTION 14: only the DEFENSE-2-blocked-shots forced COUNTER
+      // (boss.isDefenseCounter, set right at its own trigger site) ignores
+      // the player's DASH invulnerability — this same function is ALSO used
+      // by the close-range proximity COUNTER, which must keep respecting it,
+      // so the flag is read from boss.isDefenseCounter fresh at spawn time
+      // rather than being hardcoded true here.
+      piercesDashInvulnerability: boss.isDefenseCounter,
     });
   }
 
@@ -2929,7 +3067,16 @@
         s.angle = tangentAngle - baseTip;
       }
 
-      if (!s.hasHit && !isPlayerInvulnerable()) {
+      // New-turn SECTION 14: the DEFENSE-block forced COUNTER's own
+      // straightClaw projectile (s.piercesDashInvulnerability, set only at
+      // its own spawnStraightClaw() call) is the ONE exception that still
+      // lands even while the player is DASHing — every other attack here
+      // (plain STING/ARC CLAW/COUNTER ARC, and even the close-range
+      // proximity COUNTER's own straightClaw) keeps respecting
+      // isPlayerInvulnerable() exactly as before. DASH itself is completely
+      // untouched — the player can still DASH freely, it simply doesn't grant
+      // its usual invulnerability against this one specific attack.
+      if (!s.hasHit && (!isPlayerInvulnerable() || s.piercesDashInvulnerability)) {
         // Oriented rectangle aligned to the live travel direction (never a
         // plain circle, and never ARC CLAW SLASH's curved hitbox — A-12) —
         // local +X is "ahead of the tip", local -X runs back along the
@@ -3369,14 +3516,15 @@
       boss.state = 'inactive';
       spawnBarrels(0);
       pickFreshStoryDroneBackground(); // SECTION S-1
-      populateSecurityDroneAreas(securityRobots, plan.speedMult, plan.fixedCount); // SECTION F-1/F-2/F-3/J/L: per-AREA 3/5/7 (or STAGE1/2/3's own fixed count — SECTION B), this STAGE's own speed multiplier baked in
+      populateSecurityDroneAreas(securityRobots, plan.speedMult, plan.fixedCount, true); // SECTION F-1/F-2/F-3/J/L: per-AREA 3/5/7 (or STAGE1/2/3's own fixed count — SECTION B), this STAGE's own speed multiplier baked in; new-turn SECTION 1: `true` guarantees at least one FAST_PATROL DRONE (every STAGE routed through this drone-type branch — 1/2/3/5/6/8/9 — needs one, per this turn's instructions)
       securityAttackSlotsInUse = 0;
     } else { // 'boss': a GABRIEL ENCOUNTER
       bossEncounterIndex = plan.encounterIndex; // SECTION Q: the ONLY place this is ever set
       spawnBarrels(BOSS_ENCOUNTER_BARREL_COUNTS[bossEncounterIndex]); // SECTION K/X
       if (plan.final) {
         spawnBoss(now); // SECTION M: GABRIEL must exist before N-3's "avoid GABRIEL's own body" placement check can read boss.x/y
-        spawnFinalStageDrones(); // SECTION M/N: 3 randomly-placed DRONEs alongside GABRIEL
+        spawnFinalStageDrones(); // SECTION M/N: 3 randomly-placed DRONEs alongside GABRIEL (new-turn SECTION 2: all FAST_PATROL)
+        finalDroneRespawned = false; // new-turn SECTION 3/6: every (re-)entry into the FINAL STAGE — including RETRY — starts fresh at "wave 1, 2nd wave not yet spawned"
       } else {
         securityRobots.length = 0;
         securityAttackSlotsInUse = 0;
@@ -3584,6 +3732,13 @@
   // boss-damage-only constants so nothing else here needs to change.
   const BARREL_DAMAGE_BOSS_MULTIPLIER = 0.5;
   const BARREL_DAMAGE_BOSS = BARREL_DAMAGE * BARREL_DAMAGE_BOSS_MULTIPLIER;
+  // New-turn SECTION 4: FINAL-STAGE DRONE-explosion-to-GABRIEL damage only,
+  // halved from BARREL_DAMAGE_BOSS — BARREL_DAMAGE_BOSS itself (still used
+  // by actual barrel explosions, including in the FINAL STAGE if any were
+  // ever present) is left completely untouched, as is every other damage
+  // source (normal SHOT, weak point, AUTO AIM, COUNTER, etc.).
+  const FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE_MULTIPLIER = 0.5;
+  const FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE = BARREL_DAMAGE_BOSS * FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE_MULTIPLIER;
   // Restock state: fires whenever every barrel is gone (none alive, none
   // currently falling in) — a single unified path for BOTH BOSS MODE and
   // TRAINING MODE, replacing the old TRAINING-only per-barrel respawnAt
@@ -3854,7 +4009,13 @@
   // STAGE_PLAN entries pass their fixed 3/5/7 through here; every other
   // caller (SECURITY TRAINING, STAGE 5/6/8/9) omits it and keeps the
   // existing random-per-AREA behavior unchanged.
-  function populateSecurityDroneAreas(into, speedMult, fixedCount) {
+  // New-turn SECTION 1: `ensureFastDrone`, when true, guarantees at least one
+  // FAST_PATROL DRONE somewhere in this STAGE's combined population — reuses
+  // the existing FAST_PATROL profile verbatim (no new speed system) rather
+  // than inventing a separate "fast" concept. Only enterStoryStage()'s own
+  // DRONE-type branch (STAGE 1/2/3/5/6/8/9) passes true; SECURITY TRAINING's
+  // spawnSecurityRobots() omits it and keeps its existing fully-random mix.
+  function populateSecurityDroneAreas(into, speedMult, fixedCount, ensureFastDrone) {
     into.length = 0;
     for (const area of [1, 2]) {
       const count = fixedCount || pickSecurityDroneCount();
@@ -3864,6 +4025,10 @@
         const x = pickSecurityDroneCenterX(into, area, y);
         into.push(buildSecurityDrone(x, y, types[i], speedMult));
       }
+    }
+    if (ensureFastDrone && !into.some((r) => r.behaviorType === 'FAST_PATROL')) {
+      const r0 = into[0];
+      into[0] = buildSecurityDrone(r0.x, r0.y, 'FAST_PATROL', speedMult);
     }
   }
 
@@ -3908,8 +4073,11 @@
         x = cx; y = cy;
         break;
       }
-      const behaviorType = SECURITY_BEHAVIOR_TYPES[Math.floor(Math.random() * SECURITY_BEHAVIOR_TYPES.length)]; // N-5
-      securityRobots.push(buildSecurityDrone(x, y, behaviorType, FINAL_STAGE_DRONE_SPEED_MULTIPLIER));
+      // New-turn SECTION 2: every FINAL-STAGE DRONE is FAST_PATROL — never
+      // the random N-5 pick anymore. FAST_PATROL only scales `patrol`
+      // (movement/patrol speed), leaving `scan` at its neutral 1.0x, so
+      // SEARCH/LASER/targeting behavior is untouched exactly as required.
+      securityRobots.push(buildSecurityDrone(x, y, 'FAST_PATROL', FINAL_STAGE_DRONE_SPEED_MULTIPLIER));
     }
   }
 
@@ -4074,7 +4242,23 @@
       // effect whatsoever on any OTHER drone (O-7/no chain-explosion).
       if (isFinalStoryStage() && boss.spawned &&
           Math.hypot(robot.x - boss.x, robot.y - boss.y) <= BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS + BOSS_HURT_RADIUS) {
-        applyExplosionDamageToBoss(BARREL_DAMAGE_BOSS, now);
+        // New-turn SECTION 4: FINAL-STAGE-only, halved from BARREL_DAMAGE_BOSS
+        // (never that constant itself, which barrels still use unchanged).
+        applyExplosionDamageToBoss(FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE, now);
+      }
+      // New-turn SECTION 3/5: the FINAL STAGE's own one-time 2nd wave — the
+      // instant EVERY currently-populated DRONE (this one included, already
+      // hp<=0 above) is dead, and only once per STAGE attempt
+      // (finalDroneRespawned), spawn a completely fresh set of 3 (via the
+      // SAME spawnFinalStageDrones() STAGE-entry function, so the new wave
+      // gets the exact same placement/FAST_PATROL/speed rules as the first).
+      // Guarded on GABRIEL not already being dead/dying so a kill-GABRIEL-
+      // first run never spawns a pointless extra wave after its own WIN
+      // condition has already fired (SECTION 5's own explicit requirement).
+      if (isFinalStoryStage() && !finalDroneRespawned && boss.state !== 'dead' && boss.state !== 'dying' &&
+          securityRobots.every((r) => r.hp <= 0)) {
+        finalDroneRespawned = true;
+        spawnFinalStageDrones();
       }
     } else {
       // SECTION E: a non-lethal hit starts this DRONE's own independent
@@ -4627,6 +4811,7 @@
     boss.straightClawHitSpawned = false;
     boss.counterDir = 'south';
     boss.counterAttackKind = 'arcClaw';
+    boss.isDefenseCounter = false; // New-turn SECTION 17: explicit RESTART/RETRY reset — boss.state is already forced away from 'straightclaw' just above/below, so this has no observable effect on its own, but is reset explicitly per this turn's spec rather than relying only on the next real 'straightclaw' entry's own bossEnterState() reset
     player.lastCounterDamage = 0;
     player.life = playerMaxLife; // SECTION E/I: applied at game start, per spec — reads the SAME setting SETTING/PAUSE MENU both write
     player.stunned = false; // SECTION C: RESTART/mode switch always starts un-stunned
@@ -5992,6 +6177,18 @@
     // (SECTION A), all-DRONE-kill EXIT gating (SECTION E), RETRY (SECTION J).
     isDroneStageCleared, resetModeState, retryCurrentRun,
     getPlayerFootWorldPosition, SECURITY_FOOT_DETECT_RADIUS,
+    // Debug/verification only — this turn's DRONE fast-type/wave/damage work.
+    get finalDroneRespawned() { return finalDroneRespawned; },
+    set finalDroneRespawned(v) { finalDroneRespawned = v; }, // debug/verification only
+    spawnFinalStageDrones, populateSecurityDroneAreas,
+    FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE, FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE_MULTIPLIER,
+    // Debug/verification only — this turn's GABRIEL DEFENSE-counter work
+    // (STRAIGHT_CLAW_TRIGGER_GUARDS is already exposed above).
+    spawnStraightClaw, isPlayerInvulnerable,
+    // Debug/verification only — this turn's AREA1<->AREA2 door-collision fix.
+    getAreaBoundaryDoorRangeX, getStageDrawMetrics, AREA_BOUNDARY_DOOR_BAND,
+    get W() { return W; }, get H() { return H; },
+    get spriteAspect() { return spriteAspect; }, SPRITE_DRAW_H,
   };
 
   // ---------- Main loop ----------
@@ -6510,11 +6707,7 @@
       // vertically (same real pixels, no distortion) to also cover the
       // extra world space above the original screen once unlocked — this
       // is what gives the world its extra vertical extent post-victory.
-      const iw = stage.img.naturalWidth, ih = stage.img.naturalHeight;
-      const scale = Math.max(W / iw, H / ih);
-      const dw = iw * scale, dh = ih * scale;
-      const dx = (W - dw) / 2;
-      const baseDy = (H - dh) / 2;
+      const { iw, ih, scale, dw, dh, dx, baseDy } = getStageDrawMetrics(stage);
       // SECTION C: the tiled column now needs to reach past AREA 2's own
       // full screen-height band (H) as well as the further post-clear EXIT
       // bonus space beyond it — same single background asset the whole
@@ -7563,15 +7756,19 @@
     ctx.strokeStyle = 'rgba(255,255,255,0.3)';
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, gaugeY + 0.5, HUD_BAR_W - 1, HUD_BAR_H - 1);
-    // PART 3 SECTION C: "無敵" — small black, centered inside the gauge —
-    // shown only while isBossDamageImmune() is actually true (the same
-    // condition the real damage code already checks), and disappears the
-    // instant that stops being true (C-4, checked fresh every frame here).
+    // PART 3 SECTION C / new-turn SECTION 9: "無敵" — thin white text,
+    // centered inside the gauge — shown only while isBossDamageImmune() is
+    // actually true (the SAME real invincibility condition the actual
+    // damage code already checks — never a separate display-only flag), and
+    // disappears the instant that stops being true (C-4, checked fresh every
+    // frame here). Gauge size/position/HP-fill logic above is untouched;
+    // only this text's own color/weight changed this turn (black/bold ->
+    // thin/white) per this turn's explicit spec.
     if (isBossDamageImmune()) {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.font = `bold ${HUD_BAR_H}px sans-serif`;
-      ctx.fillStyle = '#000000';
+      ctx.font = `${HUD_BAR_H}px sans-serif`;
+      ctx.fillStyle = '#ffffff';
       ctx.fillText('無敵', x + HUD_BAR_W / 2, gaugeY + HUD_BAR_H / 2 + 0.5);
     }
     ctx.restore();
