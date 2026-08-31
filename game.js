@@ -101,11 +101,11 @@
   // by `bossEncounterIndex`, keeping each encounter's existing visual
   // identity (SECTION S-4).
   const STORY_STAGE_PLAN = [
-    { type: 'drone', speedMult: 1.0 },                       // STAGE 1
-    { type: 'drone', speedMult: 1.0 },                       // STAGE 2
-    { type: 'drone', speedMult: 1.0 },                       // STAGE 3
+    { type: 'drone', speedMult: 1.0, fixedCount: 3 },        // STAGE 1: fixed 3 (SECTION B — never randomized)
+    { type: 'drone', speedMult: 1.0, fixedCount: 5 },        // STAGE 2: fixed 5
+    { type: 'drone', speedMult: 1.0, fixedCount: 7 },        // STAGE 3: fixed 7
     { type: 'boss', encounterIndex: 0 },                     // STAGE 4: GABRIEL ENCOUNTER 1
-    { type: 'drone', speedMult: 1.3 },                       // STAGE 5
+    { type: 'drone', speedMult: 1.3 },                       // STAGE 5 — no fixedCount: 3/5/7 random per AREA, unchanged
     { type: 'drone', speedMult: 1.3 },                       // STAGE 6
     { type: 'boss', encounterIndex: 1 },                     // STAGE 7: GABRIEL ENCOUNTER 2 (DARK PHASE, 3 BARREL)
     { type: 'drone', speedMult: 1.5 },                       // STAGE 8
@@ -1063,8 +1063,16 @@
   const SECURITY_ROBOTS_PER_AREA = 3;
   const SECURITY_ROBOT_COUNT = SECURITY_ROBOTS_PER_AREA * 2; // legacy reference only — 3+3 was the PART 4 fixed count
   const SECURITY_ROBOT_MIN_SPACING = 130; // px between any two robots' patrol CENTERS
-  const SECURITY_TELEGRAPH_MS = 450; // SECTION M: 300-600ms band, default ~450ms — unchanged from PART 2
-  const SECURITY_LASER_VISUAL_MS = 220; // cosmetic beam-display duration after firing (SECTION M — no re-tracking during this window) — unchanged from PART 2
+  // SECTION C (this turn): DRONE LASER attack tempo doubled — halves both
+  // the TELEGRAPH windup and the post-fire impact-resolution delay, so the
+  // full detected->telegraph->laser sequence takes about half as long
+  // overall. Still fully dodgeable (C-5): 225ms is still a real, visible
+  // windup, and resolveSecurityLaserHit()'s own re-check-at-resolve-time
+  // logic (fireSecurityLaser()'s "target lock, then a real window to step
+  // off the line" design) is completely untouched — only these two timing
+  // constants changed, never the fixed-target-lock mechanic itself (C-6).
+  const SECURITY_TELEGRAPH_MS = 225; // was 450ms (PART 2/SECTION M) — halved
+  const SECURITY_LASER_VISUAL_MS = 110; // was 220ms — halved
   const SECURITY_LASER_COOLDOWN_MIN_MS = 1000, SECURITY_LASER_COOLDOWN_MAX_MS = 2000; // SECTION O: per-robot cooldown after firing
   const SECURITY_MAX_SIMULTANEOUS_ATTACKS = 2; // SECTION O: global cap across ALL robots combined — unchanged from PART 2
   // SECTION F: slow left-right patrol around a fixed per-robot center — a
@@ -1676,7 +1684,21 @@
     // window too, for the same reason (no gameplay should proceed while a
     // terminal screen is about to take over).
     if (gameClearRemainingMs > 0) return true;
-    return gameState.mode === 'boss' && (!boss.spawned || boss.state === 'intro');
+    if (gameState.mode !== 'boss') return false;
+    // PART (this turn) SECTION A: this lock exists ONLY to hold the player
+    // still/blind/silent while GABRIEL's own BOSS INTRO cinematic is about
+    // to play or playing — it must never apply to a DRONE-type STORY STAGE,
+    // which has no GABRIEL/BOSS INTRO at all (boss.spawned is permanently
+    // false there under the current STORY_STAGE_PLAN). Before this check,
+    // `!boss.spawned` alone was true for the ENTIRE duration of every
+    // DRONE-type STAGE — a lock with no release condition, which is the
+    // actual root cause of "STORY DRONE STAGE开始時に操作不能" (not a timing
+    // race, not something a delay/timeout could paper over). FINAL STAGE is
+    // a boss-type STAGE (GABRIEL spawns immediately on entry — see
+    // enterStoryStage()), so it keeps the exact same wait-for-INTRO
+    // behavior as ENCOUNTER 1/2 below, unchanged.
+    if (isStoryDroneStage()) return false;
+    return !boss.spawned || boss.state === 'intro';
   }
 
   // SECTION C/I: STUN is a genuine, separate status effect (never folded
@@ -3138,10 +3160,12 @@
   // tracking, which is why it's set generously high and only ever matters
   // in a genuine worst case.
   const LOADING_MAX_WAIT_MS = 12000;
+  const LOADING_FADE_OUT_MS = 250; // SECTION H-6: matches #loading-screen's own CSS transition duration
 
   function initLoadingSequence() {
     setScreen('loading');
-    const loadingText = document.getElementById('loading-text');
+    const loadingScreenEl = document.getElementById('loading-screen');
+    const loadingBarFill = document.getElementById('loading-bar-fill');
     const openingVideoEl = document.getElementById('opening-video');
     const loadingStartedAt = performance.now();
     function computeProgress() {
@@ -3165,8 +3189,14 @@
     }
     function tick() {
       const { loaded, total } = computeProgress();
-      loadingText.textContent = `Loading... ${Math.floor((loaded / total) * 100)}%`;
-      if (loaded >= total || performance.now() - loadingStartedAt > LOADING_MAX_WAIT_MS) { setScreen('opening'); return; }
+      // SECTION G: no text, no percent number — a plain bar-width fill only.
+      loadingBarFill.style.width = `${Math.floor((loaded / total) * 100)}%`;
+      if (loaded >= total || performance.now() - loadingStartedAt > LOADING_MAX_WAIT_MS) {
+        // SECTION H-6: fade out, THEN swap to OPENING — never an instant cut.
+        loadingScreenEl.classList.add('loading-fade-out');
+        setTimeout(() => setScreen('opening'), LOADING_FADE_OUT_MS);
+        return;
+      }
       setTimeout(tick, 100);
     }
     tick();
@@ -3217,11 +3247,25 @@
   function worldScrollUnlocked() {
     // SECTION 15-18: no longer restricted to portrait (H >= W) — see the
     // matching note above the currentArea/area1Cleared block in update().
-    // PART 5 SECTION G/U: a DRONE-only STORY STAGE is never kill-gated —
-    // its EXIT is open immediately, exactly like TRAINING's own always-open
-    // EXIT below — so this only checks area2Cleared for GABRIEL-type STAGES.
-    if (isStoryDroneStage()) return gameState.mode === 'boss' && !stageTransition.active;
+    // SECTION E (this turn, supersedes the previous "never kill-gated"
+    // design): a DRONE-type STORY STAGE now requires every DRONE in BOTH
+    // AREA1+AREA2 destroyed (isDroneStageCleared()) before the bonus
+    // EXIT-hunting band opens — until then this returns false, which
+    // clampPlayerToScreen() already uses to physically keep the player out
+    // of that band (E-1/E-2/E-5), so the EXIT itself is simply unreachable
+    // rather than reachable-but-inert. AREA1<->AREA2 crossing itself is
+    // completely unaffected (E-4) — only this bonus band beyond AREA2.
+    if (isStoryDroneStage()) return gameState.mode === 'boss' && !stageTransition.active && isDroneStageCleared();
     return gameState.mode === 'boss' && area2Cleared && !stageTransition.active;
+  }
+
+  // SECTION E-9: every DRONE currently populated for this STAGE (both
+  // AREAs, securityRobots is always the combined AREA1+AREA2 population —
+  // see populateSecurityDroneAreas()) must be at hp<=0. Vacuously true if
+  // securityRobots is empty (never the case for an actual DRONE-type
+  // STAGE, but kept safe rather than special-cased).
+  function isDroneStageCleared() {
+    return securityRobots.every((r) => r.hp <= 0);
   }
   // PART 4 SECTION K/L: TRAINING's own equivalent of worldScrollUnlocked()
   // — but NEVER gated behind a "clear" flag (J-2: SECURITY TRAINING is
@@ -3325,7 +3369,7 @@
       boss.state = 'inactive';
       spawnBarrels(0);
       pickFreshStoryDroneBackground(); // SECTION S-1
-      populateSecurityDroneAreas(securityRobots, plan.speedMult); // SECTION F-1/F-2/F-3/J/L: per-AREA 3/5/7, this STAGE's own speed multiplier baked in
+      populateSecurityDroneAreas(securityRobots, plan.speedMult, plan.fixedCount); // SECTION F-1/F-2/F-3/J/L: per-AREA 3/5/7 (or STAGE1/2/3's own fixed count — SECTION B), this STAGE's own speed multiplier baked in
       securityAttackSlotsInUse = 0;
     } else { // 'boss': a GABRIEL ENCOUNTER
       bossEncounterIndex = plan.encounterIndex; // SECTION Q: the ONLY place this is ever set
@@ -3805,10 +3849,15 @@
   // full fresh 2-AREA population into `into` (mutated in place, mirroring
   // spawnBarrels()'s own reset-then-repopulate pattern) — each AREA's own
   // count and behavior-TYPE mix are rolled independently (C-1/C-2/A-2).
-  function populateSecurityDroneAreas(into, speedMult) {
+  // SECTION B (this turn): `fixedCount`, when given, is used for BOTH AREAs
+  // instead of the usual {3,5,7} random roll — STAGE 1/2/3's own STORY_
+  // STAGE_PLAN entries pass their fixed 3/5/7 through here; every other
+  // caller (SECURITY TRAINING, STAGE 5/6/8/9) omits it and keeps the
+  // existing random-per-AREA behavior unchanged.
+  function populateSecurityDroneAreas(into, speedMult, fixedCount) {
     into.length = 0;
     for (const area of [1, 2]) {
-      const count = pickSecurityDroneCount();
+      const count = fixedCount || pickSecurityDroneCount();
       const types = pickSecurityBehaviorTypes(count);
       for (let i = 0; i < count; i++) {
         const y = securityDroneRowY(area, i, count);
@@ -3878,18 +3927,40 @@
     return { x: robot.scanCenterX, y: robot.scanCenterY + robot.scanOffset }; // vertical
   }
 
-  // SECTION H/L: a wide, short, soft-edged OVAL detection area (never the
-  // old thin directional rectangle — SECTION G) — approximated here as a
-  // simple normalized-ellipse containment test, inflated by
-  // PLAYER_HIT_RADIUS on both axes so corner/edge behavior stays generous
-  // and consistent with how every other hitbox in this file already adds
-  // the player's own radius as tolerance (L-2/L-3).
+  // SECTION D (this turn): the PLAYER's own foot/ground-contact world
+  // position — the SAME footFrac math drawPlayer() itself already uses to
+  // land the sprite's drawn foot row exactly on player.y at normal scale
+  // (see the dy calculation further below in draw()), reused here verbatim
+  // rather than approximated separately, so "detected" can only ever mean
+  // "the player's own feet, as actually drawn on screen, are here" (D-3).
+  function getPlayerFootWorldPosition() {
+    const footFrac = PLAYER_FOOT_Y / PLAYER_CANVAS_H;
+    return { x: player.x, y: player.y - SPRITE_DRAW_H / 2 + SPRITE_DRAW_H * footFrac };
+  }
+
+  // SECTION D-6: a small foot-sized tolerance — NOT the full-body
+  // PLAYER_HIT_RADIUS (22px) the previous version added on both axes,
+  // which made the invisible detection ellipse noticeably larger than the
+  // visible white SEARCH ellipse and fired before the player's own sprite
+  // visually touched it (the reported false-detection bug).
+  const SECURITY_FOOT_DETECT_RADIUS = 4;
+
+  // SECTION H/L/D (this turn): a wide, short, soft-edged OVAL detection
+  // area (never the old thin directional rectangle — SECTION G), tested
+  // against the player's own FOOT point (D-2/D-3) with only a small
+  // foot-sized tolerance (D-6) — never the player's full body/sprite
+  // center. Uses the exact same centerX/centerY/radiusX/radiusY
+  // (getSecurityShadowCenter()/SECURITY_SHADOW_RADIUS_X/Y) the visible
+  // white ellipse itself is drawn with (drawSecurityShadow()), so visual
+  // and hitbox can never disagree (D-9/SECTION F-1's "one shared
+  // coordinate function" requirement, extended here to the foot check).
   function isPlayerInSecurityShadow(robot) {
     const c = getSecurityShadowCenter(robot);
-    const rx = SECURITY_SHADOW_RADIUS_X + PLAYER_HIT_RADIUS;
-    const ry = SECURITY_SHADOW_RADIUS_Y + PLAYER_HIT_RADIUS;
-    const nx = (player.x - c.x) / rx;
-    const ny = (player.y - c.y) / ry;
+    const foot = getPlayerFootWorldPosition();
+    const rx = SECURITY_SHADOW_RADIUS_X + SECURITY_FOOT_DETECT_RADIUS;
+    const ry = SECURITY_SHADOW_RADIUS_Y + SECURITY_FOOT_DETECT_RADIUS;
+    const nx = (foot.x - c.x) / rx;
+    const ny = (foot.y - c.y) / ry;
     return (nx * nx + ny * ny) <= 1;
   }
 
@@ -4296,7 +4367,7 @@
   // intentionally much larger than anything drawn here — this is a stage
   // effect sized to read as "big", not a literal hitbox outline.
   function drawExplosion(e, now) {
-    const t = now - e.startAt;
+    const t = Math.max(0, now - e.startAt); // guards a rare same-frame startAt>now race from ever producing a negative gradient radius below
     if (t >= EXPLOSION_DURATION_MS) return;
     ctx.save();
     ctx.translate(e.x, e.y);
@@ -4512,7 +4583,16 @@
   // Resets everything that belongs to "a run" — nothing from the previous
   // mode (bullets, claw projectiles, explosions, boss state/HP, barrels,
   // DASH state) is allowed to survive into the next one.
-  function resetModeState() {
+  // SECTION J (this turn): `preserveStoryProgress` — when true, skips the
+  // currentStageIndex/bossEncounterIndex reset below so GAME OVER's own
+  // RETRY (see retryCurrentRun()) re-initializes the SAME STORY STAGE the
+  // player just died on, rather than jumping back to STAGE 1 the way a
+  // genuine RESTART/mode-switch (which always passes no argument, i.e.
+  // false) still correctly does. Every other reset below (LIFE/position/
+  // camera/AREA/DRONE-or-GABRIEL re-init/BARREL/projectile/STUN/control-
+  // recovery) is identical either way — RETRY's own J-3 requirement list is
+  // just this same existing reset, unconditionally.
+  function resetModeState(preserveStoryProgress) {
     resetPlayerToBattlePose(); // SECTION H: BOSS mode starts directly at the intro pose; TRAINING mode keeps the screen-center default
     player.dashing = false;
     player.knockbackUntil = 0;
@@ -4554,9 +4634,12 @@
     resetStealth(); // RESTART/mode switch ends STEALTH and its cooldown outright — the only two things allowed to (PART 21)
 
     // Stage world/camera/EXIT (PART 21-29) — a RESTART or mode switch always
-    // returns to the first/default stage with the world fully closed back up.
-    currentStageIndex = 0;
-    bossEncounterIndex = 0; // PART 5 SECTION Q: fresh per STORY run, same as currentStageIndex
+    // returns to the first/default stage with the world fully closed back up;
+    // RETRY (preserveStoryProgress===true) is the one exception (SECTION J).
+    if (!preserveStoryProgress) {
+      currentStageIndex = 0;
+      bossEncounterIndex = 0; // PART 5 SECTION Q: fresh per STORY run, same as currentStageIndex
+    }
     cameraY = 0;
     stageTransition.active = false;
     stageTransition.phase = null;
@@ -4789,6 +4872,12 @@
     lastPlayerInputAt = performance.now();
     updateStunVisuals();
     modeRebootBtn.hidden = true;
+  });
+
+  // SECTION J (this turn): RETRY — see retryCurrentRun()'s own comment for
+  // the full "why not startMode()" reasoning.
+  document.getElementById('game-over-retry-btn').addEventListener('click', () => {
+    retryCurrentRun();
   });
 
   // SECTION M-4: same QUIT semantics as mode-quit-btn above — no reload,
@@ -5710,6 +5799,22 @@
     setScreen('gameover');
   }
 
+  // SECTION J (this turn): RETRY re-initializes the CURRENT run in place
+  // (same gameState.mode — STORY re-enters the SAME currentStageIndex/
+  // bossEncounterIndex the player just died on, never STAGE 1) rather than
+  // routing through startMode() (which would reset STORY progress back to
+  // STAGE 1 and isn't what J-2 asks for). Reuses resetModeState()'s own
+  // full reset verbatim via preserveStoryProgress=true, so there is exactly
+  // one implementation of "what does resetting a run actually do" — never a
+  // second copy here. J-4: BGM is untouched by resetModeState() (only
+  // returnToTopMenu() ever resets it), so RETRY naturally continues from
+  // its current playback position instead of restarting at 0.
+  function retryCurrentRun() {
+    resetModeState(true);
+    gameState.paused = false;
+    setScreen('gameplay');
+  }
+
   // Exposed for Playwright/manual verification only — not part of gameplay.
   window.__game = {
     player, boss, playerHitCount: 0,
@@ -5883,6 +5988,10 @@
     set storyDroneBgIndex(v) { storyDroneBgIndex = v; }, // debug/verification only
     isStoryDroneStage, isFinalStoryStage, isSecurityDroneSystemActive,
     enterStoryStage, pickFreshStoryDroneBackground,
+    // Debug/verification only — this turn: input-lock root-cause fix
+    // (SECTION A), all-DRONE-kill EXIT gating (SECTION E), RETRY (SECTION J).
+    isDroneStageCleared, resetModeState, retryCurrentRun,
+    getPlayerFootWorldPosition, SECURITY_FOOT_DETECT_RADIUS,
   };
 
   // ---------- Main loop ----------

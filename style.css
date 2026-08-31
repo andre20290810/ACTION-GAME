@@ -655,6 +655,10 @@ body {
    landscape-block-overlay (z-index 20) so landscape always wins over any
    of them, and #setting-panel sits above both PAUSE MENU and MAIN MENU so
    it can overlay either one. */
+/* SECTION G/H (this turn): no "Loading..." text, no percent — a minimal
+   horizontal progress bar only, filled from real asset-preload progress
+   (see initLoadingSequence() in game.js — computeProgress()/tick() are
+   unchanged; only the DISPLAY is now a bar width instead of text). */
 #loading-screen {
   position: fixed;
   inset: 0;
@@ -663,14 +667,24 @@ body {
   align-items: center;
   justify-content: center;
   background: #000;
+  opacity: 1;
+  transition: opacity 250ms ease; /* H-6: fades out naturally instead of an instant cut */
 }
+#loading-screen.loading-fade-out { opacity: 0; }
 #loading-screen[hidden] { display: none; }
-#loading-text {
-  color: rgba(230, 235, 240, 0.92);
-  font-family: sans-serif;
-  font-weight: 600;
-  font-size: 15px;
-  letter-spacing: 0.08em;
+#loading-bar-track {
+  width: 50%; /* H-5: ~40-60% of screen width on portrait */
+  max-width: 220px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+#loading-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: rgba(220, 225, 230, 0.85);
+  transition: width 100ms linear;
 }
 
 #opening-screen {
@@ -883,20 +897,26 @@ body {
   inset: 0;
   z-index: 13;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
   background: #0a0b0c;
 }
 #game-over-screen[hidden] { display: none; }
+/* SECTION I (this turn): the MENU (RETRY/QUIT/ARTIST PAGE) is left-aligned
+   — same 8vw safe margin / plain-text treatment as OPENING's own MODE
+   SELECT (I-4/I-5) — while the title itself stays centered (I-6, via its
+   own align-self override below), never a centered button stack (I-3). */
 #game-over-panel {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: flex-start;
+  justify-content: center;
   gap: 18px;
-  min-width: 220px;
-  padding: 10px 20px;
+  width: 100%;
+  padding: 10px 8vw;
 }
 #game-over-title {
+  align-self: center;
   font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
   font-weight: 900;
   font-size: 34px;

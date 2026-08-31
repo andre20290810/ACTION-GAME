@@ -25,7 +25,9 @@
      time-based bar: the percentage text is driven from a real loaded/total
      asset count. -->
 <div id="loading-screen">
-  <div id="loading-text">Loading... 0%</div>
+  <div id="loading-bar-track">
+    <div id="loading-bar-fill"></div>
+  </div>
 </div>
 
 <!-- SECTION H/D: OPENING — the official attached video as a muted/loop/
@@ -90,8 +92,11 @@
 <div id="game-over-screen" hidden>
   <div id="game-over-panel">
     <div id="game-over-title">GAME OVER</div>
-    <button class="mode-btn" id="game-over-quit-btn">QUIT</button>
-    <a class="mode-btn" id="game-over-artist-btn" href="https://www.tunecore.co.jp/artists?id=1140292&amp;utm_source=ig&amp;utm_medium=social&amp;utm_content=link_in_bio&amp;fbclid=PAdGRleAUBDaFwZG9mAmZkaWQWUNfnDNp7K4OsR1rDORVcLG0AXA4O12V4dG4DYWVtAjExAHNydGMGYXBwX2lkDzEyNDAyNDU3NDI4NzQxNAABpwXbm4sakBiMJ9ZlYKC8rJYDSVbb6nyHcFcsnqaYmSRyGKJCnX_N71DFNmgD_aem_YS0e_NpMoesX0DHRet6cWQ" target="_blank" rel="noopener noreferrer">ARTIST PAGE</a>
+    <!-- SECTION I: left-aligned menu, same plain-text treatment as OPENING's
+         own MODE SELECT (.main-menu-item, reused rather than duplicated). -->
+    <button class="main-menu-item" id="game-over-retry-btn">RETRY</button>
+    <button class="main-menu-item" id="game-over-quit-btn">QUIT</button>
+    <a class="main-menu-item" id="game-over-artist-btn" href="https://www.tunecore.co.jp/artists?id=1140292&amp;utm_source=ig&amp;utm_medium=social&amp;utm_content=link_in_bio&amp;fbclid=PAdGRleAUBDaFwZG9mAmZkaWQWUNfnDNp7K4OsR1rDORVcLG0AXA4O12V4dG4DYWVtAjExAHNydGMGYXBwX2lkDzEyNDAyNDU3NDI4NzQxNAABpwXbm4sakBiMJ9ZlYKC8rJYDSVbb6nyHcFcsnqaYmSRyGKJCnX_N71DFNmgD_aem_YS0e_NpMoesX0DHRet6cWQ" target="_blank" rel="noopener noreferrer">ARTIST PAGE</a>
   </div>
 </div>
 
