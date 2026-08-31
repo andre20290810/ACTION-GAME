@@ -6107,13 +6107,24 @@
     if (flashCooldownRemainingMs > 0) return; // cooldown active: nothing happens at all, not even feedback
     if (!boss.spawned || flashDisabledByCinematic()) return;
     lastPlayerInputAt = performance.now(); // SECTION B: FLASH counts as combat input for the watchdog
-    // SECTION 11: COUNTER ATTACK (boss.state === 'straightclaw') is the one
-    // state where the distance requirement is deliberately skipped — the
-    // player must be able to punish it from anywhere, not just from
-    // FLASH_MIN_DISTANCE+ away. Every other state keeps the original
-    // "too close" rejection unchanged.
-    const counterMode = boss.state === 'straightclaw';
-    if (!counterMode) {
+    // SECTION 11/19: COUNTER ATTACK (boss.state === 'straightclaw') and DARK
+    // PHASE (boss.state === 'darkphase') are the two states where the
+    // distance requirement is deliberately skipped. COUNTER must be
+    // punishable from anywhere, not just FLASH_MIN_DISTANCE+ away; DARK
+    // PHASE must be FLASH-able at any range once the mask is visible,
+    // exactly like canFlashTarget()'s own darkphase branch
+    // (isAimedAtDarkPhaseHead()) already never checks distance. Before this
+    // fix, this early gate still applied to 'darkphase' (only 'straightclaw'
+    // was exempted), so a press made while standing within FLASH_MIN_DISTANCE
+    // of GABRIEL during DARK PHASE — a common case, since its CLAW attacks
+    // are close-range — returned right here as "too close" and never reached
+    // canFlashTarget()/targetHit at all, even though the reticle was
+    // correctly showing red (drawAimLine() uses canFlashTarget(), which has
+    // no such distance check for darkphase). That mismatch — red aim, silent
+    // no-op press — was the reported bug; every other state keeps the
+    // original "too close" rejection unchanged.
+    const skipsDistanceGate = boss.state === 'straightclaw' || boss.state === 'darkphase';
+    if (!skipsDistanceGate) {
       const dist = Math.hypot(boss.x - player.x, boss.y - player.y);
       if (dist < FLASH_MIN_DISTANCE) {
         // Too close: a clearly noticeable (but text-free) red-tinted
