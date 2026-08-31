@@ -155,7 +155,10 @@
   // FINAL STAGE is (re)entered (enterStoryStage()'s own `plan.final` branch),
   // including via RETRY, so a fresh attempt always starts from "wave 1, not
   // yet respawned" exactly like a brand-new run.
-  let finalDroneRespawned = false;
+  // PART8 SECTION I: split into ONE flag PER AREA — Area1 and Area2 each run
+  // their own independent wave1->wave2 progression (3 die -> 3 more, once),
+  // so one Area's wave state can never gate or be gated by the other's.
+  let finalDroneRespawnedByArea = { 1: false, 2: false };
   // SECTION S: DRONE-only STORY stages reuse TRAINING_BACKGROUNDS (below) —
   // this index is re-picked fresh every time a drone-type STAGE is entered.
   let storyDroneBgIndex = 0;
@@ -261,6 +264,31 @@
   // own investigation: there is no separate, third tracked "Area" — see
   // worldExtraAbove/exitWorldPos() — only these two boundaries need a door).
   function getAreaBoundaryYs() { return [0, -H]; }
+
+  // PART8 SECTION M/AJ: the ONE shared "is this straight line blocked by an
+  // Area-boundary WALL" check — reused for AUTO AIM candidate filtering,
+  // player SHOT, enemy projectile (DRONE LASER), and every GABRIEL CLAW
+  // kind (including the DEFENSE-counter's own CLAW), so MOVE/AIM/SHOT/CLAW
+  // can never disagree about where the wall actually is (AJ's own explicit
+  // "判定ズレを防ぐ" requirement). A segment from (x1,y1) to (x2,y2) is
+  // blocked only if it crosses one of getAreaBoundaryYs()'s Y values at an
+  // X outside the REAL measured door opening (getFloorXRangeWorld()) — the
+  // exact same [WALL][DOOR][WALL] geometry clampPlayerToScreen() already
+  // enforces for the player's own movement. Fails open (never blocks) if
+  // the floor's own bounds aren't measured yet, matching
+  // clampPlayerToScreen()'s identical guard.
+  function segmentCrossesAreaWall(x1, y1, x2, y2) {
+    const floor = getFloorXRangeWorld();
+    if (!floor) return false;
+    if (y1 === y2) return false; // a horizontal segment can only ever run exactly along a boundary, never cross one
+    for (const boundaryY of getAreaBoundaryYs()) {
+      if ((y1 - boundaryY) * (y2 - boundaryY) > 0) continue; // both endpoints on the same side of this boundary — no crossing here
+      const t = (boundaryY - y1) / (y2 - y1);
+      const crossX = x1 + (x2 - x1) * t;
+      if (crossX < floor.left || crossX > floor.right) return true; // crosses the WALL part, not the DOOR opening
+    }
+    return false;
+  }
   // How far (in world Y, both directions) around an exact boundary the
   // door-width constraint applies. Kept small and symmetric — just enough
   // that normal per-frame movement speed can never "jump across" the band
@@ -615,7 +643,15 @@
   // Every other barrel-explosion effect (PLAYER knockback, BOSS knockback,
   // the visual explosion itself) still reads BARREL_EXPLOSION_RADIUS above,
   // completely untouched.
-  const BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS = BARREL_EXPLOSION_RADIUS * 0.82;
+  // PART8 SECTION AC/AE: this turn's own further 30% reduction — applied
+  // ONLY to this DAMAGE-reach radius (the one genuine "blast damage" radius
+  // in the explosion system; BARREL_EXPLOSION_RADIUS above is knockback-only
+  // and untouched, exactly as its own comment already requires). Also
+  // shared by the FINAL STAGE's DRONE-explosion-vs-GABRIEL damage check
+  // (applyDamageToSecurityDrone()), which reads this exact same constant —
+  // so both explosion sources get the SAME 30% narrower damage reach.
+  const EXPLOSION_DAMAGE_RADIUS_REDUCTION = 0.70; // new radius = old radius * 0.70 (a 30% DEcrease, not "30% of")
+  const BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS = BARREL_EXPLOSION_RADIUS * 0.82 * EXPLOSION_DAMAGE_RADIUS_REDUCTION;
   // SECTION E: always 5 barrels — every spawn/restock site below uses this
   // one constant instead of the old random 2-4 range. Positions themselves
   // are still randomized per-barrel every time via pickBarrelSpot().
@@ -696,6 +732,15 @@
   const STRAIGHT_CLAW_TRIGGER_GUARDS = 2; // this turn: was 5 — the 2nd consecutive guarded shot now deterministically triggers it (never a random/probabilistic gate — see applyBodyHitToBoss())
   const STRAIGHT_CLAW_WINDUP_MS = 2000; // straight_claw_windup.png shown; no damage/hit/knockback can occur yet
   const STRAIGHT_CLAW_ATTACK_MS = 400; // straight_claw_release.png shown; the actual straight-line hit travels during this window
+  // PART8 SECTION T/Z: the DEFENSE-counter's own straightClaw instance
+  // travels the SAME total distance in HALF the time (2x average speed) —
+  // this system is time-based interpolation (u = elapsed/lifetimeMs), so
+  // "2x speed" here means dividing the effective lifetime by this factor.
+  // Applies ONLY to the boss.isDefenseCounter-triggered instance (read
+  // fresh at spawn, same pattern as piercesDashInvulnerability below) —
+  // the close-range proximity COUNTER's own straightClaw (south direction)
+  // keeps STRAIGHT_CLAW_ATTACK_MS completely unchanged.
+  const COUNTER_CLAW_SPEED_MULTIPLIER = 2.0;
   const STRAIGHT_CLAW_RECOVERY_MS = 600; // straight_claw_release.png still shown; no new hit, GABRIEL still invulnerable
   const STRAIGHT_CLAW_OVERSHOOT = 1.3; // same convention as CLAW_STING_OVERSHOOT — travels past the locked point so it reads as a real thrust-through
   const STRAIGHT_CLAW_HIT_HALF_LEN_FWD = 26; // small margin ahead of the line's end point
@@ -849,6 +894,7 @@
     // FIRE_COOLDOWN_MS and the ammo decrement/cooldown logic in update().
     ammo: 30,
     ammoCooldownRemainingMs: 0, // dt-driven (not a `now` deadline) so it correctly freezes during PAUSE, same pattern as the other countdown timers in this file
+    reloadType: null, // PART8 SECTION A: 'manual' | 'auto' | null — which duration (MANUAL_RELOAD_MS/EMPTY_RELOAD_MS) the current ammoCooldownRemainingMs countdown is measured against
     // SECTION E: formal LIFE stat, default Infinity (never reduced by
     // attacks at that setting — see applyDamageToPlayerLife()). Max is
     // chosen via the PAUSE MENU / MAIN MENU SETTING (playerMaxLife below).
@@ -1233,7 +1279,13 @@
   // per-robot random pick within these bands (F-4) keeps every robot's
   // motion visibly distinct rather than uniform.
   const SECURITY_PATROL_RANGE_MIN = 40, SECURITY_PATROL_RANGE_MAX = 90; // px either side of patrolCenterX
-  const SECURITY_PATROL_SPEED_MIN = 18, SECURITY_PATROL_SPEED_MAX = 34; // px/sec — deliberately slow (F-3)
+  // PART8 SECTION F: raised ~27% from the original 18-34 (F-3's old
+  // "deliberately slow" design) — DRONEs were reported too easy to outrun/
+  // outshoot. FAST_PATROL's existing 1.5x multiplier below (unchanged) already
+  // puts a FAST DRONE ~50% ahead of a NORMAL one drawn from this SAME base
+  // range, which is within the requested 30-50% differential, so only the
+  // base range itself needed raising, not the relative TYPE multipliers.
+  const SECURITY_PATROL_SPEED_MIN = 23, SECURITY_PATROL_SPEED_MAX = 43; // px/sec
   // SECTION H/I/J: the new searchlight SHADOW — a horizontal oval/capsule
   // (never the old thin directional rectangle, which SECTION G explicitly
   // retires) that itself patrols back and forth along ONE fixed axis
@@ -1343,7 +1395,14 @@
   // its own distinct, explicitly-named multiplier — defaults to 1.0 and
   // deliberately does NOT inherit STAGE 8/9's 1.5x (STORY_STAGE_PLAN's own
   // `speedMult` field further below is never read for the FINAL entry).
+  // PART8 SECTION H: clarified this turn — FINAL_STAGE_DRONE_COUNT was being
+  // read as "3 total for the whole FINAL STAGE" (the confirmed root cause of
+  // the Area1=2/Area2=1 split bug), but the real spec is 3 PER AREA (6
+  // total at wave1). FINAL_STAGE_DRONE_COUNT is kept only for any external
+  // reference to "3"; every spawn/wave loop below uses the new, correctly-
+  // named FINAL_DRONES_PER_AREA.
   const FINAL_STAGE_DRONE_COUNT = 3;
+  const FINAL_DRONES_PER_AREA = 3;
   const FINAL_STAGE_DRONE_SPEED_MULTIPLIER = 1.0;
   // PART7 SECTION H: wave 2's one-time "falls from above and lands" entrance
   // duration — reuses the exact ease-in-fall + growing/darkening shadow
@@ -3055,11 +3114,18 @@
     const angle = Math.atan2(target.y - origin.y, target.x - origin.x);
     const endX = origin.x + Math.cos(angle) * dist * STRAIGHT_CLAW_OVERSHOOT;
     const endY = origin.y + Math.sin(angle) * dist * STRAIGHT_CLAW_OVERSHOOT;
+    // PART8 SECTION X/Y: mirrored/angle computed the SAME way spawnClawSting()
+    // does (previously unused here since this kind was never drawn as a claw
+    // image at all) — needed now that the DEFENSE-counter's own instance
+    // draws a real, correctly-rotated claw sprite pointing along its locked
+    // travel direction (see drawArcClawSlash()).
+    const mirrored = Math.cos(angle) < 0;
+    const baseTip = mirrored ? ARC_CLAW_BASE_TIP_ANGLE_FLIPPED : ARC_CLAW_BASE_TIP_ANGLE;
     arcClawSlashes.push({
       kind: 'straightClaw',
-      p0: origin, p2: { x: endX, y: endY },
+      p0: origin, p2: { x: endX, y: endY }, mirrored,
       startedAt: now, hasHit: false,
-      x: origin.x, y: origin.y, angle: 0, tangentAngle: angle, trail: [],
+      x: origin.x, y: origin.y, angle: angle - baseTip, tangentAngle: angle, trail: [],
       // New-turn SECTION 14: only the DEFENSE-2-blocked-shots forced COUNTER
       // (boss.isDefenseCounter, set right at its own trigger site) ignores
       // the player's DASH invulnerability — this same function is ALSO used
@@ -3067,6 +3133,9 @@
       // so the flag is read from boss.isDefenseCounter fresh at spawn time
       // rather than being hardcoded true here.
       piercesDashInvulnerability: boss.isDefenseCounter,
+      // PART8 SECTION T/Z: same read-fresh pattern — only the DEFENSE-
+      // counter's own instance travels at 2x speed.
+      speedMult: boss.isDefenseCounter ? COUNTER_CLAW_SPEED_MULTIPLIER : 1,
     });
   }
 
@@ -3096,7 +3165,12 @@
       const isStraightClaw = s.kind === 'straightClaw';
       const isCounterArc = s.kind === 'counterArc'; // COUNTER ATTACK's north/east/west variant — SAME curved-bezier motion as 'slash', just faster (see lifetimeMs below)
       const isStraightLine = isSting || isStraightClaw;
-      const lifetimeMs = isSting ? CLAW_STING_LIFETIME_MS : (isStraightClaw ? STRAIGHT_CLAW_ATTACK_MS : (isCounterArc ? COUNTER_ARC_CLAW_LIFETIME_MS : ARC_CLAW_LIFETIME_MS));
+      // PART8 SECTION T/Z: straightClaw's own lifetime is divided by its
+      // speedMult (2.0 for the DEFENSE-counter's instance, 1 for every
+      // other straightClaw use) — same total travel distance in half the
+      // time, i.e. 2x average speed, without inventing a separate velocity
+      // system in what is otherwise a purely time-based interpolation.
+      const lifetimeMs = isSting ? CLAW_STING_LIFETIME_MS : (isStraightClaw ? STRAIGHT_CLAW_ATTACK_MS / (s.speedMult || 1) : (isCounterArc ? COUNTER_ARC_CLAW_LIFETIME_MS : ARC_CLAW_LIFETIME_MS));
       const u = (now - s.startedAt) / lifetimeMs;
       if (u >= 1) { arcClawSlashes.splice(i, 1); continue; }
       const t = arcClawEase(Math.max(0, u));
@@ -3109,6 +3183,17 @@
         ? { x: s.p0.x + (s.p2.x - s.p0.x) * t, y: s.p0.y + (s.p2.y - s.p0.y) * t }
         : quadBezierPoint(s.p0, s.p1, s.p2, t);
       const tangentAngle = isStraightLine ? s.tangentAngle : quadBezierTangentAngle(s.p0, s.p1, s.p2, t);
+      // PART8 SECTION T/V/AB: an Area-boundary WALL between last frame's
+      // position and this one vanishes the attack outright — applies to
+      // EVERY CLAW kind here (SECTION T's general "GABRIELのCLAWも...壁を
+      // 貫通してはいけない"), including the DEFENSE-counter's own instance,
+      // which pierces ONLY the player's DASH invulnerability
+      // (piercesDashInvulnerability) and never Area walls (SECTION AB —
+      // the two are explicitly independent).
+      if (segmentCrossesAreaWall(s.x, s.y, pos.x, pos.y)) {
+        arcClawSlashes.splice(i, 1);
+        continue;
+      }
 
       // Each stored sample keeps its OWN position/rotation from when it was
       // the live frame — angle for the claw image's draw rotation, and the
@@ -3230,11 +3315,16 @@
   }
 
   function drawArcClawSlash(s) {
-    // STRAIGHT CLAW's attack is communicated entirely through GABRIEL's own
-    // windup/release body sprite (see bossFrameName()) — this shared
-    // slash/sting claw-image VFX is never drawn for it, only its hitbox
-    // (updateArcClawSlashes() above) is tracked here.
-    if (s.kind === 'straightClaw') return;
+    // STRAIGHT CLAW's ordinary (close-range-proximity-COUNTER, south
+    // direction) use is still communicated entirely through GABRIEL's own
+    // windup/release body sprite (see bossFrameName()) — unchanged. PART8
+    // SECTION X: the DEFENSE-counter's own instance (piercesDashInvulnerability,
+    // set only at that one trigger site) is the exception — it now ALSO
+    // draws the existing claw image as a real flying projectile, reusing
+    // the same drawArcClawImage()/crescent-trail art every other CLAW kind
+    // already uses (no new art), so the counter is visibly a thrown claw,
+    // not just a body-pose animation.
+    if (s.kind === 'straightClaw' && !s.piercesDashInvulnerability) return;
     // A very thin, non-magical white/silver trail connecting the recent
     // positions — "air cut open", never a glowing/blue energy line.
     if (s.trail.length >= 1) {
@@ -3310,11 +3400,17 @@
     document.getElementById('control-area').style.display = next === 'gameplay' ? '' : 'none';
   }
 
-  // ---------- SECTION T: game-wide BGM (Outbreak 1.0) ----------
+  // ---------- SECTION T: game-wide BGM (Outbreak 1.1) ----------
   // Exactly ONE Audio instance for the entire session — created once here,
-  // never recreated by any screen/mode/PAUSE transition below. Filename
-  // normalized for URL-safety (spaces/dots in "Outbreak 1.0" -> underscores).
-  const bgmAudio = new Audio('assets/audio/outbreak_1_0.mp3');
+  // never recreated by any screen/mode/PAUSE transition below. PART8
+  // SECTION AG-2: swapped from Outbreak 1.0 to the attached Outbreak 1.1
+  // source file (byte-identical copy, no re-encoding), stored at
+  // assets/audio/outbreak_1_1.mp3 — same repo naming convention as the file
+  // it replaces (spaces/dots in "Outbreak 1.1" normalized to underscores
+  // for URL-safety). Every control below (loop/volume/preload/pause-resume/
+  // stage-transition/GAME OVER/RETRY-position/QUIT-reset/audio-unlock) is
+  // completely unchanged — only the audio source itself moved.
+  const bgmAudio = new Audio('assets/audio/outbreak_1_1.mp3');
   bgmAudio.loop = true; // T-5: loop forever
   bgmAudio.preload = 'auto';
   // T-10: no on/off toggle in SETTING this turn (always-on) — but kept as a
@@ -3348,7 +3444,7 @@
   // RESULT) calls setScreen() directly and never touches BGM at all, so
   // those all keep the existing continuous-playback behavior (D-3).
   function returnToTopMenu() {
-    bgmAudio.currentTime = 0; // D-1/D-2: OPENING/TOP always restarts Outbreak 1.0 from the top
+    bgmAudio.currentTime = 0; // D-1/D-2: OPENING/TOP always restarts the BGM from the top
     bgmAudio.play().catch(() => {}); // defensive only — bgmAudio is already playing in every real route that reaches here
     setScreen('mainMenu');
   }
@@ -3586,8 +3682,8 @@
       spawnBarrels(BOSS_ENCOUNTER_BARREL_COUNTS[bossEncounterIndex]); // SECTION K/X
       if (plan.final) {
         spawnBoss(now); // SECTION M: GABRIEL must exist before N-3's "avoid GABRIEL's own body" placement check can read boss.x/y
-        spawnFinalStageDrones(false, now); // SECTION M/N: 3 randomly-placed DRONEs alongside GABRIEL (new-turn SECTION 2: all FAST_PATROL); wave 1 (initial spawn) never drops in — instant appear, per SECTION H's explicit wording
-        finalDroneRespawned = false; // new-turn SECTION 3/6: every (re-)entry into the FINAL STAGE — including RETRY — starts fresh at "wave 1, 2nd wave not yet spawned"
+        spawnFinalStageDrones(now); // PART8 SECTION H: 3+3 DRONEs (one full wave1 per Area) alongside GABRIEL, all FAST_PATROL; wave 1 (initial spawn) never drops in — instant appear
+        finalDroneRespawnedByArea = { 1: false, 2: false }; // PART8 SECTION AH: every (re-)entry into the FINAL STAGE — including RETRY — starts fresh at "wave 1, 2nd wave not yet spawned" for BOTH Areas independently
       } else {
         securityRobots.length = 0;
         securityAttackSlotsInUse = 0;
@@ -3756,11 +3852,43 @@
     }
   }
 
+  // PART8 SECTION V: frame 1 (heal_box_1) only, drawn ~3% larger than the
+  // other 4 frames — a pure display-time scale on the SAME unmodified image
+  // file, never a generative edit of the asset itself, and never touching
+  // HEAL_ITEM_DRAW_W (every other frame's base size is untouched).
+  const HEAL_ITEM_FRAME1_SCALE = 1.03;
+  // PART8 SECTION W: a small, self-contained floating-text array (same
+  // draw-time-prune pattern barrelLandings already uses) — the ONE new
+  // floating-text mechanism in this file, reused verbatim rather than
+  // invented per-caller if any future text needs the same treatment.
+  const HEAL_PICKUP_TEXT_MS = 1000; // within the requested 800-1200ms band
+  const healPickupTexts = [];
+  function spawnHealPickupText(x, y, now) {
+    healPickupTexts.push({ x, y, startedAt: now });
+  }
+  function drawHealPickupTexts(now) {
+    for (let i = healPickupTexts.length - 1; i >= 0; i--) {
+      const t = healPickupTexts[i];
+      const elapsed = now - t.startedAt;
+      if (elapsed >= HEAL_PICKUP_TEXT_MS) { healPickupTexts.splice(i, 1); continue; }
+      const u = elapsed / HEAL_PICKUP_TEXT_MS;
+      ctx.save();
+      ctx.globalAlpha = 1 - u; // fades out over the full duration
+      ctx.font = 'bold 14px sans-serif';
+      ctx.fillStyle = '#3ddc5a'; // green, per SECTION W
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('HP+30%！', t.x, t.y - u * 24); // drifts upward while it fades
+      ctx.restore();
+    }
+  }
+
   function drawHealItem() {
     if (!healItem.active) return;
     const img = HEAL_ITEM_IMAGES[healItem.frameIndex];
     if (!img.complete || img.naturalWidth === 0) return;
-    const w = HEAL_ITEM_DRAW_W;
+    const scale = healItem.frameIndex === 0 ? HEAL_ITEM_FRAME1_SCALE : 1;
+    const w = HEAL_ITEM_DRAW_W * scale;
     const h = w * (img.naturalHeight / img.naturalWidth);
     ctx.drawImage(img, healItem.x - w / 2, healItem.y - h / 2, w, h);
   }
@@ -4060,6 +4188,21 @@
     return { lo, hi };
   }
 
+  // PART8 SECTION E/L: root-cause fix for the "全DRONEが同じX" collapse —
+  // on a narrow-floor background (e.g. this game's own STAGE1 pool, whose
+  // measured floor can be ~160px wide), the OLD placement margin (body
+  // clearance + the ENTIRE max patrol swing, SECURITY_PATROL_RANGE_MAX)
+  // could easily exceed the corridor's own width, forcing
+  // getDronePlacementRangeX() to collapse its returned range to a single
+  // point — meaning EVERY drone in EVERY area landed at the exact same X,
+  // not just a visually-similar one. This margin only needs to keep a
+  // DRONE'S OWN BODY off the wall texture at spawn; buildSecurityDrone()'s
+  // own separate, already-existing patrolRange clamp (keyed off the actual
+  // chosen x, not this margin) independently shrinks each robot's patrol
+  // swing to whatever room is really left, so a much smaller placement
+  // margin here is safe and gives real X variety back even on narrow floors.
+  const DRONE_PLACEMENT_BODY_MARGIN = SECURITY_ROBOT_DRAW_D * 1.5;
+
   function pickSecurityDroneCenterX(existingRobots, area, y) {
     const marginX = SECURITY_ROBOT_DRAW_D * 3 + SECURITY_PATROL_RANGE_MAX;
     const range = getDronePlacementRangeX(marginX);
@@ -4082,6 +4225,55 @@
     const mid = (range.lo + range.hi) / 2;
     const offset = Math.min(W * 0.12, (range.hi - range.lo) / 4);
     return mid + (existingRobots.length % 2 === 0 ? -1 : 1) * offset;
+  }
+
+  // PART8 SECTION E: root cause of the "縦一列" (single vertical column)
+  // look — securityDroneRowY() placed Y at fixed, perfectly-even (count+1)
+  // division points every DRONE STAGE, while only X was ever randomized;
+  // on the narrower floor-plate backgrounds the safe X range is much
+  // narrower than the full vertical usable band, so the regular Y rows
+  // visually dominated and every DRONE read as one vertical line. Replaced
+  // with a genuine 2D random pick (both X and Y) within the SAME
+  // floor-aware X range and the SAME usable Y band securityDroneRowY() used,
+  // with UI-zone, player/extra-avoid-point, and DRONE-DRONE spacing checks —
+  // never placing any part of a DRONE (or its patrol swing, via marginX)
+  // inside wall texture. `avoidPoints` (optional) is used by the FINAL
+  // STAGE's own placement to additionally clear GABRIEL's body.
+  function pickSecurityDroneSpot(existingRobots, area, marginX, avoidPoints) {
+    const range = getDronePlacementRangeX(marginX);
+    const areaTop = areaTopY(area);
+    const usableTop = areaTop + H * 0.22;
+    const usableBottom = areaTop + H - H * 0.22;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const x = range.lo + Math.random() * (range.hi - range.lo);
+      const y = usableTop + Math.random() * (usableBottom - usableTop);
+      if (isNearUIZone(x, y - areaTop)) continue;
+      if (Math.hypot(x - player.x, y - player.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue;
+      let tooClose = false;
+      for (const r of existingRobots) {
+        if (Math.hypot(x - r.patrolCenterX, y - r.y) < SECURITY_ROBOT_MIN_SPACING) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      if (avoidPoints) {
+        for (const p of avoidPoints) {
+          if (Math.hypot(x - p.x, y - p.y) < (p.r || SECURITY_ROBOT_MIN_SPACING * 1.2)) { tooClose = true; break; }
+        }
+        if (tooClose) continue;
+      }
+      return { x, y };
+    }
+    // Fallback (very narrow floor/band): deterministic per-index spread
+    // across both axes so even the fallback never stacks every DRONE onto
+    // one point.
+    const midX = (range.lo + range.hi) / 2;
+    const midY = (usableTop + usableBottom) / 2;
+    const offX = Math.min(W * 0.12, (range.hi - range.lo) / 4);
+    const offY = Math.min(H * 0.08, (usableBottom - usableTop) / 4);
+    const n = existingRobots.length;
+    return {
+      x: midX + (n % 2 === 0 ? -1 : 1) * offX,
+      y: midY + (Math.floor(n / 2) % 2 === 0 ? -1 : 1) * offY,
+    };
   }
 
   const SECURITY_SCAN_AXES = ['horizontal', 'vertical'];
@@ -4201,13 +4393,13 @@
   // spawnSecurityRobots() omits it and keeps its existing fully-random mix.
   function populateSecurityDroneAreas(into, speedMult, fixedCount, ensureFastDrone) {
     into.length = 0;
+    const marginX = DRONE_PLACEMENT_BODY_MARGIN;
     for (const area of [1, 2]) {
       const count = fixedCount || pickSecurityDroneCount();
       const types = pickSecurityBehaviorTypes(count);
       for (let i = 0; i < count; i++) {
-        const y = securityDroneRowY(area, i, count);
-        const x = pickSecurityDroneCenterX(into, area, y);
-        into.push(buildSecurityDrone(x, y, types[i], speedMult));
+        const spot = pickSecurityDroneSpot(into, area, marginX); // PART8 SECTION E: true 2D scatter, not fixed rows
+        into.push(buildSecurityDrone(spot.x, spot.y, types[i], speedMult));
       }
     }
     if (ensureFastDrone && !into.some((r) => r.behaviorType === 'FAST_PATROL')) {
@@ -4248,54 +4440,50 @@
   // getFloorXRangeWorld() machinery pickSecurityDroneCenterX() already
   // uses, and by splitting the fixed 3-DRONE count across BOTH AREA1 and
   // AREA2 (F: real combat in both, never an inflated total count).
-  // `dropIn` (SECTION H): when true (wave 2's one-time respawn only —
-  // wave 1's initial spawn always passes false/omits it), each new DRONE
-  // starts in a 'dropping' state and falls in from above using the same
-  // shadow-reveal + ease-in-fall technique GABRIEL's own BOSS INTRO uses
-  // (see drawBossIntro()'s SILENCE_END..SHADOW_END phase) — no new art,
-  // normal AI does not run until landing (see updateSecurityRobots()).
-  function spawnFinalStageDrones(dropIn, now) {
-    securityRobots.length = 0;
-    securityAttackSlotsInUse = 0;
-    const marginX = SECURITY_ROBOT_DRAW_D * 3 + SECURITY_PATROL_RANGE_MAX; // SECTION I: leaves full patrol-swing headroom, same formula pickSecurityDroneCenterX() uses, so a landed drone never has to have its patrolRange clamped down to a near-frozen sliver
-    // SECTION F: alternate AREA1/AREA2 across the fixed 3-DRONE count (2 in
-    // one area, 1 in the other) rather than the old all-AREA1 placement.
-    const areaSeq = [];
-    for (let i = 0; i < FINAL_STAGE_DRONE_COUNT; i++) areaSeq.push(i % 2 === 0 ? 1 : 2);
-    const countByArea = { 1: areaSeq.filter((a) => a === 1).length, 2: areaSeq.filter((a) => a === 2).length };
-    const seenInArea = { 1: 0, 2: 0 };
-    for (let i = 0; i < FINAL_STAGE_DRONE_COUNT; i++) {
-      const area = areaSeq[i];
-      const areaTop = areaTopY(area);
-      const y = securityDroneRowY(area, seenInArea[area], countByArea[area]); // same regular, margin-safe row formula every other DRONE stage uses
-      seenInArea[area]++;
-      const range = getDronePlacementRangeX(marginX);
-      let x = (range.lo + range.hi) / 2;
-      for (let attempt = 0; attempt < 30; attempt++) {
-        const cx = range.lo + Math.random() * (range.hi - range.lo);
-        if (isNearUIZone(cx, y - areaTop)) continue;
-        // GABRIEL and the player only ever occupy AREA1 in the FINAL STAGE, so these two checks only matter there.
-        if (area === 1 && Math.hypot(cx - player.x, y - player.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue; // N-3: clear of the player's own spawn point
-        if (area === 1 && Math.hypot(cx - boss.x, y - boss.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue; // N-3: clear of GABRIEL's own body
-        let tooClose = false;
-        for (const r of securityRobots) {
-          if (Math.hypot(cx - r.patrolCenterX, y - r.y) < SECURITY_ROBOT_MIN_SPACING) { tooClose = true; break; } // N-3: DRONE-DRONE overlap
-        }
-        if (tooClose) continue;
-        x = cx;
-        break;
-      }
-      // New-turn SECTION 2: every FINAL-STAGE DRONE is FAST_PATROL — never
-      // the random N-5 pick anymore. FAST_PATROL only scales `patrol`
-      // (movement/patrol speed), leaving `scan` at its neutral 1.0x, so
-      // SEARCH/LASER/targeting behavior is untouched exactly as required.
-      const drone = buildSecurityDrone(x, y, 'FAST_PATROL', FINAL_STAGE_DRONE_SPEED_MULTIPLIER);
+  // `dropIn` (SECTION H/K): when true (a wave-2 respawn only — wave 1's
+  // initial spawn always passes false), each new DRONE starts in a
+  // 'dropping' state and falls in from above using the same shadow-reveal +
+  // ease-in-fall technique GABRIEL's own BOSS INTRO uses (see
+  // drawBossIntro()'s SILENCE_END..SHADOW_END phase) — no new art, normal
+  // AI does not run until landing (see updateSecurityRobots()).
+  //
+  // PART8 SECTION H/I/J/K: rewritten to spawn ONE Area's worth at a time
+  // (FINAL_DRONES_PER_AREA, never a shared "3 total" count — that was the
+  // confirmed root cause of the old 2/1 split) and to APPEND rather than
+  // reset the whole securityRobots array, so spawning Area2's wave2 can
+  // never wipe out Area1's still-alive drones (and vice versa) — the two
+  // Areas' populations must be able to coexist and be manipulated
+  // independently. Placement uses the SAME true 2D scatter
+  // (pickSecurityDroneSpot()) every other DRONE STAGE now uses (PART8
+  // SECTION E), with GABRIEL/player as extra avoid-points in AREA1 only.
+  function spawnFinalStageDronesForArea(area, dropIn, now) {
+    const marginX = DRONE_PLACEMENT_BODY_MARGIN; // PART8 SECTION E/L: body-clearance only — see DRONE_PLACEMENT_BODY_MARGIN's own comment for why the old full-patrol-swing margin collapsed every DRONE onto one X on narrow floors; buildSecurityDrone()'s own patrolRange clamp still independently protects the swing
+    const avoidPoints = area === 1 // GABRIEL and the player only ever occupy AREA1 in the FINAL STAGE
+      ? [{ x: player.x, y: player.y }, { x: boss.x, y: boss.y }]
+      : null;
+    for (let i = 0; i < FINAL_DRONES_PER_AREA; i++) {
+      const spot = pickSecurityDroneSpot(securityRobots, area, marginX, avoidPoints);
+      // New-turn SECTION 2 / PART8 SECTION G: every FINAL-STAGE DRONE is
+      // FAST_PATROL — FAST_PATROL only scales `patrol` (movement speed),
+      // leaving `scan` at its neutral 1.0x, so SEARCH/LASER/targeting
+      // behavior is untouched exactly as required.
+      const drone = buildSecurityDrone(spot.x, spot.y, 'FAST_PATROL', FINAL_STAGE_DRONE_SPEED_MULTIPLIER);
       if (dropIn) {
         drone.dropState = 'dropping';
         drone.dropStartAt = now;
       }
       securityRobots.push(drone);
     }
+  }
+
+  // Initial FINAL STAGE spawn (called once from enterStoryStage()) — a
+  // fresh wave1 in BOTH Areas, never dropping in (instant appear, same as
+  // every other DRONE STAGE's initial population).
+  function spawnFinalStageDrones(now) {
+    securityRobots.length = 0;
+    securityAttackSlotsInUse = 0;
+    spawnFinalStageDronesForArea(1, false, now);
+    spawnFinalStageDronesForArea(2, false, now);
   }
 
   // SECTION H/I/K: the ONE shared function computing the searchlight
@@ -4405,6 +4593,11 @@
   // fires, while a player who stays on it (or wanders back onto it) still
   // gets hit.
   function resolveSecurityLaserHit(robot, now) {
+    // PART8 SECTION S: an Area-boundary WALL between the DRONE and the
+    // player's position AT RESOLVE TIME blocks the beam entirely — a laser
+    // is a ray/line-damage attack, not a travelling projectile, so there is
+    // nothing to "vanish"; the hit simply never resolves.
+    if (segmentCrossesAreaWall(robot.laserOriginX, robot.laserOriginY, player.x, player.y)) return;
     const dist = distanceToSegment(player.x, player.y, robot.laserOriginX, robot.laserOriginY, robot.laserEndX, robot.laserEndY);
     if (dist <= PLAYER_HIT_RADIUS) {
       // SECTION M: routes through the SAME shared damage choke-point and
@@ -4463,19 +4656,24 @@
         // (never that constant itself, which barrels still use unchanged).
         applyExplosionDamageToBoss(FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE, now);
       }
-      // New-turn SECTION 3/5: the FINAL STAGE's own one-time 2nd wave — the
-      // instant EVERY currently-populated DRONE (this one included, already
-      // hp<=0 above) is dead, and only once per STAGE attempt
-      // (finalDroneRespawned), spawn a completely fresh set of 3 (via the
-      // SAME spawnFinalStageDrones() STAGE-entry function, so the new wave
-      // gets the exact same placement/FAST_PATROL/speed rules as the first).
-      // Guarded on GABRIEL not already being dead/dying so a kill-GABRIEL-
-      // first run never spawns a pointless extra wave after its own WIN
-      // condition has already fired (SECTION 5's own explicit requirement).
-      if (isFinalStoryStage() && !finalDroneRespawned && boss.state !== 'dead' && boss.state !== 'dying' &&
-          securityRobots.every((r) => r.hp <= 0)) {
-        finalDroneRespawned = true; // PART7 SECTION G: set synchronously the instant wave1's last hp<=0 is confirmed, before spawnFinalStageDrones() below runs — guards against any same-frame re-entry ever double-spawning wave2
-        spawnFinalStageDrones(true, now); // PART7 SECTION H: wave 2 falls in from above, reusing GABRIEL's own intro shadow+fall technique
+      // PART8 SECTION H/I/J: the FINAL STAGE's own one-time 2nd wave, now
+      // managed PER AREA — the instant every DRONE belonging to THIS SAME
+      // Area (this one included, already hp<=0 above) is dead, and only
+      // once per Area per STAGE attempt (finalDroneRespawnedByArea[area]),
+      // spawn a fresh set of FINAL_DRONES_PER_AREA into that SAME Area only
+      // (spawnFinalStageDronesForArea() appends, never touching the other
+      // Area's own population/wave state). Guarded on GABRIEL not already
+      // being dead/dying so a kill-GABRIEL-first run never spawns a
+      // pointless extra wave after its own WIN condition has already fired.
+      if (isFinalStoryStage() && boss.state !== 'dead' && boss.state !== 'dying') {
+        const droneArea = robot.y < 0 ? 2 : 1; // areas never overlap in Y and a DRONE's row never changes area, so this is a stable, cheap area lookup
+        if (!finalDroneRespawnedByArea[droneArea]) {
+          const areaDrones = securityRobots.filter((r) => (r.y < 0 ? 2 : 1) === droneArea);
+          if (areaDrones.length > 0 && areaDrones.every((r) => r.hp <= 0)) {
+            finalDroneRespawnedByArea[droneArea] = true; // set synchronously before spawning below — guards against any same-frame re-entry ever double-spawning this Area's wave2
+            spawnFinalStageDronesForArea(droneArea, true, now); // PART7 SECTION H/PART8 SECTION K: wave 2 falls in from above, reusing GABRIEL's own intro shadow+fall technique, landing in the SAME Area that was just cleared
+          }
+        }
       }
     } else {
       // SECTION E: a non-lethal hit starts this DRONE's own independent
@@ -4982,16 +5180,21 @@
     // of range, or because it doesn't exist at all for the current
     // defenseDir (e.g. NORTH), in which case primary is null and this
     // fallback is the ONLY way DEFENSE can be AUTO-AIM-targeted at all.
-    if (bossTargets.primary) {
+    // PART8 SECTION Q: an Area-boundary WALL between the player and a
+    // candidate blocks AUTO AIM from ever snapping onto it — checked from
+    // the player's own position (not the reticle tip), matching the spec's
+    // "playerとenemyの間にArea境界wallが存在する場合".
+    if (bossTargets.primary && !segmentCrossesAreaWall(player.x, player.y, bossTargets.primary.x, bossTargets.primary.y)) {
       const d = Math.hypot(tipX - bossTargets.primary.x, tipY - bossTargets.primary.y);
       if (d < bestDist) { bestDist = d; best = bossTargets.primary; bestIsBoss = true; }
     }
-    if (!best && bossTargets.secondary) {
+    if (!best && bossTargets.secondary && !segmentCrossesAreaWall(player.x, player.y, bossTargets.secondary.x, bossTargets.secondary.y)) {
       const d = Math.hypot(tipX - bossTargets.secondary.x, tipY - bossTargets.secondary.y);
       if (d < bestDist) { bestDist = d; best = bossTargets.secondary; bestIsBoss = true; }
     }
     for (const b of barrels) {
       if (!b.alive) continue;
+      if (segmentCrossesAreaWall(player.x, player.y, b.x, b.y)) continue;
       const d = Math.hypot(tipX - b.x, tipY - b.y);
       if (d < bestDist) { bestDist = d; best = { x: b.x, y: b.y }; bestIsBoss = false; }
     }
@@ -5033,6 +5236,7 @@
     player.relaxed = false;
     player.ammo = FIRE_MAG_SIZE;
     player.ammoCooldownRemainingMs = 0;
+    player.reloadType = null; // PART8 SECTION AI: no stale reload type left over across GAME OVER/RETRY/stage-start/mode-reset/TOP
     healItem.active = false; // PART7 SECTION W: cleared unconditionally here — the 'boss' branch below re-arms it fresh via enterStoryStage()'s own spawnHealItem() call; TRAINING/BASIC modes simply never re-arm it, so no leftover STORY item can ever show up there
 
     bullets.length = 0;
@@ -5537,6 +5741,7 @@
     }
     let best = null, bestDist = Infinity;
     for (const c of candidates) {
+      if (segmentCrossesAreaWall(player.x, player.y, c.x, c.y)) continue; // PART8 SECTION Q/U: same wall/door rule as the drag-to-snap AUTO AIM
       const d = Math.hypot(c.x - player.x, c.y - player.y);
       if (d < bestDist) { bestDist = d; best = c; }
     }
@@ -5732,8 +5937,12 @@
     fireAmmoLabel.textContent = `${player.ammo} / ∞`;
     // 0% right at depletion, 100% once fully recovered; sits at "full ring"
     // (ready) whenever the magazine isn't currently depleted/cooling down.
+    // PART8 SECTION B/C: the denominator depends on WHICH reload is running
+    // (player.reloadType) — MANUAL_RELOAD_MS for a manual reload, EMPTY_
+    // RELOAD_MS for the auto-empty one — never one shared duration.
+    const activeReloadMs = player.reloadType === 'manual' ? MANUAL_RELOAD_MS : EMPTY_RELOAD_MS;
     const readyFrac = player.ammoCooldownRemainingMs > 0
-      ? 1 - player.ammoCooldownRemainingMs / FIRE_COOLDOWN_MS
+      ? 1 - player.ammoCooldownRemainingMs / activeReloadMs
       : 1;
     fireRingProgress.style.strokeDashoffset = `${FIRE_RING_CIRCUMFERENCE * (1 - readyFrac)}`;
     fireButton.classList.toggle('depleted', player.ammoCooldownRemainingMs > 0);
@@ -5744,14 +5953,22 @@
     }
   }
 
-  // PART7 SECTION P: red "Reloading!" text following the player in WORLD
-  // space (drawn from inside draw()'s own ctx.translate(0,-cameraY) block,
-  // so it scrolls with the player exactly like the player sprite itself —
-  // never a fixed HUD position). Shown for both the auto (ammo hit 0) and
-  // manual (SECTION O) triggers alike, since both drive the exact same
-  // ammoCooldownRemainingMs timer; hidden the instant it reaches 0.
-  function drawReloadingText() {
+  // PART7 SECTION P / PART8 SECTION C-D: red "Reloading!" text following the
+  // player in WORLD space (drawn from inside draw()'s own
+  // ctx.translate(0,-cameraY) block, so it scrolls with the player exactly
+  // like the player sprite itself — never a fixed HUD position). Shown for
+  // both the auto (ammo hit 0) and manual triggers alike; hidden the
+  // instant ammoCooldownRemainingMs reaches 0. PART8 SECTION D: now blinks
+  // on/off using `now` (the same pause-aware game-time value every other
+  // draw-time timer in this file already receives — never Date.now()), so
+  // PAUSE freezes the blink phase for free exactly like it freezes the
+  // reload countdown itself.
+  const RELOADING_TEXT_BLINK_MS = 450;
+  function drawReloadingText(now) {
     if (player.ammoCooldownRemainingMs <= 0) return;
+    const activeReloadMs = player.reloadType === 'manual' ? MANUAL_RELOAD_MS : EMPTY_RELOAD_MS;
+    const elapsed = activeReloadMs - player.ammoCooldownRemainingMs;
+    if (Math.floor(elapsed / RELOADING_TEXT_BLINK_MS) % 2 === 1) return; // off-phase: draw nothing this tick
     ctx.save();
     ctx.font = 'bold 13px sans-serif';
     ctx.fillStyle = '#ff3b30';
@@ -5794,8 +6011,9 @@
     if (e) e.preventDefault();
     if (gameState.paused) return;
     if (player.ammo <= 0 || player.ammo >= FIRE_MAG_SIZE) return; // SECTION O: usable range is strictly 1-29
-    if (player.ammoCooldownRemainingMs > 0) return; // already reloading — never reset/restart the timer
-    player.ammoCooldownRemainingMs = FIRE_COOLDOWN_MS;
+    if (player.ammoCooldownRemainingMs > 0) return; // already reloading (manual OR auto-empty) — never reset/restart/retype an in-progress reload; this is what stops the 5s auto reload from ever being shortened to 2s
+    player.reloadType = 'manual';
+    player.ammoCooldownRemainingMs = MANUAL_RELOAD_MS;
   }
   reloadZone.addEventListener('touchstart', triggerManualReload, { passive: false });
   reloadZone.addEventListener('mousedown', triggerManualReload);
@@ -6124,14 +6342,21 @@
   const bullets = [];
   const BULLET_SPEED = 620;
   const FIRE_INTERVAL = 170; // ms
-  // SECTION D / PART7 SECTION N-Q: 30-shot magazine, infinite reserve ammo.
-  // ammoCooldownRemainingMs IS the RELOAD timer (same field, same countdown
-  // this turn's RELOAD spec describes) — it starts automatically the
-  // instant ammo hits 0 (below), OR manually via triggerManualReload()
-  // while ammo is 1-29, and always takes FIRE_COOLDOWN_MS (now 2000ms per
-  // SECTION N) either way. dt-driven, so PAUSE freezes it for free.
+  // SECTION D / PART7 SECTION N-Q / PART8 SECTION A: 30-shot magazine,
+  // infinite reserve ammo. ammoCooldownRemainingMs IS the RELOAD timer (same
+  // field, same countdown) — it starts automatically the instant ammo hits
+  // 0 (below, using EMPTY_RELOAD_MS), OR manually via triggerManualReload()
+  // while ammo is 1-29 (using MANUAL_RELOAD_MS). PART8 SECTION A: these two
+  // durations are now DELIBERATELY separate constants — manual and auto-
+  // empty reloads must never share one timer value again. dt-driven, so
+  // PAUSE freezes it for free. player.reloadType ('manual'/'auto'/null)
+  // records which duration is currently in effect, read by the SHOT ring
+  // progress calc (updateFireHud()) and by triggerManualReload()'s own
+  // "never shorten an in-progress auto reload" guard.
   const FIRE_MAG_SIZE = 30;
-  const FIRE_COOLDOWN_MS = 2000;
+  const MANUAL_RELOAD_MS = 2000;
+  const EMPTY_RELOAD_MS = 5000;
+  const FIRE_COOLDOWN_MS = EMPTY_RELOAD_MS; // kept only for external/debug references to the old single-duration name; no internal logic reads this directly anymore
   const FIRE_POSE_DURATION = 80; // ms — how long the FIRE sprite shows per shot
   const MUZZLE_DIST = SPRITE_DRAW_H * 0.46; // same muzzle offset used previously
   const AIM_LINE_LEN = 240; // AUTO AIM's reticle-tip search distance — fixed (unchanged; keeps existing AUTO AIM target-detection behavior identical)
@@ -6312,6 +6537,7 @@
     BOSS_PHASE_THRESHOLDS, INTRO_TOTAL_MS, THRESHOLD_CINEMATIC_MS, DYING_DURATION_MS,
     DEFENSE_GUARD_BREAK_HITS, BARREL_EXPLOSION_RADIUS, BOSS_HURT_RADIUS,
     BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS, BARREL_DAMAGE, BARREL_DAMAGE_BOSS, BARREL_DAMAGE_BOSS_MULTIPLIER, // debug/verification only — SECTION C (this turn)
+    EXPLOSION_DAMAGE_RADIUS_REDUCTION, // debug/verification only — PART8 SECTION AC
     BULLET_DAMAGE, // debug/verification only — PART 2: the reused normal-attack damage constant for SECURITY ROBOT's laser
     TRAINING_BACKGROUNDS, get currentStage() { return currentStage(); }, // debug/verification only — SECTION D (this turn)
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
@@ -6458,9 +6684,9 @@
     SECURITY_BEHAVIOR_TYPES, SECURITY_BEHAVIOR_MULTIPLIERS,
     CENTER_SCAN_SLOW_FACTOR, CENTER_SCAN_DURATION_MIN_MS, CENTER_SCAN_DURATION_MAX_MS,
     CENTER_SCAN_RETURN_SPEED, CENTER_SCAN_COOLDOWN_MIN_MS, CENTER_SCAN_COOLDOWN_MAX_MS,
-    SECURITY_DRONE_COUNT_CHOICES, FINAL_STAGE_DRONE_COUNT, FINAL_STAGE_DRONE_SPEED_MULTIPLIER,
-    pickSecurityBehaviorTypes, buildSecurityDrone, pickSecurityDroneCount,
-    populateSecurityDroneAreas, spawnFinalStageDrones, updateCenterScannerMovement,
+    SECURITY_DRONE_COUNT_CHOICES, FINAL_STAGE_DRONE_COUNT, FINAL_DRONES_PER_AREA, FINAL_STAGE_DRONE_SPEED_MULTIPLIER,
+    pickSecurityBehaviorTypes, buildSecurityDrone, pickSecurityDroneCount, pickSecurityDroneSpot,
+    populateSecurityDroneAreas, spawnFinalStageDrones, spawnFinalStageDronesForArea, updateCenterScannerMovement,
     STORY_STAGE_PLAN, BOSS_ENCOUNTER_BARREL_COUNTS,
     get bossEncounterIndex() { return bossEncounterIndex; },
     set bossEncounterIndex(v) { bossEncounterIndex = v; }, // debug/verification only
@@ -6473,9 +6699,9 @@
     isDroneStageCleared, resetModeState, retryCurrentRun,
     getPlayerFootWorldPosition, SECURITY_FOOT_DETECT_RADIUS,
     // Debug/verification only — this turn's DRONE fast-type/wave/damage work.
-    get finalDroneRespawned() { return finalDroneRespawned; },
-    set finalDroneRespawned(v) { finalDroneRespawned = v; }, // debug/verification only
-    spawnFinalStageDrones, populateSecurityDroneAreas,
+    get finalDroneRespawnedByArea() { return finalDroneRespawnedByArea; },
+    set finalDroneRespawnedByArea(v) { finalDroneRespawnedByArea = v; }, // debug/verification only
+    spawnFinalStageDrones, spawnFinalStageDronesForArea, populateSecurityDroneAreas,
     FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE, FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE_MULTIPLIER,
     // Debug/verification only — this turn's GABRIEL DEFENSE-counter work
     // (STRAIGHT_CLAW_TRIGGER_GUARDS is already exposed above).
@@ -6489,6 +6715,10 @@
     FIRE_MAG_SIZE, FIRE_COOLDOWN_MS, triggerManualReload,
     // Debug/verification only — PART7: healing item system.
     healItem, spawnHealItem, getHealItemSpawnPos, HEAL_ITEM_HEAL_FRAC, HEAL_ITEM_IMAGES, HEAL_ITEM_HIT_RADIUS,
+    HEAL_ITEM_FRAME1_SCALE, healPickupTexts, HEAL_PICKUP_TEXT_MS,
+    // Debug/verification only — PART8: separate manual/auto reload durations,
+    // counter-CLAW speed, and the shared Area-wall/LOS helper.
+    MANUAL_RELOAD_MS, EMPTY_RELOAD_MS, COUNTER_CLAW_SPEED_MULTIPLIER, segmentCrossesAreaWall,
     // Debug/verification only — PART7: FINAL-STAGE DRONE drop-in.
     FINAL_DRONE_DROP_MS,
   };
@@ -6728,7 +6958,10 @@
     // to a full FIRE_MAG_SIZE and FIRE works again, with no manual reload.
     if (player.ammoCooldownRemainingMs > 0) {
       player.ammoCooldownRemainingMs = Math.max(0, player.ammoCooldownRemainingMs - dt * 1000);
-      if (player.ammoCooldownRemainingMs === 0) player.ammo = FIRE_MAG_SIZE;
+      if (player.ammoCooldownRemainingMs === 0) {
+        player.ammo = FIRE_MAG_SIZE;
+        player.reloadType = null; // PART8 SECTION AI: no reload in progress once it's actually complete
+      }
     }
     updateFireHud();
 
@@ -6748,7 +6981,8 @@
       player.ammo--;
       if (player.ammo <= 0) {
         player.ammo = 0;
-        player.ammoCooldownRemainingMs = FIRE_COOLDOWN_MS;
+        player.reloadType = 'auto'; // PART8 SECTION A: empty-magazine reload always uses EMPTY_RELOAD_MS, never the manual duration
+        player.ammoCooldownRemainingMs = EMPTY_RELOAD_MS;
       }
       // STEALTH reveal (PART 17/18/20): firing — manual or AUTO-AIM-assisted,
       // no distinction — reveals the player's CURRENT position to GABRIEL
@@ -6776,8 +7010,17 @@
     // boss.state === 'defense'), body hurtbox otherwise, then alive barrels.
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i];
+      const prevBx = b.x, prevBy = b.y;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
+      // PART8 SECTION N: an Area-boundary WALL vanishes the bullet on the
+      // spot, same as the left/right screen-edge wall just below — checked
+      // as a segment from last frame's position to this one so a fast
+      // bullet can never tunnel through the wall between two frames.
+      if (segmentCrossesAreaWall(prevBx, prevBy, b.x, b.y)) {
+        bullets.splice(i, 1);
+        continue;
+      }
       // LEFT/RIGHT wall contact: the bullet simply vanishes on the spot —
       // no ricochet/bounce of any kind (the previous mirror-reflection
       // system, its reflection-angle math, its post-bounce "flank" damage
@@ -6864,6 +7107,7 @@
         if (Math.hypot(b.x - healItem.x, b.y - healItem.y) <= HEAL_ITEM_HIT_RADIUS) {
           healItem.active = false;
           player.life = playerMaxLife === Infinity ? Infinity : Math.min(playerMaxLife, player.life + playerMaxLife * HEAL_ITEM_HEAL_FRAC);
+          spawnHealPickupText(healItem.x, healItem.y, now); // PART8 SECTION W
           consumed = true;
         }
       }
@@ -7065,6 +7309,7 @@
     // (not-yet-landed) barrels draw too, via their own in-air pose.
     for (const b of barrels) if (b.alive || b.falling) drawBarrel(b);
     drawHealItem(); // PART7 SECTION T: sits in the worldExtraAbove bonus band, same painter layer as barrels
+    drawHealPickupTexts(now); // PART8 SECTION W: "HP+30%！" floating text, world-space, drawn above the item's own layer
     for (let i = barrelLandings.length - 1; i >= 0; i--) {
       const l = barrelLandings[i];
       if (now - l.startAt >= BARREL_LANDING_MS) { barrelLandings.splice(i, 1); continue; }
@@ -7114,7 +7359,7 @@
       drawPlayer(now);
       if (bossVisible) drawBoss(now);
     }
-    drawReloadingText(); // PART7 SECTION P: drawn in this same world-translated block so it follows the player through camera scroll
+    drawReloadingText(now); // PART7 SECTION P: drawn in this same world-translated block so it follows the player through camera scroll
 
     // PART 2: laser beams draw crossing over the player/boss layer, so the
     // shot itself is never hidden behind either — still world-space (before
