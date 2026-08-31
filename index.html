@@ -143,6 +143,14 @@
 <div id="control-area">
   <!-- Secondary row: STEALTH/FLASH only, right-aligned. -->
   <div id="control-secondary-row">
+    <!-- PART7 SECTION O: circular manual RELOAD button, immediately to the
+         LEFT of STEALTH — #control-secondary-row is flex-end, so DOM order
+         here (RELOAD, STEALTH, FLASH) keeps RELOAD directly left of STEALTH. -->
+    <div id="reload-zone">
+      <button id="reload-button" aria-label="RELOAD">
+        <span id="reload-label">RELOAD</span>
+      </button>
+    </div>
     <div id="stealth-zone">
       <button id="stealth-button" aria-label="STEALTH">
         <svg id="stealth-cooldown-ring" viewBox="0 0 100 100" aria-hidden="true">

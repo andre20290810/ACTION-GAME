@@ -91,12 +91,12 @@
   // floor's own left/right edges, as a fraction of THIS image's own width
   // (0=left edge of the image, 1=right edge), measured by visually
   // inspecting each actual background file. Used only for the AREA1<->AREA2
-  // boundary door-collision fix (SECTION 21-25) — see getAreaBoundaryDoorRangeX().
+  // boundary door-collision fix (SECTION 21-25) — see getFloorXRangeWorld().
   // stage_b has none: it's no longer reachable (SECTION 20 above).
   const STAGES = [
     { key: 'stage_b', file: 'assets/stage/stage_b_floor.jpg', theme: 'outdoor', lightTint: 'rgba(0,0,0,0)' },
-    { key: 'lab_b03', file: 'assets/stage/lab_b03_floor.png', theme: 'indoor', lightTint: 'rgba(40,60,90,0.10)', floorLeftFrac: 0.08, floorRightFrac: 0.92 },
-    { key: 'stage_a', file: 'assets/stage/stage_a_floor.png', theme: 'indoor', lightTint: 'rgba(90,60,30,0.10)', floorLeftFrac: 0.08, floorRightFrac: 0.92 },
+    { key: 'lab_b03', file: 'assets/stage/lab_b03_floor.png', theme: 'indoor', lightTint: 'rgba(40,60,90,0.10)', floorLeftFrac: 0.08, floorRightFrac: 0.92 }, // re-measured this turn via pixel inspection: wall panels only in the extreme ~6% margins
+    { key: 'stage_a', file: 'assets/stage/stage_a_floor.png', theme: 'indoor', lightTint: 'rgba(90,60,30,0.10)', floorLeftFrac: 0.08, floorRightFrac: 0.92 }, // re-measured: wide open floor, wall only at the extreme ~5% margins
   ];
   STAGES.forEach((s) => {
     s.img = new Image();
@@ -171,11 +171,17 @@
   // New-turn SECTION 22/24: floorLeftFrac/floorRightFrac — see STAGES[]'s
   // own comment above for what these mean.
   const TRAINING_BACKGROUNDS = [
-    { key: 'cargo_lift_e12_a', file: 'assets/stages/training/cargo_lift_e12_a.jpg', floorLeftFrac: 0.16, floorRightFrac: 0.84 },
-    { key: 'experiment_lab_c09', file: 'assets/stages/training/experiment_lab_c09.jpg', floorLeftFrac: 0.08, floorRightFrac: 0.92 },
-    { key: 'cargo_lift_e12_b', file: 'assets/stages/training/cargo_lift_e12_b.jpg', floorLeftFrac: 0.16, floorRightFrac: 0.84 },
-    { key: 'shelter_b07', file: 'assets/stages/training/shelter_b07.jpg', floorLeftFrac: 0.16, floorRightFrac: 0.84 },
-    { key: 'fortress_a01', file: 'assets/stages/training/fortress_a01.jpg', floorLeftFrac: 0.08, floorRightFrac: 0.92 },
+    // PART2-turn SECTION A/AA: re-measured this turn by actually cropping
+    // and visually inspecting the top ~35% of each raw asset file (where
+    // the door threshold sits) with a 10%-gridline overlay, rather than
+    // the previous turn's un-measured guesses — several of those (cargo_lift_e12_a/b,
+    // fortress_a01 especially) were significantly too wide, which is the
+    // root cause SECTION A's real-device wall-clipping traced back to.
+    { key: 'cargo_lift_e12_a', file: 'assets/stages/training/cargo_lift_e12_a.jpg', floorLeftFrac: 0.28, floorRightFrac: 0.70 },
+    { key: 'experiment_lab_c09', file: 'assets/stages/training/experiment_lab_c09.jpg', floorLeftFrac: 0.15, floorRightFrac: 0.86 },
+    { key: 'cargo_lift_e12_b', file: 'assets/stages/training/cargo_lift_e12_b.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.78 },
+    { key: 'shelter_b07', file: 'assets/stages/training/shelter_b07.jpg', floorLeftFrac: 0.17, floorRightFrac: 0.83 },
+    { key: 'fortress_a01', file: 'assets/stages/training/fortress_a01.jpg', floorLeftFrac: 0.19, floorRightFrac: 0.81 },
   ];
   TRAINING_BACKGROUNDS.forEach((s) => {
     s.img = new Image();
@@ -211,7 +217,7 @@
   // New-turn SECTION 21-25: the SAME "cover"-scale + horizontal-center
   // formula draw() already uses to place the current background image —
   // factored out here so the AREA1<->AREA2 door-collision check
-  // (getAreaBoundaryDoorRangeX() below) can compute the EXACT same
+  // (getFloorXRangeWorld() below) can compute the EXACT same
   // on-screen image bounds draw() renders, rather than a second, potentially
   // drifting approximation (SECTION 22's own "見た目とコリジョン位置を一致
   // させる" requirement).
@@ -224,30 +230,43 @@
     return { iw, ih, scale, dw, dh, dx, baseDy };
   }
 
-  // New-turn SECTION 21-25: the walkable door opening's world/screen X range
-  // at the AREA1<->AREA2 boundary, derived from the CURRENT background's own
-  // floorLeftFrac/floorRightFrac (a fraction of the image's OWN width —
-  // see STAGES[]/TRAINING_BACKGROUNDS' own comments) mapped through the
-  // SAME dx/dw the image is actually drawn with. Returns null if the image
-  // hasn't loaded yet (fails OPEN — no new collision restriction — rather
-  // than blocking movement against a background that isn't even visible
-  // yet) or declares no floorLeftFrac/floorRightFrac at all (stage_b, which
-  // is no longer reachable in STORY MODE anyway).
-  function getAreaBoundaryDoorRangeX() {
+  // PART2-turn SECTION A/B/I: the walkable floor's world/screen X range for
+  // the CURRENT background, derived from its own floorLeftFrac/floorRightFrac
+  // (a fraction of the image's OWN width — see STAGES[]/TRAINING_BACKGROUNDS'
+  // own comments, now measured directly from each actual asset file via
+  // pixel inspection rather than guessed) mapped through the SAME dx/dw the
+  // image is actually drawn with (getStageDrawMetrics()). This is Y-
+  // independent — the background is only ever tiled VERTICALLY (draw()'s own
+  // loop), so dx/dw — and therefore the floor's X range — are identical at
+  // every world Y for a given background, which is exactly why this same
+  // function now also anchors DRONE placement margins (pickSecurityDroneCenterX()/
+  // spawnFinalStageDrones()), not just the AREA-boundary door check below.
+  // Returns null if the image hasn't loaded yet (fails OPEN — callers must
+  // each decide their own safe fallback rather than block against a
+  // not-yet-visible background) or declares no floorLeftFrac/floorRightFrac
+  // at all (stage_b, no longer reachable in STORY MODE anyway).
+  function getFloorXRangeWorld() {
     const stage = currentStage();
     if (!stage || !stage.ready || !stage.img.naturalWidth) return null;
     if (stage.floorLeftFrac === undefined || stage.floorRightFrac === undefined) return null;
     const m = getStageDrawMetrics(stage);
     return { left: m.dx + stage.floorLeftFrac * m.dw, right: m.dx + stage.floorRightFrac * m.dw };
   }
-  // New-turn SECTION 21: how far (in world Y, both directions) around the
-  // exact AREA1<->AREA2 boundary (world Y=0 — see areaTopY()/the
-  // `currentArea = player.y < 0 ? 2 : 1` flip in update()) the door-width
-  // constraint applies. Kept small and symmetric — just enough that normal
-  // per-frame movement speed can never "jump across" the band in one frame
-  // (SECTION 25-4's DASH-through-the-wall check) — outside this band,
-  // AREA1/AREA2's own full-corridor-width movement is completely unchanged
-  // (SECTION 23).
+  // PART2-turn SECTION A: every world Y where a background tile boundary —
+  // and therefore a "door" opening — actually occurs. Since dh (the drawn
+  // tile height) lands almost exactly on H at the portrait aspect ratios
+  // this game targets, tile seams fall at Y=0 (AREA1<->AREA2, areaTopY(2))
+  // and Y=-H (AREA2<->the post-clear bonus EXIT band) — the only two
+  // crossings that exist in this game's actual world structure (SECTION B's
+  // own investigation: there is no separate, third tracked "Area" — see
+  // worldExtraAbove/exitWorldPos() — only these two boundaries need a door).
+  function getAreaBoundaryYs() { return [0, -H]; }
+  // How far (in world Y, both directions) around an exact boundary the
+  // door-width constraint applies. Kept small and symmetric — just enough
+  // that normal per-frame movement speed can never "jump across" the band
+  // in one frame (SECTION Z-4's DASH-through-the-wall check) — outside this
+  // band, AREA1/AREA2's own full-corridor-width movement is completely
+  // unchanged (SECTION 23).
   const AREA_BOUNDARY_DOOR_BAND = 80;
 
   // PART 5 SECTION Q/T: the ONLY 3 helpers anything should ever use to ask
@@ -573,6 +592,17 @@
   // or boss in size.
   const barrelImg = new Image();
   barrelImg.src = 'assets/objects/explosive_barrel.png';
+
+  // PART7 SECTION R/S: the 5 attached red first-aid-box photos, added
+  // verbatim (only non-generative resizing applied — see
+  // assets/objects/source/heal_box_N_source.png for the untouched
+  // originals) in their exact attachment order 1-5, which HEAL_ITEM_IMAGES'
+  // own index order preserves for the SECTION S loop below.
+  const HEAL_ITEM_IMAGES = [1, 2, 3, 4, 5].map((n) => {
+    const img = new Image();
+    img.src = `assets/objects/heal_box_${n}.png`;
+    return img;
+  });
   // Full draw box (including the image's own transparent margin); the
   // visible drum within it ends up ~26% of the player's height, inside
   // the requested 20-30% band.
@@ -778,6 +808,8 @@
   const player = {
     x: 0,
     y: 0,
+    lastValidY: 0, // PART2-turn SECTION A: last Y clampPlayerToScreen() itself resolved to — the AREA-boundary wall check's "were we already inside the door band" reference, reset alongside x/y on every stage/mode reset
+
     speed: 240 * 0.80, // px/sec — PART 28: 80% of the previous 240 (DASH speed/distance untouched)
     baseDir: 'down',   // discrete sprite bucket — driven by AIM STICK while it's engaged, by MOVE STICK otherwise (see update())
     // aimOffsetRaw/aimOffset: ABSOLUTE angles (radians, atan2 convention),
@@ -878,6 +910,7 @@
   function resetPlayerToBattlePose() {
     player.x = W * 0.50;
     player.y = areaTopY(1) + H * 0.80; // mode start / a fresh STAGE transition both always begin in AREA 1
+    player.lastValidY = player.y; // PART2-turn SECTION A: always well outside any boundary band at spawn
     player.baseDir = 'up'; // P-2: facing north, same as STORY's BOSS battle pose
     player.aimOffsetRaw = BASE_ANGLE.up;
     player.aimOffset = BASE_ANGLE.up;
@@ -916,21 +949,44 @@
     player.x = Math.max(halfW, Math.min(W - halfW, player.x));
     player.y = Math.max(topY, Math.min(H - halfH, player.y));
 
-    // New-turn SECTION 21-25: right at the AREA1<->AREA2 boundary, only the
-    // door opening drawn in the current background is passable — the rest
-    // of that band is wall. This runs AFTER the full-width horizontal clamp
-    // above, so it can only ever narrow player.x further, never widen it;
-    // away from the boundary band, movement is exactly as before (full
-    // corridor width — SECTION 23, AREA1<->AREA2 crossing itself is
-    // unaffected, only this collision fix is new). Applies identically in
-    // every mode (STORY/BASIC TRAINING/SECURITY TRAINING all share this same
-    // boundary and this same clampPlayerToScreen() call — SECTION 24).
-    if (Math.abs(player.y) <= AREA_BOUNDARY_DOOR_BAND) {
-      const door = getAreaBoundaryDoorRangeX();
-      if (door) {
-        player.x = Math.max(door.left + halfW, Math.min(door.right - halfW, player.x));
+    // PART2-turn SECTION A/B/C (root-cause redo of last turn's fix): a
+    // genuine solid WALL at each AREA boundary, with only the door opening
+    // passable — [ WALL ][ DOOR ][ WALL ], never a post-hoc "snap sideways
+    // into the door" once already inside the band. Last turn's version
+    // clamped player.x unconditionally the instant |player.y| entered the
+    // band, which (a) used floorLeftFrac/floorRightFrac values that were
+    // too wide for several backgrounds (re-measured directly from the
+    // actual asset files this turn — see STAGES[]/TRAINING_BACKGROUNDS),
+    // and (b) is exactly what produced SECTION C's "sudden AREA1->AREA2
+    // warp": snapping x sideways by 50-100+px in the same instant the
+    // player's y crosses into the band reads as a teleport even though
+    // only x moved. The fix below instead behaves like a real wall: if the
+    // player was OUTSIDE the band last frame (player.lastValidY) and this
+    // frame's movement would put them INSIDE the band at an x outside the
+    // door, their Y is reverted to lastValidY — blocking the crossing
+    // outright — while x is left alone, so they can still slide left/right
+    // along the wall face to line up with the door, exactly like bumping
+    // into a real obstacle. Only if they were ALREADY inside the band last
+    // frame (e.g. spawned there) does it fall back to nudging x into the
+    // door, as a safety net. Checked at every real tile-boundary Y
+    // (getAreaBoundaryYs() — SECTION B: AREA1<->AREA2 at 0, AREA2<->the
+    // bonus EXIT band at -H; there is no third tracked Area), and applies
+    // identically in every mode (SECTION 24).
+    const floor = getFloorXRangeWorld();
+    if (floor) {
+      const doorLeft = floor.left + halfW, doorRight = floor.right - halfW;
+      for (const boundaryY of getAreaBoundaryYs()) {
+        if (Math.abs(player.y - boundaryY) > AREA_BOUNDARY_DOOR_BAND) continue;
+        if (player.x >= doorLeft && player.x <= doorRight) continue; // inside the door — nothing to block
+        const wasOutsideBand = player.lastValidY === undefined || Math.abs(player.lastValidY - boundaryY) > AREA_BOUNDARY_DOOR_BAND;
+        if (wasOutsideBand) {
+          player.y = player.lastValidY !== undefined ? player.lastValidY : player.y; // block the crossing; x is untouched (slide along the wall)
+        } else {
+          player.x = Math.max(doorLeft, Math.min(doorRight, player.x)); // already inside the band from a prior frame — nudge into the door rather than getting permanently stuck
+        }
       }
     }
+    player.lastValidY = player.y;
   }
 
   // ---------- DASH (4 directions, button-triggered, re-triggerable) ----------
@@ -1289,6 +1345,12 @@
   // `speedMult` field further below is never read for the FINAL entry).
   const FINAL_STAGE_DRONE_COUNT = 3;
   const FINAL_STAGE_DRONE_SPEED_MULTIPLIER = 1.0;
+  // PART7 SECTION H: wave 2's one-time "falls from above and lands" entrance
+  // duration — reuses the exact ease-in-fall + growing/darkening shadow
+  // technique from drawBossIntro()'s SILENCE_END..SHADOW_END phase, scaled
+  // down to a single lightweight per-DRONE timer (no new art, no copy of
+  // GABRIEL's own multi-phase cinematic state machine).
+  const FINAL_DRONE_DROP_MS = 650;
   // ================= END PART 2/5 constants (state machine/logic further below) =================
 
   // Minimum straight-line distance a new relocate position must keep from
@@ -3510,6 +3572,7 @@
     barrelLandings.length = 0;
     barrelRestockPending = false;
     barrelRestockRemainingMs = 0;
+    spawnHealItem(); // PART7 SECTION W: fresh, unconsumed item every STAGE entry (drone-type and boss-type alike, since both open the SAME worldExtraAbove bonus band)
     if (plan.type === 'drone') {
       // SECTION F-6/F-8/X-1: no GABRIEL, no BOSS INTRO, zero barrels.
       boss.spawned = false;
@@ -3523,7 +3586,7 @@
       spawnBarrels(BOSS_ENCOUNTER_BARREL_COUNTS[bossEncounterIndex]); // SECTION K/X
       if (plan.final) {
         spawnBoss(now); // SECTION M: GABRIEL must exist before N-3's "avoid GABRIEL's own body" placement check can read boss.x/y
-        spawnFinalStageDrones(); // SECTION M/N: 3 randomly-placed DRONEs alongside GABRIEL (new-turn SECTION 2: all FAST_PATROL)
+        spawnFinalStageDrones(false, now); // SECTION M/N: 3 randomly-placed DRONEs alongside GABRIEL (new-turn SECTION 2: all FAST_PATROL); wave 1 (initial spawn) never drops in — instant appear, per SECTION H's explicit wording
         finalDroneRespawned = false; // new-turn SECTION 3/6: every (re-)entry into the FINAL STAGE — including RETRY — starts fresh at "wave 1, 2nd wave not yet spawned"
       } else {
         securityRobots.length = 0;
@@ -3629,6 +3692,77 @@
     const bottomBand = Math.max(180, H * 0.32);
     if (y < H - bottomBand) return false;
     return x < Math.min(240, W * 0.42) || x > W - Math.min(260, W * 0.46);
+  }
+
+  // ---------- Healing item (PART7 SECTIONS R-W) ----------
+  // A SINGLE item (never 5 separate ones — SECTION S) whose drawn sprite
+  // cycles through HEAL_ITEM_IMAGES in strict 1->2->3->4->5->1 order at a
+  // fixed cadence, driven from the same dt-based per-frame update every
+  // other timer in this file uses (so it also freezes correctly during
+  // PAUSE, matching Q's freeze requirement for the unrelated RELOAD gauge).
+  const HEAL_ITEM_FRAME_MS = 220; // SECTION S: fast enough to read as a naturally-turning box, slow enough that each frame still registers
+  const HEAL_ITEM_DRAW_W = SPRITE_DRAW_H * 0.34; // SECTION R: small, stage-prop-sized — comparable footprint to BARREL_DRAW_H
+  const HEAL_ITEM_HIT_RADIUS = 22;
+  const HEAL_ITEM_HEAL_FRAC = 0.30; // SECTION U: life = min(maxLife, life + maxLife*0.30)
+
+  const healItem = {
+    x: 0, y: 0,
+    active: false, // SECTION U/W: false once SHOT-destroyed; only spawnHealItem() (fresh STAGE/RETRY) turns it true again
+    frameIndex: 0,
+    frameElapsedMs: 0,
+  };
+
+  // SECTION T: placed in the game's own REAL "3rd region" — the
+  // worldExtraAbove bonus band beyond AREA2 that worldScrollUnlocked()/
+  // trainingWorldScrollUnlocked() already open up once a STAGE's own clear
+  // condition is met (see exitWorldPos()) — never a fabricated new Area3.
+  // Sits in the lower-middle of that band: comfortably below the EXIT zone
+  // pinned at the band's very top (never on/over the EXIT), and comfortably
+  // above the AREA2<->bonus-band boundary door's own ±AREA_BOUNDARY_DOOR_
+  // BAND collision band (never straddling an Area-transition boundary).
+  // This private band never hosts a DRONE spawn (spawnFinalStageDrones()/
+  // populateSecurityDroneAreas() only ever place DRONEs within AREA1/AREA2
+  // themselves), so there is inherently no DRONE-overlap to additionally
+  // guard against here.
+  function getHealItemSpawnPos() {
+    const bandTop = -H - worldExtraAbove;
+    const bandBottom = -H;
+    const y = bandBottom - (bandBottom - bandTop) * 0.5;
+    const floor = getFloorXRangeWorld(); // Y-independent — see getFloorXRangeWorld()'s own comment
+    const x = floor ? (floor.left + floor.right) / 2 : W / 2;
+    return { x, y };
+  }
+
+  // SECTION W: called from enterStoryStage() — every fresh STAGE entry
+  // (including a STAGE-preserving RETRY, since RETRY re-runs enterStoryStage
+  // via resetModeState(true)) restores exactly one fresh, unconsumed item;
+  // walking back and forth between AREAs within the SAME STAGE attempt never
+  // calls this again, so an already-consumed item stays consumed.
+  function spawnHealItem() {
+    const pos = getHealItemSpawnPos();
+    healItem.x = pos.x;
+    healItem.y = pos.y;
+    healItem.active = true;
+    healItem.frameIndex = 0;
+    healItem.frameElapsedMs = 0;
+  }
+
+  function updateHealItem(dt) {
+    if (!healItem.active) return;
+    healItem.frameElapsedMs += dt * 1000;
+    while (healItem.frameElapsedMs >= HEAL_ITEM_FRAME_MS) {
+      healItem.frameElapsedMs -= HEAL_ITEM_FRAME_MS;
+      healItem.frameIndex = (healItem.frameIndex + 1) % HEAL_ITEM_IMAGES.length; // SECTION S: strict 1->2->3->4->5->1 order, never shuffled
+    }
+  }
+
+  function drawHealItem() {
+    if (!healItem.active) return;
+    const img = HEAL_ITEM_IMAGES[healItem.frameIndex];
+    if (!img.complete || img.naturalWidth === 0) return;
+    const w = HEAL_ITEM_DRAW_W;
+    const h = w * (img.naturalHeight / img.naturalWidth);
+    ctx.drawImage(img, healItem.x - w / 2, healItem.y - h / 2, w, h);
   }
 
   function pickBarrelSpot() {
@@ -3737,7 +3871,12 @@
   // by actual barrel explosions, including in the FINAL STAGE if any were
   // ever present) is left completely untouched, as is every other damage
   // source (normal SHOT, weak point, AUTO AIM, COUNTER, etc.).
-  const FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE_MULTIPLIER = 0.5;
+  // PART7 SECTION J: halved AGAIN this turn (0.5 -> 0.25 of BARREL_DAMAGE_BOSS
+  // overall) — i.e. 50% of last turn's already-halved value. Scope is
+  // unchanged: ONLY this DRONE-explosion-vs-GABRIEL path in the FINAL
+  // STAGE; BARREL_DAMAGE_BOSS itself (barrels' own damage to GABRIEL, every
+  // other stage/source) is never touched.
+  const FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE_MULTIPLIER = 0.25;
   const FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE = BARREL_DAMAGE_BOSS * FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE_MULTIPLIER;
   // Restock state: fires whenever every barrel is gone (none alive, none
   // currently falling in) — a single unified path for BOTH BOSS MODE and
@@ -3898,11 +4037,35 @@
   // spacing against every already-placed robot this STAGE, 30-attempt
   // retry) — only Y is now regular; X keeps its randomness (B-5's own
   // explicit "X座標については...多少randomizeして構いません").
+  // PART2-turn SECTION D/E/I: the safe X-range for placing a DRONE's own
+  // patrol CENTER, given how far its own margin (patrol swing + body) needs
+  // to clear on each side — clamped inside the CURRENT background's actual
+  // visible floor (getFloorXRangeWorld()), never the full screen width, so
+  // a DRONE's spawn point (and its later patrol swing) can never land any
+  // part of itself inside wall texture (SECTION I's actual root cause: the
+  // old margin was screen-width-only and never consulted the floor at all).
+  // Falls back to the full screen width (minus the same margin) only if the
+  // current background's own floor bounds aren't available yet (e.g. image
+  // still loading) — collapses to a single centered point rather than
+  // producing an inverted/invalid range if the corridor is narrower than
+  // the requested margin.
+  function getDronePlacementRangeX(marginX) {
+    const floor = getFloorXRangeWorld();
+    let lo = marginX, hi = W - marginX;
+    if (floor) {
+      lo = Math.max(lo, floor.left + marginX);
+      hi = Math.min(hi, floor.right - marginX);
+    }
+    if (lo > hi) { const mid = (lo + hi) / 2; lo = hi = mid; }
+    return { lo, hi };
+  }
+
   function pickSecurityDroneCenterX(existingRobots, area, y) {
     const marginX = SECURITY_ROBOT_DRAW_D * 3 + SECURITY_PATROL_RANGE_MAX;
+    const range = getDronePlacementRangeX(marginX);
     const areaTop = areaTopY(area);
     for (let attempt = 0; attempt < 30; attempt++) {
-      const x = marginX + Math.random() * (W - marginX * 2);
+      const x = range.lo + Math.random() * (range.hi - range.lo);
       if (isNearUIZone(x, y - areaTop)) continue; // isNearUIZone reads screen-space UI zones — offset back to a 0-based band first
       if (Math.hypot(x - player.x, y - player.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue; // clear of the player's initial spot
       let tooClose = false;
@@ -3912,10 +4075,13 @@
       if (tooClose) continue;
       return x;
     }
-    // Fallback if 30 attempts all collided (very small screens): centered,
-    // with a small deterministic per-index offset so same-row fallbacks
-    // still don't all stack on the exact same X.
-    return W * 0.5 + (existingRobots.length % 2 === 0 ? -1 : 1) * W * 0.12;
+    // Fallback if 30 attempts all collided (very small/narrow floors):
+    // centered within the actual floor range, with a small deterministic
+    // per-index offset (capped to a quarter of the available range) so
+    // same-row fallbacks still don't all stack on the exact same X.
+    const mid = (range.lo + range.hi) / 2;
+    const offset = Math.min(W * 0.12, (range.hi - range.lo) / 4);
+    return mid + (existingRobots.length % 2 === 0 ? -1 : 1) * offset;
   }
 
   const SECURITY_SCAN_AXES = ['horizontal', 'vertical'];
@@ -3953,10 +4119,22 @@
     const patrolDir = Math.random() < 0.5 ? 1 : -1;
     const basePatrolSpeed = SECURITY_PATROL_SPEED_MIN + Math.random() * (SECURITY_PATROL_SPEED_MAX - SECURITY_PATROL_SPEED_MIN);
     const baseScanSpeed = SECURITY_SCAN_SPEED_MIN + Math.random() * (SECURITY_SCAN_SPEED_MAX - SECURITY_SCAN_SPEED_MIN);
+    let patrolRange = SECURITY_PATROL_RANGE_MIN + Math.random() * (SECURITY_PATROL_RANGE_MAX - SECURITY_PATROL_RANGE_MIN);
+    // PART2-turn SECTION I: a final safety clamp (on top of
+    // getDronePlacementRangeX()'s own placement-time margin) so that
+    // whatever x this drone actually landed at, its own patrol SWING can
+    // never reach past the visible floor into wall texture — covers every
+    // caller, including spawnFinalStageDrones()'s own separate placement
+    // scheme (SECTION F), not just pickSecurityDroneCenterX().
+    const floor = getFloorXRangeWorld();
+    if (floor) {
+      const maxRangeBySpace = Math.min(x - floor.left, floor.right - x) - SECURITY_ROBOT_DRAW_D * 0.5;
+      patrolRange = Math.max(0, Math.min(patrolRange, maxRangeBySpace));
+    }
     return {
       x, y, // y is this robot's fixed row — only x ever changes (F: left/right only)
       patrolCenterX: x,
-      patrolRange: SECURITY_PATROL_RANGE_MIN + Math.random() * (SECURITY_PATROL_RANGE_MAX - SECURITY_PATROL_RANGE_MIN),
+      patrolRange,
       patrolSpeed: basePatrolSpeed * mult.patrol * speedMult,
       patrolDir,
       dir: patrolDir > 0 ? 'east' : 'west', // F-6
@@ -3989,6 +4167,12 @@
         : 0,
       centerScanDurationMs: 0,
       centerScanRemainingMs: 0,
+      // PART7 SECTION H: 'active' for every normal DRONE (including wave 1's
+      // initial FINAL-STAGE spawn — instant appear, unchanged); only
+      // spawnFinalStageDrones(dropIn=true)'s wave-2 respawn overwrites these
+      // to 'dropping'/now right after construction.
+      dropState: 'active',
+      dropStartAt: -Infinity,
     };
   }
 
@@ -4051,33 +4235,66 @@
   // body, UI zones, and DRONE-DRONE overlap (N-3). TYPE is randomly chosen
   // per-DRONE from all 4 existing types (N-5); speedMult is the FINAL
   // STAGE's own dedicated constant, never STAGE 8/9's 1.5x (N-6).
-  function spawnFinalStageDrones() {
+  // PART7 SECTION E/F: rewritten this turn — the old version (a) hardcoded
+  // areaTopY(1), so every FINAL-STAGE DRONE ever landed in AREA1 only,
+  // leaving AREA2 with zero DRONE combat, and (b) used a floor-UNAWARE
+  // marginX (screen-width based, no getFloorXRangeWorld() lookup), so a
+  // roll near either edge of a narrow-floor background (e.g. cargo_lift/
+  // fortress-style assets) could place a DRONE's own patrol swing inside
+  // wall texture, which is the confirmed root cause of SECTION E/I's
+  // "spawns wall-adjacent then looks frozen" reports (a degenerate
+  // patrolRange near 0, clamped by buildSecurityDrone()'s own safety net).
+  // Both are fixed here by reusing the SAME getDronePlacementRangeX()/
+  // getFloorXRangeWorld() machinery pickSecurityDroneCenterX() already
+  // uses, and by splitting the fixed 3-DRONE count across BOTH AREA1 and
+  // AREA2 (F: real combat in both, never an inflated total count).
+  // `dropIn` (SECTION H): when true (wave 2's one-time respawn only —
+  // wave 1's initial spawn always passes false/omits it), each new DRONE
+  // starts in a 'dropping' state and falls in from above using the same
+  // shadow-reveal + ease-in-fall technique GABRIEL's own BOSS INTRO uses
+  // (see drawBossIntro()'s SILENCE_END..SHADOW_END phase) — no new art,
+  // normal AI does not run until landing (see updateSecurityRobots()).
+  function spawnFinalStageDrones(dropIn, now) {
     securityRobots.length = 0;
     securityAttackSlotsInUse = 0;
-    const areaTop = areaTopY(1);
-    const marginX = SECURITY_ROBOT_DRAW_D * 3;
-    const marginTop = areaTop + H * 0.22, marginBottom = areaTop + H - H * 0.22;
+    const marginX = SECURITY_ROBOT_DRAW_D * 3 + SECURITY_PATROL_RANGE_MAX; // SECTION I: leaves full patrol-swing headroom, same formula pickSecurityDroneCenterX() uses, so a landed drone never has to have its patrolRange clamped down to a near-frozen sliver
+    // SECTION F: alternate AREA1/AREA2 across the fixed 3-DRONE count (2 in
+    // one area, 1 in the other) rather than the old all-AREA1 placement.
+    const areaSeq = [];
+    for (let i = 0; i < FINAL_STAGE_DRONE_COUNT; i++) areaSeq.push(i % 2 === 0 ? 1 : 2);
+    const countByArea = { 1: areaSeq.filter((a) => a === 1).length, 2: areaSeq.filter((a) => a === 2).length };
+    const seenInArea = { 1: 0, 2: 0 };
     for (let i = 0; i < FINAL_STAGE_DRONE_COUNT; i++) {
-      let x = W * 0.5, y = (marginTop + marginBottom) / 2;
+      const area = areaSeq[i];
+      const areaTop = areaTopY(area);
+      const y = securityDroneRowY(area, seenInArea[area], countByArea[area]); // same regular, margin-safe row formula every other DRONE stage uses
+      seenInArea[area]++;
+      const range = getDronePlacementRangeX(marginX);
+      let x = (range.lo + range.hi) / 2;
       for (let attempt = 0; attempt < 30; attempt++) {
-        const cx = marginX + Math.random() * (W - marginX * 2);
-        const cy = marginTop + Math.random() * (marginBottom - marginTop);
-        if (isNearUIZone(cx, cy - areaTop)) continue;
-        if (Math.hypot(cx - player.x, cy - player.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue; // N-3: clear of the player's own spawn point
-        if (Math.hypot(cx - boss.x, cy - boss.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue; // N-3: clear of GABRIEL's own body
+        const cx = range.lo + Math.random() * (range.hi - range.lo);
+        if (isNearUIZone(cx, y - areaTop)) continue;
+        // GABRIEL and the player only ever occupy AREA1 in the FINAL STAGE, so these two checks only matter there.
+        if (area === 1 && Math.hypot(cx - player.x, y - player.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue; // N-3: clear of the player's own spawn point
+        if (area === 1 && Math.hypot(cx - boss.x, y - boss.y) < SECURITY_ROBOT_MIN_SPACING * 1.2) continue; // N-3: clear of GABRIEL's own body
         let tooClose = false;
         for (const r of securityRobots) {
-          if (Math.hypot(cx - r.patrolCenterX, cy - r.y) < SECURITY_ROBOT_MIN_SPACING) { tooClose = true; break; } // N-3: DRONE-DRONE overlap
+          if (Math.hypot(cx - r.patrolCenterX, y - r.y) < SECURITY_ROBOT_MIN_SPACING) { tooClose = true; break; } // N-3: DRONE-DRONE overlap
         }
         if (tooClose) continue;
-        x = cx; y = cy;
+        x = cx;
         break;
       }
       // New-turn SECTION 2: every FINAL-STAGE DRONE is FAST_PATROL — never
       // the random N-5 pick anymore. FAST_PATROL only scales `patrol`
       // (movement/patrol speed), leaving `scan` at its neutral 1.0x, so
       // SEARCH/LASER/targeting behavior is untouched exactly as required.
-      securityRobots.push(buildSecurityDrone(x, y, 'FAST_PATROL', FINAL_STAGE_DRONE_SPEED_MULTIPLIER));
+      const drone = buildSecurityDrone(x, y, 'FAST_PATROL', FINAL_STAGE_DRONE_SPEED_MULTIPLIER);
+      if (dropIn) {
+        drone.dropState = 'dropping';
+        drone.dropStartAt = now;
+      }
+      securityRobots.push(drone);
     }
   }
 
@@ -4257,8 +4474,8 @@
       // condition has already fired (SECTION 5's own explicit requirement).
       if (isFinalStoryStage() && !finalDroneRespawned && boss.state !== 'dead' && boss.state !== 'dying' &&
           securityRobots.every((r) => r.hp <= 0)) {
-        finalDroneRespawned = true;
-        spawnFinalStageDrones();
+        finalDroneRespawned = true; // PART7 SECTION G: set synchronously the instant wave1's last hp<=0 is confirmed, before spawnFinalStageDrones() below runs — guards against any same-frame re-entry ever double-spawning wave2
+        spawnFinalStageDrones(true, now); // PART7 SECTION H: wave 2 falls in from above, reusing GABRIEL's own intro shadow+fall technique
       }
     } else {
       // SECTION E: a non-lethal hit starts this DRONE's own independent
@@ -4344,6 +4561,16 @@
     if (!isSecurityDroneSystemActive()) return;
     for (const robot of securityRobots) {
       if (robot.hp <= 0) continue; // SECTION E-4: a dead DRONE does nothing at all — no movement, scan, detection, telegraph, or laser
+      // PART7 SECTION H: while a wave-2 DRONE is still falling, none of its
+      // normal AI (patrol/search/telegraph/laser) runs at all — it only
+      // resolves the drop timer and, once elapsed, flips to 'active' so the
+      // very next tick begins normal AI from a clean 'watching' state.
+      if (robot.dropState === 'dropping') {
+        if (now - robot.dropStartAt >= FINAL_DRONE_DROP_MS) {
+          robot.dropState = 'active';
+        }
+        continue;
+      }
       // SECTION F/M-4: the DRONE "locks on" and stops its own left/right
       // patrol the instant it notices the player (detected/telegraph/
       // attack), facing SOUTH toward them (F-7) — patrol (and its own
@@ -4433,6 +4660,7 @@
   // that TYPE).
   function drawSecurityShadow(robot) {
     if (robot.hp <= 0) return; // E-4: dead DRONEs cast no shadow
+    if (robot.dropState === 'dropping') return; // PART7 SECTION H: no searchlight while still falling — matches no AI running yet
     const c = getSecurityShadowCenter(robot);
     ctx.save();
     ctx.filter = 'blur(3px)';
@@ -4449,6 +4677,27 @@
     const img = securityRobotImgs[robot.dir];
     const m = SECURITY_ROBOT_METRICS[robot.dir];
     if (!img.complete || img.naturalWidth === 0) return;
+    // PART7 SECTION H: wave-2 drop-in — same growing/darkening ground-shadow
+    // + ease-in fall (fallT = t*t) technique as drawBossIntro()'s own
+    // SILENCE_END..SHADOW_END phase, applied to this one DRONE's existing
+    // sprite/metrics (no new image, no separate cinematic state machine).
+    if (robot.dropState === 'dropping') {
+      const t = Math.max(0, Math.min(1, (now - robot.dropStartAt) / FINAL_DRONE_DROP_MS));
+      const shadowT = Math.min(1, t * 1.15);
+      ctx.save();
+      ctx.globalAlpha = 0.4 * shadowT;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(robot.x, robot.y, m.drawW * 0.32 * shadowT, m.drawW * 0.32 * shadowT * 0.35, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      const fallT = t * t;
+      const restDrawY = robot.y - m.drawH / 2;
+      const startDrawY = restDrawY - H * 0.5 - m.drawH;
+      const drawY = startDrawY + (restDrawY - startDrawY) * fallT;
+      ctx.drawImage(img, robot.x - m.drawW / 2, drawY, m.drawW, m.drawH);
+      return;
+    }
     const dx = robot.x - m.drawW / 2, dy = robot.y - m.drawH / 2;
     // PART 4 SECTION E: independent per-DRONE damage-blink — same on/off-
     // segment pattern as GABRIEL's own damage blink, reusing the exact
@@ -4784,6 +5033,7 @@
     player.relaxed = false;
     player.ammo = FIRE_MAG_SIZE;
     player.ammoCooldownRemainingMs = 0;
+    healItem.active = false; // PART7 SECTION W: cleared unconditionally here — the 'boss' branch below re-arms it fresh via enterStoryStage()'s own spawnHealItem() call; TRAINING/BASIC modes simply never re-arm it, so no leftover STORY item can ever show up there
 
     bullets.length = 0;
     arcClawSlashes.length = 0;
@@ -5487,6 +5737,28 @@
       : 1;
     fireRingProgress.style.strokeDashoffset = `${FIRE_RING_CIRCUMFERENCE * (1 - readyFrac)}`;
     fireButton.classList.toggle('depleted', player.ammoCooldownRemainingMs > 0);
+    // PART7 SECTION O: purely visual — reflects whether triggerManualReload()
+    // would currently do anything (1-29 ammo, not already reloading).
+    if (reloadButton) {
+      reloadButton.classList.toggle('usable', player.ammo > 0 && player.ammo < FIRE_MAG_SIZE && player.ammoCooldownRemainingMs <= 0);
+    }
+  }
+
+  // PART7 SECTION P: red "Reloading!" text following the player in WORLD
+  // space (drawn from inside draw()'s own ctx.translate(0,-cameraY) block,
+  // so it scrolls with the player exactly like the player sprite itself —
+  // never a fixed HUD position). Shown for both the auto (ammo hit 0) and
+  // manual (SECTION O) triggers alike, since both drive the exact same
+  // ammoCooldownRemainingMs timer; hidden the instant it reaches 0.
+  function drawReloadingText() {
+    if (player.ammoCooldownRemainingMs <= 0) return;
+    ctx.save();
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillStyle = '#ff3b30';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('Reloading!', player.x, player.y - SPRITE_DRAW_H / 2 - 10);
+    ctx.restore();
   }
 
   function fireStart(e) {
@@ -5507,6 +5779,26 @@
   fireZone.addEventListener('touchcancel', fireEnd, { passive: false });
   fireZone.addEventListener('mousedown', fireStart);
   window.addEventListener('mouseup', fireEnd);
+
+  // ---------- RELOAD button (PART7 SECTION O) ----------
+  // A dedicated manual trigger for the SAME ammoCooldownRemainingMs timer
+  // the auto-reload-at-0 path already drives — never a second/parallel
+  // timer. SECTION O: only usable while ammo is 1-29 (never at 0 — auto-
+  // reload already owns that case — and never at a full 30 magazine);
+  // pressing again while ammoCooldownRemainingMs > 0 is a no-op (never
+  // resets/restarts the timer, since it's only set here, once, if it was
+  // previously 0).
+  const reloadZone = document.getElementById('reload-zone');
+  const reloadButton = document.getElementById('reload-button');
+  function triggerManualReload(e) {
+    if (e) e.preventDefault();
+    if (gameState.paused) return;
+    if (player.ammo <= 0 || player.ammo >= FIRE_MAG_SIZE) return; // SECTION O: usable range is strictly 1-29
+    if (player.ammoCooldownRemainingMs > 0) return; // already reloading — never reset/restart the timer
+    player.ammoCooldownRemainingMs = FIRE_COOLDOWN_MS;
+  }
+  reloadZone.addEventListener('touchstart', triggerManualReload, { passive: false });
+  reloadZone.addEventListener('mousedown', triggerManualReload);
 
   // ---------- DASH button (PART 17-21) ----------
   // A dedicated button — the MOVE STICK double-tap gesture is gone (PART
@@ -5832,11 +6124,14 @@
   const bullets = [];
   const BULLET_SPEED = 620;
   const FIRE_INTERVAL = 170; // ms
-  // SECTION D: 30-shot magazine, infinite reserve ammo. No manual reload —
-  // the only way back to a full magazine is the automatic post-depletion
-  // cooldown below.
+  // SECTION D / PART7 SECTION N-Q: 30-shot magazine, infinite reserve ammo.
+  // ammoCooldownRemainingMs IS the RELOAD timer (same field, same countdown
+  // this turn's RELOAD spec describes) — it starts automatically the
+  // instant ammo hits 0 (below), OR manually via triggerManualReload()
+  // while ammo is 1-29, and always takes FIRE_COOLDOWN_MS (now 2000ms per
+  // SECTION N) either way. dt-driven, so PAUSE freezes it for free.
   const FIRE_MAG_SIZE = 30;
-  const FIRE_COOLDOWN_MS = 5000;
+  const FIRE_COOLDOWN_MS = 2000;
   const FIRE_POSE_DURATION = 80; // ms — how long the FIRE sprite shows per shot
   const MUZZLE_DIST = SPRITE_DRAW_H * 0.46; // same muzzle offset used previously
   const AIM_LINE_LEN = 240; // AUTO AIM's reticle-tip search distance — fixed (unchanged; keeps existing AUTO AIM target-detection behavior identical)
@@ -6185,10 +6480,17 @@
     // Debug/verification only — this turn's GABRIEL DEFENSE-counter work
     // (STRAIGHT_CLAW_TRIGGER_GUARDS is already exposed above).
     spawnStraightClaw, isPlayerInvulnerable,
-    // Debug/verification only — this turn's AREA1<->AREA2 door-collision fix.
-    getAreaBoundaryDoorRangeX, getStageDrawMetrics, AREA_BOUNDARY_DOOR_BAND,
+    // Debug/verification only — AREA1<->AREA2 (and bonus-band) door-collision fix.
+    getFloorXRangeWorld, getStageDrawMetrics, AREA_BOUNDARY_DOOR_BAND, getAreaBoundaryYs,
+    getDronePlacementRangeX, clampPlayerToScreen,
     get W() { return W; }, get H() { return H; },
     get spriteAspect() { return spriteAspect; }, SPRITE_DRAW_H,
+    // Debug/verification only — PART7: RELOAD system.
+    FIRE_MAG_SIZE, FIRE_COOLDOWN_MS, triggerManualReload,
+    // Debug/verification only — PART7: healing item system.
+    healItem, spawnHealItem, getHealItemSpawnPos, HEAL_ITEM_HEAL_FRAC, HEAL_ITEM_IMAGES, HEAL_ITEM_HIT_RADIUS,
+    // Debug/verification only — PART7: FINAL-STAGE DRONE drop-in.
+    FINAL_DRONE_DROP_MS,
   };
 
   // ---------- Main loop ----------
@@ -6435,8 +6737,11 @@
     // from movement. Suppressed entirely during knockbackLocked, same as
     // MOVE/AIM. SECTION D: also suppressed while the magazine is empty and
     // cooling down — never bypasses AIM/muzzle/trajectory/AUTO AIM, purely
-    // an extra gate in front of the existing fire trigger.
-    const wantsFire = isFiringHeld && player.ammo > 0;
+    // an extra gate in front of the existing fire trigger. PART7 SECTION N:
+    // also suppressed for the full RELOAD duration even when triggered
+    // manually at partial ammo (ammoCooldownRemainingMs > 0 with ammo still
+    // >0) — MOVE/AIM/DASH/STEALTH/FLASH are untouched by this gate.
+    const wantsFire = isFiringHeld && player.ammo > 0 && player.ammoCooldownRemainingMs <= 0;
     if (wantsFire && now - lastFireTime >= FIRE_INTERVAL) {
       lastFireTime = now;
       spawnBullet();
@@ -6548,10 +6853,25 @@
           }
         }
       }
+      // PART7 SECTION U/V: the player's own bullet (this loop is the SHOT
+      // pipeline only — DRONE LASER/GABRIEL CLAW/enemy projectiles/DRONE
+      // explosion/player contact/DASH/STEALTH/FLASH never reach this code
+      // path at all) is the ONLY thing that can destroy/trigger a healing
+      // item. Marked inactive immediately (SECTION U: never usable twice)
+      // before the heal is applied, and the bullet is consumed like any
+      // other hit.
+      if (!consumed && healItem.active) {
+        if (Math.hypot(b.x - healItem.x, b.y - healItem.y) <= HEAL_ITEM_HIT_RADIUS) {
+          healItem.active = false;
+          player.life = playerMaxLife === Infinity ? Infinity : Math.min(playerMaxLife, player.life + playerMaxLife * HEAL_ITEM_HEAL_FRAC);
+          consumed = true;
+        }
+      }
       if (consumed) bullets.splice(i, 1);
     }
 
     updateBarrels(dt, now);
+    updateHealItem(dt); // PART7 SECTION S/Q: dt-driven, freezes during PAUSE like every other timer here
     updateSecurityRobots(dt, now);
     updateFlashGrenade(dt, now);
     updateScreenFlashes(dt);
@@ -6744,6 +7064,7 @@
     // characters (drawn next), same as an ordinary game object. Falling
     // (not-yet-landed) barrels draw too, via their own in-air pose.
     for (const b of barrels) if (b.alive || b.falling) drawBarrel(b);
+    drawHealItem(); // PART7 SECTION T: sits in the worldExtraAbove bonus band, same painter layer as barrels
     for (let i = barrelLandings.length - 1; i >= 0; i--) {
       const l = barrelLandings[i];
       if (now - l.startAt >= BARREL_LANDING_MS) { barrelLandings.splice(i, 1); continue; }
@@ -6793,6 +7114,7 @@
       drawPlayer(now);
       if (bossVisible) drawBoss(now);
     }
+    drawReloadingText(); // PART7 SECTION P: drawn in this same world-translated block so it follows the player through camera scroll
 
     // PART 2: laser beams draw crossing over the player/boss layer, so the
     // shot itself is never hidden behind either — still world-space (before

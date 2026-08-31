@@ -328,7 +328,7 @@ body {
    priority: MOVE/AIM/SHOT > FLASH/STEALTH/DASH > PAUSE), laid out via
    #control-secondary-row/#control-primary-right rather than the old 2x2
    grid — see index.html for the DOM structure. */
-#flash-zone, #stealth-zone, #dash-zone {
+#flash-zone, #stealth-zone, #dash-zone, #reload-zone {
   position: relative;
   width: 56px;
   height: 56px;
@@ -428,6 +428,43 @@ body {
   text-align: center;
   color: rgba(255, 150, 40, 0.9);
   padding: 0 24px;
+}
+
+/* PART7 SECTION O: circular manual RELOAD button, same size/shape language
+   as STEALTH/FLASH — dim by default, brightens (.usable) only while ammo is
+   1-29 and no reload is already in progress (game.js toggles the class). */
+#reload-button {
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 2px solid rgba(140, 170, 255, 0.35);
+  color: #d8e2ff;
+  font-family: sans-serif;
+  font-weight: bold;
+  font-size: 8px;
+  letter-spacing: 0.03em;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: filter 120ms ease, background 120ms ease;
+  opacity: 0.55;
+}
+#reload-button:active {
+  background: rgba(140, 170, 255, 0.18);
+}
+#reload-button.usable {
+  opacity: 1;
+  background: rgba(140, 170, 255, 0.14);
+  border-color: rgba(170, 195, 255, 0.8);
+}
+#reload-label {
+  position: relative;
+  z-index: 1;
 }
 
 #stealth-button {
@@ -579,7 +616,7 @@ body {
   #control-secondary-row, #control-primary-right { gap: 12px; }
   #action-stick-zone, #aim-stick-zone { width: 104px; height: 104px; }
   #fire-zone { width: 108px; height: 108px; }
-  #flash-zone, #stealth-zone, #dash-zone { width: 64px; height: 64px; }
+  #flash-zone, #stealth-zone, #dash-zone, #reload-zone { width: 64px; height: 64px; }
 }
 
 /* Very short landscape viewports (PART 45/46) — e.g. iPhone SE/mini-class
@@ -599,7 +636,7 @@ body {
   #control-secondary-row, #control-primary-right { gap: 6px; }
   #action-stick-zone, #aim-stick-zone { width: 68px; height: 68px; }
   #fire-zone { width: 72px; height: 72px; }
-  #flash-zone, #stealth-zone, #dash-zone { width: 46px; height: 46px; }
+  #flash-zone, #stealth-zone, #dash-zone, #reload-zone { width: 46px; height: 46px; }
 }
 
 /* SECTION M: portrait — the primary target orientation (per PART 14's own
