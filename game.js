@@ -347,11 +347,19 @@
     gabriel_down: 'assets/video/events/gabriel_down.mp4',
     gabriel_defeated: 'assets/video/events/gabriel_defeated.mp4',
     adam_arrival: 'assets/video/events/adam_arrival.mp4',
-    // SECTION Y: pre-registered, deliberately NOT wired to any playback
-    // this PART — ESCAPE/ENDING routing (PART10) will fill these in.
-    ending_main: null,
-    ending_secret: null,
-    ending_true: null,
+    // DARK OUT PART 10 SECTION M/N: the 3 ending movies, formalized from
+    // incoming_assets/movies/endings/ (all 3 were HEVC — genuinely
+    // transcoded, never remuxed — to H.264/AAC/yuv420p/faststart, same
+    // convention as every EVENT_MOVIES entry above) into their own
+    // assets/video/endings/ directory — kept separate from assets/video/
+    // events/ since endings are terminal one-shot sequences, not mid-run
+    // story beats, mirroring the existing system/ vs events/ split by
+    // purpose. Exact required key names per spec (never PART9's own
+    // placeholder ending_main/ending_secret/ending_true above, which those
+    // named originally reserved but are superseded by these):
+    main_escape: 'assets/video/endings/main_escape.mp4',
+    main_bad_ending: 'assets/video/endings/main_bad_ending.mp4',
+    true_ending: 'assets/video/endings/true_ending.mp4',
   };
 
   // SECTION W: run-scoped "has this one-time cinematic already played this
@@ -373,6 +381,11 @@
     bbGabrielArrivalPlayed: false,
     roid1ArrivalPlayed: false,
     roid2ArrivalPlayed: false,
+    // DARK OUT PART 10 SECTION L: PART9 wired adam_arrival.mp4 for the
+    // SECRET-STORY ADAM transition only — BOSS BATTLE MODE's own ADAM fight
+    // never got one. Same "first-time from BOSS SELECT only" pattern as
+    // bbGabrielArrivalPlayed/roid1ArrivalPlayed/roid2ArrivalPlayed above.
+    bbAdamArrivalPlayed: false,
   };
 
   // SECTION G: the shared EVENT MOVIE PLAYER state — `token` is a per-play
@@ -1476,6 +1489,18 @@
         }
       }
     }
+    // DARK OUT PART 10 SECTION H: ROID1/ROID2 fully blockades the AREA1
+    // exit while alive — a real, full-corridor-width wall positioned at
+    // its own established player-facing interaction radius (ROID_HURT_
+    // RADIUS, the exact same radius its own body-hit check already uses —
+    // never a separately-guessed margin), so the player can approach and
+    // fight it but can never cross into AREA2 (H-1) nor slip around either
+    // side of it to reach AREA2 that way (H-2). ROID itself never roams
+    // (H-3), so boss.y is a stable reference for the whole fight.
+    if (boss.spawned && isRoidBossType(boss.type) && boss.state !== 'dead') {
+      const roidBlockadeY = boss.y + ROID_HURT_RADIUS;
+      if (player.y < roidBlockadeY) player.y = roidBlockadeY;
+    }
     player.lastValidY = player.y;
   }
 
@@ -1875,47 +1900,60 @@
   // defined here — SECTION 5 of the confirmed design fixes them at 300ms/
   // 3000ms, but they belong to the ROID AI PART (not yet implemented), never
   // the asset-registration PART.
+  // DARK OUT PART 10 SECTION D-2/F: the bodyTopFrac/bodyBottomFrac values
+  // below were RE-MEASURED from the actual PNG alpha channels (threshold
+  // >128, per-row solid-pixel bounding box scan — the same real-pixel
+  // methodology used to fix ADAM's oversized ATTACK frames), replacing the
+  // old hand-guessed fractions. The old guesses under-covered specific
+  // frames (e.g. ROID1 search_03's old 0.05-0.83 assumed only 78% of the
+  // canvas was body, when the real content spans ~99.7% edge-to-edge),
+  // which made computeBodyVisualScale() render that one frame oversized
+  // relative to its siblings — this was the root cause of "ROID1's static
+  // SOUTH IDLE frame renders larger than the others." Measuring every
+  // frame's real extent and letting computeBodyVisualScale() normalize
+  // against a single shared target height fixes this the same way it fixed
+  // ADAM, and simultaneously satisfies PART10-F (ROID2 SEARCH vs FIRE).
   const ROID1_SPRITES = {
     // SEARCH: 1->2->3->4->5->4->3->2->1 (ping-pong sequencing is a later
     // PART's job — this array IS the animation's frame-order data).
     search: [
-      makeSpriteFrame('assets/characters/roid1/roid1_search_01.png', 983, 1280, 0.02, 0.99),
-      makeSpriteFrame('assets/characters/roid1/roid1_search_02.png', 942, 1280, 0.02, 0.99),
-      makeSpriteFrame('assets/characters/roid1/roid1_search_03.png', 1279, 1776, 0.05, 0.83),
-      makeSpriteFrame('assets/characters/roid1/roid1_search_04.png', 753, 1280, 0.02, 0.99),
-      makeSpriteFrame('assets/characters/roid1/roid1_search_05.png', 1280, 2427, 0.01, 0.88),
+      makeSpriteFrame('assets/characters/roid1/roid1_search_01.png', 983, 1280, 0.0016, 0.9984),
+      makeSpriteFrame('assets/characters/roid1/roid1_search_02.png', 942, 1280, 0.0016, 0.9984),
+      makeSpriteFrame('assets/characters/roid1/roid1_search_03.png', 1279, 1776, 0.0011, 0.9977),
+      makeSpriteFrame('assets/characters/roid1/roid1_search_04.png', 753, 1280, 0.0023, 0.9977),
+      makeSpriteFrame('assets/characters/roid1/roid1_search_05.png', 1280, 2427, 0.0012, 0.9979),
     ],
     // FIRE: 1->2->3->4->3->2->1. All 4 share one fixed 813x1280 canvas — the
     // muzzle flash is layered over the existing body silhouette rather than
     // extending the canvas, so it never needs excluding from bodyTop/
     // BottomFrac (unlike ROID2 below).
     fire: [
-      makeSpriteFrame('assets/characters/roid1/roid1_fire_01.png', 813, 1280, 0.02, 0.99),
-      makeSpriteFrame('assets/characters/roid1/roid1_fire_02.png', 813, 1280, 0.02, 0.99),
-      makeSpriteFrame('assets/characters/roid1/roid1_fire_03.png', 813, 1280, 0.02, 0.99),
-      makeSpriteFrame('assets/characters/roid1/roid1_fire_04.png', 813, 1280, 0.02, 0.99),
+      makeSpriteFrame('assets/characters/roid1/roid1_fire_01.png', 813, 1280, 0.0023, 0.9984),
+      makeSpriteFrame('assets/characters/roid1/roid1_fire_02.png', 813, 1280, 0.0023, 0.9984),
+      makeSpriteFrame('assets/characters/roid1/roid1_fire_03.png', 813, 1280, 0.0023, 0.9984),
+      makeSpriteFrame('assets/characters/roid1/roid1_fire_04.png', 813, 1280, 0.0023, 0.9984),
     ],
   };
   const ROID2_SPRITES = {
-    // All 5 SEARCH frames share the exact same nativeH (1280) — only width
-    // (arm/cannon spread) differs between them — so one fraction pair is
-    // exactly right for all 5, not an approximation.
+    // All 5 SEARCH frames are near edge-to-edge alpha content (real measured
+    // fractions all ~0.003-0.997) — only width (arm/cannon spread) differs
+    // between them.
     search: [
-      makeSpriteFrame('assets/characters/roid2/roid2_search_01.png', 1049, 1280, 0.05, 0.95),
-      makeSpriteFrame('assets/characters/roid2/roid2_search_02.png', 1174, 1280, 0.05, 0.95),
-      makeSpriteFrame('assets/characters/roid2/roid2_search_03.png', 1273, 1280, 0.05, 0.95),
-      makeSpriteFrame('assets/characters/roid2/roid2_search_04.png', 1096, 1280, 0.05, 0.95),
-      makeSpriteFrame('assets/characters/roid2/roid2_search_05.png', 1065, 1280, 0.05, 0.95),
+      makeSpriteFrame('assets/characters/roid2/roid2_search_01.png', 1049, 1280, 0.0031, 0.9984),
+      makeSpriteFrame('assets/characters/roid2/roid2_search_02.png', 1174, 1280, 0.0031, 0.9977),
+      makeSpriteFrame('assets/characters/roid2/roid2_search_03.png', 1273, 1280, 0.0023, 0.9977),
+      makeSpriteFrame('assets/characters/roid2/roid2_search_04.png', 1096, 1280, 0.0031, 0.9984),
+      makeSpriteFrame('assets/characters/roid2/roid2_search_05.png', 1065, 1280, 0.0031, 0.9969),
     ],
-    // FIRE: ROID2's flash is HORIZONTAL (spec section 9) and its own canvas
-    // is genuinely shorter/differently-cropped per frame (1008/1568/1008/
-    // 1008 vs SEARCH's constant 1280) — bodyBottomFrac is set narrower here
-    // specifically to exclude the sideways flash spread from the body box.
+    // FIRE: ROID2's crouched wide-legged firing stance is genuinely shorter
+    // (real measured content, not padding) than its standing SEARCH pose —
+    // real per-frame alpha bounds below (fire_02's portrait-cropped canvas
+    // measures differently from fire_01/03/04's landscape canvas).
     fire: [
-      makeSpriteFrame('assets/characters/roid2/roid2_fire_01.png', 1792, 1008, 0.05, 0.90),
-      makeSpriteFrame('assets/characters/roid2/roid2_fire_02.png', 1264, 1568, 0.10, 0.85),
-      makeSpriteFrame('assets/characters/roid2/roid2_fire_03.png', 1792, 1008, 0.05, 0.90),
-      makeSpriteFrame('assets/characters/roid2/roid2_fire_04.png', 1792, 1008, 0.05, 0.90),
+      makeSpriteFrame('assets/characters/roid2/roid2_fire_01.png', 1792, 1008, 0.0556, 0.9802),
+      makeSpriteFrame('assets/characters/roid2/roid2_fire_02.png', 1264, 1568, 0.1091, 0.9286),
+      makeSpriteFrame('assets/characters/roid2/roid2_fire_03.png', 1792, 1008, 0.0734, 0.9593),
+      makeSpriteFrame('assets/characters/roid2/roid2_fire_04.png', 1792, 1008, 0.0853, 0.9831),
     ],
   };
 
@@ -1938,11 +1976,44 @@
   // use in fireRoidBullet() below — BULLET_SPEED itself is declared later in
   // this file (with the player SHOT system), so it can't be captured into a
   // top-level const here without a temporal-dead-zone error.
-  const ROID_SEARCH_FRAME_MS = 140; // ping-pong SEARCH frame hold — first-pass, tunable
+  // DARK OUT PART 10 SECTION C-1: real-device feedback called the SEARCH
+  // animation too frantic — halved to 280ms. This loop now ONLY plays while
+  // the PLAYER's position is unknown (STEALTH active or FLASH-blinded, see
+  // updateRoidTargetTracking() below); once known, ROID holds a single
+  // directional frame instead (SECTION C-2/C-3), so this constant no longer
+  // governs normal combat at all.
+  const ROID_SEARCH_FRAME_MS = 280;
   const ROID_FIRE_FRAME_MS = 110; // ping-pong FIRE frame hold — first-pass, tunable
   const ROID_BURST_SHOT_COUNT = 5;
   const ROID_BURST_SHOT_INTERVAL_MS = 300;
   const ROID_BURST_COOLDOWN_MS = 3000;
+  // SECTION C-2/C-3: which SEARCH frame each ROID type holds while facing
+  // the PLAYER's left/center/right side — determined by directly viewing
+  // each numbered frame (never guessed from the filename alone). ROID1's
+  // search_03 faces the viewer dead-on, search_04 is turned to its own
+  // right (reads as PLAYER-to-the-right), search_05 turned to its own left
+  // (PLAYER-to-the-left); search_01/02 are reserved for the target-unknown
+  // ping-pong loop only. ROID2's search_03 is its most forward-facing pose,
+  // search_05 turned toward its own left, search_01 toward its own right.
+  const ROID1_FACE_FRAME = { left: 4, center: 2, right: 3 };
+  const ROID2_FACE_FRAME = { left: 4, center: 2, right: 0 };
+  // SECTION C-3: hysteresis band — PLAYER must cross ZONE px past boss.x to
+  // switch OUT of 'center', but must come back within (ZONE-HYST) px to
+  // switch back, so hovering near a boundary can't flicker the held frame.
+  const ROID_FACE_ZONE_PX = 60;
+  const ROID_FACE_ZONE_HYST_PX = 20;
+  // SECTION E: ROID1 SNIPER MODE — first-pass constants, tunable.
+  const ROID_SPECIAL_AFTER_BURSTS = 3; // shared trigger count for BOTH ROID1 SNIPER and ROID2 MISSILE
+  const ROID1_SNIPER_SHOT_COUNT = 4;
+  const ROID1_SNIPER_LOCK_MS = 650;
+  const ROID1_SNIPER_INTERSHOT_MS = 300;
+  const ROID1_SNIPER_BULLET_SPEED_MULT = 1.5;
+  // SECTION G: ROID2 MISSILE AREA ATTACK — first-pass constants, tunable.
+  const ROID2_MISSILE_COUNT = 3;
+  const ROID2_MISSILE_WARNING_MS = 900;
+  const ROID2_MISSILE_STAGGER_MS = 450;
+  const ROID2_MISSILE_BLAST_RADIUS = 80;
+  const ROID2_MISSILE_DAMAGE = ROID_BULLET_DAMAGE;
   // Body-derived hurtbox — a fraction of the SAME target body height ROID's
   // own draw already scales to (ROID_BODY_TARGET_HEIGHT), not GABRIEL's
   // fixed BOSS_HURT_RADIUS (that constant is GABRIEL's own measured torso
@@ -1950,6 +2021,18 @@
   // First-pass estimate (roughly torso-width for either mecha design),
   // documented as tunable in the completion report.
   const ROID_HURT_RADIUS = ROID_BODY_TARGET_HEIGHT * 0.32;
+  // DARK OUT PART 10 SECTION I: ROID BOSS BATTLE stages show zero barrels
+  // (enterBossBattleStage() already always calls spawnBarrels(0) for every
+  // target) and instead always exactly 3 FAST DRONE escorts — a minimal new
+  // 'ROID_ESCORT' behavior-type entry in SECURITY_BEHAVIOR_MULTIPLIERS
+  // below reuses the existing securityRobots/DRONE engine wholesale (I-1),
+  // never a separate enemy system. Only patrol (physical movement) is
+  // doubled (I-2's "movement speed") — scan sweep speed and the shared
+  // attack/cadence/damage machinery are left at their normal multiplier,
+  // since the spec explicitly calls out cadence/damage as things NOT to
+  // double.
+  const ROID_ESCORT_COUNT = 3;
+  const ROID_ESCORT_RESPAWN_MS = 1500;
   // Muzzle origin as a fraction of the CURRENTLY DRAWN (scaled) FIRE-frame
   // bounding box — same shape as SECURITY_ROBOT_METRICS' muzzleFracX/Y,
   // visually estimated from each profile's representative FIRE frame (see
@@ -1983,49 +2066,60 @@
   // Direction values (south/north/east/west) are the spec's own absolute
   // filename-to-direction mapping (section 11) — never re-derived from image
   // content.
+  // DARK OUT PART 10 SECTION A-2: bodyTopFrac/bodyBottomFrac below were
+  // re-measured directly from each PNG's own alpha channel (threshold>128,
+  // per-row solid-pixel scan — never guessed from native canvas size) rather
+  // than the old hand-estimated fractions. The old ATTACK fractions (0.30/
+  // 0.85, assuming only ~55% of the canvas was "body") badly underestimated
+  // ATTACK's real extent — every ADAM pose across all 4 states is actually a
+  // near-edge-to-edge render (measured body fraction 0.98-0.996 for all of
+  // them) — so the old numbers made ATTACK draw 15-33% larger than IDLE at
+  // the same target height. Using each frame's real measured extent instead
+  // makes computeBodyVisualScale() normalize every ADAM pose to the same
+  // true visible height by construction, not by coincidence.
   const ADAM_SPRITES = {
     idle: {
-      south: makeSpriteFrame('assets/characters/adam/adam_idle_south.png', 1658, 1970, 0.36, 1.00, { direction: 'south' }),
-      north: makeSpriteFrame('assets/characters/adam/adam_idle_north.png', 1815, 1475, 0.36, 1.00, { direction: 'north' }),
-      east: makeSpriteFrame('assets/characters/adam/adam_idle_east.png', 1299, 1890, 0.30, 0.90, { direction: 'east' }),
-      west: makeSpriteFrame('assets/characters/adam/adam_idle_west.png', 1311, 1891, 0.30, 0.90, { direction: 'west' }),
+      south: makeSpriteFrame('assets/characters/adam/adam_idle_south.png', 1658, 1970, 0.005, 0.996, { direction: 'south' }),
+      north: makeSpriteFrame('assets/characters/adam/adam_idle_north.png', 1815, 1475, 0.005, 0.988, { direction: 'north' }),
+      east: makeSpriteFrame('assets/characters/adam/adam_idle_east.png', 1299, 1890, 0.005, 0.993, { direction: 'east' }),
+      west: makeSpriteFrame('assets/characters/adam/adam_idle_west.png', 1311, 1891, 0.006, 0.994, { direction: 'west' }),
     },
     // WALK: 1->2->3->1->2->3... per direction (section 12).
     walk: {
       south: [
-        makeSpriteFrame('assets/characters/adam/adam_walk_south_01.png', 1613, 1829, 0.36, 1.00, { direction: 'south' }),
-        makeSpriteFrame('assets/characters/adam/adam_walk_south_02.png', 1609, 1906, 0.36, 1.00, { direction: 'south' }),
-        makeSpriteFrame('assets/characters/adam/adam_walk_south_03.png', 1449, 1740, 0.36, 1.00, { direction: 'south' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_south_01.png', 1613, 1829, 0.004, 0.989, { direction: 'south' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_south_02.png', 1609, 1906, 0.004, 0.995, { direction: 'south' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_south_03.png', 1449, 1740, 0.005, 0.990, { direction: 'south' }),
       ],
       north: [
-        makeSpriteFrame('assets/characters/adam/adam_walk_north_01.png', 1880, 1595, 0.36, 1.00, { direction: 'north' }),
-        makeSpriteFrame('assets/characters/adam/adam_walk_north_02.png', 1815, 1475, 0.36, 1.00, { direction: 'north' }),
-        makeSpriteFrame('assets/characters/adam/adam_walk_north_03.png', 1880, 1604, 0.36, 1.00, { direction: 'north' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_north_01.png', 1880, 1595, 0.004, 0.992, { direction: 'north' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_north_02.png', 1815, 1475, 0.005, 0.988, { direction: 'north' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_north_03.png', 1880, 1604, 0.004, 0.992, { direction: 'north' }),
       ],
       west: [
-        makeSpriteFrame('assets/characters/adam/adam_walk_west_01.png', 1397, 1641, 0.30, 0.90, { direction: 'west' }),
-        makeSpriteFrame('assets/characters/adam/adam_walk_west_02.png', 1362, 2007, 0.30, 0.90, { direction: 'west' }),
-        makeSpriteFrame('assets/characters/adam/adam_walk_west_03.png', 1269, 1517, 0.30, 0.90, { direction: 'west' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_west_01.png', 1397, 1641, 0.004, 0.991, { direction: 'west' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_west_02.png', 1362, 2007, 0.009, 0.994, { direction: 'west' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_west_03.png', 1269, 1517, 0.007, 0.995, { direction: 'west' }),
       ],
       east: [
-        makeSpriteFrame('assets/characters/adam/adam_walk_east_01.png', 1397, 1641, 0.30, 0.90, { direction: 'east' }),
-        makeSpriteFrame('assets/characters/adam/adam_walk_east_02.png', 1362, 2007, 0.30, 0.90, { direction: 'east' }),
-        makeSpriteFrame('assets/characters/adam/adam_walk_east_03.png', 1280, 1530, 0.30, 0.90, { direction: 'east' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_east_01.png', 1397, 1641, 0.004, 0.991, { direction: 'east' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_east_02.png', 1362, 2007, 0.008, 0.993, { direction: 'east' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_east_03.png', 1280, 1530, 0.007, 0.995, { direction: 'east' }),
       ],
     },
     defense: {
-      south: makeSpriteFrame('assets/characters/adam/adam_defense_south.png', 1280, 1497, 0.08, 0.98, { direction: 'south' }),
-      west: makeSpriteFrame('assets/characters/adam/adam_defense_west.png', 1579, 1475, 0.08, 0.93, { direction: 'west' }),
-      east: makeSpriteFrame('assets/characters/adam/adam_defense_east.png', 1577, 1466, 0.08, 0.93, { direction: 'east' }),
-      north: makeSpriteFrame('assets/characters/adam/adam_defense_north.png', 1228, 1298, 0.08, 0.98, { direction: 'north' }),
+      south: makeSpriteFrame('assets/characters/adam/adam_defense_south.png', 1280, 1497, 0.004, 0.993, { direction: 'south' }),
+      west: makeSpriteFrame('assets/characters/adam/adam_defense_west.png', 1579, 1475, 0.004, 0.990, { direction: 'west' }),
+      east: makeSpriteFrame('assets/characters/adam/adam_defense_east.png', 1577, 1466, 0.004, 0.993, { direction: 'east' }),
+      north: makeSpriteFrame('assets/characters/adam/adam_defense_north.png', 1228, 1298, 0.002, 0.998, { direction: 'north' }),
     },
     // ATTACK STANCE: registered for later blink-based attack-telegraph use
     // (ADAM_ATTACK_BLINK_MS, section 13) — no blink/state logic yet.
     attack: {
-      south: makeSpriteFrame('assets/characters/adam/adam_attack_south.png', 1763, 1982, 0.30, 0.85, { direction: 'south' }),
-      north: makeSpriteFrame('assets/characters/adam/adam_attack_north.png', 1886, 1290, 0.30, 0.85, { direction: 'north' }),
-      west: makeSpriteFrame('assets/characters/adam/adam_attack_west.png', 1412, 1899, 0.30, 0.85, { direction: 'west' }),
-      east: makeSpriteFrame('assets/characters/adam/adam_attack_east.png', 1453, 1885, 0.30, 0.85, { direction: 'east' }),
+      south: makeSpriteFrame('assets/characters/adam/adam_attack_south.png', 1763, 1982, 0.004, 0.991, { direction: 'south' }),
+      north: makeSpriteFrame('assets/characters/adam/adam_attack_north.png', 1886, 1290, 0.006, 0.994, { direction: 'north' }),
+      west: makeSpriteFrame('assets/characters/adam/adam_attack_west.png', 1412, 1899, 0.004, 0.994, { direction: 'west' }),
+      east: makeSpriteFrame('assets/characters/adam/adam_attack_east.png', 1453, 1885, 0.003, 0.993, { direction: 'east' }),
     },
     // SECTION 14/15: registered for the LATER PART's reuse of GABRIEL's own
     // spawnArcClawSlash()/ARC_CLAW_LIFETIME_MS and spawnStraightClaw()/
@@ -2055,7 +2149,22 @@
   // (BOSS_DRAW_H) — same reasoning as ROID_BODY_TARGET_HEIGHT above: ADAM's
   // body should read as "about the same size as GABRIEL", not its own
   // invented scale.
-  const ADAM_BODY_TARGET_HEIGHT = BOSS_DRAW_H;
+  // DARK OUT PART 10 SECTION A: real-device feedback was that full
+  // GABRIEL-equivalent size reads as much too large for ADAM specifically —
+  // reduced to 70% of that reference (ADAM_SIZE_SCALE), applied uniformly to
+  // every ADAM body state (IDLE/WALK/DEFENSE/ATTACK, all 4 directions) via
+  // this one shared target height.
+  const ADAM_SIZE_SCALE = 0.70;
+  const ADAM_BODY_TARGET_HEIGHT = BOSS_DRAW_H * ADAM_SIZE_SCALE;
+  // SECTION A-1: the INTRO/THRESHOLD/DYING/FLASH DOWN cinematic sequences
+  // (getAdamCinematicImageInfo() below) size ADAM against CINEMATIC_DRAW_H
+  // instead of ADAM_BODY_TARGET_HEIGHT (that constant is GABRIEL's own
+  // cinematic-pose target, shared verbatim so ADAM's cinematic beats read at
+  // the same scale GABRIEL's do) — applying the same ADAM_SIZE_SCALE to it
+  // here keeps ADAM's cinematic size consistent with its own new combat
+  // size, without touching CINEMATIC_DRAW_H itself (GABRIEL's own cinematic
+  // sizing must stay byte-for-byte unchanged).
+  const ADAM_CINEMATIC_TARGET_HEIGHT = CINEMATIC_DRAW_H * ADAM_SIZE_SCALE;
 
   // WALK ping-pong... no — WALK is a plain 1->2->3->1 WRAP (spec section 12),
   // same shape as GABRIEL's own south/north 3-frame wrap (bossFrameName()),
@@ -2132,13 +2241,20 @@
   // front-pose (offX=offY=0) anchor does.
   function getAdamCinematicImageInfo() {
     const frame = ADAM_SPRITES.idle[boss.downFacing] || ADAM_SPRITES.idle.south;
-    const scale = computeBodyVisualScale(frame, CINEMATIC_DRAW_H);
+    // DARK OUT PART 10 SECTION A-1: ADAM_CINEMATIC_TARGET_HEIGHT (=
+    // CINEMATIC_DRAW_H * ADAM_SIZE_SCALE) here, not CINEMATIC_DRAW_H itself
+    // — keeps ADAM's INTRO/THRESHOLD/DYING/FLASH DOWN cinematic size
+    // consistent with its own new (70%) combat size, without touching
+    // CINEMATIC_DRAW_H (GABRIEL's own cinematic sizing).
+    const scale = computeBodyVisualScale(frame, ADAM_CINEMATIC_TARGET_HEIGHT);
     const w = frame.nativeW * scale, h = frame.nativeH * scale;
     // Solve for the offY that makes the shared `boss.y - h/2 + offY` draw
     // formula (used verbatim by every GABRIEL cinematic draw call site)
     // land the body's own bottom edge (bodyBottomFrac) at boss.y +
     // CINEMATIC_DRAW_H/2 — the same bottom-anchor convention every other
-    // ADAM pose uses.
+    // ADAM pose uses (the anchor formula itself still targets
+    // CINEMATIC_DRAW_H/2, matching every caller's own `boss.y ± CINEMATIC_
+    // DRAW_H/2` math; only the drawn frame's own w/h/scale shrink).
     const offY = CINEMATIC_DRAW_H / 2 - frame.bodyBottomFrac * h + h / 2;
     return { img: frame.img, w, h, offX: 0, offY };
   }
@@ -2213,8 +2329,20 @@
   const ITEM_SPRITES = {
     // SECTION 18: SECRET FILE: PROJECT ADAM (never the old "PROJECT GABRIEL"
     // name) — 1->2->3->4->1... loop, picked up at EVENT STAGE b1.
+    // DARK OUT PART 10 SECTION J: real-device feedback found PROJECT ADAM
+    // (and, per SECTION K, all 3 BLOOD SAMPLEs) rendering screen-covering
+    // huge — scaleMultiplier here was based on ADAM's own full reference
+    // body height, wildly too large for a small pickup prop. useHealItemSize
+    // switches these 4 item types onto a WIDTH-based target instead
+    // (HEAL_ITEM_DRAW_W — the size the one existing, already-shipped small
+    // pickup prop actually renders at), applied in spawnWorldItem()/
+    // drawWorldItems() below; scaleMultiplier is kept on the object (now
+    // unused by these 4) only so it isn't a breaking shape change for any
+    // other reader. ESCAPE NAVIGATOR is untouched (SECTION K-2 — no size
+    // complaint was raised for it), still using the old height-based path.
     projectAdam: {
       scaleMultiplier: 0.35,
+      useHealItemSize: true,
       frames: [
         makeSpriteFrame('assets/items/project_adam/project_adam_01.png', 1280, 1218, 0.20, 0.80),
         makeSpriteFrame('assets/items/project_adam/project_adam_02.png', 1138, 1280, 0.20, 0.80),
@@ -2226,6 +2354,7 @@
     // 1->2->3->1... looping, picked up after GABRIEL 1/2/3 respectively.
     bloodSample1: {
       scaleMultiplier: 0.30,
+      useHealItemSize: true,
       frames: [
         makeSpriteFrame('assets/items/blood_sample_1/blood_sample_1_01.png', 662, 1280, 0.08, 0.95),
         makeSpriteFrame('assets/items/blood_sample_1/blood_sample_1_02.png', 726, 1280, 0.08, 0.95),
@@ -2234,6 +2363,7 @@
     },
     bloodSample2: {
       scaleMultiplier: 0.30,
+      useHealItemSize: true,
       frames: [
         makeSpriteFrame('assets/items/blood_sample_2/blood_sample_2_01.png', 738, 1280, 0.08, 0.95),
         makeSpriteFrame('assets/items/blood_sample_2/blood_sample_2_02.png', 625, 1280, 0.08, 0.95),
@@ -2242,6 +2372,7 @@
     },
     bloodSample3: {
       scaleMultiplier: 0.30,
+      useHealItemSize: true,
       frames: [
         makeSpriteFrame('assets/items/blood_sample_3/blood_sample_3_01.png', 682, 1280, 0.08, 0.95),
         makeSpriteFrame('assets/items/blood_sample_3/blood_sample_3_02.png', 735, 1280, 0.08, 0.95),
@@ -2375,6 +2506,11 @@
       // at draw time (frames differ in native size) via computeBodyVisualScale(),
       // never a single scale baked in here.
       targetHeightPx: getItemReferenceBodyHeightPx() * sprite.scaleMultiplier,
+      // DARK OUT PART 10 SECTION J/K: width-based target for the 4 item
+      // types real-device testing found screen-covering huge — see
+      // useHealItemSize's own comment on ITEM_SPRITES above. null for every
+      // other item type (drawWorldItems() falls back to targetHeightPx then).
+      targetDrawWidth: sprite.useHealItemSize ? HEAL_ITEM_DRAW_W : null,
       collected: false,
     });
   }
@@ -2410,8 +2546,35 @@
   // spawnWorldItem's own general-purpose contract. NOT called from any BOSS-
   // defeat handler, or anywhere else, this PART (section 19's own explicit
   // "STORY非contamination" requirement).
+  // DARK OUT PART 10 SECTION K-1: the requested (x,y) (boss corpse position
+  // + a fixed vertical offset) is now clamped into a genuinely safe drop
+  // spot — on-screen, at least WORLD_ITEM_PICKUP_RADIUS + the item's own
+  // small visual radius + a margin away from the PLAYER's current position
+  // (so the reward never spawns already-overlapping/instant-pickup), and
+  // never pushed far from the boss corpse itself (only nudged the minimum
+  // amount needed). A no-op shift when the naive spot was already safe.
+  const WORLD_ITEM_REWARD_SAFE_MARGIN = 20;
   function spawnWorldItemReward(type, x, y) {
-    spawnWorldItem(type, x, y);
+    const itemRadius = HEAL_ITEM_DRAW_W / 2;
+    const minDist = WORLD_ITEM_PICKUP_RADIUS + itemRadius + WORLD_ITEM_REWARD_SAFE_MARGIN;
+    let dropX = x, dropY = y;
+    const dx = dropX - player.x, dy = dropY - player.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < minDist) {
+      // Push directly away from the PLAYER along the same line (or straight
+      // down if the two positions coincide exactly) — the smallest possible
+      // nudge that restores the safe distance, never a large relocation.
+      const ang = dist > 0.001 ? Math.atan2(dy, dx) : Math.PI / 2;
+      dropX = player.x + Math.cos(ang) * minDist;
+      dropY = player.y + Math.sin(ang) * minDist;
+    }
+    // Stay on-screen (a small inset so the item is never half-clipped at
+    // the very edge) — clamped last so it always wins over the push-away
+    // step above.
+    const inset = itemRadius + 10;
+    dropX = Math.max(inset, Math.min(W - inset, dropX));
+    dropY = Math.max(inset, Math.min(H - inset, dropY));
+    spawnWorldItem(type, dropX, dropY);
   }
 
   // PART 7 SECTION 23: pure, side-effect-free helper — reads runInventory
@@ -2459,8 +2622,20 @@
     for (const item of worldItems) {
       const frame = item.frames[item.frameIndex];
       if (!frame.ready) continue;
-      const scale = computeBodyVisualScale(frame, item.targetHeightPx);
-      const w = frame.nativeW * scale, h = frame.nativeH * scale;
+      // DARK OUT PART 10 SECTION J/K: width-based sizing for PROJECT ADAM/
+      // BLOOD SAMPLE ①②③ (targetDrawWidth set) — same convention
+      // drawHealItem() itself already uses for the one existing pickup prop.
+      // Every other item type (targetDrawWidth null, e.g. ESCAPE NAVIGATOR)
+      // keeps the original height-based computeBodyVisualScale() path
+      // completely unchanged.
+      let w, h;
+      if (item.targetDrawWidth) {
+        w = item.targetDrawWidth;
+        h = w * (frame.nativeH / frame.nativeW);
+      } else {
+        const scale = computeBodyVisualScale(frame, item.targetHeightPx);
+        w = frame.nativeW * scale; h = frame.nativeH * scale;
+      }
       ctx.drawImage(frame.img, item.x - w / 2, item.y - h / 2, w, h);
     }
   }
@@ -2780,6 +2955,20 @@
     storyScenarioState.stageOverrideId = null;
     worldItems.length = 0;
     adamSphereState.visible = false;
+    // DARK OUT PART 10 SECTION T: ending state must never leak into the
+    // next run — reset alongside every other scenario-scoped flag here,
+    // the ONE shared cleanup path both returnToTopMenu() and every QUIT
+    // button already route through. runInventory itself is deliberately
+    // NOT reset here (unlike the RESULT screen's own "BACK TO TOP MENU"
+    // button, which does reset it) — this same function is also reached by
+    // exitEventStageForDebug() and other debug/QUIT paths that existing
+    // regression coverage (verify_part6_event.js TEST B) relies on leaving
+    // runInventory untouched; resetModeState() already fully resets it the
+    // instant any genuinely NEW run actually starts, so nothing leaks into
+    // real gameplay either way.
+    storyEndingState.active = false;
+    storyEndingState.started = false;
+    storyEndingState.route = null;
   }
 
   // SECTION C/D: official, untouched, non-AI-regenerated assets — exact
@@ -2807,6 +2996,10 @@
     FAST_PATROL: { patrol: 1.5, scan: 1.0 },
     FAST_SEARCH: { patrol: 1.0, scan: 1.5 },
     CENTER_SCANNER: { patrol: 1.0, scan: 1.0 },
+    // DARK OUT PART 10 SECTION I-2: ROID's own escort DRONE — "about 2x"
+    // the normal patrol movement speed, scan speed left neutral (never
+    // requested to change).
+    ROID_ESCORT: { patrol: 2.0, scan: 1.0 },
   };
   // ================= PART 5 SECTION B: CENTER SCANNER state machine =================
   // patrol -> returningToCenter -> centerScan -> patrol. CENTER_SCAN_SLOW_
@@ -3192,6 +3385,22 @@
     burstShotsFired: 0,
     nextShotAt: 0,
     cooldownUntil: 0,
+    // DARK OUT PART 10 SECTION C: whether the PLAYER's position is currently
+    // known (false while STEALTH is active or during a FLASH-blind window —
+    // see updateRoidTargetTracking()) and which held facing zone to use
+    // while it is.
+    targetKnown: true,
+    facingZone: 'center', // 'left' | 'center' | 'right' — hysteresis-held, see ROID_FACE_ZONE_PX/HYST_PX
+    flashLostUntil: 0, // SECTION C-5: a successful FLASH blinds ROID for FLASH_DOWN_MS, same as GABRIEL's own flashdown duration
+    // SECTION E/G: completed normal bursts since the last SNIPER/MISSILE —
+    // reaching ROID_SPECIAL_AFTER_BURSTS triggers the special attack instead
+    // of another normal burst, then resets to 0.
+    burstsCompleted: 0,
+    // SECTION E: ROID1 SNIPER MODE sub-state.
+    sniper: { shotIndex: 0, phase: 'locking', phaseStartedAt: 0, lockedX: 0, lockedY: 0 },
+    // SECTION G: ROID2 MISSILE MODE sub-state — `missiles` holds one entry
+    // per missile: { x, y, warnStartedAt, launched, impacted }.
+    missile: { index: 0, nextLaunchAt: 0, missiles: [] },
   };
   // DARK OUT PART 4: ROID's own enemy-fire projectiles — a separate, minimal
   // array from the player's own `bullets` (never mixed with it, so the
@@ -3374,6 +3583,15 @@
   // a cooldown for a burst that never actually fired); once at least one
   // shot landed, it moves straight to COOLDOWN instead, same as a burst
   // that finished normally.
+  // DARK OUT PART 10 SECTION D-1: real-device feedback found ROID1
+  // overlapping the PAUSE button (top max(10px, safe-area-inset-top),
+  // height 26px) — ROID1's own tallest SEARCH canvas (search_05, a lot of
+  // extra canvas above the body itself) pushes its visible top almost to
+  // y=0. Nudged down so its visible top clears the PAUSE zone's bottom edge
+  // with a safe margin, without cropping any image. ROID2 was not reported
+  // as a problem, so its own spawn Y is left untouched (spec's own explicit
+  // "ROID1指摘なのでROID2位置を必要以上に変更しない").
+  const ROID1_SPAWN_Y_EXTRA = 46;
   function spawnRoidBoss(type) {
     const profile = ROID_BOSS_PROFILES[type];
     if (!profile) return; // never crash on an unplayable/unknown target — mirrors startBossBattle()'s own guard
@@ -3385,19 +3603,68 @@
     boss.stateEnteredAt = performance.now();
     const areaTop = areaTopY(currentArea); // same fixed-composition reference spawnBoss() itself uses
     boss.x = W / 2;
-    boss.y = areaTop + Math.max(BOSS_DRAW_H * 0.55, H * 0.16);
+    boss.y = areaTop + Math.max(BOSS_DRAW_H * 0.55, H * 0.16) + (type === 'roid1' ? ROID1_SPAWN_Y_EXTRA : 0);
     roidState.profile = profile;
     roidState.searchFrame = 0; roidState.searchDir = 1; roidState.searchFrameElapsedMs = 0;
     roidState.fireFrame = 0; roidState.fireDir = 1; roidState.fireFrameElapsedMs = 0;
     roidState.burstShotsFired = 0;
     roidState.nextShotAt = 0;
     roidState.cooldownUntil = 0;
+    // DARK OUT PART 10 SECTION C/E/G: fresh per-fight tracking/special-mode
+    // state — never carried over from a previous ROID fight/RETRY.
+    roidState.targetKnown = true;
+    roidState.facingZone = 'center';
+    roidState.flashLostUntil = 0;
+    roidState.burstsCompleted = 0;
+    roidState.sniper.shotIndex = 0; roidState.sniper.phase = 'locking'; roidState.sniper.phaseStartedAt = 0;
+    roidState.missile.index = 0; roidState.missile.nextLaunchAt = 0; roidState.missile.missiles = [];
     enemyBullets.length = 0;
     // Same fixed reference pose spawnBoss() places the player into, minus
     // the INTRO-only lockout fields (ROID has no cinematic to lock the
     // player out for).
     player.x = W * 0.50;
     player.y = areaTop + H * 0.80;
+    // DARK OUT PART 10 SECTION I: always exactly ROID_ESCORT_COUNT FAST
+    // DRONE escorts, AREA1-only (I-3), replacing the barrels
+    // enterBossBattleStage() already zeroes out for every BOSS BATTLE
+    // target. securityRobots is already cleared by resetModeState() just
+    // before enterBossBattleStage() runs, so this always starts fresh.
+    securityRobots.length = 0;
+    securityAttackSlotsInUse = 0;
+    for (let i = 0; i < ROID_ESCORT_COUNT; i++) {
+      const spot = pickSecurityDroneSpot(securityRobots, 1, DRONE_PLACEMENT_BODY_MARGIN,
+        [{ x: boss.x, y: boss.y, r: ROID_HURT_RADIUS * 1.5 }, { x: player.x, y: player.y }]);
+      const escort = buildSecurityDrone(spot.x, spot.y, 'ROID_ESCORT', 1.0);
+      escort.isRoidEscort = true;
+      escort.escortRespawnAt = 0;
+      securityRobots.push(escort);
+    }
+  }
+
+  // DARK OUT PART 10 SECTION I-4: keeps exactly ROID_ESCORT_COUNT escort
+  // slots filled while the ROID boss is alive — a killed slot is replaced
+  // IN PLACE (never appended) ROID_ESCORT_RESPAWN_MS after its death, so
+  // the array length (and therefore the alive-or-about-to-respawn count)
+  // never exceeds ROID_ESCORT_COUNT and respawning stops the instant the
+  // boss itself dies (I-4's "never 4+ simultaneous", "stops once the boss
+  // is dead").
+  function maintainRoidEscortDrones(now) {
+    if (boss.state === 'dead') return;
+    for (const robot of securityRobots) {
+      if (!robot.isRoidEscort || robot.hp > 0) continue;
+      if (!robot.escortRespawnAt) {
+        robot.escortRespawnAt = now + ROID_ESCORT_RESPAWN_MS;
+        continue;
+      }
+      if (now < robot.escortRespawnAt) continue;
+      const others = securityRobots.filter((r) => r !== robot);
+      const spot = pickSecurityDroneSpot(others, 1, DRONE_PLACEMENT_BODY_MARGIN,
+        [{ x: boss.x, y: boss.y, r: ROID_HURT_RADIUS * 1.5 }, { x: player.x, y: player.y }]);
+      const fresh = buildSecurityDrone(spot.x, spot.y, 'ROID_ESCORT', 1.0);
+      fresh.isRoidEscort = true;
+      fresh.escortRespawnAt = 0;
+      Object.assign(robot, fresh); // replace in place — same array slot/reference, never appended
+    }
   }
 
   // Ping-pong index/direction stepper shared by SEARCH and FIRE — bounces
@@ -3412,18 +3679,53 @@
     return { index: next, dir: nextDir };
   }
 
-  // SEARCH keeps ping-ponging continuously regardless of state (search,
-  // firing, or cooldown) — only FIRE's own animation is gated to the
-  // 'firing' state, since it has no meaning otherwise.
+  // DARK OUT PART 10 SECTION C: PLAYER position known/unknown + which
+  // facing zone to hold — called once per updateRoidBoss() tick, BEFORE any
+  // state-machine logic reads roidState.targetKnown/facingZone, so both are
+  // always current for the rest of this same frame.
+  function updateRoidTargetTracking(now) {
+    const stealthed = now < player.stealthUntil;
+    const flashLost = now < roidState.flashLostUntil;
+    const known = !stealthed && !flashLost;
+    const wasKnown = roidState.targetKnown;
+    roidState.targetKnown = known;
+    if (known) {
+      const dx = player.x - boss.x;
+      let zone = roidState.facingZone;
+      if (!wasKnown) zone = 'center'; // SECTION C-6: reacquire always starts from a fresh read, never the stale pre-loss zone
+      if (zone === 'center') {
+        if (dx > ROID_FACE_ZONE_PX) zone = 'right';
+        else if (dx < -ROID_FACE_ZONE_PX) zone = 'left';
+      } else if (zone === 'right') {
+        if (dx < ROID_FACE_ZONE_PX - ROID_FACE_ZONE_HYST_PX) zone = 'center';
+      } else if (zone === 'left') {
+        if (dx > -(ROID_FACE_ZONE_PX - ROID_FACE_ZONE_HYST_PX)) zone = 'center';
+      }
+      roidState.facingZone = zone;
+    }
+  }
+
+  // SEARCH holds a single directional frame while the PLAYER's position is
+  // known (SECTION C-2/C-3 — no ping-pong ticking, no elapsed-time
+  // accumulation to avoid a stale timer suddenly firing a jump the instant
+  // target-unknown resumes) and only ping-pongs through the full frame set
+  // while it's unknown (SECTION C-1). FIRE's own animation is unchanged —
+  // still gated to the 'firing' state only.
   function updateRoidAnimation(dt) {
     const profile = roidState.profile;
     if (!profile) return;
-    roidState.searchFrameElapsedMs += dt * 1000;
-    if (roidState.searchFrameElapsedMs >= ROID_SEARCH_FRAME_MS) {
+    if (roidState.targetKnown) {
+      const map = boss.type === 'roid1' ? ROID1_FACE_FRAME : ROID2_FACE_FRAME;
+      roidState.searchFrame = map[roidState.facingZone];
       roidState.searchFrameElapsedMs = 0;
-      const step = stepPingPong(roidState.searchFrame, roidState.searchDir, profile.sprites.search.length);
-      roidState.searchFrame = step.index;
-      roidState.searchDir = step.dir;
+    } else {
+      roidState.searchFrameElapsedMs += dt * 1000;
+      if (roidState.searchFrameElapsedMs >= ROID_SEARCH_FRAME_MS) {
+        roidState.searchFrameElapsedMs = 0;
+        const step = stepPingPong(roidState.searchFrame, roidState.searchDir, profile.sprites.search.length);
+        roidState.searchFrame = step.index;
+        roidState.searchDir = step.dir;
+      }
     }
     if (boss.state === 'firing') {
       roidState.fireFrameElapsedMs += dt * 1000;
@@ -3459,9 +3761,125 @@
     });
   }
 
+  // DARK OUT PART 10 SECTION E: ROID1's own SNIPER MODE — fires
+  // ROID1_SNIPER_SHOT_COUNT shots, EACH one locking the PLAYER's position
+  // fresh right as that shot's own lock window starts (never the position
+  // from shot 1 reused for every shot). ROID1 is fully invincible for the
+  // whole mode (see applyBodyHitToRoidBoss()'s own guard) — reverts to
+  // 'search' (slow, target-unknown-style loop restart handled naturally by
+  // updateRoidTargetTracking() next tick) once the last shot fires.
+  function beginRoidSniper(now) {
+    boss.state = 'sniper';
+    roidState.sniper.shotIndex = 0;
+    roidState.sniper.phase = 'locking';
+    roidState.sniper.phaseStartedAt = now;
+    roidState.sniper.lockedX = player.x;
+    roidState.sniper.lockedY = player.y;
+  }
+  function fireRoidSniperBullet(now, targetX, targetY) {
+    const profile = roidState.profile;
+    if (!profile) return;
+    const frame = profile.sprites.fire[0];
+    const scale = computeBodyVisualScale(frame, ROID_BODY_TARGET_HEIGHT);
+    const drawW = frame.nativeW * scale, drawH = frame.nativeH * scale;
+    const drawX = boss.x - drawW / 2, drawY = boss.y - drawH / 2;
+    const muzzleX = drawX + drawW * profile.muzzleFracX;
+    const muzzleY = drawY + drawH * profile.muzzleFracY;
+    // SECTION E-5: the shot travels straight at the LOCKED point captured
+    // when this shot's lock window began — never re-aimed after firing
+    // (no homing), even if the PLAYER has since moved away from it.
+    const angle = Math.atan2(targetY - muzzleY, targetX - muzzleX);
+    enemyBullets.push({
+      x: muzzleX, y: muzzleY,
+      vx: Math.cos(angle) * BULLET_SPEED * ROID1_SNIPER_BULLET_SPEED_MULT,
+      vy: Math.sin(angle) * BULLET_SPEED * ROID1_SNIPER_BULLET_SPEED_MULT,
+      born: now,
+    });
+  }
+  function updateRoidSniper(now) {
+    const s = roidState.sniper;
+    // SECTION E-7: STEALTH/successful FLASH mid-SNIPER cancels every
+    // remaining (not-yet-fired) shot outright — bullets already in flight
+    // are untouched (enemyBullets is a separate array, never cleared here).
+    if (!roidState.targetKnown) {
+      boss.state = 'search';
+      return;
+    }
+    if (s.phase === 'locking') {
+      if (now - s.phaseStartedAt >= ROID1_SNIPER_LOCK_MS) {
+        fireRoidSniperBullet(now, s.lockedX, s.lockedY);
+        s.shotIndex++;
+        if (s.shotIndex >= ROID1_SNIPER_SHOT_COUNT) {
+          boss.state = 'search';
+          roidState.burstsCompleted = 0;
+          return;
+        }
+        s.phase = 'intershot';
+        s.phaseStartedAt = now;
+      }
+    } else if (s.phase === 'intershot') {
+      if (now - s.phaseStartedAt >= ROID1_SNIPER_INTERSHOT_MS) {
+        // SECTION E-3: re-lock onto the PLAYER's CURRENT position for this
+        // next shot — a fresh read every time, never the shot-1 position.
+        s.lockedX = player.x; s.lockedY = player.y;
+        s.phase = 'locking';
+        s.phaseStartedAt = now;
+      }
+    }
+  }
+
+  // DARK OUT PART 10 SECTION G: ROID2's own MISSILE AREA ATTACK — launches
+  // ROID2_MISSILE_COUNT missiles staggered ROID2_MISSILE_STAGGER_MS apart,
+  // each locking the PLAYER's position at its own launch instant, showing a
+  // warning circle for ROID2_MISSILE_WARNING_MS before impacting there
+  // (never homing afterward). Reuses the existing spawnExplosionVisual()
+  // for the impact VFX and applyDamageToPlayerLife() for damage — no new
+  // image assets. ROID2 is fully invincible for the whole mode.
+  function beginRoidMissile(now) {
+    boss.state = 'missile';
+    roidState.missile.index = 0;
+    roidState.missile.nextLaunchAt = now;
+    roidState.missile.missiles = [];
+  }
+  function updateRoidMissile(now) {
+    const m = roidState.missile;
+    // SECTION G-6: target lost mid-MISSILE cancels every remaining
+    // not-yet-launched missile; already-launched (warning-shown or
+    // in-flight) missiles still land at their own already-locked spot.
+    if (!roidState.targetKnown) {
+      m.index = ROID2_MISSILE_COUNT; // stop launching any further ones
+    } else if (m.index < ROID2_MISSILE_COUNT && now >= m.nextLaunchAt) {
+      m.missiles.push({ x: player.x, y: player.y, warnStartedAt: now, impacted: false });
+      m.index++;
+      m.nextLaunchAt = now + ROID2_MISSILE_STAGGER_MS;
+    }
+    for (const missile of m.missiles) {
+      if (missile.impacted) continue;
+      if (now - missile.warnStartedAt >= ROID2_MISSILE_WARNING_MS) {
+        missile.impacted = true;
+        spawnExplosionVisual(missile.x, missile.y, now);
+        if (Math.hypot(player.x - missile.x, player.y - missile.y) <= ROID2_MISSILE_BLAST_RADIUS) {
+          applyDamageToPlayerLife(now, ROID2_MISSILE_DAMAGE);
+        }
+      }
+    }
+    // Mode ends once every missile launched so far has impacted AND no more
+    // will ever launch (either all ROID2_MISSILE_COUNT are out, or target
+    // was lost and launching was cut short above).
+    if (m.index >= ROID2_MISSILE_COUNT && m.missiles.every((x) => x.impacted)) {
+      boss.state = 'search';
+      roidState.burstsCompleted = 0;
+      m.missiles = [];
+    }
+  }
+
   function updateRoidBoss(dt, now) {
+    updateRoidTargetTracking(now);
+    maintainRoidEscortDrones(now);
     updateRoidAnimation(dt);
-    const stealthed = now < player.stealthUntil;
+    if (boss.state === 'sniper') { updateRoidSniper(now); return; }
+    if (boss.state === 'missile') { updateRoidMissile(now); return; }
+    const stealthed = !roidState.targetKnown;
     if (boss.state === 'search') {
       if (!stealthed) {
         boss.state = 'firing';
@@ -3494,7 +3912,16 @@
       // Cooldown always runs to completion regardless of STEALTH — never
       // rewound/extended by it (spec section 13).
       if (now >= roidState.cooldownUntil) {
-        boss.state = 'search';
+        // DARK OUT PART 10 SECTION E/G: every ROID_SPECIAL_AFTER_BURSTS-th
+        // completed burst goes into the SNIPER (ROID1) / MISSILE (ROID2)
+        // special attack instead of another normal SEARCH->FIRING cycle.
+        roidState.burstsCompleted++;
+        if (roidState.burstsCompleted >= ROID_SPECIAL_AFTER_BURSTS) {
+          if (boss.type === 'roid1') beginRoidSniper(now);
+          else beginRoidMissile(now);
+        } else {
+          boss.state = 'search';
+        }
       }
     }
   }
@@ -3506,7 +3933,11 @@
   // already built (the boss.state==='dead' check in update() below fires
   // triggerBossBattleDefeat() automatically) — never GABRIEL's own
   // checkBossHpMilestones()/startBossDying() cinematic-death path.
+  // DARK OUT PART 10 SECTION E-2/G-2: fully invincible for the whole
+  // SNIPER/MISSILE special-attack window — restored to normal damageability
+  // the instant either mode ends (boss.state leaves 'sniper'/'missile').
   function applyBodyHitToRoidBoss(now) {
+    if (boss.state === 'sniper' || boss.state === 'missile') return;
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
     bossDamageBlinkStartAt = now; // reuses the existing generic (boss-agnostic) hit-flash timestamp/compositing helper
     if (boss.hp <= 0) {
@@ -3559,6 +3990,49 @@
       }
     } else {
       ctx.drawImage(frame.img, dx, dy, w, h);
+    }
+    // DARK OUT PART 10 SECTION E-5: SNIPER MODE lock-on telegraph — a red
+    // aim line from ROID1 to the currently-locking point plus a small
+    // target cross, both canvas-drawn (no new image assets). Only shown
+    // during the 'locking' phase — the intershot pause between locks is
+    // deliberately bare.
+    if (boss.state === 'sniper' && roidState.sniper.phase === 'locking') {
+      const s = roidState.sniper;
+      const t = Math.min(1, (now - s.phaseStartedAt) / ROID1_SNIPER_LOCK_MS);
+      ctx.save();
+      ctx.strokeStyle = `rgba(255,40,30,${0.35 + 0.35 * t})`;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.moveTo(boss.x, boss.y);
+      ctx.lineTo(s.lockedX, s.lockedY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const crossR = 10 + 6 * t;
+      ctx.strokeStyle = `rgba(255,60,40,${0.5 + 0.4 * t})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(s.lockedX - crossR, s.lockedY); ctx.lineTo(s.lockedX + crossR, s.lockedY);
+      ctx.moveTo(s.lockedX, s.lockedY - crossR); ctx.lineTo(s.lockedX, s.lockedY + crossR);
+      ctx.stroke();
+      ctx.restore();
+    }
+    // SECTION G-4: MISSILE MODE warning circles — a filling red ring at
+    // each locked impact point, growing more solid as the warning window
+    // runs out, canvas-drawn only.
+    if (boss.state === 'missile') {
+      for (const missile of roidState.missile.missiles) {
+        if (missile.impacted) continue;
+        const t = Math.min(1, (now - missile.warnStartedAt) / ROID2_MISSILE_WARNING_MS);
+        ctx.save();
+        ctx.globalAlpha = 0.25 + 0.45 * t;
+        ctx.strokeStyle = '#ff3020';
+        ctx.lineWidth = 2 + 2 * t;
+        ctx.beginPath();
+        ctx.arc(missile.x, missile.y, ROID2_MISSILE_BLAST_RADIUS * (0.4 + 0.6 * t), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
     }
   }
 
@@ -4961,7 +5435,17 @@
         // was already fixed once at spawn time and stays that way for its
         // whole flight (and isn't drawn as a separate claw image at all for
         // STRAIGHT CLAW — see drawArcClawSlash()).
-        const baseTip = s.mirrored ? ARC_CLAW_BASE_TIP_ANGLE_FLIPPED : ARC_CLAW_BASE_TIP_ANGLE;
+        const gabrielBaseTip = s.mirrored ? ARC_CLAW_BASE_TIP_ANGLE_FLIPPED : ARC_CLAW_BASE_TIP_ANGLE;
+        // DARK OUT PART 10 SECTION B-1: real-device testing found ADAM's own
+        // ARC CLAW rendering upside-down relative to its travel direction —
+        // GABRIEL's own claw is completely untouched (gabrielBaseTip is used
+        // as-is for it, byte-for-byte the same as before). ADAM shares the
+        // same measured axis angle (its own streak art's principal axis is
+        // ~134°, matching GABRIEL's ~135° almost exactly) but reads correctly
+        // rotated a further 180° around that same axis — corrected here,
+        // scoped to boss.type==='adam' only, never touching s.angle for
+        // GABRIEL's own slashes.
+        const baseTip = boss.type === 'adam' ? gabrielBaseTip + Math.PI : gabrielBaseTip;
         s.angle = tangentAngle - baseTip;
       }
 
@@ -5104,9 +5588,20 @@
     // already uses (no new art), so the counter is visibly a thrown claw,
     // not just a body-pose animation.
     if (s.kind === 'straightClaw' && !s.piercesDashInvulnerability) return;
+    // DARK OUT PART 10 SECTION B-2: real-device feedback specifically about
+    // ADAM's own ARC CLAW called this white/silver trail+crescent VFX an
+    // unwanted extra effect clashing with ADAM's own dark/red claw art —
+    // GABRIEL's own claw keeps this exact white trail+crescent completely
+    // unchanged (isAdamClaw stays false for it, so nothing below is skipped).
+    // SECTION B-3: STRAIGHT CLAW is explicitly excluded from this fix (its
+    // own direction/speed/hitbox regression risk isn't worth touching for a
+    // purely cosmetic ARC CLAW request) — s.kind!=='straightClaw' keeps its
+    // existing white trail/crescent decoration exactly as before, for both
+    // GABRIEL and ADAM alike.
+    const isAdamClaw = boss.type === 'adam' && s.kind !== 'straightClaw';
     // A very thin, non-magical white/silver trail connecting the recent
     // positions — "air cut open", never a glowing/blue energy line.
-    if (s.trail.length >= 1) {
+    if (!isAdamClaw && s.trail.length >= 1) {
       ctx.save();
       ctx.strokeStyle = 'rgba(235,238,242,0.35)';
       ctx.lineWidth = 1.4;
@@ -5126,7 +5621,7 @@
     for (let i = 0; i < n; i++) {
       const sample = s.trail[i];
       const a = i / Math.max(1, n);
-      drawArcClawCrescentTrail(sample.x, sample.y, sample.tangentAngle, s.mirrored, 0.08 + 0.10 * a);
+      if (!isAdamClaw) drawArcClawCrescentTrail(sample.x, sample.y, sample.tangentAngle, s.mirrored, 0.08 + 0.10 * a);
       drawArcClawImage(sample.x, sample.y, sample.angle, s.mirrored, 0.18 + 0.24 * a, s.kind);
     }
     drawArcClawImage(s.x, s.y, s.angle, s.mirrored, 1, s.kind);
@@ -5479,6 +5974,20 @@
     // read whatever STORY_STAGE_PLAN entry currentStageIndex still points
     // at (coincidentally, not meaningfully).
     if (eventStageState.active) return false;
+    // DARK OUT PART 10 SECTION O-1/O-2: once a scenario has genuinely
+    // reached its final escape-ready state (all three of scenario active,
+    // escapeReady, and the Navigator itself in hand — O-2's explicit AND;
+    // escapeReady is in practice only ever set alongside the Navigator, see
+    // onWorldItemPickup(), but this checks all three anyway rather than
+    // relying on that implication), the EXIT re-opens even though this
+    // would otherwise be the FINAL-stage exclusion below — this is the ONE
+    // path that reuses the EXISTING walk-to-EXIT mechanic for the new
+    // ENDING sequence (see the EXIT-reach branch in update() for the
+    // beginStoryEscapeEnding() dispatch). Without all three, the EXIT
+    // stays locked exactly as before.
+    if (storyScenarioState.scenario && storyScenarioState.escapeReady && runInventory.escapeNavigator) {
+      return gameState.mode === 'boss' && !stageTransition.active;
+    }
     // DARK OUT PART 8 SECTION 15/16/25/30: the FINAL GABRIEL STAGE — and the
     // SECRET-only special ADAM STORY fight, which shares that exact same
     // currentStageIndex/bossEncounterIndex the whole time (section 27) —
@@ -5528,6 +6037,53 @@
     // 2's own full-screen band now sits between the original screen and
     // this bonus space.
     return { x: W / 2, y: -H - worldExtraAbove + EXIT_ZONE_H / 2 + 20 };
+  }
+
+  // DARK OUT PART 10 SECTION O/P/Q/R/S: ESCAPE READY -> EXIT -> ENDING.
+  // storyEndingState is a small, separate object (same "don't bloat
+  // storyScenarioState further" spirit as storyCinematicState) guarding
+  // against the EXIT-zone contact check in update() ever starting this
+  // sequence more than once (R) — belt-and-braces on top of the fact that
+  // playEventMovie() itself freezes the ENTIRE update() loop (SECTION H)
+  // the same synchronous tick this fires, which already makes a genuine
+  // 2nd trigger practically unreachable.
+  const storyEndingState = { active: false, started: false, route: null };
+
+  // Reached ONLY from the EXIT-reach branch in update(), and only when
+  // worldScrollUnlocked()'s own O-1/O-2 escape-ready condition already held
+  // — NEVER falls through to beginStageTransition()'s own currentStageIndex
+  // += 1 STORY-advance logic, so STORY_STAGE_PLAN[10] (which does not
+  // exist) is never read (O-3).
+  function beginStoryEscapeEnding(now) {
+    if (storyEndingState.started) return; // R: single-trigger guarantee
+    storyEndingState.started = true;
+    storyEndingState.active = true;
+    const route = storyScenarioState.scenario; // 'main' or 'secret'
+    storyEndingState.route = route;
+    // P-2: gameplay BGM stops here and is never resumed until a fresh run
+    // — paused BEFORE playEventMovie() so its own wasBgmPlaying check reads
+    // false, meaning its finish() will never auto-resume it either, for any
+    // movie in this chain or once RESULT is reached.
+    bgmAudio.pause();
+    if (route === 'secret') {
+      // Q: SECRET's own true ending — never plays MAIN's own movies.
+      playEventMovie('true_ending', () => {
+        storyEndingState.active = false;
+        enterResultScreen();
+      });
+    } else {
+      // P-1: MAIN's own two-movie chain, back-to-back with zero gameplay
+      // frame/menu/GAME-CLEAR-overlay flash in between — playEventMovie()'s
+      // finish() calls this onComplete synchronously, so the 2nd movie's
+      // overlay/video swap happens within the very same synchronous call
+      // stack as the 1st movie's teardown, before any frame is painted.
+      playEventMovie('main_escape', () => {
+        playEventMovie('main_bad_ending', () => {
+          storyEndingState.active = false;
+          enterResultScreen(); // P-3: straight to RESULT — triggerGameClear()'s 2.5s overlay is never inserted here
+        });
+      });
+    }
   }
 
   // Short, simple fade sequence (never a long loading-style one): fade to
@@ -7367,12 +7923,15 @@
       // クトを共有する" design) — same INTRO/BOSS ARRIVAL sequence, same
       // HP/difficulty, just a different boss.type/boss.name and (via the
       // sprite-resolver additions below) different visuals.
-      // DARK OUT PART 9: no arrival movie is wired for BOSS BATTLE MODE's
-      // own ADAM fight this PART — adam_arrival.mp4 is used exclusively for
-      // the SECRET STORY transition (see updateAdamSphere()); the spec's
-      // per-movie routing list never lists a BOSS BATTLE ADAM arrival, so
-      // none is added here.
       spawnBoss(performance.now(), 'adam');
+      // DARK OUT PART 10 SECTION L: PART9 wired adam_arrival.mp4 only for
+      // the SECRET STORY transition (see updateAdamSphere()) — BOSS BATTLE
+      // MODE's own ADAM fight never got one. Same "first-time from BOSS
+      // SELECT only" gating as GABRIEL's/ROID's own arrival above.
+      if (!storyCinematicState.bbAdamArrivalPlayed) {
+        storyCinematicState.bbAdamArrivalPlayed = true;
+        playEventMovie('adam_arrival', () => {});
+      }
     } else if (bossBattleState.target === 'roid1' || bossBattleState.target === 'roid2') {
       // DARK OUT PART 4: same "always spawns whichever target is active"
       // shape as the GABRIEL branch above — never STORY_STAGE_PLAN/
@@ -7442,6 +8001,7 @@
     storyCinematicState.bbGabrielArrivalPlayed = false;
     storyCinematicState.roid1ArrivalPlayed = false;
     storyCinematicState.roid2ArrivalPlayed = false;
+    storyCinematicState.bbAdamArrivalPlayed = false;
     startGameplayBgm(); // SECTION F: BOSS BATTLE MODE never plays opening.mp4 — just the same MENU->gameplay BGM handoff as TRAINING
     startMode('bossBattle'); // reuses the SAME resetModeState()/setScreen('gameplay') path STORY/TRAINING already use; sets gameState.mode itself
   }
@@ -7745,6 +8305,19 @@
     setScreen('result');
   }
   document.getElementById('result-back-btn').addEventListener('click', () => {
+    // DARK OUT PART 10 SECTION T: the full MAIN/SECRET run inventory is
+    // reset HERE, specifically on this button, rather than inside the
+    // lower-level returnToTopMenu()/exitStoryScenarioContext() that other
+    // QUIT/debug paths also share (verify_part6_event.js's own debug-re-
+    // entry regression coverage relies on those NOT touching runInventory)
+    // — resetModeState() already fully resets it the instant any genuinely
+    // NEW run starts anyway, so this is purely "don't leak it into the
+    // period between RESULT and the next run starting," per spec.
+    runInventory.projectAdamCollected = false;
+    runInventory.bloodSample1 = false;
+    runInventory.bloodSample2 = false;
+    runInventory.bloodSample3 = false;
+    runInventory.escapeNavigator = false;
     returnToTopMenu(); // R-1: no reload; PART 3 SECTION D: BGM now resets to the top here too, same as every other TOP-bound route
   });
   // R-2: ARTIST PAGE stays a disabled placeholder — see index.html's own
@@ -8394,16 +8967,30 @@
         // PHASE required aim at all — outside it, a throw always succeeded
         // as long as the distance gate passed, aim-independent).
         if (boss.spawned && !flashDisabledByCinematic() && targetHit) {
-          // SECTION 12: interrupting COUNTER ATTACK (boss.state ===
-          // 'straightclaw') via a successful FLASH is handled by this SAME
-          // call — startBossFlashDown() already unconditionally clears
-          // arcClawSlashes (invalidating any in-flight COUNTER hitbox
-          // before it can land a late hit) and moves boss.state to
-          // 'flashdown' in the same synchronous step, which is also
-          // exactly when COUNTER's invulnerability lifts (every
-          // invulnerability check tests boss.state === 'straightclaw'
-          // directly) — no separate cancel path needed.
-          startBossFlashDown(now);
+          // DARK OUT PART 10 SECTION C-5: ROID1/ROID2 never use GABRIEL's
+          // own 'flashdown' cinematic state at all (their own update/draw
+          // functions have no idea what that state means — calling
+          // startBossFlashDown() on a ROID would leave boss.state stuck at
+          // 'flashdown' forever, since updateRoidBoss() never checks for
+          // it). A successful FLASH against ROID instead just blinds its
+          // own target-tracking for the same FLASH_DOWN_MS window (see
+          // roidState.flashLostUntil / updateRoidTargetTracking()) — combat
+          // AI keeps running throughout, just with the PLAYER's position
+          // unknown, exactly like STEALTH.
+          if (isRoidBossType(boss.type)) {
+            roidState.flashLostUntil = now + FLASH_DOWN_MS;
+          } else {
+            // SECTION 12: interrupting COUNTER ATTACK (boss.state ===
+            // 'straightclaw') via a successful FLASH is handled by this SAME
+            // call — startBossFlashDown() already unconditionally clears
+            // arcClawSlashes (invalidating any in-flight COUNTER hitbox
+            // before it can land a late hit) and moves boss.state to
+            // 'flashdown' in the same synchronous step, which is also
+            // exactly when COUNTER's invulnerability lifts (every
+            // invulnerability check tests boss.state === 'straightclaw'
+            // directly) — no separate cancel path needed.
+            startBossFlashDown(now);
+          }
         }
       }
     }
@@ -8730,6 +9317,7 @@
     // Debug/verification only — DARK OUT PART 9: CINEMATIC INTEGRATION.
     menuBgmAudio, startMenuBgmOnce, startGameplayBgm, stopMenuBgm,
     SYSTEM_MOVIES, EVENT_MOVIES, storyCinematicState, eventMovieState,
+    storyEndingState, beginStoryEscapeEnding, // DARK OUT PART 10 — debug/verification only
     playEventMovie, cancelEventMovie, skipEventMovie,
     onWorldItemPickup, // debug/verification only — lets tests simulate a pickup without needing real player/item collision
     get autoAimActive() { return autoAimActive; },
@@ -9206,7 +9794,15 @@
       if (scrollUnlockedHere) {
         const exit = exitWorldPos();
         if (Math.abs(player.x - exit.x) < EXIT_ZONE_W / 2 && Math.abs(player.y - exit.y) < EXIT_ZONE_H / 2) {
-          beginStageTransition(now); // updateStageTransition() itself branches STORY vs TRAINING advance by gameState.mode
+          // DARK OUT PART 10 SECTION O-3: the escape-ready final-scenario
+          // case branches into the new ENDING sequence instead of the
+          // normal STAGE-advance flow, which would otherwise try to read
+          // the nonexistent STORY_STAGE_PLAN[10].
+          if (storyScenarioState.scenario && storyScenarioState.escapeReady && runInventory.escapeNavigator) {
+            beginStoryEscapeEnding(now);
+          } else {
+            beginStageTransition(now); // updateStageTransition() itself branches STORY vs TRAINING advance by gameState.mode
+          }
         }
       }
     } else {
