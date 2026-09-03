@@ -321,6 +321,199 @@
     stageOverrideId: null,
   };
 
+  // ==========================================================================
+  // DARK OUT PART 9: CINEMATIC INTEGRATION — SYSTEM/EVENT MOVIE registry +
+  // run-scoped "already played" flags.
+  // ==========================================================================
+  // Path registry only — never a design-time guess at existence. Every path
+  // here points at a real, already-converted file under assets/video/. The
+  // 3 ENDING movies are deliberately left unregistered (null) this PART —
+  // pre-registering the KEYS without a path is enough to reserve them for
+  // PART10 without touching their (still-unconverted-into-this-structure)
+  // source files, and playEventMovie()'s own !src guard below means nothing
+  // could ever accidentally play them even if a caller referenced the key.
+  const SYSTEM_MOVIES = {
+    loading: 'assets/video/system/loading.mp4',
+    start_display: 'assets/video/system/start_display.mp4',
+    opening: 'assets/video/system/opening.mp4',
+  };
+  const EVENT_MOVIES = {
+    sneaking: 'assets/video/events/sneaking.mp4',
+    drone_arrival: 'assets/video/events/drone_arrival.mp4',
+    experiment_lab: 'assets/video/events/experiment_lab.mp4',
+    roid1_arrival: 'assets/video/events/roid1_arrival.mp4',
+    roid2_arrival: 'assets/video/events/roid2_arrival.mp4',
+    gabriel_arrival: 'assets/video/events/gabriel_arrival.mp4',
+    gabriel_down: 'assets/video/events/gabriel_down.mp4',
+    gabriel_defeated: 'assets/video/events/gabriel_defeated.mp4',
+    adam_arrival: 'assets/video/events/adam_arrival.mp4',
+    // SECTION Y: pre-registered, deliberately NOT wired to any playback
+    // this PART — ESCAPE/ENDING routing (PART10) will fill these in.
+    ending_main: null,
+    ending_secret: null,
+    ending_true: null,
+  };
+
+  // SECTION W: run-scoped "has this one-time cinematic already played this
+  // attempt" flags — a small, separate object from storyScenarioState (per
+  // this PART's own explicit instruction not to bloat that object further).
+  // gabrielArrivalPlayed is indexed by the STORY's own bossEncounterIndex
+  // (0/1/2 = GABRIEL 1/2/3) so each encounter's arrival plays exactly once
+  // per run, independent of the others. The bb*/roid* flags are BOSS BATTLE
+  // MODE's own separate "first time this target was picked from BOSS
+  // SELECT" flags — reset in startBossBattle() only (never by
+  // resetModeState()'s STORY-only reset block below), so a BOSS BATTLE
+  // RESTART/RETRY (which never re-enters startBossBattle()) correctly skips
+  // the arrival replay, matching "BOSS-BATTLE-first-time" / RETRY-skips.
+  const storyCinematicState = {
+    sneakingPlayed: false,
+    droneArrivalPlayed: false,
+    gabrielArrivalPlayed: [false, false, false],
+    adamArrivalPlayed: false,
+    bbGabrielArrivalPlayed: false,
+    roid1ArrivalPlayed: false,
+    roid2ArrivalPlayed: false,
+  };
+
+  // SECTION G: the shared EVENT MOVIE PLAYER state — `token` is a per-play
+  // generation counter (bumped on every new playEventMovie()/cancelEventMovie()
+  // call) so a stale 'ended'/play()-promise callback from a movie that was
+  // superseded (QUIT/RETRY mid-playback, or — defensively — a 2nd
+  // playEventMovie() call before the first finished) can recognize itself as
+  // stale and no-op, rather than firing its onComplete a second time or out
+  // of order.
+  let eventMovieTokenCounter = 0;
+  const eventMovieState = {
+    active: false,
+    key: null,
+    token: 0,
+    onComplete: null,
+    resumeBgm: false, // SECTION I: whether gameplay BGM (bgmAudio) was actually playing when this movie started, and should resume after
+  };
+  const eventMovieOverlayEl = document.getElementById('event-movie-overlay');
+  const eventMovieVideoEl = document.getElementById('event-movie-video');
+  const eventMovieTapFallbackEl = document.getElementById('event-movie-tap-fallback');
+
+  // SECTION G/H/I/J: plays either a SYSTEM or an EVENT movie key through the
+  // one shared overlay/video element. `onComplete` fires exactly once, after
+  // the movie genuinely finishes (natural 'ended') — never on a cancelled/
+  // superseded play. Gameplay simulation freeze itself lives in update()
+  // (SECTION H's own separate, independent eventMovieState.active check) —
+  // this function only owns the movie's own playback/audio-ducking/fallback
+  // lifecycle, never touches boss/player/stage state directly.
+  function playEventMovie(key, onComplete) {
+    const src = SYSTEM_MOVIES[key] || EVENT_MOVIES[key];
+    if (!src) {
+      // Defensive only — an unregistered/null key (e.g. a still-unwired
+      // ENDING movie) never crashes or silently hangs; it just skips
+      // straight to whatever was supposed to happen after it.
+      if (onComplete) onComplete();
+      return;
+    }
+    eventMovieTokenCounter += 1;
+    const token = eventMovieTokenCounter;
+    // SECTION I: gameplay BGM is PAUSED (never reset/stopped) so it resumes
+    // from this exact position afterward — EVENT movies carry their own
+    // embedded audio, so two audio sources must never overlap.
+    const wasBgmPlaying = !bgmAudio.paused;
+    if (wasBgmPlaying) bgmAudio.pause();
+    eventMovieState.active = true;
+    eventMovieState.key = key;
+    eventMovieState.token = token;
+    eventMovieState.onComplete = onComplete || null;
+    eventMovieState.resumeBgm = wasBgmPlaying;
+
+    eventMovieTapFallbackEl.hidden = true;
+    eventMovieTapFallbackEl.onclick = null;
+    eventMovieVideoEl.loop = false;
+    eventMovieVideoEl.muted = false; // EVENT/SYSTEM movies use their own embedded audio, not muted like the looping menu background video
+    eventMovieVideoEl.src = src;
+    eventMovieVideoEl.currentTime = 0;
+    eventMovieOverlayEl.hidden = false;
+
+    function finish() {
+      if (eventMovieState.token !== token) return; // stale — superseded by a cancel/newer play
+      eventMovieState.active = false;
+      eventMovieState.key = null;
+      eventMovieState.onComplete = null;
+      eventMovieOverlayEl.hidden = true;
+      eventMovieVideoEl.onended = null;
+      eventMovieVideoEl.removeAttribute('src');
+      eventMovieVideoEl.load();
+      eventMovieTapFallbackEl.hidden = true;
+      eventMovieTapFallbackEl.onclick = null;
+      if (eventMovieState.resumeBgm) bgmAudio.play().catch(() => {});
+      if (onComplete) onComplete();
+    }
+    eventMovieVideoEl.onended = () => { if (eventMovieState.token === token) finish(); };
+
+    function attemptPlay() {
+      eventMovieVideoEl.play().catch(() => {
+        if (eventMovieState.token !== token) return; // superseded before the rejected promise even resolved
+        // SECTION J: iOS (and other browsers) can reject an audible play()
+        // outside a direct user gesture — show a simple, non-permanent
+        // retry control rather than silently skipping the movie.
+        eventMovieTapFallbackEl.hidden = false;
+      });
+    }
+    eventMovieTapFallbackEl.onclick = () => {
+      eventMovieTapFallbackEl.hidden = true;
+      attemptPlay();
+    };
+    attemptPlay();
+  }
+
+  // SECTION V: full teardown for RETRY/QUIT — invalidates the current token
+  // (so any in-flight play()-promise-rejection or 'ended' callback becomes a
+  // stale no-op) and hides/clears the video, but deliberately does NOT call
+  // onComplete (the run is being abandoned, not completed — calling
+  // onComplete here would wrongly fire e.g. a reward-spawn or ADAM
+  // transition after the player already left) and does NOT resume bgmAudio
+  // itself (RETRY/QUIT's own existing BGM handling — resetModeState() never
+  // touches bgmAudio; returnToTopMenu() explicitly resets it to 0 — already
+  // owns that, independently, right around every call site of this
+  // function). A no-op when no movie is active.
+  function cancelEventMovie() {
+    if (!eventMovieState.active && eventMovieState.key === null && eventMovieVideoEl.hasAttribute('src') === false) return;
+    eventMovieTokenCounter += 1;
+    eventMovieState.token = eventMovieTokenCounter;
+    eventMovieState.active = false;
+    eventMovieState.key = null;
+    eventMovieState.onComplete = null;
+    eventMovieVideoEl.onended = null;
+    eventMovieVideoEl.pause();
+    eventMovieVideoEl.removeAttribute('src');
+    eventMovieVideoEl.load();
+    eventMovieOverlayEl.hidden = true;
+    eventMovieTapFallbackEl.hidden = true;
+    eventMovieTapFallbackEl.onclick = null;
+  }
+
+  // SECTION U: debug-only skip — window.__game exposure only, never a
+  // visible in-game SKIP button (explicitly forbidden by spec). Unlike
+  // cancelEventMovie(), this DOES still call the pending onComplete —
+  // "skip" means "let the movie's own consequence happen right now",
+  // exactly as if it had played to the end, just faster.
+  function skipEventMovie() {
+    if (!eventMovieState.active) return;
+    const onComplete = eventMovieState.onComplete;
+    const resumeBgm = eventMovieState.resumeBgm;
+    eventMovieTokenCounter += 1;
+    eventMovieState.token = eventMovieTokenCounter;
+    eventMovieState.active = false;
+    eventMovieState.key = null;
+    eventMovieState.onComplete = null;
+    eventMovieVideoEl.onended = null;
+    eventMovieVideoEl.pause();
+    eventMovieVideoEl.removeAttribute('src');
+    eventMovieVideoEl.load();
+    eventMovieOverlayEl.hidden = true;
+    eventMovieTapFallbackEl.hidden = true;
+    eventMovieTapFallbackEl.onclick = null;
+    if (resumeBgm) bgmAudio.play().catch(() => {});
+    if (onComplete) onComplete();
+  }
+
   // DARK OUT PART 3: BOSS BATTLE MODE — an independent battle/dev-test
   // context reachable from MAIN MENU, completely separate from STORY MODE's
   // own progression (currentStageIndex/bossEncounterIndex/STORY_STAGE_PLAN/
@@ -2329,7 +2522,19 @@
       adamSphereState.activationElapsedMs += dt * 1000;
       if (adamSphereState.activationElapsedMs >= ADAM_SPHERE_ACTIVATION_MS) {
         adamSphereState.state = 'released'; // SECTION 23
-        beginAdamStoryBossTransition(now); // SECTION 25
+        // DARK OUT PART 9 SECTION K: adam_arrival.mp4 plays here, BEFORE the
+        // existing beginAdamStoryBossTransition() runs — never duplicating
+        // that function, just deferring its one call into the movie's
+        // onComplete. This naturally satisfies "skipped on ADAM-fight
+        // RETRY" with no extra flag: a RETRY of the ADAM fight re-enters via
+        // resetModeState()'s own stageOverrideId==='boss_c4_adam' branch,
+        // which calls spawnBoss(now,'adam') directly and never re-runs this
+        // 'activating'->'released' transition at all (adamSphereState.
+        // visible is already false by then — see beginAdamStoryBossTransition()'s
+        // own exitEventStage() call), so this code path is unreachable on
+        // RETRY by construction, exactly preserving every PART8.1-verified
+        // RETRY guarantee.
+        playEventMovie('adam_arrival', () => { beginAdamStoryBossTransition(performance.now()); });
       }
     }
   }
@@ -2463,10 +2668,30 @@
       // STAGE 1) via updateStageTransition()'s hardcoded `currentStageIndex
       // += 1` STORY-advance branch, so this is a direct, instant call instead.
       exitEventStage();
-      enterStoryStage(now);
+      // DARK OUT PART 9 SECTION K/X: SECRET's own drone_arrival.mp4 —
+      // MAIN's own copy plays earlier, in beginScenarioOpening() before
+      // STAGE 1's very first entry; SECRET instead plays it right here, at
+      // this exact b1->STAGE1 transition (after b1, before STAGE1 — never
+      // before b1), run-scoped so it never repeats on STAGE2/3's own later
+      // DRONE stages. enterStoryStage() itself is deferred into the movie's
+      // onComplete — `now` may be stale by the time a multi-second movie
+      // finishes, so a fresh performance.now() is used instead, same
+      // pattern as every other deferred spawnBoss()/beginAdam...() call in
+      // this file.
+      if (!storyCinematicState.droneArrivalPlayed) {
+        storyCinematicState.droneArrivalPlayed = true;
+        playEventMovie('drone_arrival', () => { enterStoryStage(performance.now()); });
+      } else {
+        enterStoryStage(now);
+      }
     } else if (type === 'bloodSample3' && storyScenarioState.scenario === 'secret' && hasAllBloodSamples()) {
       // SECTION 14/20: SECRET's own FINAL GABRIEL reward completes the set -> b2.
-      enterStoryEventStage('b2');
+      // DARK OUT PART 9 SECTION K: experiment_lab.mp4 plays BEFORE b2 is
+      // even entered — the ADAM SPHERE doesn't exist until enterStoryEventStage
+      // ('b2') runs (see enterEventStage()'s own spawnAdamSphere() call), so
+      // deferring b2 entry into the movie's onComplete already satisfies
+      // "before SPHERE submission can fire" with no separate gate needed.
+      playEventMovie('experiment_lab', () => { enterStoryEventStage('b2'); });
     } else if (type === 'escapeNavigator' && storyScenarioState.scenario) {
       // SECTION 15/30/32: MAIN (after GABRIEL3) or SECRET (after ADAM) —
       // either way, collecting it just marks escape-ready and stops
@@ -4475,7 +4700,6 @@
       // a complete no-op for BOSS BATTLE MODE and any raw/legacy/debug run
       // with no scenario selected, so every pre-PART8 behavior below is
       // completely unaffected in those cases.
-      handleStoryBossDefeatRewards(now);
       // SECTION L-2/O/P (PART 5 SECTION U-4: now keyed off the STORY_STAGE_
       // PLAN entry's own `final` flag, never a raw stage-position/STAGES.
       // length comparison): the FINAL GABRIEL ENCOUNTER triggers GAME CLEAR
@@ -4493,8 +4717,28 @@
       // behind — see storyScenarioState.stageOverrideId's own comment), so
       // without this guard ADAM's own death would incorrectly re-trigger
       // GAME CLEAR here too.
-      if (isFinalStoryStage() && !storyScenarioState.scenario) {
-        triggerGameClear(now);
+      function proceedWithDefeatRewards() {
+        handleStoryBossDefeatRewards(now);
+        if (isFinalStoryStage() && !storyScenarioState.scenario) {
+          triggerGameClear(now);
+        }
+      }
+      // DARK OUT PART 9 SECTION K/T: gabriel_down (ENCOUNTER 1/2) / gabriel_
+      // defeated (ENCOUNTER 3, FINAL) play right here, BEFORE the reward/
+      // GAME-CLEAR progression above continues — never for BOSS BATTLE MODE
+      // (T's own "unchanged BOSS DEFEATED->BOSS SELECT flow, never gabriel_
+      // down/defeated" requirement) and never for the ADAM STORY fight
+      // (S: "no dedicated defeat movie this PART" — its own existing
+      // NAVIGATOR flow is untouched). handleStoryBossDefeatRewards() itself
+      // is deferred into the movie's onComplete rather than called
+      // synchronously here, since freeze (SECTION H) only stops the *update
+      // loop* from ticking further — it doesn't rewind work already done
+      // this same tick.
+      if (!bossBattleState.active && storyScenarioState.scenario && boss.type !== 'adam') {
+        const movieKey = bossEncounterIndex === GABRIEL_ENCOUNTER_3_INDEX ? 'gabriel_defeated' : 'gabriel_down';
+        playEventMovie(movieKey, proceedWithDefeatRewards);
+      } else {
+        proceedWithDefeatRewards();
       }
     }
   }
@@ -4967,11 +5211,11 @@
   bgmAudio.volume = BGM_VOLUME;
   let bgmStarted = false;
   // T-2/T-3: iOS Safari (and other browsers) block audio-with-sound
-  // autoplay before a user gesture — OPENING's video stays muted-autoplay
-  // (silent either way, per the source file's own lack of an audio track —
-  // see MANIFEST notes), and the FIRST "TAP TO START" tap is the gesture
-  // that unlocks and starts this <audio> element. T-6: bgmStarted guards
-  // against ever calling this a second time / creating a second instance.
+  // autoplay before a user gesture. DARK OUT PART 9 SECTION E: bgmAudio
+  // (outbreak_1_1) is now GAMEPLAY-only — this "once" unlock-style starter
+  // is kept only for debug/back-compat (window.__game.startBgmOnce()); the
+  // real player flow now starts it via startGameplayBgm() below, at actual
+  // STORY/TRAINING/BOSS BATTLE start, never at TAP TO START.
   function startBgmOnce() {
     if (bgmStarted) return;
     bgmStarted = true;
@@ -4983,6 +5227,59 @@
     });
   }
 
+  // ---------- DARK OUT PART 9 SECTION E: MENU-only BGM (Outbreak 0) ----------
+  // A SEPARATE Audio instance from bgmAudio above — never reused/repointed.
+  // Starts on the TAP TO START gesture (the same iOS-unlock gesture bgmAudio
+  // itself used to use pre-PART9) and plays continuously across every MENU
+  // sub-screen (MAIN MENU/SCENARIO SELECT/BOSS SELECT/TRAINING SELECT/
+  // SETTING) — stopped the instant a scenario/target/training choice is
+  // actually made (see startGameplayBgm() below), resumed fresh from 0 on
+  // every return to TOP MENU (returnToTopMenu()'s own startMenuBgmForTopMenu()
+  // call) — mirrors bgmAudio's own pre-existing "reset to 0 only on return
+  // to TOP" rule, applied to this new MENU-only track instead.
+  const menuBgmAudio = new Audio('assets/audio/Outbreak0.mp3');
+  menuBgmAudio.loop = true;
+  menuBgmAudio.preload = 'auto';
+  menuBgmAudio.volume = BGM_VOLUME;
+  let menuBgmStarted = false;
+  function startMenuBgmOnce() {
+    if (menuBgmStarted) return;
+    menuBgmStarted = true;
+    menuBgmAudio.play().catch(() => {
+      menuBgmStarted = false; // same one-more-attempt-on-next-tap defensiveness as startBgmOnce() above
+    });
+  }
+  function stopMenuBgm() {
+    menuBgmAudio.pause();
+  }
+  // Called once, right when startMode() is actually about to begin real
+  // gameplay from a MENU choice (TRAINING SELECT/BOSS SELECT/the post-
+  // opening.mp4 SCENARIO SELECT gate) — deliberately NOT called from inside
+  // startMode()/resetModeState() themselves, so a PAUSE MENU RESTART (which
+  // also calls startMode() but never left MENU/never stopped bgmAudio) does
+  // NOT get its gameplay BGM incorrectly restarted from 0 — RESTART keeps
+  // its existing pre-PART9 "BGM reset to 0 only on return to TOP" behavior.
+  function startGameplayBgm() {
+    stopMenuBgm();
+    bgmAudio.currentTime = 0;
+    bgmAudio.play().catch(() => {});
+  }
+  // Restores the exact MENU-BGM/MENU-background-video state on every return
+  // to TOP MENU: gameplay BGM stopped, Outbreak0 resumed from 0 — never
+  // creates a duplicate Audio instance (same menuBgmAudio object every
+  // time). If TAP TO START hasn't happened yet in this session
+  // (menuBgmStarted still false), this deliberately does nothing rather
+  // than force an autoplay-with-sound call outside any user gesture — not a
+  // reachable case today since returnToTopMenu() is only ever called
+  // mid-run, well after TAP TO START already fired.
+  function startMenuBgmForTopMenu() {
+    bgmAudio.pause(); // gameplay BGM is combat-only — must not keep playing once back at MENU
+    if (menuBgmStarted) {
+      menuBgmAudio.currentTime = 0;
+      menuBgmAudio.play().catch(() => {});
+    }
+  }
+
   // PART 3 SECTION D: the ONE shared "return to OPENING/TOP MENU" path —
   // every existing route that lands back at MAIN MENU from gameplay/GAME
   // OVER/RESULT goes through this single function instead of a separate
@@ -4991,8 +5288,15 @@
   // RESULT) calls setScreen() directly and never touches BGM at all, so
   // those all keep the existing continuous-playback behavior (D-3).
   function returnToTopMenu() {
-    bgmAudio.currentTime = 0; // D-1/D-2: OPENING/TOP always restarts the BGM from the top
-    bgmAudio.play().catch(() => {}); // defensive only — bgmAudio is already playing in every real route that reaches here
+    // DARK OUT PART 9 SECTION V: cancel any in-flight EVENT MOVIE before
+    // touching BGM below — QUIT is reachable while a movie is playing (the
+    // PAUSE MENU/GAME OVER QUIT buttons are DOM elements, not part of the
+    // frozen gameplay simulation, so they still receive taps during a
+    // movie). Never resumes gameplay BGM itself here (see cancelEventMovie()'s
+    // own comment) — the unconditional bgmAudio.currentTime=0/play() below
+    // already does the actual "what BGM plays at TOP" job for every route.
+    cancelEventMovie();
+    startMenuBgmForTopMenu();
     // DARK OUT PART 8 SECTION 35/36: centralized here (not duplicated at each
     // QUIT button) for the exact same reason D-4 above centralizes BGM reset
     // — every route back to MAIN MENU must leave no STORY scenario/EVENT/
@@ -5040,8 +5344,14 @@
         // point — waiting any longer would just hang LOADING forever) —
         // T-9: metadata/playable state counts as loaded, full download
         // not required.
+        // DARK OUT PART 9 SECTION D: openingVideoEl now points at
+        // start_display.mp4 — this exact readyState check already IS the
+        // "wait for start_display.mp4 to report canplay/loadeddata, never a
+        // fixed timeout" requirement (LOADING_MAX_WAIT_MS below stays a
+        // safety ceiling only, unchanged).
         openingVideoEl.readyState >= 1 || !!openingVideoEl.error,
-        bgmAudio.readyState >= 1 || !!bgmAudio.error, // T-9: same rule for the BGM file
+        bgmAudio.readyState >= 1 || !!bgmAudio.error, // T-9: same rule for the gameplay BGM file
+        menuBgmAudio.readyState >= 1 || !!menuBgmAudio.error, // PART 9 SECTION E: same rule for the new MENU BGM file
       ];
       return { loaded: targets.filter(Boolean).length, total: targets.length };
     }
@@ -5065,7 +5375,10 @@
   function onOpeningTap(e) {
     e.preventDefault();
     if (gameState.screen !== 'opening') return; // guards against a stray double-fire (touchstart + mousedown) doing this twice
-    startBgmOnce(); // T-3: this exact tap is the user-gesture unlock
+    // DARK OUT PART 9 SECTION E: this exact tap is the user-gesture unlock —
+    // now starts the MENU-only Outbreak0 track (startBgmOnce()/bgmAudio are
+    // gameplay-only from this PART on, started later by startGameplayBgm()).
+    startMenuBgmOnce();
     setScreen('mainMenu');
   }
   openingOverlayEl.addEventListener('touchstart', onOpeningTap, { passive: false });
@@ -5081,15 +5394,47 @@
   // BACK). Both scenario choices still route through the exact same
   // startMode('boss', scenario) everything else already uses.
   document.getElementById('main-menu-story-btn').addEventListener('click', () => setScreen('scenarioSelect'));
-  document.getElementById('scenario-select-main-btn').addEventListener('click', () => startMode('boss', 'main'));
-  document.getElementById('scenario-select-secret-btn').addEventListener('click', () => startMode('boss', 'secret'));
+  // DARK OUT PART 9 SECTION F/K/L/X: selecting MAIN or SECRET now stops the
+  // MENU BGM, plays opening.mp4 to completion, then sneaking.mp4 (common to
+  // both scenarios, run-scoped, never on RETRY), then — MAIN only —
+  // drone_arrival.mp4 (MAIN's own first DRONE STAGE is STORY STAGE 1,
+  // entered immediately; SECRET's own drone_arrival instead plays later, at
+  // the b1->STAGE1 PROJECT ADAM pickup transition — see onWorldItemPickup()),
+  // and ONLY THEN calls the existing startMode('boss', scenario) exactly
+  // once — never pre-running gameplay behind the movies, never duplicating
+  // PART8's own scenario-init logic. This is the ONE place opening.mp4 ever
+  // plays — BOSS BATTLE MODE/TRAINING never reach this function.
+  function beginScenarioOpening(scenario) {
+    stopMenuBgm();
+    playEventMovie('opening', () => {
+      playEventMovie('sneaking', () => {
+        const enterScenario = () => {
+          startGameplayBgm();
+          startMode('boss', scenario);
+          storyCinematicState.sneakingPlayed = true;
+        };
+        if (scenario === 'main') {
+          playEventMovie('drone_arrival', () => {
+            storyCinematicState.droneArrivalPlayed = true;
+            enterScenario();
+          });
+        } else {
+          enterScenario();
+        }
+      });
+    });
+  }
+  document.getElementById('scenario-select-main-btn').addEventListener('click', () => beginScenarioOpening('main'));
+  document.getElementById('scenario-select-secret-btn').addEventListener('click', () => beginScenarioOpening('secret'));
   document.getElementById('scenario-select-back-btn').addEventListener('click', () => setScreen('mainMenu'));
   // PART 2 SECTION A: TRAINING now opens a BASIC/SECURITY submenu instead of
   // jumping straight into BASIC TRAINING — both submenu choices still route
   // through the exact same startMode() everything else already uses.
+  // DARK OUT PART 9 SECTION F: TRAINING never plays opening.mp4 — only the
+  // gameplay/menu BGM handoff applies here.
   document.getElementById('main-menu-training-btn').addEventListener('click', () => setScreen('trainingSelect'));
-  document.getElementById('training-select-basic-btn').addEventListener('click', () => startMode('training'));
-  document.getElementById('training-select-security-btn').addEventListener('click', () => startMode('securityTraining'));
+  document.getElementById('training-select-basic-btn').addEventListener('click', () => { startGameplayBgm(); startMode('training'); });
+  document.getElementById('training-select-security-btn').addEventListener('click', () => { startGameplayBgm(); startMode('securityTraining'); });
   document.getElementById('training-select-back-btn').addEventListener('click', () => setScreen('mainMenu'));
 
   // DARK OUT PART 3 SECTION 2/3: BOSS BATTLE MODE — pressing it goes
@@ -5287,7 +5632,27 @@
         securityAttackSlotsInUse = 0;
         spawnBoss(now);
       }
+      maybePlayStoryGabrielArrival(); // PART 9 SECTION K: see its own comment
     }
+  }
+
+  // DARK OUT PART 9 SECTION K: plays gabriel_arrival.mp4 exactly once per
+  // STORY run per bossEncounterIndex (0/1/2 = GABRIEL 1/2/3) — spawnBoss()
+  // above already set boss.state='intro' synchronously; since update()'s
+  // own eventMovieState.active early-return (SECTION H) freezes the ENTIRE
+  // simulation the instant this movie starts, GABRIEL's existing INTRO
+  // cinematic timer simply doesn't advance until the movie ends, so this
+  // never needs to touch spawnBoss()/updateBoss() itself — the movie just
+  // plays in front of the (frozen) intro pose, then the existing INTRO
+  // proceeds completely unmodified. Only reached for a STORY scenario run
+  // (storyScenarioState.scenario truthy); a raw/legacy/debug STORY run with
+  // no scenario selected never plays it, matching every other PART9 movie's
+  // own scenario-gating.
+  function maybePlayStoryGabrielArrival() {
+    if (!storyScenarioState.scenario) return;
+    if (storyCinematicState.gabrielArrivalPlayed[bossEncounterIndex]) return; // already played this run — RETRY of the same encounter reaches this same check and skips
+    storyCinematicState.gabrielArrivalPlayed[bossEncounterIndex] = true;
+    playEventMovie('gabriel_arrival', () => {});
   }
 
   function updateStageTransition(now) {
@@ -6827,6 +7192,12 @@
   // recovery) is identical either way — RETRY's own J-3 requirement list is
   // just this same existing reset, unconditionally.
   function resetModeState(preserveStoryProgress, scenario) {
+    // DARK OUT PART 9 SECTION V: every RESTART/RETRY/fresh-mode-start goes
+    // through this one function — cancelling any in-flight EVENT MOVIE here
+    // (rather than separately at each caller) guarantees a stale 'ended'/
+    // play()-rejection callback from a movie that was mid-playback when
+    // RESTART/RETRY fired can never touch the run that's about to be reset.
+    cancelEventMovie();
     resetPlayerToBattlePose(); // SECTION H: BOSS mode starts directly at the intro pose; TRAINING mode keeps the screen-center default
     player.dashing = false;
     player.knockbackUntil = 0;
@@ -6895,6 +7266,16 @@
       storyScenarioState.bloodSamplesSubmitted = false;
       storyScenarioState.escapeReady = false;
       storyScenarioState.stageOverrideId = null;
+      // DARK OUT PART 9 SECTION W: STORY's own one-time cinematic flags are
+      // fresh only on a genuine new run/RESTART, same scoping as
+      // storyScenarioState itself just above — a mid-run RETRY
+      // (preserveStoryProgress===true) never reaches this block, so it
+      // correctly skips replaying sneaking/drone_arrival/gabriel_arrival/
+      // adam_arrival for whatever the player was just retrying.
+      storyCinematicState.sneakingPlayed = false;
+      storyCinematicState.droneArrivalPlayed = false;
+      storyCinematicState.gabrielArrivalPlayed = [false, false, false];
+      storyCinematicState.adamArrivalPlayed = false;
     }
     cameraY = 0;
     stageTransition.active = false;
@@ -6972,18 +7353,38 @@
     bossBattleState.defeatHandled = false;
     if (bossBattleState.target === 'gabriel') {
       spawnBoss(performance.now());
+      // DARK OUT PART 9 SECTION K: BOSS-BATTLE-first-time arrival — the flag
+      // is reset only in startBossBattle() (a fresh BOSS SELECT pick), so a
+      // RESTART/RETRY of this same fight (both re-enter here without going
+      // back through startBossBattle()) correctly skips the replay.
+      if (!storyCinematicState.bbGabrielArrivalPlayed) {
+        storyCinematicState.bbGabrielArrivalPlayed = true;
+        playEventMovie('gabriel_arrival', () => {});
+      }
     } else if (bossBattleState.target === 'adam') {
       // DARK OUT PART 5: ADAM shares GABRIEL's own spawnBoss()/updateBoss()/
       // drawBoss() engine wholesale (see section 2's "同じ単一bossオブジェ
       // クトを共有する" design) — same INTRO/BOSS ARRIVAL sequence, same
       // HP/difficulty, just a different boss.type/boss.name and (via the
       // sprite-resolver additions below) different visuals.
+      // DARK OUT PART 9: no arrival movie is wired for BOSS BATTLE MODE's
+      // own ADAM fight this PART — adam_arrival.mp4 is used exclusively for
+      // the SECRET STORY transition (see updateAdamSphere()); the spec's
+      // per-movie routing list never lists a BOSS BATTLE ADAM arrival, so
+      // none is added here.
       spawnBoss(performance.now(), 'adam');
     } else if (bossBattleState.target === 'roid1' || bossBattleState.target === 'roid2') {
       // DARK OUT PART 4: same "always spawns whichever target is active"
       // shape as the GABRIEL branch above — never STORY_STAGE_PLAN/
       // BOSS_ENCOUNTER_BARREL_COUNTS, which this function must not read.
       spawnRoidBoss(bossBattleState.target);
+      // DARK OUT PART 9 SECTION K: same "first-time from BOSS SELECT only"
+      // gating as GABRIEL's own arrival above, keyed per-target.
+      const roidFlagKey = bossBattleState.target === 'roid1' ? 'roid1ArrivalPlayed' : 'roid2ArrivalPlayed';
+      if (!storyCinematicState[roidFlagKey]) {
+        storyCinematicState[roidFlagKey] = true;
+        playEventMovie(bossBattleState.target + '_arrival', () => {});
+      }
     }
   }
 
@@ -7032,6 +7433,16 @@
     bossBattleState.target = targetKey;
     bossBattleState.stageId = target.stageId;
     bossBattleState.active = true;
+    // DARK OUT PART 9 SECTION K/L: reset every BOSS BATTLE arrival-movie
+    // flag here — the ONE place a NEW target is actually picked from BOSS
+    // SELECT (never re-reached by a RESTART/RETRY of the SAME fight, which
+    // both go straight through resetModeState()->enterBossBattleStage()
+    // instead) — so the "first-time" arrival plays exactly once per BOSS
+    // SELECT choice, and is correctly skipped on any RESTART/RETRY after.
+    storyCinematicState.bbGabrielArrivalPlayed = false;
+    storyCinematicState.roid1ArrivalPlayed = false;
+    storyCinematicState.roid2ArrivalPlayed = false;
+    startGameplayBgm(); // SECTION F: BOSS BATTLE MODE never plays opening.mp4 — just the same MENU->gameplay BGM handoff as TRAINING
     startMode('bossBattle'); // reuses the SAME resetModeState()/setScreen('gameplay') path STORY/TRAINING already use; sets gameState.mode itself
   }
 
@@ -8316,6 +8727,11 @@
     gameState, barrels, explosions, bullets, spawnBarrels, startMode, explodeBarrel, // debug/verification only — SECTION F
     // Debug/verification only — SECTION G/H/I/J/T (LOADING/OPENING/MAIN MENU/BGM).
     setScreen, bgmAudio, startBgmOnce, BGM_VOLUME, returnToTopMenu, // returnToTopMenu debug/verification only — PART 3 SECTION D
+    // Debug/verification only — DARK OUT PART 9: CINEMATIC INTEGRATION.
+    menuBgmAudio, startMenuBgmOnce, startGameplayBgm, stopMenuBgm,
+    SYSTEM_MOVIES, EVENT_MOVIES, storyCinematicState, eventMovieState,
+    playEventMovie, cancelEventMovie, skipEventMovie,
+    onWorldItemPickup, // debug/verification only — lets tests simulate a pickup without needing real player/item collision
     get autoAimActive() { return autoAimActive; },
     getAutoAimTargetPoint, // debug/verification only
     get autoAimTargetIsBoss() { return autoAimTargetIsBoss; },
@@ -8547,6 +8963,15 @@
 
   function update(dt, now) {
     if (gameState.paused) return; // PAUSE freezes everything: no movement, AI, bullets, timers
+    // DARK OUT PART 9 SECTION H: cinematic freeze — a SEPARATE, independent
+    // early-return from PAUSE (never sets gameState.paused/pauseStartedAt,
+    // never opens the PAUSE MENU via showModeMenu()) so an EVENT MOVIE
+    // playing never fights with the real PAUSE MENU's own state. Nothing
+    // below this line ticks while a movie plays: no PLAYER input, no boss/
+    // DRONE/bullet/cooldown/stage-progression/scroll/reward-progression —
+    // draw() itself is untouched (it just keeps rendering the frozen last
+    // frame underneath the movie overlay).
+    if (eventMovieState.active) return;
     updateDarkPhaseOverlay(dt); // always ticks whenever unpaused, regardless of stage-transition/intro state below
     updateStageTransition(now); // always ticks, even while frozen below
     if (stageTransition.active) {

@@ -25,6 +25,12 @@
      time-based bar: the percentage text is driven from a real loaded/total
      asset count. -->
 <div id="loading-screen">
+  <!-- PART 9 SECTION D: boot-time loading footage — muted/loop/autoplay
+       background only, shown the instant the page boots, before any real
+       asset-readiness is known. Swapped for start_display.mp4 (see
+       #opening-video below) the moment that video reports itself
+       playable — never a fixed timeout. -->
+  <video id="loading-video" src="assets/video/system/loading.mp4" muted loop autoplay playsinline webkit-playsinline="true"></video>
   <div id="loading-bar-track">
     <div id="loading-bar-fill"></div>
   </div>
@@ -38,7 +44,14 @@
      tap — see #main-menu-overlay below — never a second video element and
      never a screen swap that would hide it. -->
 <div id="opening-screen" hidden>
-  <video id="opening-video" src="assets/video/dark_out_opening.mp4" muted loop autoplay playsinline></video>
+  <!-- PART 9 SECTION D/E: repointed from the old dark_out_opening.mp4 to
+       start_display.mp4 (the OPENING/MAIN MENU/SCENARIO SELECT/BOSS
+       SELECT/TRAINING SELECT background loop) — dark_out_opening.mp4 file
+       itself is left untouched on disk, simply no longer referenced.
+       start_display.mp4 already has "DARK OUT" burned into its own
+       footage throughout, so #opening-title below is hidden via CSS
+       rather than duplicating the title as separate overlay text. -->
+  <video id="opening-video" src="assets/video/system/start_display.mp4" muted loop autoplay playsinline webkit-playsinline="true"></video>
   <div id="opening-overlay">
     <div id="opening-title">DARK OUT</div>
     <div id="opening-tap-prompt">TAP TO START</div>
@@ -271,6 +284,22 @@
      sync via the same media feature. -->
 <div id="landscape-block-overlay">
   <div id="landscape-block-message">縦画面でプレイしてください</div>
+</div>
+
+<!-- PART 9 SECTION G: shared EVENT MOVIE PLAYER — one DOM overlay reused
+     by every SYSTEM/EVENT movie (opening/sneaking/drone_arrival/
+     gabriel_arrival/gabriel_down/gabriel_defeated/experiment_lab/
+     adam_arrival/roid1_arrival/roid2_arrival). Sits above every other
+     screen (see style.css z-index) so it can freeze/cover LOADING,
+     OPENING/MENU, and gameplay alike. playsinline/webkit-playsinline are
+     mandatory (iOS fullscreen-hijack prevention); object-fit is used for
+     display only — the source footage itself is never cropped/scaled by
+     ffmpeg. #event-movie-tap-fallback is the SECTION J iOS play()-
+     rejection fallback — hidden unless a play() call is actually
+     rejected, never a permanent UI element. -->
+<div id="event-movie-overlay" hidden>
+  <video id="event-movie-video" playsinline webkit-playsinline="true" preload="auto"></video>
+  <button id="event-movie-tap-fallback" hidden>TAP TO PLAY</button>
 </div>
 
 <script src="game.js"></script>

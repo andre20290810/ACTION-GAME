@@ -709,6 +709,16 @@ body {
 }
 #loading-screen.loading-fade-out { opacity: 0; }
 #loading-screen[hidden] { display: none; }
+/* PART 9 SECTION D: full-bleed muted background loop, sat behind the
+   existing progress bar (bar is a later sibling, so it naturally paints on
+   top with no z-index needed within this one screen). */
+#loading-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 #loading-bar-track {
   width: 50%; /* H-5: ~40-60% of screen width on portrait */
   max-width: 220px;
@@ -767,7 +777,13 @@ body {
    a slight forward skew for a "sharp" rather than "gothic serif" feel
    (replacing the previous Georgia/serif treatment). No new font files —
    built from the existing bold sans-serif system stack only. */
+/* PART 9 SECTION D: #opening-video now plays start_display.mp4, which
+   already has "DARK OUT" burned into the footage itself throughout its
+   entire loop (confirmed by frame inspection) — this text overlay is kept
+   in the DOM (harmless, unused) but hidden outright to avoid a duplicate
+   title stacked on top of the video's own. */
 #opening-title {
+  display: none;
   font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
   font-weight: 900;
   /* Sized to always fit on one line within a narrow portrait viewport
@@ -943,14 +959,39 @@ body {
   color: #f4211f;
   text-shadow: 0 0 10px rgba(230, 30, 20, 0.55);
 }
+/* PART 9 SECTION A-2/A-3: strengthened from the original 13px/600 weight —
+   still restrained (a light red glow, never a neon effect), centered
+   (unlike the action buttons below, which go left-aligned), with slightly
+   more breathing room above/below so it reads clearly between RANK and the
+   action buttons. */
 #result-thanks {
   font-family: sans-serif;
-  font-weight: 600;
-  font-size: 13px;
-  letter-spacing: 0.15em;
+  font-weight: 800;
+  font-size: 16px;
+  letter-spacing: 0.12em;
   text-align: center;
-  color: rgba(230, 230, 235, 0.8);
-  margin: 8px 0 4px;
+  color: rgba(255, 255, 255, 0.96);
+  text-shadow: 0 0 8px rgba(230, 30, 20, 0.35);
+  margin: 14px 0 10px;
+}
+/* PART 9 SECTION A-1: BACK TO TOP MENU (<button>) and ARTIST PAGE (<a>) sit
+   on the same #result-panel flex column as the PLAY TIME/ACCURACY/DAMAGE
+   TAKEN/RANK rows above, but .mode-btn's own shared padding (6px 10px) and
+   each element's own UA-default text alignment left them starting at
+   different X positions instead of lining up with those labels' own flush-
+   left edge. Scoped to just these two IDs (never touching global .mode-btn,
+   which PAUSE MENU/GAME OVER also use) — zeroes the horizontal padding/
+   margin and forces explicit left alignment so button vs anchor default
+   differences can't diverge again the same way. */
+#result-back-btn,
+#result-artist-btn {
+  display: block;
+  width: 100%;
+  align-self: stretch;
+  text-align: left;
+  padding-left: 0;
+  padding-right: 0;
+  margin-left: 0;
 }
 /* SECTION M: GAME OVER — a real DOM screen (never a canvas overlay on the
    frozen frame, unlike GAME CLEAR), entered the instant PLAYER LIFE hits 0
@@ -1132,3 +1173,46 @@ body {
 #mode-resume-btn {
   color: rgba(160, 225, 180, 0.9);
 }
+
+/* ==========================================================================
+   PART 9 SECTION G: shared EVENT MOVIE PLAYER overlay — one instance reused
+   for every SYSTEM/EVENT movie. Sits above everything (mode-menu/landscape-
+   block are both z-index 20) so it can freeze/cover LOADING, MENU, and
+   gameplay alike. object-fit:contain (never `cover`) so no source footage
+   is ever cropped — matches the "zero source cropping" requirement.
+   ========================================================================== */
+#event-movie-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#event-movie-overlay[hidden] { display: none; }
+#event-movie-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+/* SECTION J: iOS play()-rejection fallback — a plain tap target, never a
+   permanent UI element (only shown while [hidden] is explicitly removed by
+   playEventMovie()'s own play().catch() handler in game.js). */
+#event-movie-tap-fallback {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-family: sans-serif;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.2em;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  padding: 16px 28px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+#event-movie-tap-fallback[hidden] { display: none; }
