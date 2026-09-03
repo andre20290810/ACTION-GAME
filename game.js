@@ -287,6 +287,40 @@
     escapeNavigator: false,
   };
 
+  // ==========================================================================
+  // DARK OUT PART 8: MAIN / SECRET SCENARIO state.
+  // ==========================================================================
+  // One small object (never scattered booleans, per section 2's own explicit
+  // instruction) holding everything the MAIN/SECRET routing needs beyond
+  // runInventory's own persistent pickup flags. `scenario` is the ONE
+  // explicit branch point every scenario-aware check below reads — null
+  // means "no active scenario run" (a raw/legacy/debug startMode('boss')
+  // call with no SCENARIO SELECT, or BOSS BATTLE MODE), which keeps every
+  // pre-PART8 code path (triggerGameClear() included) exactly as it was.
+  const storyScenarioState = {
+    scenario: null, // 'main' | 'secret' | null
+    // SECTION 17/18: which world-item type (if any) was just spawned as a
+    // GABRIEL/ADAM STORY defeat reward and is still waiting to be picked up —
+    // gates worldScrollUnlocked() (SECTION 10/12) so STAGE progression can
+    // never race ahead of the reward.
+    pendingReward: null,
+    awaitingRewardPickup: false,
+    // SECTION 22: separate from runInventory.bloodSample1/2/3 themselves,
+    // which stay true forever once collected — this is "has the SET of 3
+    // already been handed to the ADAM SPHERE", set exactly once.
+    bloodSamplesSubmitted: false,
+    // SECTION 32: true once ESCAPE NAVIGATOR is collected via EITHER route —
+    // this PART's own stopping point, before any EXIT/ENDING logic exists.
+    escapeReady: false,
+    // SECTION 27: non-null ('boss_c4_adam') only while the SECRET-only
+    // special STORY ADAM fight is active — lets currentStage() resolve c4's
+    // background without touching currentStageIndex/STORY_STAGE_PLAN/
+    // bossEncounterIndex, and lets RETRY/resetModeState() tell "resume the
+    // ADAM fight" apart from "resume the FINAL GABRIEL fight" (both share the
+    // exact same currentStageIndex/bossEncounterIndex the whole time).
+    stageOverrideId: null,
+  };
+
   // DARK OUT PART 3: BOSS BATTLE MODE — an independent battle/dev-test
   // context reachable from MAIN MENU, completely separate from STORY MODE's
   // own progression (currentStageIndex/bossEncounterIndex/STORY_STAGE_PLAN/
@@ -385,6 +419,17 @@
     // never a currentStageIndex hack.
     if (eventStageState.active) {
       const entry = getStageRegistryEntry(eventStageState.stageId);
+      if (entry) return entry.background;
+    }
+    // DARK OUT PART 8 SECTION 27: the SECRET-only special STORY ADAM fight —
+    // background always comes from the fixed STAGE_REGISTRY 'boss_c4_adam'
+    // entry via storyScenarioState.stageOverrideId, mirroring BOSS BATTLE
+    // MODE's own bossBattleState.stageId lookup just below (never touches
+    // currentStageIndex/STORY_STAGE_PLAN/bossEncounterIndex). Gated on
+    // gameState.mode==='boss' so a stale override value can never leak into
+    // another mode's background.
+    if (gameState.mode === 'boss' && storyScenarioState.stageOverrideId) {
+      const entry = getStageRegistryEntry(storyScenarioState.stageOverrideId);
       if (entry) return entry.background;
     }
     // DARK OUT PART 3 SECTION 9: checked first, ahead of every existing
@@ -2211,6 +2256,7 @@
           runInventory[profile.inventoryKey] = true;
           spawnWorldItemPickupText(profile.pickupLines, item.x, item.y, now);
         }
+        onWorldItemPickup(item.type, now); // DARK OUT PART 8: scenario-progression side effects — a no-op unless a MAIN/SECRET scenario is actually active
         worldItems.splice(i, 1);
       }
     }
@@ -2233,15 +2279,24 @@
   // permission to keep the two separate.
   const ADAM_SPHERE_FRAME_MS = 220; // same first-pass cadence as PROJECT_ADAM_FRAME_MS — tunable independently later
   const ADAM_SPHERE_POS_FRAC = { x: 0.5, y: 0.5 }; // dead-center — "ADAMが格納されている大型培養object" reads as a room's central fixture
+  // DARK OUT PART 8 SECTION 22: PLAYER-to-SPHERE contact distance for BLOOD
+  // SAMPLE SUBMISSION — a bit larger than WORLD_ITEM_PICKUP_RADIUS (30) since
+  // the SPHERE is a big fixed room fixture, not a small handheld item.
+  const ADAM_SPHERE_SUBMIT_RADIUS = 60;
+  // SECTION 24: short, non-excessive activation wait — no movie/particle
+  // exists yet this PART, just a brief hold on the SPHERE's own existing
+  // 4-frame animation before the transition into the ADAM STORY fight.
+  const ADAM_SPHERE_ACTIVATION_MS = 2000;
   const adamSphereState = {
     visible: false,
     x: 0, y: 0,
     frameIndex: 0,
     frameTimer: 0,
-    // SECTION 17: minimal state placeholder for the future activation
-    // sequence (sealed -> ready -> activating -> released) — no transition
-    // logic exists yet this PART, only the resting 'sealed' value.
+    // SECTION 17/23: sealed -> activating -> released — 'ready' was left as
+    // spec's own optional extra step; not needed for this PART's minimal
+    // submit-once/wait/transition flow.
     state: 'sealed',
+    activationElapsedMs: 0, // SECTION 24: counts up only while state==='activating'
   };
   function spawnAdamSphere() {
     adamSphereState.visible = true;
@@ -2250,13 +2305,32 @@
     adamSphereState.frameIndex = 0;
     adamSphereState.frameTimer = 0;
     adamSphereState.state = 'sealed';
+    adamSphereState.activationElapsedMs = 0;
   }
-  function updateAdamSphere(dt) {
+  function updateAdamSphere(dt, now) {
     if (!adamSphereState.visible) return;
     adamSphereState.frameTimer += dt * 1000;
     while (adamSphereState.frameTimer >= ADAM_SPHERE_FRAME_MS) {
       adamSphereState.frameTimer -= ADAM_SPHERE_FRAME_MS;
       adamSphereState.frameIndex = (adamSphereState.frameIndex + 1) % ADAM_SPHERE_SPRITES.length;
+    }
+    // DARK OUT PART 8 SECTION 22/23/24/25: BLOOD SAMPLE SUBMISSION — SECRET
+    // scenario only, only once (bloodSamplesSubmitted guards re-entry even
+    // after the SPHERE state itself has moved on), only once all 3 samples
+    // are genuinely collected.
+    if (adamSphereState.state === 'sealed' && storyScenarioState.scenario === 'secret' &&
+        hasAllBloodSamples() && !storyScenarioState.bloodSamplesSubmitted) {
+      if (Math.hypot(player.x - adamSphereState.x, player.y - adamSphereState.y) <= ADAM_SPHERE_SUBMIT_RADIUS) {
+        storyScenarioState.bloodSamplesSubmitted = true; // SECTION 22: the inventory flags themselves stay true forever — this is the separate "submitted" flag
+        adamSphereState.state = 'activating';
+        adamSphereState.activationElapsedMs = 0;
+      }
+    } else if (adamSphereState.state === 'activating') {
+      adamSphereState.activationElapsedMs += dt * 1000;
+      if (adamSphereState.activationElapsedMs >= ADAM_SPHERE_ACTIVATION_MS) {
+        adamSphereState.state = 'released'; // SECTION 23
+        beginAdamStoryBossTransition(now); // SECTION 25
+      }
     }
   }
   // SECTION 16: no collision of any kind is checked here on purpose — PLAYER
@@ -2349,6 +2423,138 @@
   function exitEventStageForDebug() {
     exitEventStage();
     returnToTopMenu();
+  }
+
+  // ==========================================================================
+  // DARK OUT PART 8: MAIN / SECRET SCENARIO routing.
+  // ==========================================================================
+  // SECTION 6: the STORY-run equivalent of enterEventStageForDebug() above —
+  // deliberately does NOT touch gameState.mode (stays 'boss' the whole time,
+  // unlike the debug flow's own gameState.mode='event') so the active STORY
+  // run's own scenario/runInventory/currentStageIndex/bossEncounterIndex
+  // context is never lost. currentStage()'s own eventStageState.active check
+  // (already first in its dispatch order) resolves b1/b2's background
+  // exactly as it already did for the debug flow.
+  function enterStoryEventStage(eventId) {
+    enterEventStage(eventId);
+  }
+
+  // SECTION 7/14/15/20/30/32: scenario-progression side effects for a just-
+  // collected world item — kept separate from updateWorldItems()'s own
+  // generic pickup loop (PART6/7) so that loop doesn't need to know about
+  // scenario-specific behavior directly. Every branch below is explicitly
+  // scenario-gated, so a legacy/debug/BOSS-BATTLE pickup (storyScenarioState.
+  // scenario === null there) never does anything beyond the shared reward-
+  // pending clear.
+  function onWorldItemPickup(type, now) {
+    // SECTION 17/18: clears the "reward awaiting pickup" gate the instant
+    // its own item is collected — see worldScrollUnlocked()'s matching guard
+    // and handleStoryBossDefeatRewards()'s own comment.
+    if (storyScenarioState.awaitingRewardPickup && storyScenarioState.pendingReward === type) {
+      storyScenarioState.awaitingRewardPickup = false;
+      storyScenarioState.pendingReward = null;
+    }
+    if (type === 'projectAdam' && storyScenarioState.scenario === 'secret') {
+      // SECTION 7: b1 -> STORY STAGE 1, immediately and automatically once
+      // PROJECT ADAM is collected — no EXIT walk for this one transition,
+      // per section 7's own "安全な自動transitionで進んでよい／新規派手な演出
+      // は不要". Reusing beginStageTransition()'s own fade would have
+      // incorrectly advanced currentStageIndex (already 0, about to become
+      // STAGE 1) via updateStageTransition()'s hardcoded `currentStageIndex
+      // += 1` STORY-advance branch, so this is a direct, instant call instead.
+      exitEventStage();
+      enterStoryStage(now);
+    } else if (type === 'bloodSample3' && storyScenarioState.scenario === 'secret' && hasAllBloodSamples()) {
+      // SECTION 14/20: SECRET's own FINAL GABRIEL reward completes the set -> b2.
+      enterStoryEventStage('b2');
+    } else if (type === 'escapeNavigator' && storyScenarioState.scenario) {
+      // SECTION 15/30/32: MAIN (after GABRIEL3) or SECRET (after ADAM) —
+      // either way, collecting it just marks escape-ready and stops
+      // progression here (no EXIT/ENDING logic exists yet this PART).
+      storyScenarioState.escapeReady = true;
+    }
+  }
+
+  // SECTION 10-16/19/26/30/31: the ONE place a GABRIEL-family STORY boss
+  // death (GABRIEL 1/2/3, keyed by bossEncounterIndex — or the SECRET-only
+  // special ADAM STORY fight, keyed by boss.type) hands out a scenario
+  // reward. Called once, right at the dying->dead transition (see
+  // updateBossDying() above) — never during BOSS BATTLE MODE (section 19's
+  // own absolute "BOSS BATTLEでは絶対に報酬なし" constraint, unchanged since
+  // PART7) and never outside an active scenario run (a raw/legacy/debug
+  // startMode('boss') call with no SCENARIO SELECT keeps its exact pre-PART8
+  // behavior — see updateBossDying()'s own GAME CLEAR fallback).
+  function handleStoryBossDefeatRewards(now) {
+    if (bossBattleState.active) return;
+    if (!storyScenarioState.scenario) return;
+    if (storyScenarioState.awaitingRewardPickup) return; // SECTION 17: never spawn a 2nd reward while one is still pending
+
+    if (boss.type === 'adam') {
+      // SECTION 30: the SECRET-only special STORY ADAM fight — always
+      // ESCAPE NAVIGATOR (never reachable from MAIN, which never sets
+      // storyScenarioState.stageOverrideId at all).
+      spawnWorldItemReward('escapeNavigator', boss.x, boss.y + 100);
+      storyScenarioState.pendingReward = 'escapeNavigator';
+      storyScenarioState.awaitingRewardPickup = true;
+      return;
+    }
+
+    // GABRIEL-family STORY death, keyed by bossEncounterIndex (0/1/2 = GABRIEL 1/2/3).
+    if (storyScenarioState.scenario === 'secret') {
+      const rewardByEncounter = ['bloodSample1', 'bloodSample2', 'bloodSample3'];
+      const reward = rewardByEncounter[bossEncounterIndex];
+      if (reward) {
+        spawnWorldItemReward(reward, boss.x, boss.y + 100);
+        storyScenarioState.pendingReward = reward;
+        storyScenarioState.awaitingRewardPickup = true;
+      }
+    } else if (storyScenarioState.scenario === 'main' && bossEncounterIndex === GABRIEL_ENCOUNTER_3_INDEX) {
+      // SECTION 15/40: MAIN only ever rewards after the FINAL GABRIEL — 1/2 give nothing.
+      spawnWorldItemReward('escapeNavigator', boss.x, boss.y + 100);
+      storyScenarioState.pendingReward = 'escapeNavigator';
+      storyScenarioState.awaitingRewardPickup = true;
+    }
+  }
+
+  // SECTION 25/26/27/28: the SECRET-only transition from a fully-activated
+  // ADAM SPHERE into the special STORY ADAM fight — see updateAdamSphere()'s
+  // own 'activating'->'released' timer below. Deliberately NEVER calls
+  // startBossBattle()/startMode() (section 26's own explicit warning: either
+  // would reset runInventory/currentStageIndex via resetModeState(), losing
+  // PROJECT ADAM/BLOOD SAMPLE progress) — the STORY run (gameState.mode
+  // stays 'boss' throughout) is simply hoisted into a special boss context
+  // via storyScenarioState.stageOverrideId (read by currentStage() above),
+  // and PART5's own shared spawnBoss(now,'adam') is called directly, the
+  // exact same engine BOSS BATTLE MODE's own ADAM fight already uses.
+  function beginAdamStoryBossTransition(now) {
+    exitEventStage(); // SECTION 25: b2 cleanup — clears eventStageState/worldItems/adamSphereState.visible
+    storyScenarioState.stageOverrideId = 'boss_c4_adam'; // SECTION 27
+    bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
+    spawnBarrels(0); // SECTION 28-30: same "no barrels" choice PART5's own BOSS BATTLE ADAM made — simplest, safest default, undocumented otherwise in spec
+    securityRobots.length = 0;
+    securityAttackSlotsInUse = 0;
+    spawnBoss(now, 'adam'); // PART5's shared engine — same INTRO/CHASE/DEFENSE/ARC CLAW/STRAIGHT CLAW/DARK PHASE/FLASH/COUNTER/dying/dead as BOSS BATTLE ADAM
+  }
+
+  // SECTION 35/36: QUIT-time cleanup for an active STORY scenario run —
+  // mirrors exitBossBattle()'s own "never leave it for the next mode to
+  // inherit" reasoning. Most of storyScenarioState resets again on the NEXT
+  // startMode('boss', ...) call anyway (see resetModeState()'s own
+  // !preserveStoryProgress block), but eventStageState does NOT (nothing
+  // else ever calls exitEventStage() on QUIT), and a stale eventStageState.
+  // active=true would otherwise leak b1/b2's background into the very next
+  // mode picked from MAIN MENU (currentStage() checks it unconditionally,
+  // first, regardless of mode) — see PART8's own investigation notes.
+  function exitStoryScenarioContext() {
+    if (eventStageState.active) exitEventStage();
+    storyScenarioState.scenario = null;
+    storyScenarioState.pendingReward = null;
+    storyScenarioState.awaitingRewardPickup = false;
+    storyScenarioState.bloodSamplesSubmitted = false;
+    storyScenarioState.escapeReady = false;
+    storyScenarioState.stageOverrideId = null;
+    worldItems.length = 0;
+    adamSphereState.visible = false;
   }
 
   // SECTION C/D: official, untouched, non-AI-regenerated assets — exact
@@ -3166,6 +3372,19 @@
     // DARK OUT PART 3: same reasoning as GAME CLEAR above, for BOSS BATTLE
     // MODE's own separate "BOSS DEFEATED" hold (see bossBattleDefeatRemainingMs).
     if (bossBattleDefeatRemainingMs > 0) return true;
+    // DARK OUT PART 8: STORY-context EVENT visits (b1/b2 — see
+    // enterStoryEventStage()) deliberately keep gameState.mode==='boss' the
+    // whole time (unlike PART6's own debug-only enterEventStageForDebug(),
+    // which switches to gameState.mode==='event' and was already exempted
+    // by the mode check just below) so the STORY run's own scenario/
+    // runInventory/currentStageIndex context is never lost. Without this
+    // explicit check, that same mode check would fall through into
+    // isStoryDroneStage()'s/boss.spawned's own coincidental (and unreliable
+    // depending on which STORY_STAGE_PLAN entry currentStageIndex happens to
+    // still point at) values below, which can and does lock the player still
+    // during b2 (see PART8's own investigation notes). EVENT visits are
+    // always freely walkable, exactly like the debug flow already was.
+    if (eventStageState.active) return false;
     // DARK OUT PART 3: BOSS BATTLE MODE shares this exact same INTRO-lock
     // behavior (GABRIEL's own spawnBoss()/updateBoss() are reused as-is —
     // see startBossBattle()) — never a second copy of this check.
@@ -4251,6 +4470,12 @@
     if (boss.cinematicElapsed >= DYING_DURATION_MS) {
       boss.state = 'dead';
       boss.deadAt = now;
+      // DARK OUT PART 8 SECTION 10-16/19/26/30/31: scenario-aware reward
+      // wiring (GABRIEL1/2 SECRET samples, GABRIEL3/ADAM final rewards) —
+      // a complete no-op for BOSS BATTLE MODE and any raw/legacy/debug run
+      // with no scenario selected, so every pre-PART8 behavior below is
+      // completely unaffected in those cases.
+      handleStoryBossDefeatRewards(now);
       // SECTION L-2/O/P (PART 5 SECTION U-4: now keyed off the STORY_STAGE_
       // PLAN entry's own `final` flag, never a raw stage-position/STAGES.
       // length comparison): the FINAL GABRIEL ENCOUNTER triggers GAME CLEAR
@@ -4258,7 +4483,17 @@
       // walk for the final encounter (nothing left to walk toward).
       // ENCOUNTER 1/2 are unaffected: they still use the pre-existing
       // EXIT-walk -> beginStageTransition() flow untouched.
-      if (isFinalStoryStage()) {
+      // DARK OUT PART 8 SECTION 16: under an active MAIN/SECRET scenario,
+      // the legacy GAME CLEAR is intercepted entirely — handleStoryBoss
+      // DefeatRewards() above already spawned the correct reward (SAMPLE③ or
+      // NAVIGATOR) instead. This same `storyScenarioState.scenario` guard
+      // also covers the SECRET-only special ADAM STORY fight: isFinalStoryStage()
+      // still reads true there too (boss.type==='adam' shares the exact same
+      // currentStageIndex/bossEncounterIndex the FINAL GABRIEL stage left
+      // behind — see storyScenarioState.stageOverrideId's own comment), so
+      // without this guard ADAM's own death would incorrectly re-trigger
+      // GAME CLEAR here too.
+      if (isFinalStoryStage() && !storyScenarioState.scenario) {
         triggerGameClear(now);
       }
     }
@@ -4694,12 +4929,15 @@
     // DARK OUT PART 3: BOSS SELECT reuses this exact same persistent-video
     // #opening-screen container/pattern too — one more overlay, no new
     // screen host.
-    const showOpeningContainer = next === 'opening' || next === 'mainMenu' || next === 'trainingSelect' || next === 'bossSelect';
+    // DARK OUT PART 8 SECTION 3: SCENARIO SELECT reuses this exact same
+    // pattern too — one more overlay, no new screen host.
+    const showOpeningContainer = next === 'opening' || next === 'mainMenu' || next === 'trainingSelect' || next === 'bossSelect' || next === 'scenarioSelect';
     document.getElementById('opening-screen').hidden = !showOpeningContainer;
     document.getElementById('opening-overlay').hidden = next !== 'opening';
     document.getElementById('main-menu-overlay').hidden = next !== 'mainMenu';
     document.getElementById('training-select-overlay').hidden = next !== 'trainingSelect';
     document.getElementById('boss-select-overlay').hidden = next !== 'bossSelect';
+    document.getElementById('scenario-select-overlay').hidden = next !== 'scenarioSelect';
     document.getElementById('result-screen').hidden = next !== 'result';
     document.getElementById('game-over-screen').hidden = next !== 'gameover';
     // PLAY AREA / CONTROL AREA are only meaningful during actual gameplay —
@@ -4755,6 +4993,12 @@
   function returnToTopMenu() {
     bgmAudio.currentTime = 0; // D-1/D-2: OPENING/TOP always restarts the BGM from the top
     bgmAudio.play().catch(() => {}); // defensive only — bgmAudio is already playing in every real route that reaches here
+    // DARK OUT PART 8 SECTION 35/36: centralized here (not duplicated at each
+    // QUIT button) for the exact same reason D-4 above centralizes BGM reset
+    // — every route back to MAIN MENU must leave no STORY scenario/EVENT/
+    // special-boss/reward state behind for the next mode to inherit.
+    // Idempotent/harmless when no scenario was ever active.
+    exitStoryScenarioContext();
     setScreen('mainMenu');
   }
 
@@ -4832,7 +5076,14 @@
   // PAUSE MENU's own BOSS MODE/TRAINING MODE buttons already use — no
   // duplicate gameplay wiring. SETTING is wired earlier, alongside PAUSE
   // MENU's own SETTING button (openSettingPanel('mainMenu')).
-  document.getElementById('main-menu-story-btn').addEventListener('click', () => startMode('boss'));
+  // DARK OUT PART 8 SECTION 3: STORY MODE no longer starts a run directly —
+  // it goes to SCENARIO SELECT first (MAIN SCENARIO / SECRET SCENARIO /
+  // BACK). Both scenario choices still route through the exact same
+  // startMode('boss', scenario) everything else already uses.
+  document.getElementById('main-menu-story-btn').addEventListener('click', () => setScreen('scenarioSelect'));
+  document.getElementById('scenario-select-main-btn').addEventListener('click', () => startMode('boss', 'main'));
+  document.getElementById('scenario-select-secret-btn').addEventListener('click', () => startMode('boss', 'secret'));
+  document.getElementById('scenario-select-back-btn').addEventListener('click', () => setScreen('mainMenu'));
   // PART 2 SECTION A: TRAINING now opens a BASIC/SECURITY submenu instead of
   // jumping straight into BASIC TRAINING — both submenu choices still route
   // through the exact same startMode() everything else already uses.
@@ -4876,6 +5127,27 @@
   // is sufficient. Everything downstream (the EXIT zone, the fade-to-next-
   // stage transition) is otherwise completely unchanged from before.
   function worldScrollUnlocked() {
+    // DARK OUT PART 8 SECTION 6/20/21: STORY-context EVENT visits (b1/b2)
+    // are simple walk-in-pickup/SPHERE-contact stages, never an EXIT-hunt
+    // band — checked first since gameState.mode stays 'boss' throughout
+    // (see enterStoryEventStage()), so the checks below would otherwise
+    // read whatever STORY_STAGE_PLAN entry currentStageIndex still points
+    // at (coincidentally, not meaningfully).
+    if (eventStageState.active) return false;
+    // DARK OUT PART 8 SECTION 15/16/25/30: the FINAL GABRIEL STAGE — and the
+    // SECRET-only special ADAM STORY fight, which shares that exact same
+    // currentStageIndex/bossEncounterIndex the whole time (section 27) —
+    // never uses the walk-to-EXIT flow under scenario routing: reward-
+    // pickup/b2-transition/escapeReady handlers replace it entirely, and
+    // STORY_STAGE_PLAN has no index past this one for beginStageTransition()
+    // to advance into. A raw/legacy/debug run with no scenario selected
+    // (storyScenarioState.scenario === null) is completely unaffected —
+    // isFinalStoryStage() still triggers the original GAME CLEAR path.
+    if (storyScenarioState.scenario && isFinalStoryStage()) return false;
+    // SECTION 10/12/17/18: a GABRIEL1/2 SECRET reward that has been spawned
+    // but not yet collected must gate the EXIT band shut — see
+    // handleStoryBossDefeatRewards()/onWorldItemPickup().
+    if (storyScenarioState.awaitingRewardPickup) return false;
     // SECTION 15-18: no longer restricted to portrait (H >= W) — see the
     // matching note above the currentArea/area1Cleared block in update().
     // SECTION E (this turn, supersedes the previous "never kill-gated"
@@ -6554,7 +6826,7 @@
   // camera/AREA/DRONE-or-GABRIEL re-init/BARREL/projectile/STUN/control-
   // recovery) is identical either way — RETRY's own J-3 requirement list is
   // just this same existing reset, unconditionally.
-  function resetModeState(preserveStoryProgress) {
+  function resetModeState(preserveStoryProgress, scenario) {
     resetPlayerToBattlePose(); // SECTION H: BOSS mode starts directly at the intro pose; TRAINING mode keeps the screen-center default
     player.dashing = false;
     player.knockbackUntil = 0;
@@ -6609,6 +6881,20 @@
       runInventory.bloodSample2 = false;
       runInventory.bloodSample3 = false;
       runInventory.escapeNavigator = false;
+      // DARK OUT PART 8 SECTION 2/33/36: storyScenarioState resets alongside
+      // runInventory on every genuine fresh run — `scenario` itself is
+      // re-applied from this SAME call's own `scenario` argument (threaded
+      // through by startMode()'s new 2nd parameter — see mode-restart-btn/
+      // SCENARIO SELECT's own handlers) rather than a separate post-hoc
+      // write, so the 'boss'-mode dispatch just below already sees the
+      // right scenario when deciding whether to enter b1 (SECRET) or STORY
+      // STAGE 1 (MAIN, or no scenario at all — legacy/debug behavior).
+      storyScenarioState.scenario = scenario || null;
+      storyScenarioState.pendingReward = null;
+      storyScenarioState.awaitingRewardPickup = false;
+      storyScenarioState.bloodSamplesSubmitted = false;
+      storyScenarioState.escapeReady = false;
+      storyScenarioState.stageOverrideId = null;
     }
     cameraY = 0;
     stageTransition.active = false;
@@ -6641,7 +6927,19 @@
     } else if (gameState.mode === 'boss') {
       securityRobots.length = 0;
       securityAttackSlotsInUse = 0;
-      enterStoryStage(performance.now());
+      // DARK OUT PART 8 SECTION 26/34: the SECRET-only special ADAM STORY
+      // fight — RETRY must re-enter the SAME ADAM fight, never
+      // enterStoryStage() (which would read STORY_STAGE_PLAN[currentStageIndex],
+      // still pointing at the FINAL GABRIEL entry — see storyScenarioState.
+      // stageOverrideId's own comment — and wrongly respawn GABRIEL instead).
+      if (storyScenarioState.stageOverrideId === 'boss_c4_adam') {
+        spawnBoss(performance.now(), 'adam');
+      } else if (!preserveStoryProgress && storyScenarioState.scenario === 'secret') {
+        // SECTION 5: a brand-new SECRET run starts at b1, not STORY STAGE 1.
+        enterStoryEventStage('b1');
+      } else {
+        enterStoryStage(performance.now());
+      }
     } else if (gameState.mode === 'bossBattle') {
       // DARK OUT PART 3: a dedicated branch, NOT a reuse of the 'boss'
       // branch above — enterStoryStage() reads/writes STORY-only state
@@ -6689,7 +6987,7 @@
     }
   }
 
-  function startMode(mode) {
+  function startMode(mode, scenario) {
     gameState.mode = mode;
     // DARK OUT PART 3 SECTION 19: BOSS BATTLE MODE must never reset (or, via
     // RESTART re-entering here with mode==='bossBattle', ever touch) STORY's
@@ -6700,7 +6998,16 @@
     // are never 'bossBattle', so they still get preserveStoryProgress=false
     // (identical to the previous no-argument call) and behave byte-for-byte
     // as before.
-    resetModeState(mode === 'bossBattle');
+    // DARK OUT PART 8: `scenario` ('main'/'secret'/undefined) is threaded
+    // straight through to resetModeState() — SCENARIO SELECT's own button
+    // handlers pass it explicitly on a fresh STORY run, and mode-restart-btn
+    // passes storyScenarioState.scenario (whatever is CURRENTLY active) so a
+    // plain RESTART preserves the same scenario rather than losing it. Every
+    // other caller (TRAINING/SECURITY TRAINING/BOSS BATTLE/legacy debug
+    // startMode('boss') with no 2nd argument) passes undefined, which
+    // resetModeState() treats as "no scenario" — byte-for-byte pre-PART8
+    // behavior.
+    resetModeState(mode === 'bossBattle', scenario);
     gameState.paused = false;
     hideModeMenu();
     setScreen('gameplay'); // SECTION I/J: MAIN MENU's STORY/TRAINING buttons both route through here — a no-op change if already in gameplay (PAUSE's own mode-switch/RESTART)
@@ -6919,7 +7226,11 @@
   // already does a full resetModeState() (player/boss/HP/bullets/blade
   // projectiles/barrels/cinematic+milestone flags/DASH state/AUTO AIM/
   // explosions), so restarting is just re-entering the same mode.
-  document.getElementById('mode-restart-btn').addEventListener('click', () => startMode(gameState.mode));
+  // DARK OUT PART 8: passes the CURRENTLY active scenario (if any) straight
+  // through — a RESTART starts the same scenario over from its own
+  // beginning (b1 for SECRET, STORY STAGE 1 for MAIN), rather than losing
+  // the scenario tag the way a bare startMode(gameState.mode) call would.
+  document.getElementById('mode-restart-btn').addEventListener('click', () => startMode(gameState.mode, storyScenarioState.scenario));
   document.getElementById('mode-resume-btn').addEventListener('click', () => {
     gameState.paused = false;
     storyPausedAccumMs += performance.now() - pauseStartedAt; // SECTION Q-1
@@ -6942,7 +7253,7 @@
     // MODE fight must clean it up (boss/projectiles/effects/battle state) —
     // never leave it for the next mode to inherit. No-op when not active.
     if (bossBattleState.active) exitBossBattle();
-    returnToTopMenu(); // PART 3 SECTION D: covers BOSS/TRAINING/SECURITY TRAINING QUIT alike (shared PAUSE MENU button)
+    returnToTopMenu(); // PART 3 SECTION D: covers BOSS/TRAINING/SECURITY TRAINING QUIT alike (shared PAUSE MENU button). PART8: also cleans up any active STORY scenario/EVENT state — see returnToTopMenu()'s own comment.
   });
 
   // SECTION H: the ONLY place player.stunned is ever cleared — a distinct,
@@ -6977,7 +7288,7 @@
     // DARK OUT PART 3 SECTION 17/20: a PLAYER death inside BOSS BATTLE MODE
     // still needs this same cleanup before returning to MAIN MENU.
     if (bossBattleState.active) exitBossBattle();
-    returnToTopMenu();
+    returnToTopMenu(); // PART8: also cleans up any active STORY scenario/EVENT state — see returnToTopMenu()'s own comment.
   });
 
   // ---------- SECTION Q/R: RESULT ----------
@@ -8044,6 +8355,10 @@
     // Debug/verification only — DARK OUT PART 7: BLOOD SAMPLE (1)/(2)/(3) / ESCAPE NAVIGATOR world items.
     WORLD_ITEM_PROFILES, ITEM_FRAME_MS, spawnWorldItem, debugSpawnWorldItem,
     spawnWorldItemReward, hasAllBloodSamples,
+    // Debug/verification only — DARK OUT PART 8: MAIN / SECRET SCENARIO routing.
+    storyScenarioState, enterStoryEventStage, handleStoryBossDefeatRewards,
+    beginAdamStoryBossTransition, exitStoryScenarioContext,
+    ADAM_SPHERE_ACTIVATION_MS, ADAM_SPHERE_SUBMIT_RADIUS,
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
     STAGES,
     get currentStageIndex() { return currentStageIndex; },
@@ -8647,7 +8962,7 @@
     updateBarrels(dt, now);
     updateHealItem(dt); // PART7 SECTION S/Q: dt-driven, freezes during PAUSE like every other timer here
     updateWorldItems(dt, now); // DARK OUT PART 6: PROJECT ADAM (and later, other) world-item animation + pickup — empty array outside EVENT STAGE, so this is a no-op everywhere else
-    updateAdamSphere(dt); // DARK OUT PART 6: ADAM SPHERE animation only — invisible/no-op outside EVENT STAGE b2
+    updateAdamSphere(dt, now); // DARK OUT PART 6: ADAM SPHERE animation only — invisible/no-op outside EVENT STAGE b2. PART8: `now` also drives the SECRET-only BLOOD SAMPLE SUBMISSION/activation timer.
     updateSecurityRobots(dt, now);
     updateFlashGrenade(dt, now);
     updateScreenFlashes(dt);

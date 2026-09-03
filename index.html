@@ -50,6 +50,9 @@
        gameplay wiring); SETTING opens the exact same #setting-panel PAUSE
        MENU's own SETTING does. -->
   <div id="main-menu-overlay" hidden>
+    <!-- DARK OUT PART 8: STORY MODE now goes to SCENARIO SELECT first
+         (#scenario-select-overlay below), same reasoning as BOSS BATTLE
+         MODE routing straight to BOSS SELECT. -->
     <button class="main-menu-item" id="main-menu-story-btn">STORY MODE</button>
     <!-- DARK OUT PART 3: BOSS BATTLE MODE — goes straight to BOSS SELECT
          (#boss-select-overlay below), same as TRAINING MODE routes to its
@@ -79,6 +82,15 @@
     <button class="main-menu-item" id="boss-select-gabriel-btn">GABRIEL</button>
     <button class="main-menu-item" id="boss-select-adam-btn">ADAM</button>
     <button class="main-menu-item" id="boss-select-back-btn">BACK</button>
+  </div>
+  <!-- DARK OUT PART 8 SECTION 3: SCENARIO SELECT — same plain-text-over-video
+       treatment as the overlays above, no new design system. Both MAIN and
+       SECRET are freely selectable this PART (no LOCK condition yet). -->
+  <div id="scenario-select-overlay" hidden>
+    <div class="boss-select-title">SCENARIO SELECT</div>
+    <button class="main-menu-item" id="scenario-select-main-btn">MAIN SCENARIO</button>
+    <button class="main-menu-item" id="scenario-select-secret-btn">SECRET SCENARIO</button>
+    <button class="main-menu-item" id="scenario-select-back-btn">BACK</button>
   </div>
 </div>
 

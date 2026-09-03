@@ -815,8 +815,9 @@ body {
    rule with #main-menu-overlay — same plain-text/left-aligned/no-card
    layout, zero duplicated styling. DARK OUT PART 3: BOSS SELECT
    (#boss-select-overlay) joins the same shared rule for the same reason —
-   no new design system, per spec section 22. */
-#main-menu-overlay, #training-select-overlay, #boss-select-overlay {
+   no new design system, per spec section 22. DARK OUT PART 8: SCENARIO
+   SELECT (#scenario-select-overlay) joins for the same reason again. */
+#main-menu-overlay, #training-select-overlay, #boss-select-overlay, #scenario-select-overlay {
   position: absolute;
   inset: 0;
   display: flex;
@@ -832,7 +833,7 @@ body {
   background: rgba(0, 0, 0, 0.2);
   touch-action: manipulation;
 }
-#main-menu-overlay[hidden], #training-select-overlay[hidden], #boss-select-overlay[hidden] { display: none; }
+#main-menu-overlay[hidden], #training-select-overlay[hidden], #boss-select-overlay[hidden], #scenario-select-overlay[hidden] { display: none; }
 .main-menu-item {
   font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
   font-weight: 700;
