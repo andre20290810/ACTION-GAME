@@ -335,6 +335,18 @@
     // background pool (never STAGES[], which is GABRIEL-encounter-only).
     const plan = STORY_STAGE_PLAN[currentStageIndex];
     if (plan && plan.type === 'drone') return TRAINING_BACKGROUNDS[storyDroneBgIndex];
+    // DARK OUT PART 3.6: every STORY GABRIEL encounter (ENCOUNTER 2/3 — the
+    // only two actually reachable under the current STORY_STAGE_PLAN) now
+    // shares the SAME c3.jpg background BOSS BATTLE MODE's own GABRIEL
+    // already uses — reuses the PART 1 STAGE_REGISTRY entry directly rather
+    // than duplicating c3.jpg as a 4th STAGES[] background. This is a pure
+    // background swap: bossEncounterIndex itself, and every combat-variant
+    // decision that reads it via getGabrielCombatEncounterIndex() (DARK
+    // PHASE/difficulty/ENCOUNTER-3-STUN), is completely untouched — falls
+    // back to the legacy STAGES[bossEncounterIndex] array only if the
+    // registry entry is ever missing (defense-in-depth, never expected).
+    const gabrielStage = getStageRegistryEntry('boss_c3_gabriel');
+    if (gabrielStage) return gabrielStage.background;
     return STAGES[bossEncounterIndex];
   }
 
