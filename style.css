@@ -813,8 +813,10 @@ body {
    scrim (not opaque) so the footage reads through clearly. */
 /* PART 2 SECTION A: TRAINING's BASIC/SECURITY submenu shares this exact
    rule with #main-menu-overlay — same plain-text/left-aligned/no-card
-   layout, zero duplicated styling. */
-#main-menu-overlay, #training-select-overlay {
+   layout, zero duplicated styling. DARK OUT PART 3: BOSS SELECT
+   (#boss-select-overlay) joins the same shared rule for the same reason —
+   no new design system, per spec section 22. */
+#main-menu-overlay, #training-select-overlay, #boss-select-overlay {
   position: absolute;
   inset: 0;
   display: flex;
@@ -830,7 +832,7 @@ body {
   background: rgba(0, 0, 0, 0.2);
   touch-action: manipulation;
 }
-#main-menu-overlay[hidden], #training-select-overlay[hidden] { display: none; }
+#main-menu-overlay[hidden], #training-select-overlay[hidden], #boss-select-overlay[hidden] { display: none; }
 .main-menu-item {
   font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
   font-weight: 700;
@@ -854,6 +856,30 @@ body {
   color: #ffffff;
   border-bottom-color: rgba(230, 60, 50, 0.85);
   text-shadow: 0 0 14px rgba(230, 40, 30, 0.75);
+}
+/* DARK OUT PART 3 SECTION 4/28: ROID1/ROID2/ADAM in BOSS SELECT — shown
+   (never hidden) but visually muted so tapping them doesn't look like it
+   did anything (their click handlers are no-ops — see game.js
+   startBossBattle()). Never a paywall/lock-icon treatment (section 5). */
+.main-menu-item-locked {
+  opacity: 0.45;
+  cursor: default;
+}
+.main-menu-item-locked:active {
+  color: rgba(235, 235, 238, 0.88);
+  border-bottom-color: rgba(230, 60, 50, 0);
+  text-shadow: none;
+}
+/* DARK OUT PART 3 SECTION 22: BOSS SELECT's own minimal title — same
+   font-family/letter-spacing/uppercase convention as .main-menu-item
+   above, just non-interactive and in the existing DARK OUT red accent. */
+.boss-select-title {
+  font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: rgba(230, 60, 50, 0.9);
 }
 
 /* SECTION Q/R: RESULT — a real DOM screen (like MAIN MENU), shown after the

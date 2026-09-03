@@ -51,6 +51,10 @@
        MENU's own SETTING does. -->
   <div id="main-menu-overlay" hidden>
     <button class="main-menu-item" id="main-menu-story-btn">STORY MODE</button>
+    <!-- DARK OUT PART 3: BOSS BATTLE MODE — goes straight to BOSS SELECT
+         (#boss-select-overlay below), same as TRAINING MODE routes to its
+         own submenu just below this. -->
+    <button class="main-menu-item" id="main-menu-bossbattle-btn">BOSS BATTLE MODE</button>
     <button class="main-menu-item" id="main-menu-training-btn">TRAINING MODE</button>
     <button class="main-menu-item" id="main-menu-setting-btn">SETTING</button>
   </div>
@@ -62,6 +66,19 @@
     <button class="main-menu-item" id="training-select-basic-btn">BASIC TRAINING</button>
     <button class="main-menu-item" id="training-select-security-btn">SECURITY TRAINING</button>
     <button class="main-menu-item" id="training-select-back-btn">BACK</button>
+  </div>
+  <!-- DARK OUT PART 3 SECTION 3/4: BOSS SELECT — same plain-text-over-video
+       treatment as the two overlays above, no new design system. ROID1/
+       ROID2/ADAM carry the "-locked" modifier (style.css) and their own
+       click handlers are no-ops (game.js) — implementation-not-finished,
+       never a paywall (spec section 5/24). -->
+  <div id="boss-select-overlay" hidden>
+    <div class="boss-select-title">BOSS SELECT</div>
+    <button class="main-menu-item main-menu-item-locked" id="boss-select-roid1-btn">ROID1 (COMING SOON)</button>
+    <button class="main-menu-item main-menu-item-locked" id="boss-select-roid2-btn">ROID2 (COMING SOON)</button>
+    <button class="main-menu-item" id="boss-select-gabriel-btn">GABRIEL</button>
+    <button class="main-menu-item main-menu-item-locked" id="boss-select-adam-btn">ADAM (COMING SOON)</button>
+    <button class="main-menu-item" id="boss-select-back-btn">BACK</button>
   </div>
 </div>
 

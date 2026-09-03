@@ -254,12 +254,52 @@
     return STAGE_REGISTRY.find((s) => s.id === id) || null;
   }
 
+  // DARK OUT PART 3: BOSS BATTLE MODE — an independent battle/dev-test
+  // context reachable from MAIN MENU, completely separate from STORY MODE's
+  // own progression (currentStageIndex/bossEncounterIndex/STORY_STAGE_PLAN/
+  // scenario/item flags are never read or written by anything in this
+  // block or by startBossBattle()/exitBossBattle() below — see section 19's
+  // own explicit protection list). Fixed BOSS->STAGE_REGISTRY mapping per
+  // spec section 8 — never randomized, never derived from STORY state.
+  // playable:false (ROID1/ROID2/ADAM) means "shown in BOSS SELECT, but
+  // pressing it starts nothing" — sprite registries exist (PART 2) but no
+  // AI/state-machine for these three yet (PART 4+), never a paywall.
+  const BOSS_BATTLE_TARGETS = {
+    roid1: { stageId: 'boss_c1_roid1', label: 'ROID1', playable: false },
+    roid2: { stageId: 'boss_c2_roid2', label: 'ROID2', playable: false },
+    gabriel: { stageId: 'boss_c3_gabriel', label: 'GABRIEL', playable: true },
+    adam: { stageId: 'boss_c4_adam', label: 'ADAM', playable: false },
+  };
+  const bossBattleState = {
+    target: null, // one of BOSS_BATTLE_TARGETS' own keys, or null when no fight is active
+    stageId: null, // mirrors BOSS_BATTLE_TARGETS[target].stageId — the ONE thing currentStage() below reads while active
+    active: false, // true only for the duration of an actual BOSS BATTLE MODE fight (set by startBossBattle(), cleared by exitBossBattle())
+    defeatHandled: false, // guards triggerBossBattleDefeat() (below) from firing more than once per fight
+  };
+  // SECTION 16: a brief "BOSS DEFEATED" hold before auto-returning to BOSS
+  // SELECT — same shape/spirit as the existing gameClearRemainingMs, but a
+  // fully separate counter and a separate small draw() block (see near the
+  // existing "GAME CLEAR!!" overlay) — never reuses/branches the STORY-only
+  // GAME CLEAR->RESULT path, since BOSS BATTLE MODE must never reach RESULT
+  // (no STORY stats, no ARTIST PAGE, wrong "return to MAIN MENU" semantics).
+  let bossBattleDefeatRemainingMs = 0;
+  const BOSS_BATTLE_DEFEAT_DISPLAY_MS = 2000;
+
   // SECTION D: the ONE place draw()/barrel-spawn/etc. read "the current
   // background" from — returns TRAINING's own pool while in TRAINING MODE,
   // STORY's STAGES otherwise, so every existing caller (draw()'s
   // currentStage().img/.ready, etc.) picks up the right image with no
   // further changes needed anywhere else.
   function currentStage() {
+    // DARK OUT PART 3 SECTION 9: checked first, ahead of every existing
+    // branch below — BOSS BATTLE MODE's background always comes from the
+    // fixed STAGE_REGISTRY mapping above, never from STORY's STAGES[]/
+    // bossEncounterIndex or TRAINING_BACKGROUNDS. currentStageIndex itself
+    // is never read or written here.
+    if (bossBattleState.active) {
+      const entry = getStageRegistryEntry(bossBattleState.stageId);
+      if (entry) return entry.background;
+    }
     if (gameState.mode === 'training') return TRAINING_BACKGROUNDS[basicTrainingBgIndex];
     if (gameState.mode === 'securityTraining') return TRAINING_BACKGROUNDS[securityTrainingBgIndex];
     // SECTION S: a DRONE-type STORY STAGE reads from the same TRAINING
@@ -2260,7 +2300,13 @@
     // window too, for the same reason (no gameplay should proceed while a
     // terminal screen is about to take over).
     if (gameClearRemainingMs > 0) return true;
-    if (gameState.mode !== 'boss') return false;
+    // DARK OUT PART 3: same reasoning as GAME CLEAR above, for BOSS BATTLE
+    // MODE's own separate "BOSS DEFEATED" hold (see bossBattleDefeatRemainingMs).
+    if (bossBattleDefeatRemainingMs > 0) return true;
+    // DARK OUT PART 3: BOSS BATTLE MODE shares this exact same INTRO-lock
+    // behavior (GABRIEL's own spawnBoss()/updateBoss() are reused as-is —
+    // see startBossBattle()) — never a second copy of this check.
+    if (gameState.mode !== 'boss' && gameState.mode !== 'bossBattle') return false;
     // PART (this turn) SECTION A: this lock exists ONLY to hold the player
     // still/blind/silent while GABRIEL's own BOSS INTRO cinematic is about
     // to play or playing — it must never apply to a DRONE-type STORY STAGE,
@@ -3070,7 +3116,11 @@
   }
 
   function updateBoss(dt, now) {
-    if (gameState.mode !== 'boss') return; // TRAINING MODE never spawns a boss
+    // DARK OUT PART 3: BOSS BATTLE MODE's GABRIEL fight reuses this EXACT
+    // function (no copy) — widened from 'boss'-only so its own spawnBoss()
+    // call (see startBossBattle()) actually gets an AI. TRAINING/SECURITY
+    // TRAINING never spawn a boss and are unaffected by this widening.
+    if (gameState.mode !== 'boss' && gameState.mode !== 'bossBattle') return;
     // PART 5 SECTION T: GABRIEL is now always spawned explicitly, the
     // instant a boss-type STORY_STAGE_PLAN entry is entered (see
     // enterStoryStage()) — there is no longer a delay-timer auto-spawn (the
@@ -3704,9 +3754,14 @@
   // the gameplay world ever ticks in the background during OPENING/MAIN
   // MENU/LOADING — SECTION J's own requirement.
   const gameState = {
-    mode: 'boss', // 'boss' | 'training'
+    // DARK OUT PART 3: 'bossBattle' added — STORY MODE's own 'boss' keeps
+    // its EXACT existing meaning (never repurposed) and is untouched by the
+    // new value; 'bossBattle' is BOSS BATTLE MODE's own, fully independent
+    // context (see bossBattleState above).
+    mode: 'boss', // 'boss' | 'training' | 'securityTraining' | 'bossBattle'
     paused: false, // game starts running in BOSS MODE, same as before PAUSE existed
-    screen: 'boot', // 'boot' | 'loading' | 'opening' | 'mainMenu' | 'gameplay'
+    // DARK OUT PART 3: 'bossSelect' added (MAIN MENU's own BOSS BATTLE MODE entry).
+    screen: 'boot', // 'boot' | 'loading' | 'opening' | 'mainMenu' | 'trainingSelect' | 'bossSelect' | 'gameplay' | 'result' | 'gameover'
   };
 
   // ---------- SECTION Q: RESULT stats ----------
@@ -3728,11 +3783,15 @@
     // PART 2 SECTION A: the TRAINING submenu (BASIC/SECURITY TRAINING) reuses
     // this exact same persistent-video #opening-screen container/pattern —
     // just one more overlay toggled by this same helper, no new screen host.
-    const showOpeningContainer = next === 'opening' || next === 'mainMenu' || next === 'trainingSelect';
+    // DARK OUT PART 3: BOSS SELECT reuses this exact same persistent-video
+    // #opening-screen container/pattern too — one more overlay, no new
+    // screen host.
+    const showOpeningContainer = next === 'opening' || next === 'mainMenu' || next === 'trainingSelect' || next === 'bossSelect';
     document.getElementById('opening-screen').hidden = !showOpeningContainer;
     document.getElementById('opening-overlay').hidden = next !== 'opening';
     document.getElementById('main-menu-overlay').hidden = next !== 'mainMenu';
     document.getElementById('training-select-overlay').hidden = next !== 'trainingSelect';
+    document.getElementById('boss-select-overlay').hidden = next !== 'bossSelect';
     document.getElementById('result-screen').hidden = next !== 'result';
     document.getElementById('game-over-screen').hidden = next !== 'gameover';
     // PLAY AREA / CONTROL AREA are only meaningful during actual gameplay —
@@ -3873,6 +3932,23 @@
   document.getElementById('training-select-basic-btn').addEventListener('click', () => startMode('training'));
   document.getElementById('training-select-security-btn').addEventListener('click', () => startMode('securityTraining'));
   document.getElementById('training-select-back-btn').addEventListener('click', () => setScreen('mainMenu'));
+
+  // DARK OUT PART 3 SECTION 2/3: BOSS BATTLE MODE — pressing it goes
+  // straight to BOSS SELECT (no intermediate menu), same reasoning as
+  // TRAINING's own submenu above (one more overlay on the SAME persistent-
+  // video container, no new screen host).
+  document.getElementById('main-menu-bossbattle-btn').addEventListener('click', () => {
+    if (bossBattleState.active) exitBossBattle(); // defensive only — never active from MAIN MENU in any reachable flow
+    setScreen('bossSelect');
+  });
+  document.getElementById('boss-select-roid1-btn').addEventListener('click', () => startBossBattle('roid1'));
+  document.getElementById('boss-select-roid2-btn').addEventListener('click', () => startBossBattle('roid2'));
+  document.getElementById('boss-select-gabriel-btn').addEventListener('click', () => startBossBattle('gabriel'));
+  document.getElementById('boss-select-adam-btn').addEventListener('click', () => startBossBattle('adam'));
+  document.getElementById('boss-select-back-btn').addEventListener('click', () => {
+    if (bossBattleState.active) exitBossBattle(); // defensive only — see above
+    setScreen('mainMenu');
+  });
 
   // ---------- Stage world / camera / EXIT (PART 21-29) ----------
   // Before the boss is fully defeated (state 'dead', not merely HP<=0 and
@@ -5653,6 +5729,15 @@
       securityRobots.length = 0;
       securityAttackSlotsInUse = 0;
       enterStoryStage(performance.now());
+    } else if (gameState.mode === 'bossBattle') {
+      // DARK OUT PART 3: a dedicated branch, NOT a reuse of the 'boss'
+      // branch above — enterStoryStage() reads/writes STORY-only state
+      // (currentStageIndex/bossEncounterIndex/STORY_STAGE_PLAN), which this
+      // mode must never touch (section 19). enterBossBattleStage() below
+      // spawns GABRIEL directly, keyed only by bossBattleState.stageId.
+      securityRobots.length = 0;
+      securityAttackSlotsInUse = 0;
+      enterBossBattleStage();
     } else {
       spawnBarrels(BARREL_COUNT);
       securityRobots.length = 0;
@@ -5660,9 +5745,37 @@
     }
   }
 
+  // DARK OUT PART 3: the 'bossBattle' equivalent of enterStoryStage() above
+  // — deliberately separate (never a shared function with an added `if`)
+  // since the two must stay independent: this one NEVER reads/writes
+  // currentStageIndex/bossEncounterIndex/STORY_STAGE_PLAN, and always spawns
+  // whichever BOSS_BATTLE_TARGETS entry bossBattleState.target names (today,
+  // only GABRIEL is playable — see section 10-14). Barrels are intentionally
+  // 0 here (spec left this unspecified for BOSS BATTLE MODE; zero is the
+  // simplest, safest choice, documented in the completion report) — never
+  // BOSS_ENCOUNTER_BARREL_COUNTS, which is bossEncounterIndex-indexed STORY
+  // data this mode must not read.
+  function enterBossBattleStage() {
+    bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
+    spawnBarrels(0);
+    bossBattleState.defeatHandled = false;
+    if (bossBattleState.target === 'gabriel') {
+      spawnBoss(performance.now());
+    }
+  }
+
   function startMode(mode) {
     gameState.mode = mode;
-    resetModeState();
+    // DARK OUT PART 3 SECTION 19: BOSS BATTLE MODE must never reset (or, via
+    // RESTART re-entering here with mode==='bossBattle', ever touch) STORY's
+    // own currentStageIndex/bossEncounterIndex — passing true reuses the
+    // EXACT SAME "leave STORY position alone" branch RETRY already relies on
+    // (see retryCurrentRun()), rather than a second implementation. This is
+    // a no-op for every existing mode: 'boss'/'training'/'securityTraining'
+    // are never 'bossBattle', so they still get preserveStoryProgress=false
+    // (identical to the previous no-argument call) and behave byte-for-byte
+    // as before.
+    resetModeState(mode === 'bossBattle');
     gameState.paused = false;
     hideModeMenu();
     setScreen('gameplay'); // SECTION I/J: MAIN MENU's STORY/TRAINING buttons both route through here — a no-op change if already in gameplay (PAUSE's own mode-switch/RESTART)
@@ -5674,6 +5787,66 @@
       storyPausedAccumMs = 0;
       shotsFired = 0; shotsHit = 0; totalDamageTaken = 0;
     }
+  }
+
+  // DARK OUT PART 3 SECTION 2/7/10: entry point for BOSS SELECT's own
+  // target buttons. Locked targets (playable:false) do nothing at all —
+  // section 4/28's own explicit "never start an unfinished battle, never
+  // crash, never fall through to some other mode" requirement — never a
+  // paywall/purchase check (section 5: no monetization this PART).
+  function startBossBattle(targetKey) {
+    const target = BOSS_BATTLE_TARGETS[targetKey];
+    if (!target || !target.playable) return;
+    bossBattleState.target = targetKey;
+    bossBattleState.stageId = target.stageId;
+    bossBattleState.active = true;
+    startMode('bossBattle'); // reuses the SAME resetModeState()/setScreen('gameplay') path STORY/TRAINING already use; sets gameState.mode itself
+  }
+
+  // DARK OUT PART 3 SECTION 15/20: the ONE place a BOSS BATTLE MODE fight
+  // ever ends — called on the post-defeat timer (triggerBossBattleDefeat()
+  // below), PAUSE MENU QUIT, and GAME OVER QUIT, so cleanup is identical
+  // regardless of which of the three ways the player leaves. Never touches
+  // STORY's own currentStageIndex/bossEncounterIndex/scenario/item state —
+  // this function doesn't reference any of them.
+  function exitBossBattle() {
+    bossBattleState.active = false;
+    bossBattleState.target = null;
+    bossBattleState.stageId = null;
+    bossBattleState.defeatHandled = false;
+    bossBattleDefeatRemainingMs = 0;
+    boss.spawned = false;
+    boss.state = 'inactive';
+    bullets.length = 0;
+    arcClawSlashes.length = 0;
+    explosions.length = 0;
+    securityRobots.length = 0;
+    securityAttackSlotsInUse = 0;
+    healItem.active = false;
+    resetFlashGrenade();
+    resetStealth();
+    cameraY = 0;
+    currentArea = 1;
+    area1Cleared = false;
+    area2Cleared = false;
+    stageTransition.active = false;
+    stageTransition.phase = null;
+    player.stunned = false;
+    recoverControlState();
+    updateStunVisuals();
+  }
+
+  // DARK OUT PART 3 SECTION 16: GABRIEL's defeat inside BOSS BATTLE MODE
+  // never reuses triggerGameClear()/enterResultScreen() (STORY-only — wrong
+  // "THANK YOU FOR PLAYING"/ARTIST PAGE copy, wrong BACK destination, and
+  // keyed off storyStartTime/shotsFired stats this mode never resets) — the
+  // spec's own documented fallback is a brief "BOSS DEFEATED" hold (drawn
+  // near the existing "GAME CLEAR!!" overlay) then straight back to BOSS
+  // SELECT. Guarded by bossBattleState.defeatHandled so this can only ever
+  // fire once per fight.
+  function triggerBossBattleDefeat(now) {
+    bossBattleState.defeatHandled = true;
+    bossBattleDefeatRemainingMs = BOSS_BATTLE_DEFEAT_DISPLAY_MS;
   }
 
   function releaseAllHeldInputs() {
@@ -5834,6 +6007,10 @@
   document.getElementById('mode-quit-btn').addEventListener('click', () => {
     gameState.paused = false;
     hideModeMenu();
+    // DARK OUT PART 3 SECTION 20: QUITting out of an active BOSS BATTLE
+    // MODE fight must clean it up (boss/projectiles/effects/battle state) —
+    // never leave it for the next mode to inherit. No-op when not active.
+    if (bossBattleState.active) exitBossBattle();
     returnToTopMenu(); // PART 3 SECTION D: covers BOSS/TRAINING/SECURITY TRAINING QUIT alike (shared PAUSE MENU button)
   });
 
@@ -5866,6 +6043,9 @@
   // nothing carries over. PART 3 SECTION D: now also resets BGM to the top
   // via the shared returnToTopMenu(), same as every other TOP-bound QUIT.
   document.getElementById('game-over-quit-btn').addEventListener('click', () => {
+    // DARK OUT PART 3 SECTION 17/20: a PLAYER death inside BOSS BATTLE MODE
+    // still needs this same cleanup before returning to MAIN MENU.
+    if (bossBattleState.active) exitBossBattle();
     returnToTopMenu();
   });
 
@@ -6527,6 +6707,16 @@
       gameClearRemainingMs = Math.max(0, gameClearRemainingMs - dt * 1000);
       if (gameClearRemainingMs === 0) enterResultScreen();
     }
+    // DARK OUT PART 3 SECTION 16: BOSS BATTLE MODE's own separate "BOSS
+    // DEFEATED" hold — ticks alongside GAME CLEAR's above but never calls
+    // enterResultScreen(); returns to BOSS SELECT instead (see exitBossBattle()).
+    if (bossBattleDefeatRemainingMs > 0) {
+      bossBattleDefeatRemainingMs = Math.max(0, bossBattleDefeatRemainingMs - dt * 1000);
+      if (bossBattleDefeatRemainingMs === 0) {
+        exitBossBattle();
+        setScreen('bossSelect');
+      }
+    }
   }
 
   function updateFlashGrenade(dt, now) {
@@ -6843,7 +7033,10 @@
     // SECTION M-4: SECURITY TRAINING's laser hit reuses this exact same
     // GAME OVER wiring — widened here rather than duplicated elsewhere, so
     // it inherits the identical instant halt-of-update/draw behavior.
-    if (player.life <= 0 && (gameState.mode === 'boss' || gameState.mode === 'securityTraining') && gameState.screen === 'gameplay') {
+    // DARK OUT PART 3 SECTION 17: BOSS BATTLE MODE reuses this exact same
+    // GAME OVER wiring too — a PLAYER death mid-fight still needs a real
+    // terminal screen (RETRY/QUIT), never a silent freeze.
+    if (player.life <= 0 && (gameState.mode === 'boss' || gameState.mode === 'securityTraining' || gameState.mode === 'bossBattle') && gameState.screen === 'gameplay') {
       triggerGameOver(now);
     }
   }
@@ -6897,6 +7090,8 @@
     ROID1_SPRITES, ROID2_SPRITES, ADAM_SPRITES, ADAM_SPHERE_SPRITES, ITEM_SPRITES,
     getAllNewCharacterItemFrames, computeBodyVisualScale, getAdamReferenceBodyHeightPx, getItemReferenceBodyHeightPx,
     ROID_BODY_TARGET_HEIGHT, ADAM_SPHERE_TARGET_DIAMETER, makeSpriteFrame, // debug/verification only — DARK OUT PART 2
+    BOSS_BATTLE_TARGETS, bossBattleState, startBossBattle, exitBossBattle,
+    get bossBattleDefeatRemainingMs() { return bossBattleDefeatRemainingMs; }, // debug/verification only — DARK OUT PART 3
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
     STAGES,
     get currentStageIndex() { return currentStageIndex; },
@@ -7202,7 +7397,12 @@
     // 'training' (BASIC TRAINING) was never included here either, so both
     // TRAINING modes are now STUN-less for the same reason: neither ever
     // has GABRIEL spawned (A-5).
-    const battleActiveForWatchdog = gameState.mode === 'boss' && boss.spawned && !bossIsInCinematic();
+    // DARK OUT PART 3: BOSS BATTLE MODE's GABRIEL fight gets the SAME STUN
+    // watchdog GABRIEL always has in STORY MODE — this is GABRIEL's own
+    // presence/fear mechanic (per the comment above), so sharing GABRIEL's
+    // implementation as-is (spec's own explicit requirement) means sharing
+    // this too, not a new behavior invented for BOSS BATTLE MODE.
+    const battleActiveForWatchdog = (gameState.mode === 'boss' || gameState.mode === 'bossBattle') && boss.spawned && !bossIsInCinematic();
     if (battleActiveForWatchdog && !player.stunned && gameClearRemainingMs <= 0) {
       if (detectControlStateCorruption() || now - lastPlayerInputAt >= CONTROL_WATCHDOG_IDLE_MS) {
         triggerStun(now);
@@ -7254,16 +7454,20 @@
     // below to include 'training' fixes this while changing nothing about
     // the BOSS MODE behavior itself (identical condition, just also true
     // for the other mode).
-    if (gameState.mode === 'boss' || gameState.mode === 'training' || gameState.mode === 'securityTraining') {
+    // DARK OUT PART 3: 'bossBattle' added to this gate (and the camera-
+    // follow gate just below) — BOSS BATTLE MODE's GABRIEL fight needs the
+    // exact same 2-area world/camera tracking STORY's own GABRIEL encounters
+    // already get; TRAINING/SECURITY TRAINING behavior is unchanged.
+    if (gameState.mode === 'boss' || gameState.mode === 'training' || gameState.mode === 'securityTraining' || gameState.mode === 'bossBattle') {
       currentArea = player.y < 0 ? 2 : 1;
       // AREA 1 clear (C-13): the one shared boss fully dissolved while the
       // player happened to be standing in AREA 1's band. boss.state can
-      // only ever reach 'dead' when gameState.mode === 'boss' (updateBoss()
-      // itself early-returns for every other mode — see its own top-of-
-      // function comment), so this remains structurally unreachable in
-      // TRAINING regardless of the widened gate above — satisfying B-5's
-      // "never connect AREA crossing to boss spawn/stage transition" for
-      // TRAINING without needing a separate mode check here.
+      // only ever reach 'dead' when gameState.mode === 'boss' or 'bossBattle'
+      // (updateBoss() itself early-returns for every other mode — see its
+      // own top-of-function comment), so this remains structurally
+      // unreachable in TRAINING regardless of the widened gate above —
+      // satisfying B-5's "never connect AREA crossing to boss spawn/stage
+      // transition" for TRAINING without needing a separate mode check here.
       if (!area1Cleared && boss.state === 'dead' && currentArea === 1) {
         area1Cleared = true;
       }
@@ -7289,7 +7493,7 @@
     // never gated behind a "clear" flag, so this is always open for
     // TRAINING (unlike STORY's worldScrollUnlocked()).
     const scrollUnlockedHere = worldScrollUnlocked() || trainingWorldScrollUnlocked();
-    if ((gameState.mode === 'boss' || gameState.mode === 'training' || gameState.mode === 'securityTraining') && !stageTransition.active) {
+    if ((gameState.mode === 'boss' || gameState.mode === 'training' || gameState.mode === 'securityTraining' || gameState.mode === 'bossBattle') && !stageTransition.active) {
       // SECTION G: AREA 1 + AREA 2's own band is always unlocked now — only
       // the further post-clear bonus space beyond it stays gated.
       const minCameraY = scrollUnlockedHere ? -H - worldExtraAbove : -H;
@@ -7479,6 +7683,17 @@
     updateStealth(dt, now);
     updateBoss(dt, now);
     updateArcClawSlashes(now);
+
+    // DARK OUT PART 3 SECTION 16: detect GABRIEL's defeat inside BOSS
+    // BATTLE MODE right as it happens (same frame updateBossDying() flips
+    // boss.state to 'dead', matching GAME CLEAR's own timing for the STORY
+    // FINAL STAGE) — a pure addition, never touching updateBossDying()/
+    // isFinalStoryStage() themselves, so STORY's own GAME CLEAR condition
+    // (which requires gameState.mode === 'boss', never 'bossBattle' — see
+    // isFinalStoryStage()) is completely unaffected.
+    if (bossBattleState.active && boss.state === 'dead' && !bossBattleState.defeatHandled) {
+      triggerBossBattleDefeat(now);
+    }
   }
 
   function currentPose(now) {
@@ -7868,6 +8083,28 @@
       ctx.shadowBlur = 18;
       ctx.fillStyle = '#ffffff';
       ctx.fillText('GAME CLEAR!!', W / 2, H / 2);
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
+
+    // DARK OUT PART 3 SECTION 16: BOSS BATTLE MODE's own separate "BOSS
+    // DEFEATED" overlay — same visual technique as GAME CLEAR above (never
+    // shares its variable/branch), but never leads to RESULT.
+    if (bossBattleDefeatRemainingMs > 0) {
+      const elapsed = BOSS_BATTLE_DEFEAT_DISPLAY_MS - bossBattleDefeatRemainingMs;
+      const fadeInMs = 300;
+      const alpha = Math.min(1, elapsed / fadeInMs);
+      ctx.fillStyle = `rgba(0,0,0,${0.45 * alpha})`;
+      ctx.fillRect(0, 0, W, H);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 40px "Arial Narrow", Arial, sans-serif';
+      ctx.shadowColor = 'rgba(200,20,20,0.9)';
+      ctx.shadowBlur = 18;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText('BOSS DEFEATED', W / 2, H / 2);
       ctx.shadowBlur = 0;
       ctx.restore();
     }
