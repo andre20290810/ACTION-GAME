@@ -1404,6 +1404,296 @@
     m.drawW = m.nativeW * m.scale;
     m.drawH = m.nativeH * m.scale;
   });
+
+  // ==========================================================================
+  // DARK OUT PART 2: CHARACTER / ITEM sprite registries + visual metadata.
+  // ==========================================================================
+  // Registers the 66 new PNGs (ROID1/ROID2/ADAM/ADAM SPHERE/ITEMs) as loadable
+  // sprite entries, exactly reusing the existing lazy-image-load shape
+  // (file/img/ready — same as TRAINING_BACKGROUNDS/STAGES/SECURITY_ROBOT_METRICS
+  // above) via ONE small shared constructor rather than 66 copy-pasted
+  // forEach blocks. NOT wired into any AI/render/collision/event code this
+  // PART — see the PART 2 spec's own section 27 for the long "not yet" list.
+  //
+  // WHY body-scale metadata, not a resized PNG (audit + spec sections 5/7/29):
+  // every one of these PNGs already carries proper alpha transparency (no
+  // white background to remove — confirmed during the pre-implementation
+  // audit), but their canvas dimensions vary enormously frame-to-frame for
+  // reasons that have nothing to do with the character's actual on-screen
+  // size — ROID1/ROID2 FIRE frames include a muzzle-flash effect layered
+  // over (ROID1) or extending sideways from (ROID2) the body without the
+  // character itself changing size; ADAM's wings/tail extend the canvas by
+  // wildly different amounts pose-to-pose while ADAM's own body (head/torso/
+  // legs) stays the same actual size. A naive "resize every PNG's canvas to
+  // the same WxH" would therefore make the character visibly balloon or
+  // shrink exactly when its effect/wing footprint changes — precisely the
+  // "見た目が拡大縮小する" bug the spec calls out. Directly mirrors the
+  // established DARKPHASE_HEAD_IMGS/SECURITY_ROBOT_METRICS pattern already
+  // in this file above (nativeW/nativeH + a manually-measured reference
+  // fraction, scale computed at load time — never canvas-width/height alone).
+  //
+  // bodyTopFrac/bodyBottomFrac: the vertical span (as a fraction 0-1 of the
+  // frame's OWN nativeH) occupied by the character's actual body silhouette
+  // (head-to-feet), deliberately EXCLUDING muzzle flash / wing-tip / tail
+  // extent wherever those are visually distinguishable from the body itself
+  // (spec section 29's explicit warning: "alpha bounds全体をそのままbody
+  // boundsとしないこと" — confirmed necessary in practice: an automated
+  // alpha-bbox pass on these exact files returned the full canvas for nearly
+  // every frame, because isolated anti-aliasing pixels touch the image edge
+  // — see the PART 2 completion report for that measurement). These were
+  // established by directly viewing a representative frame from each pose
+  // family (ROID1 SEARCH/FIRE, ROID2 SEARCH/FIRE, ADAM IDLE/WALK/DEFENSE/
+  // ATTACK per direction) and are a considered FIRST-PASS visual estimate,
+  // not a pixel-ruler measurement — deliberately called out here and in the
+  // completion report as needing a dedicated visual-fit pass once these
+  // sprites are actually wired into rendering (a later PART; out of scope
+  // here per spec section 27's "ADAM movement/state machine" exclusion).
+  // Frames within the same short pose-family (e.g. one WALK cycle's 3
+  // frames, or ROID2's 5 SEARCH frames, which share an identical nativeH
+  // across all 5) reuse the same fraction pair rather than inventing false
+  // per-frame precision.
+  function makeSpriteFrame(file, nativeW, nativeH, bodyTopFrac, bodyBottomFrac, extra) {
+    const img = new Image();
+    const frame = Object.assign({ file, img, ready: false, nativeW, nativeH, bodyTopFrac, bodyBottomFrac }, extra || {});
+    img.onload = () => { frame.ready = true; };
+    img.src = file;
+    return frame;
+  }
+  // The one shared scale calculator every group below uses: body-silhouette
+  // height (not canvas height) mapped to a target on-screen height. Anchor
+  // (feet) is bodyBottomFrac * nativeH * scale from the frame's own top —
+  // callers draw anchored to that point so SEARCH<->FIRE / IDLE<->WALK<->
+  // DEFENSE<->ATTACK switches never jump vertically even though nativeH
+  // differs frame to frame.
+  function computeBodyVisualScale(frame, targetBodyHeightPx) {
+    const bodyHeightPx = (frame.bodyBottomFrac - frame.bodyTopFrac) * frame.nativeH;
+    return bodyHeightPx > 0 ? targetBodyHeightPx / bodyHeightPx : 1;
+  }
+
+  // ---------- ROID1 / ROID2 ----------
+  // SECTION 8/9: target on-screen body height = BOSS_DRAW_H, the SAME
+  // constant GABRIEL's own canvas is scaled to (BOSS_DRAW_H/BOSS_CANVAS_H —
+  // GABRIEL's asset pipeline already keeps its body filling that aligned
+  // canvas almost edge-to-edge, so BOSS_DRAW_H IS effectively GABRIEL's own
+  // visible body height already) — "同程度をTARGETとする...BODY silhouette基準"
+  // is satisfied by reusing this one existing constant rather than inventing
+  // a new ROID-specific size.
+  const ROID_BODY_TARGET_HEIGHT = BOSS_DRAW_H;
+  // ROID_BURST_SHOT_INTERVAL_MS/ROID_BURST_COOLDOWN_MS are intentionally NOT
+  // defined here — SECTION 5 of the confirmed design fixes them at 300ms/
+  // 3000ms, but they belong to the ROID AI PART (not yet implemented), never
+  // the asset-registration PART.
+  const ROID1_SPRITES = {
+    // SEARCH: 1->2->3->4->5->4->3->2->1 (ping-pong sequencing is a later
+    // PART's job — this array IS the animation's frame-order data).
+    search: [
+      makeSpriteFrame('assets/characters/roid1/roid1_search_01.png', 983, 1280, 0.02, 0.99),
+      makeSpriteFrame('assets/characters/roid1/roid1_search_02.png', 942, 1280, 0.02, 0.99),
+      makeSpriteFrame('assets/characters/roid1/roid1_search_03.png', 1279, 1776, 0.05, 0.83),
+      makeSpriteFrame('assets/characters/roid1/roid1_search_04.png', 753, 1280, 0.02, 0.99),
+      makeSpriteFrame('assets/characters/roid1/roid1_search_05.png', 1280, 2427, 0.01, 0.88),
+    ],
+    // FIRE: 1->2->3->4->3->2->1. All 4 share one fixed 813x1280 canvas — the
+    // muzzle flash is layered over the existing body silhouette rather than
+    // extending the canvas, so it never needs excluding from bodyTop/
+    // BottomFrac (unlike ROID2 below).
+    fire: [
+      makeSpriteFrame('assets/characters/roid1/roid1_fire_01.png', 813, 1280, 0.02, 0.99),
+      makeSpriteFrame('assets/characters/roid1/roid1_fire_02.png', 813, 1280, 0.02, 0.99),
+      makeSpriteFrame('assets/characters/roid1/roid1_fire_03.png', 813, 1280, 0.02, 0.99),
+      makeSpriteFrame('assets/characters/roid1/roid1_fire_04.png', 813, 1280, 0.02, 0.99),
+    ],
+  };
+  const ROID2_SPRITES = {
+    // All 5 SEARCH frames share the exact same nativeH (1280) — only width
+    // (arm/cannon spread) differs between them — so one fraction pair is
+    // exactly right for all 5, not an approximation.
+    search: [
+      makeSpriteFrame('assets/characters/roid2/roid2_search_01.png', 1049, 1280, 0.05, 0.95),
+      makeSpriteFrame('assets/characters/roid2/roid2_search_02.png', 1174, 1280, 0.05, 0.95),
+      makeSpriteFrame('assets/characters/roid2/roid2_search_03.png', 1273, 1280, 0.05, 0.95),
+      makeSpriteFrame('assets/characters/roid2/roid2_search_04.png', 1096, 1280, 0.05, 0.95),
+      makeSpriteFrame('assets/characters/roid2/roid2_search_05.png', 1065, 1280, 0.05, 0.95),
+    ],
+    // FIRE: ROID2's flash is HORIZONTAL (spec section 9) and its own canvas
+    // is genuinely shorter/differently-cropped per frame (1008/1568/1008/
+    // 1008 vs SEARCH's constant 1280) — bodyBottomFrac is set narrower here
+    // specifically to exclude the sideways flash spread from the body box.
+    fire: [
+      makeSpriteFrame('assets/characters/roid2/roid2_fire_01.png', 1792, 1008, 0.05, 0.90),
+      makeSpriteFrame('assets/characters/roid2/roid2_fire_02.png', 1264, 1568, 0.10, 0.85),
+      makeSpriteFrame('assets/characters/roid2/roid2_fire_03.png', 1792, 1008, 0.05, 0.90),
+      makeSpriteFrame('assets/characters/roid2/roid2_fire_04.png', 1792, 1008, 0.05, 0.90),
+    ],
+  };
+
+  // ---------- ADAM ----------
+  // SECTION 10/11: IDLE is the body-scale reference; WALK/DEFENSE/ATTACK for
+  // a given direction are scaled to match THAT direction's own IDLE body
+  // height (never a cross-direction or canvas-based target) — exactly the
+  // "adam_walk_south -> adam_idle_south" mapping the spec fixes per section 10.
+  // getAdamReferenceBodyHeightPx() below is the single place that reads this.
+  // Direction values (south/north/east/west) are the spec's own absolute
+  // filename-to-direction mapping (section 11) — never re-derived from image
+  // content.
+  const ADAM_SPRITES = {
+    idle: {
+      south: makeSpriteFrame('assets/characters/adam/adam_idle_south.png', 1658, 1970, 0.36, 1.00, { direction: 'south' }),
+      north: makeSpriteFrame('assets/characters/adam/adam_idle_north.png', 1815, 1475, 0.36, 1.00, { direction: 'north' }),
+      east: makeSpriteFrame('assets/characters/adam/adam_idle_east.png', 1299, 1890, 0.30, 0.90, { direction: 'east' }),
+      west: makeSpriteFrame('assets/characters/adam/adam_idle_west.png', 1311, 1891, 0.30, 0.90, { direction: 'west' }),
+    },
+    // WALK: 1->2->3->1->2->3... per direction (section 12).
+    walk: {
+      south: [
+        makeSpriteFrame('assets/characters/adam/adam_walk_south_01.png', 1613, 1829, 0.36, 1.00, { direction: 'south' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_south_02.png', 1609, 1906, 0.36, 1.00, { direction: 'south' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_south_03.png', 1449, 1740, 0.36, 1.00, { direction: 'south' }),
+      ],
+      north: [
+        makeSpriteFrame('assets/characters/adam/adam_walk_north_01.png', 1880, 1595, 0.36, 1.00, { direction: 'north' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_north_02.png', 1815, 1475, 0.36, 1.00, { direction: 'north' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_north_03.png', 1880, 1604, 0.36, 1.00, { direction: 'north' }),
+      ],
+      west: [
+        makeSpriteFrame('assets/characters/adam/adam_walk_west_01.png', 1397, 1641, 0.30, 0.90, { direction: 'west' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_west_02.png', 1362, 2007, 0.30, 0.90, { direction: 'west' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_west_03.png', 1269, 1517, 0.30, 0.90, { direction: 'west' }),
+      ],
+      east: [
+        makeSpriteFrame('assets/characters/adam/adam_walk_east_01.png', 1397, 1641, 0.30, 0.90, { direction: 'east' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_east_02.png', 1362, 2007, 0.30, 0.90, { direction: 'east' }),
+        makeSpriteFrame('assets/characters/adam/adam_walk_east_03.png', 1280, 1530, 0.30, 0.90, { direction: 'east' }),
+      ],
+    },
+    defense: {
+      south: makeSpriteFrame('assets/characters/adam/adam_defense_south.png', 1280, 1497, 0.08, 0.98, { direction: 'south' }),
+      west: makeSpriteFrame('assets/characters/adam/adam_defense_west.png', 1579, 1475, 0.08, 0.93, { direction: 'west' }),
+      east: makeSpriteFrame('assets/characters/adam/adam_defense_east.png', 1577, 1466, 0.08, 0.93, { direction: 'east' }),
+      north: makeSpriteFrame('assets/characters/adam/adam_defense_north.png', 1228, 1298, 0.08, 0.98, { direction: 'north' }),
+    },
+    // ATTACK STANCE: registered for later blink-based attack-telegraph use
+    // (ADAM_ATTACK_BLINK_MS, section 13) — no blink/state logic yet.
+    attack: {
+      south: makeSpriteFrame('assets/characters/adam/adam_attack_south.png', 1763, 1982, 0.30, 0.85, { direction: 'south' }),
+      north: makeSpriteFrame('assets/characters/adam/adam_attack_north.png', 1886, 1290, 0.30, 0.85, { direction: 'north' }),
+      west: makeSpriteFrame('assets/characters/adam/adam_attack_west.png', 1412, 1899, 0.30, 0.85, { direction: 'west' }),
+      east: makeSpriteFrame('assets/characters/adam/adam_attack_east.png', 1453, 1885, 0.30, 0.85, { direction: 'east' }),
+    },
+    // SECTION 14/15: registered for the LATER PART's reuse of GABRIEL's own
+    // spawnArcClawSlash()/ARC_CLAW_LIFETIME_MS and spawnStraightClaw()/
+    // STRAIGHT_CLAW_ATTACK_MS — same visible size/attack speed as GABRIEL's,
+    // no new attack logic here. STRAIGHT CLAW's target-side tip (the spec's
+    // "画像の下方向へ伸びている爪先側") reuses GABRIEL's existing mirrored/
+    // angle rotation math unchanged (PART8) — never re-implemented.
+    arcClaw: makeSpriteFrame('assets/characters/adam/adam_arc_claw.png', 1280, 1223, 0, 1),
+    straightClaw: makeSpriteFrame('assets/characters/adam/adam_straight_claw.png', 496, 1303, 0, 1),
+  };
+  // The one lookup for "what body height should THIS direction's WALK/
+  // DEFENSE/ATTACK frame be scaled to" — always that direction's own IDLE.
+  function getAdamReferenceBodyHeightPx(direction) {
+    const idle = ADAM_SPRITES.idle[direction];
+    return (idle.bodyBottomFrac - idle.bodyTopFrac) * idle.nativeH;
+  }
+
+  // ---------- ADAM SPHERE ----------
+  // SECTION 17: target diameter = DRONE's own existing visible diameter x2
+  // — SECURITY_ROBOT_DRAW_D IS that diameter (the constant every DRONE frame
+  // above is already scaled to), so this is a pure relative multiple of an
+  // existing value, never the sphere's own 1408x1408 source canvas.
+  const ADAM_SPHERE_TARGET_DIAMETER = SECURITY_ROBOT_DRAW_D * 2;
+  const ADAM_SPHERE_SPRITES = [
+    // 1->2->3->4->1... loop (section 17). All 4 share the same 1408x1408
+    // canvas and fill it nearly edge-to-edge (confirmed during the
+    // pre-implementation audit's border-transparency sampling).
+    makeSpriteFrame('assets/characters/adam_sphere/adam_sphere_01.png', 1408, 1408, 0.02, 0.98),
+    makeSpriteFrame('assets/characters/adam_sphere/adam_sphere_02.png', 1408, 1408, 0.02, 0.98),
+    makeSpriteFrame('assets/characters/adam_sphere/adam_sphere_03.png', 1408, 1408, 0.02, 0.98),
+    makeSpriteFrame('assets/characters/adam_sphere/adam_sphere_04.png', 1408, 1408, 0.02, 0.98),
+  ];
+
+  // ---------- ITEMS ----------
+  // SECTION 23: every item's reference is ADAM's own SOUTH IDLE body height
+  // (the spec's own chosen common reference), with a per-item scaleMultiplier
+  // layered on top — "全ITEMをADAMと同じ巨大サイズで表示" is explicitly NOT
+  // the intent (section 23), so each group's multiplier is its own small
+  // fraction, independently tunable later without touching the PNGs.
+  function getItemReferenceBodyHeightPx() {
+    return getAdamReferenceBodyHeightPx('south');
+  }
+  const ITEM_SPRITES = {
+    // SECTION 18: SECRET FILE: PROJECT ADAM (never the old "PROJECT GABRIEL"
+    // name) — 1->2->3->4->1... loop, picked up at EVENT STAGE b1.
+    projectAdam: {
+      scaleMultiplier: 0.35,
+      frames: [
+        makeSpriteFrame('assets/items/project_adam/project_adam_01.png', 1280, 1218, 0.20, 0.80),
+        makeSpriteFrame('assets/items/project_adam/project_adam_02.png', 1138, 1280, 0.20, 0.80),
+        makeSpriteFrame('assets/items/project_adam/project_adam_03.png', 596, 1280, 0.20, 0.80),
+        makeSpriteFrame('assets/items/project_adam/project_adam_04.png', 951, 1280, 0.20, 0.80),
+      ],
+    },
+    // SECTION 19/20: BLOOD SAMPLE (1)/(2)/(3) — secret-scenario-only, each
+    // 1->2->3->1... looping, picked up after GABRIEL 1/2/3 respectively.
+    bloodSample1: {
+      scaleMultiplier: 0.30,
+      frames: [
+        makeSpriteFrame('assets/items/blood_sample_1/blood_sample_1_01.png', 662, 1280, 0.08, 0.95),
+        makeSpriteFrame('assets/items/blood_sample_1/blood_sample_1_02.png', 726, 1280, 0.08, 0.95),
+        makeSpriteFrame('assets/items/blood_sample_1/blood_sample_1_03.png', 672, 1280, 0.08, 0.95),
+      ],
+    },
+    bloodSample2: {
+      scaleMultiplier: 0.30,
+      frames: [
+        makeSpriteFrame('assets/items/blood_sample_2/blood_sample_2_01.png', 738, 1280, 0.08, 0.95),
+        makeSpriteFrame('assets/items/blood_sample_2/blood_sample_2_02.png', 625, 1280, 0.08, 0.95),
+        makeSpriteFrame('assets/items/blood_sample_2/blood_sample_2_03.png', 820, 1280, 0.08, 0.95),
+      ],
+    },
+    bloodSample3: {
+      scaleMultiplier: 0.30,
+      frames: [
+        makeSpriteFrame('assets/items/blood_sample_3/blood_sample_3_01.png', 682, 1280, 0.08, 0.95),
+        makeSpriteFrame('assets/items/blood_sample_3/blood_sample_3_02.png', 735, 1280, 0.08, 0.95),
+        makeSpriteFrame('assets/items/blood_sample_3/blood_sample_3_03.png', 578, 1280, 0.08, 0.95),
+      ],
+    },
+    // SECTION 22: ESCAPE NAVIGATOR — 1->2->3->4->5->1... looping key item,
+    // shared visual asset for both the MAIN and SECRET escape routes.
+    escapeNavigator: {
+      scaleMultiplier: 0.40,
+      frames: [
+        makeSpriteFrame('assets/items/escape_navigator/escape_navigator_01.png', 869, 1280, 0.05, 0.95),
+        makeSpriteFrame('assets/items/escape_navigator/escape_navigator_02.png', 729, 1280, 0.05, 0.95),
+        makeSpriteFrame('assets/items/escape_navigator/escape_navigator_03.png', 642, 1280, 0.05, 0.95),
+        makeSpriteFrame('assets/items/escape_navigator/escape_navigator_04.png', 614, 1280, 0.05, 0.95),
+        makeSpriteFrame('assets/items/escape_navigator/escape_navigator_05.png', 674, 1280, 0.05, 0.95),
+      ],
+    },
+  };
+
+  // Debug/verification only (section 26) — every one of the 66 new frames,
+  // flattened, for load/count/metadata checks. Never read by gameplay code.
+  function getAllNewCharacterItemFrames() {
+    const out = [];
+    ROID1_SPRITES.search.forEach((f) => out.push(f));
+    ROID1_SPRITES.fire.forEach((f) => out.push(f));
+    ROID2_SPRITES.search.forEach((f) => out.push(f));
+    ROID2_SPRITES.fire.forEach((f) => out.push(f));
+    Object.values(ADAM_SPRITES.idle).forEach((f) => out.push(f));
+    Object.values(ADAM_SPRITES.walk).forEach((arr) => arr.forEach((f) => out.push(f)));
+    Object.values(ADAM_SPRITES.defense).forEach((f) => out.push(f));
+    Object.values(ADAM_SPRITES.attack).forEach((f) => out.push(f));
+    out.push(ADAM_SPRITES.arcClaw, ADAM_SPRITES.straightClaw);
+    ADAM_SPHERE_SPRITES.forEach((f) => out.push(f));
+    Object.values(ITEM_SPRITES).forEach((group) => group.frames.forEach((f) => out.push(f)));
+    return out;
+  }
+  // ==========================================================================
+  // END DARK OUT PART 2 registries.
+  // ==========================================================================
+
   // SECTION C/D: official, untouched, non-AI-regenerated assets — exact
   // mapping per the request (1st image=SOUTH, 2nd=WEST, 3rd=EAST), visually
   // confirmed to already carry proper alpha transparency (no white
@@ -6604,6 +6894,9 @@
     BULLET_DAMAGE, // debug/verification only — PART 2: the reused normal-attack damage constant for SECURITY ROBOT's laser
     TRAINING_BACKGROUNDS, get currentStage() { return currentStage(); }, // debug/verification only — SECTION D (this turn)
     STAGE_REGISTRY, getStageRegistryEntry, // debug/verification only — DARK OUT PART 1
+    ROID1_SPRITES, ROID2_SPRITES, ADAM_SPRITES, ADAM_SPHERE_SPRITES, ITEM_SPRITES,
+    getAllNewCharacterItemFrames, computeBodyVisualScale, getAdamReferenceBodyHeightPx, getItemReferenceBodyHeightPx,
+    ROID_BODY_TARGET_HEIGHT, ADAM_SPHERE_TARGET_DIAMETER, makeSpriteFrame, // debug/verification only — DARK OUT PART 2
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
     STAGES,
     get currentStageIndex() { return currentStageIndex; },
