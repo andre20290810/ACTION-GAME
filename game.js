@@ -260,8 +260,11 @@
   // pressing it starts nothing" — sprite registries exist (PART 2) but no
   // AI/state-machine for these three yet (PART 4+), never a paywall.
   const BOSS_BATTLE_TARGETS = {
-    roid1: { stageId: 'boss_c1_roid1', label: 'ROID1', playable: false },
-    roid2: { stageId: 'boss_c2_roid2', label: 'ROID2', playable: false },
+    // DARK OUT PART 4: ROID1/ROID2 now have a real AI (spawnRoidBoss()/
+    // updateRoidBoss()/drawRoidBoss()) — flipped to playable. ADAM stays
+    // false (no AI yet, out of this PART's scope).
+    roid1: { stageId: 'boss_c1_roid1', label: 'ROID1', playable: true },
+    roid2: { stageId: 'boss_c2_roid2', label: 'ROID2', playable: true },
     gabriel: { stageId: 'boss_c3_gabriel', label: 'GABRIEL', playable: true },
     adam: { stageId: 'boss_c4_adam', label: 'ADAM', playable: false },
   };
@@ -1603,6 +1606,61 @@
     ],
   };
 
+  // DARK OUT PART 4: ROID1/ROID2 shared BOSS AI — one engine, two PROFILEs.
+  // Every value below is either reused verbatim from an existing constant
+  // (documented per-line why) or a documented first-pass estimate — never a
+  // fabricated number presented as measured.
+  //
+  // ROID_MAX_HP: MUST equal BOSS_HP_MAX exactly. drawBossLifeHud() (the
+  // existing, unmodified HP gauge) divides boss.hp by the hardcoded
+  // BOSS_HP_MAX constant with no boss.type branch — any other value here
+  // would silently desync ROID's own gauge fill from its real HP.
+  const ROID_MAX_HP = BOSS_HP_MAX;
+  // ROID_BULLET_DAMAGE: reuses BULLET_DAMAGE — the SAME constant DRONE's own
+  // laser already reuses for its enemy-fire damage (see
+  // resolveSecurityLaserHit()), rather than inventing a new number.
+  const ROID_BULLET_DAMAGE = BULLET_DAMAGE;
+  // ROID bullet speed reuses BULLET_SPEED (the player's own bullet speed,
+  // per the spec's own suggested reference value) directly at the point of
+  // use in fireRoidBullet() below — BULLET_SPEED itself is declared later in
+  // this file (with the player SHOT system), so it can't be captured into a
+  // top-level const here without a temporal-dead-zone error.
+  const ROID_SEARCH_FRAME_MS = 140; // ping-pong SEARCH frame hold — first-pass, tunable
+  const ROID_FIRE_FRAME_MS = 110; // ping-pong FIRE frame hold — first-pass, tunable
+  const ROID_BURST_SHOT_COUNT = 5;
+  const ROID_BURST_SHOT_INTERVAL_MS = 300;
+  const ROID_BURST_COOLDOWN_MS = 3000;
+  // Body-derived hurtbox — a fraction of the SAME target body height ROID's
+  // own draw already scales to (ROID_BODY_TARGET_HEIGHT), not GABRIEL's
+  // fixed BOSS_HURT_RADIUS (that constant is GABRIEL's own measured torso
+  // box and has no bearing on ROID's differently-proportioned silhouette).
+  // First-pass estimate (roughly torso-width for either mecha design),
+  // documented as tunable in the completion report.
+  const ROID_HURT_RADIUS = ROID_BODY_TARGET_HEIGHT * 0.32;
+  // Muzzle origin as a fraction of the CURRENTLY DRAWN (scaled) FIRE-frame
+  // bounding box — same shape as SECURITY_ROBOT_METRICS' muzzleFracX/Y,
+  // visually estimated from each profile's representative FIRE frame (see
+  // completion report) rather than a fixed pixel offset that would drift
+  // as the sprite scales.
+  const ROID_BOSS_PROFILES = {
+    roid1: {
+      type: 'roid1',
+      name: 'ROID1',
+      stageId: 'boss_c1_roid1',
+      sprites: ROID1_SPRITES,
+      muzzleFracX: 0.46,
+      muzzleFracY: 0.36,
+    },
+    roid2: {
+      type: 'roid2',
+      name: 'ROID2',
+      stageId: 'boss_c2_roid2',
+      sprites: ROID2_SPRITES,
+      muzzleFracX: 0.49,
+      muzzleFracY: 0.42,
+    },
+  };
+
   // ---------- ADAM ----------
   // SECTION 10/11: IDLE is the body-scale reference; WALK/DEFENSE/ATTACK for
   // a given direction are scaled to match THAT direction's own IDLE body
@@ -2074,6 +2132,14 @@
   const OPPOSITE_COMPASS = { north: 'south', south: 'north', east: 'west', west: 'east' };
 
   const boss = {
+    // DARK OUT PART 4: 'gabriel' | 'roid1' | 'roid2' — the ONE discriminator
+    // separating GABRIEL's own untouched engine (every field below this one,
+    // and every existing GABRIEL function) from the new ROID AI, which reads
+    // and writes only this field plus the separate `roidState`/`enemyBullets`
+    // additions further down. Always explicitly reset in spawnBoss() (to
+    // 'gabriel') and spawnRoidBoss() (to its own type) — never left stale
+    // from a previous fight.
+    type: 'gabriel',
     name: 'GABRIEL', // official display name — internal field so every player-visible label (WARNING banner, debug/aria text) reads from one source
     downFacing: 'south', // captured ONCE when a DOWN/CINEMATIC sequence begins (intro/threshold/dying) — see getCinematicImageInfo(); never mutated mid-sequence even if boss.dir changes underneath it
     x: 0, y: 0,
@@ -2159,6 +2225,26 @@
     dyingParticles: [],
   };
 
+  // DARK OUT PART 4: ROID-only ephemeral state, kept in its own small object
+  // rather than added to the shared `boss` literal above — none of these
+  // fields have any meaning for GABRIEL, and GABRIEL's own huge field list
+  // must not grow just to host them. spawnRoidBoss() resets every field
+  // fresh on each fight; exitBossBattle() also resets them so nothing leaks
+  // into the next BOSS BATTLE MODE session.
+  const roidState = {
+    profile: null, // one of ROID_BOSS_PROFILES' own entries — set by spawnRoidBoss()
+    searchFrame: 0, searchDir: 1, searchFrameElapsedMs: 0, // ping-pong index/direction/timer over profile.sprites.search
+    fireFrame: 0, fireDir: 1, fireFrameElapsedMs: 0, // ping-pong index/direction/timer over profile.sprites.fire
+    burstShotsFired: 0,
+    nextShotAt: 0,
+    cooldownUntil: 0,
+  };
+  // DARK OUT PART 4: ROID's own enemy-fire projectiles — a separate, minimal
+  // array from the player's own `bullets` (never mixed with it, so the
+  // PLAYER-bullet-vs-boss collision loop and this one can never cross-hit
+  // the wrong side). Mirrors spawnBullet()'s own {x,y,vx,vy,born} shape.
+  const enemyBullets = [];
+
   // Temporary local-verification aid (see the investigation into DARK PHASE
   // not triggering) — logs every boss.state transition through the single
   // function they all flow through. Disabled by default; flip to true only
@@ -2239,6 +2325,7 @@
   }
 
   function spawnBoss(now) {
+    boss.type = 'gabriel'; // DARK OUT PART 4: explicit every spawn — never left over from a previous ROID fight
     const areaTop = areaTopY(currentArea); // SECTION C: same relative composition in AREA 1 or AREA 2
     boss.x = W / 2;
     boss.introTargetY = areaTop + Math.max(BOSS_DRAW_H * 0.55, H * 0.16); // the normal resting spawn spot
@@ -2302,6 +2389,214 @@
   function isBossDamageImmune() {
     if (!boss.spawned || bossIsInCinematic()) return false;
     return boss.state === 'defense' || boss.state === 'straightclaw' || boss.state === 'darkphase' || boss.state === 'teleport';
+  }
+
+  // ==========================================================================
+  // DARK OUT PART 4: ROID1 / ROID2 shared BOSS AI.
+  // ==========================================================================
+  // Deliberately a SEPARATE spawn/update/draw path from GABRIEL's own
+  // (spawnBoss()/updateBoss()/drawBoss() above) — never a generalized/shared
+  // engine. GABRIEL's own functions are extended only with a minimal
+  // `boss.type !== 'gabriel'` dispatch at their very top (or, for the
+  // PLAYER-bullet-vs-boss collision loop, a parallel branch) — everything
+  // below this point is new code that GABRIEL's own combat never executes.
+  //
+  // State machine: 'search' (ping-pong SEARCH animation, no attack) ->
+  // 'firing' (ping-pong FIRE animation, one live-aimed bullet every
+  // ROID_BURST_SHOT_INTERVAL_MS, up to ROID_BURST_SHOT_COUNT) -> 'cooldown'
+  // (ROID_BURST_COOLDOWN_MS idle, SEARCH animation keeps playing) -> back to
+  // 'search'. STEALTH (now < player.stealthUntil) suppresses entry into
+  // FIRING from SEARCH, and interrupts an in-progress FIRING burst: if no
+  // shot has been fired yet this burst it returns to SEARCH (never "wastes"
+  // a cooldown for a burst that never actually fired); once at least one
+  // shot landed, it moves straight to COOLDOWN instead, same as a burst
+  // that finished normally.
+  function spawnRoidBoss(type) {
+    const profile = ROID_BOSS_PROFILES[type];
+    if (!profile) return; // never crash on an unplayable/unknown target — mirrors startBossBattle()'s own guard
+    boss.type = type;
+    boss.name = profile.name;
+    boss.spawned = true;
+    boss.hp = ROID_MAX_HP;
+    boss.state = 'search'; // no INTRO cinematic for ROID (spec section 32) — combat starts immediately
+    boss.stateEnteredAt = performance.now();
+    const areaTop = areaTopY(currentArea); // same fixed-composition reference spawnBoss() itself uses
+    boss.x = W / 2;
+    boss.y = areaTop + Math.max(BOSS_DRAW_H * 0.55, H * 0.16);
+    roidState.profile = profile;
+    roidState.searchFrame = 0; roidState.searchDir = 1; roidState.searchFrameElapsedMs = 0;
+    roidState.fireFrame = 0; roidState.fireDir = 1; roidState.fireFrameElapsedMs = 0;
+    roidState.burstShotsFired = 0;
+    roidState.nextShotAt = 0;
+    roidState.cooldownUntil = 0;
+    enemyBullets.length = 0;
+    // Same fixed reference pose spawnBoss() places the player into, minus
+    // the INTRO-only lockout fields (ROID has no cinematic to lock the
+    // player out for).
+    player.x = W * 0.50;
+    player.y = areaTop + H * 0.80;
+  }
+
+  // Ping-pong index/direction stepper shared by SEARCH and FIRE — bounces
+  // 0->last->0 instead of wrapping, matching the spec's "1->2->3->4->5->4->
+  // 3->2->1" sequencing for both frame families.
+  function stepPingPong(index, dir, len) {
+    if (len <= 1) return { index: 0, dir: 1 };
+    let next = index + dir;
+    let nextDir = dir;
+    if (next >= len) { next = len - 2 >= 0 ? len - 2 : 0; nextDir = -1; }
+    else if (next < 0) { next = Math.min(1, len - 1); nextDir = 1; }
+    return { index: next, dir: nextDir };
+  }
+
+  // SEARCH keeps ping-ponging continuously regardless of state (search,
+  // firing, or cooldown) — only FIRE's own animation is gated to the
+  // 'firing' state, since it has no meaning otherwise.
+  function updateRoidAnimation(dt) {
+    const profile = roidState.profile;
+    if (!profile) return;
+    roidState.searchFrameElapsedMs += dt * 1000;
+    if (roidState.searchFrameElapsedMs >= ROID_SEARCH_FRAME_MS) {
+      roidState.searchFrameElapsedMs = 0;
+      const step = stepPingPong(roidState.searchFrame, roidState.searchDir, profile.sprites.search.length);
+      roidState.searchFrame = step.index;
+      roidState.searchDir = step.dir;
+    }
+    if (boss.state === 'firing') {
+      roidState.fireFrameElapsedMs += dt * 1000;
+      if (roidState.fireFrameElapsedMs >= ROID_FIRE_FRAME_MS) {
+        roidState.fireFrameElapsedMs = 0;
+        const step = stepPingPong(roidState.fireFrame, roidState.fireDir, profile.sprites.fire.length);
+        roidState.fireFrame = step.index;
+        roidState.fireDir = step.dir;
+      }
+    } else {
+      roidState.fireFrame = 0; roidState.fireDir = 1; roidState.fireFrameElapsedMs = 0;
+    }
+  }
+
+  // Re-fetches the LIVE player position at the exact instant of firing
+  // (never the burst-start position) and spawns one bullet from the
+  // profile's own muzzle fraction against the CURRENTLY drawn (scaled)
+  // FIRE-frame bounding box — same formula as getSecurityRobotMuzzlePos().
+  function fireRoidBullet(now) {
+    const profile = roidState.profile;
+    if (!profile) return;
+    const frame = profile.sprites.fire[roidState.fireFrame];
+    const scale = computeBodyVisualScale(frame, ROID_BODY_TARGET_HEIGHT);
+    const drawW = frame.nativeW * scale, drawH = frame.nativeH * scale;
+    const drawX = boss.x - drawW / 2, drawY = boss.y - drawH / 2;
+    const muzzleX = drawX + drawW * profile.muzzleFracX;
+    const muzzleY = drawY + drawH * profile.muzzleFracY;
+    const angle = Math.atan2(player.y - muzzleY, player.x - muzzleX);
+    enemyBullets.push({
+      x: muzzleX, y: muzzleY,
+      vx: Math.cos(angle) * BULLET_SPEED, vy: Math.sin(angle) * BULLET_SPEED,
+      born: now,
+    });
+  }
+
+  function updateRoidBoss(dt, now) {
+    updateRoidAnimation(dt);
+    const stealthed = now < player.stealthUntil;
+    if (boss.state === 'search') {
+      if (!stealthed) {
+        boss.state = 'firing';
+        roidState.burstShotsFired = 0;
+        roidState.nextShotAt = now; // first shot fires immediately on entering FIRING (spec section 12)
+      }
+    } else if (boss.state === 'firing') {
+      if (stealthed) {
+        // Interrupted mid-burst: no shots fired yet -> back to SEARCH
+        // (never spend a cooldown on a burst that never actually fired);
+        // at least one shot already landed -> COOLDOWN, same as a burst
+        // that finished normally.
+        if (roidState.burstShotsFired <= 0) {
+          boss.state = 'search';
+        } else {
+          boss.state = 'cooldown';
+          roidState.cooldownUntil = now + ROID_BURST_COOLDOWN_MS;
+        }
+      } else if (now >= roidState.nextShotAt) {
+        fireRoidBullet(now);
+        roidState.burstShotsFired++;
+        if (roidState.burstShotsFired >= ROID_BURST_SHOT_COUNT) {
+          boss.state = 'cooldown';
+          roidState.cooldownUntil = now + ROID_BURST_COOLDOWN_MS;
+        } else {
+          roidState.nextShotAt = now + ROID_BURST_SHOT_INTERVAL_MS;
+        }
+      }
+    } else if (boss.state === 'cooldown') {
+      // Cooldown always runs to completion regardless of STEALTH — never
+      // rewound/extended by it (spec section 13).
+      if (now >= roidState.cooldownUntil) {
+        boss.state = 'search';
+      }
+    }
+  }
+
+  // ONE plain body hit — no DEFENSE/weak-point/point-blank-counter concepts
+  // exist for ROID (isBossDamageImmune() is already naturally false for
+  // every ROID state, satisfying that rule with zero extra code). Routes HP
+  // loss and death through the SAME BOSS BATTLE MODE defeat flow PART 3
+  // already built (the boss.state==='dead' check in update() below fires
+  // triggerBossBattleDefeat() automatically) — never GABRIEL's own
+  // checkBossHpMilestones()/startBossDying() cinematic-death path.
+  function applyBodyHitToRoidBoss(now) {
+    boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
+    bossDamageBlinkStartAt = now; // reuses the existing generic (boss-agnostic) hit-flash timestamp/compositing helper
+    if (boss.hp <= 0) {
+      boss.state = 'dead';
+    }
+  }
+
+  function updateEnemyBullets(dt, now) {
+    for (let i = enemyBullets.length - 1; i >= 0; i--) {
+      const b = enemyBullets[i];
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      if (b.x < -20 || b.x > W + 20 || b.y < cameraY - 20 || b.y > cameraY + H + 20) {
+        enemyBullets.splice(i, 1);
+        continue;
+      }
+      if (!isPlayerInvulnerable() && Math.hypot(b.x - player.x, b.y - player.y) <= PLAYER_HIT_RADIUS) {
+        applyDamageToPlayerLife(now, ROID_BULLET_DAMAGE);
+        enemyBullets.splice(i, 1);
+      }
+    }
+  }
+
+  function drawEnemyBullets() {
+    for (const b of enemyBullets) drawBullet(b); // same tracer visual as the player's own bullets
+  }
+
+  function drawRoidBoss(now) {
+    const profile = roidState.profile;
+    if (!profile) return;
+    const firing = boss.state === 'firing';
+    const frame = firing ? profile.sprites.fire[roidState.fireFrame] : profile.sprites.search[roidState.searchFrame];
+    if (!frame || !frame.ready || !frame.img || !frame.img.complete || frame.img.naturalWidth <= 0) return;
+    const scale = computeBodyVisualScale(frame, ROID_BODY_TARGET_HEIGHT);
+    const w = frame.nativeW * scale, h = frame.nativeH * scale;
+    // Bottom-anchored like GABRIEL's own draw: the body's own bottom edge
+    // (bodyBottomFrac) stays fixed at boss.y + half the body's target
+    // height, regardless of how much extra canvas (muzzle flash/etc.) a
+    // given frame carries above or below the body itself.
+    const dy = boss.y + ROID_BODY_TARGET_HEIGHT / 2 - frame.bodyBottomFrac * h;
+    const dx = boss.x - w / 2;
+    const blinkElapsed = now - bossDamageBlinkStartAt;
+    if (blinkElapsed >= 0 && blinkElapsed < BOSS_DAMAGE_BLINK_TOTAL_MS) {
+      const segment = Math.floor(blinkElapsed / BOSS_HIT_TINT_MS);
+      if (segment % 2 === 0) {
+        const tWithinHalf = 1 - (blinkElapsed % BOSS_HIT_TINT_MS) / BOSS_HIT_TINT_MS;
+        drawBossWithHitTint(frame.img, dx, dy, w, h, tWithinHalf);
+      } else {
+        ctx.drawImage(frame.img, dx, dy, w, h);
+      }
+    } else {
+      ctx.drawImage(frame.img, dx, dy, w, h);
+    }
   }
 
   // PART 8 / SECTION B: scoped to the whole boss-appearance window — from
@@ -3172,6 +3467,11 @@
     // GABRIEL into a supposedly boss-free STAGE once the old timer elapsed.
     if (!boss.spawned) return;
     if (boss.state === 'dead') return;
+    // DARK OUT PART 4: ROID1/ROID2 use a completely separate state machine
+    // (updateRoidBoss()) — dispatched here, immediately after the shared
+    // spawned/dead guards above, so GABRIEL's own CHASE/ATTACK/DEFENSE/
+    // DARK PHASE/etc. code below this line never runs for a ROID fight.
+    if (boss.type !== 'gabriel') { updateRoidBoss(dt, now); return; }
     // Cinematic sequences each own their own progression/timing entirely —
     // see updateBossIntro/Threshold/Dying() — and never fall through to the
     // normal CHASE/ATTACK/DEFENSE/RECOVER AI below.
@@ -5809,6 +6109,11 @@
     bossBattleState.defeatHandled = false;
     if (bossBattleState.target === 'gabriel') {
       spawnBoss(performance.now());
+    } else if (bossBattleState.target === 'roid1' || bossBattleState.target === 'roid2') {
+      // DARK OUT PART 4: same "always spawns whichever target is active"
+      // shape as the GABRIEL branch above — never STORY_STAGE_PLAN/
+      // BOSS_ENCOUNTER_BARREL_COUNTS, which this function must not read.
+      spawnRoidBoss(bossBattleState.target);
     }
   }
 
@@ -5865,6 +6170,12 @@
     bossBattleDefeatRemainingMs = 0;
     boss.spawned = false;
     boss.state = 'inactive';
+    boss.type = 'gabriel'; // DARK OUT PART 4: never leaves a stale ROID type behind for the next fight
+    roidState.profile = null;
+    roidState.burstShotsFired = 0;
+    roidState.nextShotAt = 0;
+    roidState.cooldownUntil = 0;
+    enemyBullets.length = 0;
     bullets.length = 0;
     arcClawSlashes.length = 0;
     explosions.length = 0;
@@ -7141,6 +7452,12 @@
     BOSS_BATTLE_TARGETS, bossBattleState, startBossBattle, exitBossBattle,
     get bossBattleDefeatRemainingMs() { return bossBattleDefeatRemainingMs; }, // debug/verification only — DARK OUT PART 3
     getGabrielCombatEncounterIndex, GABRIEL_ENCOUNTER_3_INDEX, // debug/verification only — DARK OUT PART 3.5
+    // Debug/verification only — DARK OUT PART 4: ROID1/ROID2 shared BOSS AI.
+    spawnRoidBoss, updateRoidBoss, drawRoidBoss, applyBodyHitToRoidBoss,
+    roidState, enemyBullets, updateEnemyBullets, fireRoidBullet,
+    ROID_BOSS_PROFILES, ROID_MAX_HP, ROID_BULLET_DAMAGE, ROID_HURT_RADIUS,
+    ROID_BURST_SHOT_COUNT, ROID_BURST_SHOT_INTERVAL_MS, ROID_BURST_COOLDOWN_MS,
+    ROID_SEARCH_FRAME_MS, ROID_FIRE_FRAME_MS,
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
     STAGES,
     get currentStageIndex() { return currentStageIndex; },
@@ -7648,7 +7965,7 @@
       // at all for the whole sequence — bullets simply pass through, same
       // as if it weren't spawned. SECTION C: DARK PHASE's own fully-hidden
       // window is the same — no hitbox at all until the mask reappears.
-      if (boss.spawned && boss.state !== 'dead' && boss.state !== 'teleport' && !isDarkPhaseHidden()) {
+      if (boss.spawned && boss.type === 'gabriel' && boss.state !== 'dead' && boss.state !== 'teleport' && !isDarkPhaseHidden()) {
         // Genuine physical hitbox overlap only — never inferred from "same
         // direction as the sprite". getWeakPointScreenPos returns null for
         // a direction with no visible eye (NORTH), so a bullet can never
@@ -7679,6 +7996,15 @@
             applyBodyHitToBoss(now, b.x, b.y, b.vx, b.vy, b.autoAimedBoss);
             consumed = true;
           }
+        }
+      } else if (boss.spawned && boss.type !== 'gabriel' && boss.state !== 'dead') {
+        // DARK OUT PART 4: ROID1/ROID2 — no DEFENSE/weak-point/point-blank-
+        // counter concepts, just a plain body-hitbox check against a
+        // body-visual-derived radius (never GABRIEL's fixed BOSS_HURT_RADIUS).
+        if (Math.hypot(b.x - boss.x, b.y - boss.y) <= ROID_HURT_RADIUS) {
+          shotsHit++;
+          applyBodyHitToRoidBoss(now);
+          consumed = true;
         }
       }
       if (!consumed) {
@@ -7731,6 +8057,7 @@
     updateScreenFlashes(dt);
     updateStealth(dt, now);
     updateBoss(dt, now);
+    updateEnemyBullets(dt, now); // DARK OUT PART 4: ROID's own fire — a separate array/loop from the player's own `bullets`, see updateEnemyBullets()
     updateArcClawSlashes(now);
 
     // DARK OUT PART 3 SECTION 16: detect GABRIEL's defeat inside BOSS
@@ -7963,6 +8290,7 @@
 
     // bullets
     for (const b of bullets) drawBullet(b);
+    drawEnemyBullets(); // DARK OUT PART 4: ROID's own fire, same tracer visual
     drawFlashGrenade();
 
     // ARC CLAW SLASH / CLAW STING draw alongside the player's own bullets.
@@ -8409,6 +8737,10 @@
     // 'dead' is the true terminal state, reached only after DYING's particle
     // dissolve finishes — there is nothing left to draw by then.
     if (boss.state === 'dead') return;
+    // DARK OUT PART 4: ROID1/ROID2 use their own draw path entirely — never
+    // GABRIEL's cinematic-state dispatch or its fixed BOSS_DRAW_W/H frame
+    // draw below.
+    if (boss.type !== 'gabriel') { drawRoidBoss(now); return; }
     if (boss.state === 'intro') { drawBossIntro(now); return; }
     if (boss.state === 'threshold') { drawBossThreshold(now); return; }
     if (boss.state === 'dying') { drawBossDying(now); return; }
