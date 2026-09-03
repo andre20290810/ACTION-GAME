@@ -261,13 +261,26 @@
   // AI/state-machine for these three yet (PART 4+), never a paywall.
   const BOSS_BATTLE_TARGETS = {
     // DARK OUT PART 4: ROID1/ROID2 now have a real AI (spawnRoidBoss()/
-    // updateRoidBoss()/drawRoidBoss()) — flipped to playable. ADAM stays
-    // false (no AI yet, out of this PART's scope).
+    // updateRoidBoss()/drawRoidBoss()) — flipped to playable.
+    // DARK OUT PART 5: ADAM now shares GABRIEL's own combat engine
+    // (spawnBoss(now,'adam')/updateBoss()/drawBoss()) — flipped to playable.
     roid1: { stageId: 'boss_c1_roid1', label: 'ROID1', playable: true },
     roid2: { stageId: 'boss_c2_roid2', label: 'ROID2', playable: true },
     gabriel: { stageId: 'boss_c3_gabriel', label: 'GABRIEL', playable: true },
-    adam: { stageId: 'boss_c4_adam', label: 'ADAM', playable: false },
+    adam: { stageId: 'boss_c4_adam', label: 'ADAM', playable: true },
   };
+  // DARK OUT PART 5 SECTION 1/26: the ONE pair of type-family predicates
+  // every dispatcher below reads — introduced specifically to retire PART
+  // 4's own `boss.type !== 'gabriel'` checks, which were correct only while
+  // 'gabriel'/'roid1'/'roid2' were the only three types and silently swept
+  // ADAM into the ROID branch once added. Never expand these into a larger
+  // class hierarchy — just the two flat membership checks the spec asks for.
+  function isRoidBossType(type) {
+    return type === 'roid1' || type === 'roid2';
+  }
+  function isGabrielFamilyBossType(type) {
+    return type === 'gabriel' || type === 'adam';
+  }
   const bossBattleState = {
     target: null, // one of BOSS_BATTLE_TARGETS' own keys, or null when no fight is active
     stageId: null, // mirrors BOSS_BATTLE_TARGETS[target].stageId — the ONE thing currentStage() below reads while active
@@ -307,6 +320,16 @@
   // those all keep reading the raw bossEncounterIndex directly, unchanged.
   function getGabrielCombatEncounterIndex() {
     if (bossBattleState.active && bossBattleState.target === 'gabriel') {
+      return GABRIEL_ENCOUNTER_3_INDEX;
+    }
+    // DARK OUT PART 5 SECTION 8/9: ADAM always evaluates as "GABRIEL
+    // ENCOUNTER 3 equivalent" (full DARK PHASE/difficulty profile) —
+    // unconditional on boss.type alone (never STORY-progression-gated, and
+    // ADAM never has its own bossEncounterIndex to read), so every existing
+    // caller of this one accessor (DARK PHASE trigger/guarantee, ENCOUNTER-
+    // 3-forced-STUN, chase-speed/attack-frequency difficulty multipliers)
+    // picks it up with no further changes.
+    if (boss.type === 'adam') {
       return GABRIEL_ENCOUNTER_3_INDEX;
     }
     return bossEncounterIndex;
@@ -653,6 +676,12 @@
   // see startBossThreshold()/startBossDying()/spawnBoss()). SOUTH uses the
   // original front pose; NORTH/EAST/WEST all share the one back pose.
   function getCinematicImageInfo() {
+    // DARK OUT PART 5 SECTION 22/27: ADAM has no cinematic-pose photo of its
+    // own — see getAdamCinematicImageInfo()'s own comment for why its IDLE
+    // frame is the right substitute. Dispatched here so every existing
+    // caller (drawBossIntro/drawBossThreshold/drawBossDying/
+    // drawBossFlashDown/buildDyingParticles) needs no changes at all.
+    if (boss.type === 'adam') return getAdamCinematicImageInfo();
     if (boss.downFacing === 'south') {
       return {
         img: cinematicPoseImg, w: CINEMATIC_DRAW_W, h: CINEMATIC_DRAW_H,
@@ -1730,6 +1759,148 @@
     return (idle.bodyBottomFrac - idle.bodyTopFrac) * idle.nativeH;
   }
 
+  // ==========================================================================
+  // DARK OUT PART 5: ADAM shares GABRIEL's own combat engine wholesale — this
+  // block is ONLY visual-resolution helpers (which ADAM sprite/geometry
+  // corresponds to a given GABRIEL-driven logical state), never a second
+  // combat implementation. See spawnBoss(now,'adam')/isGabrielFamilyBossType()
+  // for the actual wiring into GABRIEL's shared updateBoss()/drawBoss().
+  // ==========================================================================
+
+  // Same target on-screen body height GABRIEL's own canvas is normalized to
+  // (BOSS_DRAW_H) — same reasoning as ROID_BODY_TARGET_HEIGHT above: ADAM's
+  // body should read as "about the same size as GABRIEL", not its own
+  // invented scale.
+  const ADAM_BODY_TARGET_HEIGHT = BOSS_DRAW_H;
+
+  // WALK ping-pong... no — WALK is a plain 1->2->3->1 WRAP (spec section 12),
+  // same shape as GABRIEL's own south/north 3-frame wrap (bossFrameName()),
+  // just applied to all 4 directions (GABRIEL's own east/west wrap only 2).
+  // Reuses the SAME period constants GABRIEL's own walk cycle already uses
+  // per direction (south slightly slower than north/east/west) rather than
+  // inventing new ones — spec section 12's own "既存値を再利用する" default.
+  function adamWalkFrameIndex(now, dirKey) {
+    const period = dirKey === 'south' ? SOUTH_WALK_FRAME_PERIOD_MS : WALK_FRAME_PERIOD_MS;
+    return Math.floor(now / period) % 3;
+  }
+
+  // Maps bossFrameName()'s logical name (driven entirely by boss.state/
+  // boss.dir/boss.defenseDir/boss.counterDir — identical for GABRIEL and
+  // ADAM, since it's shared combat state, not a GABRIEL-specific field) to
+  // the ADAM_SPRITES frame that carries "the same meaning" (spec section 11/
+  // 13/14: IDLE<->neutral, WALK<->moving, DEFENSE<->defenseDir, ATTACK<->
+  // attack/preattack/counter telegraph or release). ADAM has no separate
+  // windup-crouch or STING body pose (only one ATTACK STANCE image per
+  // direction — section 5's asset list), so straight_claw_windup/_release
+  // both reuse the south ATTACK STANCE — the same "one shared telegraph
+  // pose regardless of exact sub-moment" simplification bossFrameName()
+  // itself already applies to GABRIEL's own windup (see its own comment:
+  // "only 1 windup image exists").
+  function resolveAdamBossFrame(name, now) {
+    if (name === 'south_idle') return ADAM_SPRITES.idle.south;
+    if (name === 'north_idle') return ADAM_SPRITES.idle.north;
+    if (name === 'east_idle') return ADAM_SPRITES.idle.east;
+    if (name === 'west_idle') return ADAM_SPRITES.idle.west;
+    if (name === 'walk_south_1' || name === 'walk_south_2' || name === 'walk_south_3') {
+      return ADAM_SPRITES.walk.south[adamWalkFrameIndex(now, 'south')];
+    }
+    if (name === 'walk_north_1' || name === 'walk_north_2' || name === 'walk_north_3') {
+      return ADAM_SPRITES.walk.north[adamWalkFrameIndex(now, 'north')];
+    }
+    // GABRIEL's own east/west WALK is only a 2-frame alternation (its own
+    // art), but ADAM has a real 3-frame east/west WALK (section 12) — the
+    // exact frame count in the LOGICAL name (walk_east_1/_2) is ignored here
+    // on purpose; adamWalkFrameIndex() recomputes ADAM's own 3-way index
+    // fresh from `now` rather than trusting a name built for GABRIEL's
+    // 2-frame art.
+    if (name === 'walk_east_1' || name === 'walk_east_2') {
+      return ADAM_SPRITES.walk.east[adamWalkFrameIndex(now, 'east')];
+    }
+    if (name === 'walk_west_1' || name === 'walk_west_2') {
+      return ADAM_SPRITES.walk.west[adamWalkFrameIndex(now, 'west')];
+    }
+    if (name === 'defense_south') return ADAM_SPRITES.defense.south;
+    if (name === 'defense_north') return ADAM_SPRITES.defense.north;
+    if (name === 'defense_east') return ADAM_SPRITES.defense.east;
+    if (name === 'defense_west') return ADAM_SPRITES.defense.west;
+    if (name === 'attack_north') return ADAM_SPRITES.attack.north;
+    if (name === 'attack_south_release') return ADAM_SPRITES.attack.south;
+    if (name === 'attack_east_release') return ADAM_SPRITES.attack.east;
+    if (name === 'attack_west_release') return ADAM_SPRITES.attack.west;
+    if (name === 'preattack_south') return ADAM_SPRITES.attack.south;
+    if (name === 'straight_claw_windup') return ADAM_SPRITES.attack.south;
+    if (name === 'straight_claw_release') return ADAM_SPRITES.attack.south;
+    return ADAM_SPRITES.idle.south; // never crash on an unrecognized name — a safe, visible fallback
+  }
+
+  // DARK OUT PART 5 SECTION 27: the INTRO/THRESHOLD/DYING/FLASH DOWN
+  // cinematic sequences all draw through this ONE function (getCinematic-
+  // ImageInfo()) — dispatching here keeps every one of those draw functions
+  // (drawBossIntro/drawBossThreshold/drawBossDying/drawBossFlashDown/
+  // buildDyingParticles) completely unmodified; they just keep calling
+  // getCinematicImageInfo() and get ADAM's own art back. ADAM has no
+  // dedicated "cinematic pose" photo (unlike GABRIEL's two hand-tuned
+  // front/back photographs) — its own south/downFacing IDLE frame is the
+  // closest existing "just standing there" equivalent (spec section 22's own
+  // "専用body画像は新規生成しない" applies equally well here), scaled via the
+  // SAME body-visual metadata/target-height convention as every other ADAM
+  // pose, anchored so its feet land at the same relative spot GABRIEL's own
+  // front-pose (offX=offY=0) anchor does.
+  function getAdamCinematicImageInfo() {
+    const frame = ADAM_SPRITES.idle[boss.downFacing] || ADAM_SPRITES.idle.south;
+    const scale = computeBodyVisualScale(frame, CINEMATIC_DRAW_H);
+    const w = frame.nativeW * scale, h = frame.nativeH * scale;
+    // Solve for the offY that makes the shared `boss.y - h/2 + offY` draw
+    // formula (used verbatim by every GABRIEL cinematic draw call site)
+    // land the body's own bottom edge (bodyBottomFrac) at boss.y +
+    // CINEMATIC_DRAW_H/2 — the same bottom-anchor convention every other
+    // ADAM pose uses.
+    const offY = CINEMATIC_DRAW_H / 2 - frame.bodyBottomFrac * h + h / 2;
+    return { img: frame.img, w, h, offX: 0, offY };
+  }
+
+  // DARK OUT PART 5 SECTION 15-19: ADAM's own ARC CLAW / STRAIGHT CLAW
+  // attack-object art. Computed lazily (called only from inside
+  // drawArcClawImage() below, never captured into a top-level const) since
+  // ADAM_SPRITES's own frame objects need to already exist. TIP_LOCAL/
+  // baseTipAngle/diag mirror exactly what GABRIEL's own ARC_CLAW_TIP_LOCAL/
+  // ARC_CLAW_BASE_TIP_ANGLE/ARC_CLAW_IMG_DIAG represent for arc_claw_slash.png
+  // (a local "tip" anchor point + the local orientation angle of the tip-
+  // pointing axis + a tip-to-base reference length used to normalize on-
+  // screen size) — determined here by directly viewing each PNG (same
+  // methodology PART 4 used for ROID's own muzzle fractions), not measured
+  // pixel-for-pixel, so documented as a first-pass, tunable estimate:
+  // - adam_straight_claw.png: a vertical claw/arm shape, wrist at the top,
+  //   talons fanning out at the very bottom — matches spec section 18's own
+  //   "画像内で下方向へ伸びている爪先側" description literally, so its tip is
+  //   bottom-center and its local orientation is straight down (90°).
+  // - adam_arc_claw.png: a diagonal sweep (thin claw-tip streaks lower-left,
+  //   wide base upper-right) — visually the same composition as GABRIEL's
+  //   own arc_claw_slash.png, so it reuses GABRIEL's own measured
+  //   ARC_CLAW_BASE_TIP_ANGLE (~135°, pointing down-left) rather than a
+  //   fresh angle, with its tip placed near the image's own bottom-left
+  //   corner (where the claw streaks visibly converge) and diag = its own
+  //   corner-to-corner canvas diagonal (matching how GABRIEL's own DIAG was
+  //   defined for a corner-to-corner composition).
+  function getAdamClawMetrics(kind) {
+    const isStraightLine = kind === 'sting' || kind === 'straightClaw';
+    const frame = isStraightLine ? ADAM_SPRITES.straightClaw : ADAM_SPRITES.arcClaw;
+    if (isStraightLine) {
+      return {
+        frame,
+        tipLocal: { x: frame.nativeW / 2, y: frame.nativeH * 0.99 },
+        diag: frame.nativeH,
+        baseTipAngle: Math.PI / 2,
+      };
+    }
+    return {
+      frame,
+      tipLocal: { x: frame.nativeW * 0.06, y: frame.nativeH * 0.99 },
+      diag: Math.hypot(frame.nativeW, frame.nativeH),
+      baseTipAngle: ARC_CLAW_BASE_TIP_ANGLE,
+    };
+  }
+
   // ---------- ADAM SPHERE ----------
   // SECTION 17: target diameter = DRONE's own existing visible diameter x2
   // — SECURITY_ROBOT_DRAW_D IS that diameter (the constant every DRONE frame
@@ -2324,8 +2495,17 @@
     }
   }
 
-  function spawnBoss(now) {
-    boss.type = 'gabriel'; // DARK OUT PART 4: explicit every spawn — never left over from a previous ROID fight
+  // DARK OUT PART 5 SECTION 2/31: `type` defaults to 'gabriel' so every
+  // EXISTING call site (STORY's enterStoryStage(), BOSS BATTLE's own GABRIEL
+  // branch) — all of which call spawnBoss(now) with exactly one argument —
+  // keeps spawning GABRIEL byte-for-byte as before. ADAM shares this exact
+  // function (never a copied spawnAdamBoss()) since its whole point is
+  // "the same combat engine, just boss.type/boss.name/visuals differ" — see
+  // enterBossBattleStage()'s own 'adam' branch, the only caller that ever
+  // passes 'adam' here.
+  function spawnBoss(now, type) {
+    boss.type = type || 'gabriel';
+    boss.name = boss.type === 'adam' ? 'ADAM' : 'GABRIEL';
     const areaTop = areaTopY(currentArea); // SECTION C: same relative composition in AREA 1 or AREA 2
     boss.x = W / 2;
     boss.introTargetY = areaTop + Math.max(BOSS_DRAW_H * 0.55, H * 0.16); // the normal resting spawn spot
@@ -3471,7 +3651,7 @@
     // (updateRoidBoss()) — dispatched here, immediately after the shared
     // spawned/dead guards above, so GABRIEL's own CHASE/ATTACK/DEFENSE/
     // DARK PHASE/etc. code below this line never runs for a ROID fight.
-    if (boss.type !== 'gabriel') { updateRoidBoss(dt, now); return; }
+    if (isRoidBossType(boss.type)) { updateRoidBoss(dt, now); return; }
     // Cinematic sequences each own their own progression/timing entirely —
     // see updateBossIntro/Threshold/Dying() — and never fall through to the
     // normal CHASE/ATTACK/DEFENSE/RECOVER AI below.
@@ -4011,7 +4191,35 @@
   // The attack's actual body: the supplied claw image, rotated so its own
   // tip<->base axis lines up with `angle` (already tangent-corrected by the
   // caller — see ARC_CLAW_BASE_TIP_ANGLE in updateArcClawSlashes()).
-  function drawArcClawImage(x, y, angle, mirrored, alpha) {
+  function drawArcClawImage(x, y, angle, mirrored, alpha, kind) {
+    // DARK OUT PART 5 SECTION 15-19: ADAM uses its own claw art here — same
+    // rotation/translate/mirror call shape, logic untouched, only the image/
+    // local-tip-anchor/reference-length differ (see getAdamClawMetrics()).
+    if (boss.type === 'adam') {
+      const m = getAdamClawMetrics(kind);
+      if (!m.frame.ready) return;
+      const isStraightLine = kind === 'sting' || kind === 'straightClaw';
+      // ARC CLAW's own baseTipAngle is GABRIEL's exact ARC_CLAW_BASE_TIP_ANGLE
+      // (chosen deliberately, see getAdamClawMetrics()'s comment), so the
+      // `angle` passed in — already `travelAngle - gabrielBaseTip(mirrored)`
+      // — needs no further change. STRAIGHT CLAW's own baseTipAngle (a
+      // constant 90°, unlike GABRIEL's own mirror-dependent pair) has to be
+      // re-targeted: recover the pure travel angle GABRIEL's own value was
+      // built from, then reapply ADAM's own constant offset instead.
+      const drawAngle = isStraightLine
+        ? (angle + (mirrored ? ARC_CLAW_BASE_TIP_ANGLE_FLIPPED : ARC_CLAW_BASE_TIP_ANGLE)) - m.baseTipAngle
+        : angle;
+      const scale = ARC_CLAW_DRAW_LENGTH / m.diag;
+      const drawW = m.frame.nativeW * scale, drawH = m.frame.nativeH * scale;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(x, y);
+      ctx.rotate(drawAngle);
+      if (mirrored) ctx.scale(-1, 1);
+      ctx.drawImage(m.frame.img, -m.tipLocal.x * scale, -m.tipLocal.y * scale, drawW, drawH);
+      ctx.restore();
+      return;
+    }
     if (!arcClawImgReady) return;
     const drawW = arcClawImg.naturalWidth * ARC_CLAW_DRAW_SCALE;
     const drawH = arcClawImg.naturalHeight * ARC_CLAW_DRAW_SCALE;
@@ -4088,9 +4296,9 @@
       const sample = s.trail[i];
       const a = i / Math.max(1, n);
       drawArcClawCrescentTrail(sample.x, sample.y, sample.tangentAngle, s.mirrored, 0.08 + 0.10 * a);
-      drawArcClawImage(sample.x, sample.y, sample.angle, s.mirrored, 0.18 + 0.24 * a);
+      drawArcClawImage(sample.x, sample.y, sample.angle, s.mirrored, 0.18 + 0.24 * a, s.kind);
     }
-    drawArcClawImage(s.x, s.y, s.angle, s.mirrored, 1);
+    drawArcClawImage(s.x, s.y, s.angle, s.mirrored, 1, s.kind);
   }
 
   // ---------- Game mode / PAUSE ----------
@@ -6109,6 +6317,13 @@
     bossBattleState.defeatHandled = false;
     if (bossBattleState.target === 'gabriel') {
       spawnBoss(performance.now());
+    } else if (bossBattleState.target === 'adam') {
+      // DARK OUT PART 5: ADAM shares GABRIEL's own spawnBoss()/updateBoss()/
+      // drawBoss() engine wholesale (see section 2's "同じ単一bossオブジェ
+      // クトを共有する" design) — same INTRO/BOSS ARRIVAL sequence, same
+      // HP/difficulty, just a different boss.type/boss.name and (via the
+      // sprite-resolver additions below) different visuals.
+      spawnBoss(performance.now(), 'adam');
     } else if (bossBattleState.target === 'roid1' || bossBattleState.target === 'roid2') {
       // DARK OUT PART 4: same "always spawns whichever target is active"
       // shape as the GABRIEL branch above — never STORY_STAGE_PLAN/
@@ -7458,6 +7673,10 @@
     ROID_BOSS_PROFILES, ROID_MAX_HP, ROID_BULLET_DAMAGE, ROID_HURT_RADIUS,
     ROID_BURST_SHOT_COUNT, ROID_BURST_SHOT_INTERVAL_MS, ROID_BURST_COOLDOWN_MS,
     ROID_SEARCH_FRAME_MS, ROID_FIRE_FRAME_MS,
+    // Debug/verification only — DARK OUT PART 5: ADAM/GABRIEL shared combat.
+    isRoidBossType, isGabrielFamilyBossType,
+    resolveAdamBossFrame, adamWalkFrameIndex, getAdamCinematicImageInfo, getAdamClawMetrics,
+    ADAM_BODY_TARGET_HEIGHT,
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
     STAGES,
     get currentStageIndex() { return currentStageIndex; },
@@ -7965,7 +8184,7 @@
       // at all for the whole sequence — bullets simply pass through, same
       // as if it weren't spawned. SECTION C: DARK PHASE's own fully-hidden
       // window is the same — no hitbox at all until the mask reappears.
-      if (boss.spawned && boss.type === 'gabriel' && boss.state !== 'dead' && boss.state !== 'teleport' && !isDarkPhaseHidden()) {
+      if (boss.spawned && isGabrielFamilyBossType(boss.type) && boss.state !== 'dead' && boss.state !== 'teleport' && !isDarkPhaseHidden()) {
         // Genuine physical hitbox overlap only — never inferred from "same
         // direction as the sprite". getWeakPointScreenPos returns null for
         // a direction with no visible eye (NORTH), so a bullet can never
@@ -7997,7 +8216,7 @@
             consumed = true;
           }
         }
-      } else if (boss.spawned && boss.type !== 'gabriel' && boss.state !== 'dead') {
+      } else if (boss.spawned && isRoidBossType(boss.type) && boss.state !== 'dead') {
         // DARK OUT PART 4: ROID1/ROID2 — no DEFENSE/weak-point/point-blank-
         // counter concepts, just a plain body-hitbox check against a
         // body-visual-derived radius (never GABRIEL's fixed BOSS_HURT_RADIUS).
@@ -8740,7 +8959,7 @@
     // DARK OUT PART 4: ROID1/ROID2 use their own draw path entirely — never
     // GABRIEL's cinematic-state dispatch or its fixed BOSS_DRAW_W/H frame
     // draw below.
-    if (boss.type !== 'gabriel') { drawRoidBoss(now); return; }
+    if (isRoidBossType(boss.type)) { drawRoidBoss(now); return; }
     if (boss.state === 'intro') { drawBossIntro(now); return; }
     if (boss.state === 'threshold') { drawBossThreshold(now); return; }
     if (boss.state === 'dying') { drawBossDying(now); return; }
@@ -8749,42 +8968,62 @@
 
     const name = bossFrameName(now);
     window.__game.bossFrame = name; // debug/verification only
-    const img = bossSprites[name];
     let bounce = 0;
     if (boss.moving && DIR_TO_BOSS_KEY[boss.dir] === 'north') {
       bounce = Math.sin(now / 120) * NORTH_BOUNCE_AMPLITUDE;
     }
-    // Per-frame visual-only scale — never touches the hurtbox/hitbox, only
-    // the drawn size. SOUTH WALK reads a little small next to the other
-    // directions (110%); PRE_ATTACK's reused older art reads a little
-    // small for its dramatic telegraph moment (113%). Both scale up from
-    // the sprite's BOTTOM edge (feet) so the boss never visibly jumps or
-    // grows from its center when the frame changes — only the top extends.
-    let scale = 1;
-    if (name === 'walk_south_1' || name === 'walk_south_2' || name === 'walk_south_3' || name === 'south_idle') scale = SOUTH_WALK_SCALE;
-    else if (name === 'preattack_south') scale = PRE_ATTACK_SCALE;
-    // NORTH_IDLE_SCALE applies uniformly to north_idle AND the 3 new walk
-    // frames (same reasoning as SOUTH_WALK_SCALE covering all 4 south
-    // frames above) — the walk frames were scale-matched to north_idle's
-    // OWN canvas measurements during processing, so without this shared
-    // multiplier they'd visibly shrink 10% the instant NORTH starts moving.
-    else if (name === 'north_idle' || name === 'walk_north_1' || name === 'walk_north_2' || name === 'walk_north_3') scale = NORTH_IDLE_SCALE;
-    else if (name === 'attack_north') scale = NORTH_ATTACK_SCALE;
-    else if (name === 'attack_south_release') scale = SOUTH_ATTACK_SCALE;
-    // COUNTER windup/release now use DIFFERENT scales — real-device
-    // feedback said windup read too small and release too large, in
-    // opposite directions. Scaling via this same shared mechanism scales
-    // from the sprite's own BOTTOM edge (see the comment above), so the
-    // ground anchor/attack position are unaffected either way — only the
-    // drawn height/width change. attack_north/attack_east_release/
-    // attack_west_release and north_idle (all shown instead of these for a
-    // north/east/west COUNTER ATTACK — see bossFrameName()) keep their own
-    // existing scale untouched, matching how they already look during a
-    // normal ARC CLAW SLASH attack or normal idle.
-    else if (name === 'straight_claw_windup') scale = COUNTER_WINDUP_SCALE;
-    else if (name === 'straight_claw_release') scale = COUNTER_STING_SCALE;
+    // DARK OUT PART 5 SECTION 6/11-14: ADAM draws through its own body-
+    // visual-metadata-scaled frame (resolveAdamBossFrame()/
+    // computeBodyVisualScale()) instead of GABRIEL's fixed BOSS_DRAW_W/H +
+    // per-name scale table below — GABRIEL's own art is pre-normalized to
+    // fill its shared canvas edge-to-edge (so a flat scale table works for
+    // it), but ADAM's PNGs vary wildly in canvas size/margins per PART 2's
+    // own investigation, so it needs the same per-frame body-height
+    // normalization ROID already uses. GABRIEL's own resolution path below
+    // is completely untouched.
+    let img, w, h;
+    if (boss.type === 'adam') {
+      const frame = resolveAdamBossFrame(name, now);
+      if (frame && frame.ready) {
+        const adamScale = computeBodyVisualScale(frame, ADAM_BODY_TARGET_HEIGHT);
+        img = frame.img;
+        w = frame.nativeW * adamScale;
+        h = frame.nativeH * adamScale;
+      }
+    } else {
+      img = bossSprites[name];
+      // Per-frame visual-only scale — never touches the hurtbox/hitbox, only
+      // the drawn size. SOUTH WALK reads a little small next to the other
+      // directions (110%); PRE_ATTACK's reused older art reads a little
+      // small for its dramatic telegraph moment (113%). Both scale up from
+      // the sprite's BOTTOM edge (feet) so the boss never visibly jumps or
+      // grows from its center when the frame changes — only the top extends.
+      let scale = 1;
+      if (name === 'walk_south_1' || name === 'walk_south_2' || name === 'walk_south_3' || name === 'south_idle') scale = SOUTH_WALK_SCALE;
+      else if (name === 'preattack_south') scale = PRE_ATTACK_SCALE;
+      // NORTH_IDLE_SCALE applies uniformly to north_idle AND the 3 new walk
+      // frames (same reasoning as SOUTH_WALK_SCALE covering all 4 south
+      // frames above) — the walk frames were scale-matched to north_idle's
+      // OWN canvas measurements during processing, so without this shared
+      // multiplier they'd visibly shrink 10% the instant NORTH starts moving.
+      else if (name === 'north_idle' || name === 'walk_north_1' || name === 'walk_north_2' || name === 'walk_north_3') scale = NORTH_IDLE_SCALE;
+      else if (name === 'attack_north') scale = NORTH_ATTACK_SCALE;
+      else if (name === 'attack_south_release') scale = SOUTH_ATTACK_SCALE;
+      // COUNTER windup/release now use DIFFERENT scales — real-device
+      // feedback said windup read too small and release too large, in
+      // opposite directions. Scaling via this same shared mechanism scales
+      // from the sprite's own BOTTOM edge (see the comment above), so the
+      // ground anchor/attack position are unaffected either way — only the
+      // drawn height/width change. attack_north/attack_east_release/
+      // attack_west_release and north_idle (all shown instead of these for a
+      // north/east/west COUNTER ATTACK — see bossFrameName()) keep their own
+      // existing scale untouched, matching how they already look during a
+      // normal ARC CLAW SLASH attack or normal idle.
+      else if (name === 'straight_claw_windup') scale = COUNTER_WINDUP_SCALE;
+      else if (name === 'straight_claw_release') scale = COUNTER_STING_SCALE;
+      w = BOSS_DRAW_W * scale; h = BOSS_DRAW_H * scale;
+    }
     if (img && img.complete && img.naturalWidth > 0) {
-      const w = BOSS_DRAW_W * scale, h = BOSS_DRAW_H * scale;
       const bottomY = boss.y + BOSS_DRAW_H / 2 + bounce;
       const dx = boss.x - w / 2, dy = bottomY - h;
       const blinkElapsed = now - bossDamageBlinkStartAt;
@@ -8928,18 +9167,43 @@
       // SECTION A/B: walk_south_1 — the south walk cycle's own first frame,
       // held perfectly STATIC (never advancing through frames 2/3) —
       // replaces the old south_idle hold here.
-      const img = bossSprites.walk_south_1;
-      if (img && img.complete && img.naturalWidth > 0) {
-        const scale = SOUTH_WALK_SCALE;
-        const w = BOSS_DRAW_W * scale, h = BOSS_DRAW_H * scale;
-        ctx.drawImage(img, boss.x - w / 2, bottomY - h, w, h);
+      // DARK OUT PART 5: ADAM shares this exact BOSS ARRIVAL sequence (spec
+      // section 29) — its own equivalent "held static walk pose" is its
+      // south WALK frame 0, body-visual-scaled like every other ADAM pose.
+      if (boss.type === 'adam') {
+        const frame = ADAM_SPRITES.walk.south[0];
+        if (frame.ready) {
+          const scale = computeBodyVisualScale(frame, ADAM_BODY_TARGET_HEIGHT);
+          const w = frame.nativeW * scale, h = frame.nativeH * scale;
+          ctx.drawImage(frame.img, boss.x - w / 2, bottomY - h, w, h);
+        }
+      } else {
+        const img = bossSprites.walk_south_1;
+        if (img && img.complete && img.naturalWidth > 0) {
+          const scale = SOUTH_WALK_SCALE;
+          const w = BOSS_DRAW_W * scale, h = BOSS_DRAW_H * scale;
+          ctx.drawImage(img, boss.x - w / 2, bottomY - h, w, h);
+        }
       }
     } else if (elapsed >= BOSS_INTRO_SOUTH_IDLE_END) {
-      const img = bossSprites.attack_south_release;
-      if (img && img.complete && img.naturalWidth > 0) {
-        const scale = SOUTH_ATTACK_SCALE; // matches the same sprite's real in-battle scale
-        const w = BOSS_DRAW_W * scale, h = BOSS_DRAW_H * scale;
-        ctx.drawImage(img, boss.x - w / 2, bottomY - h, w, h);
+      // DARK OUT PART 5: ADAM's own "about to strike" INTRO beat reuses its
+      // south ATTACK STANCE image — the same "same meaning, ADAM's own art"
+      // mapping bossFrameName()'s 'attack_south_release' already gets
+      // elsewhere (resolveAdamBossFrame()).
+      if (boss.type === 'adam') {
+        const frame = ADAM_SPRITES.attack.south;
+        if (frame.ready) {
+          const scale = computeBodyVisualScale(frame, ADAM_BODY_TARGET_HEIGHT);
+          const w = frame.nativeW * scale, h = frame.nativeH * scale;
+          ctx.drawImage(frame.img, boss.x - w / 2, bottomY - h, w, h);
+        }
+      } else {
+        const img = bossSprites.attack_south_release;
+        if (img && img.complete && img.naturalWidth > 0) {
+          const scale = SOUTH_ATTACK_SCALE; // matches the same sprite's real in-battle scale
+          const w = BOSS_DRAW_W * scale, h = BOSS_DRAW_H * scale;
+          ctx.drawImage(img, boss.x - w / 2, bottomY - h, w, h);
+        }
       }
     }
     // Before BOSS_INTRO_SILENCE_END (initial shake + silence): nothing is
