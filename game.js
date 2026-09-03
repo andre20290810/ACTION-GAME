@@ -249,6 +249,34 @@
     return STAGE_REGISTRY.find((s) => s.id === id) || null;
   }
 
+  // DARK OUT PART 6: EVENT STAGE — a minimal, non-combat mode (gameState.mode
+  // === 'event') for PROJECT ADAM / ADAM SPHERE. Background is ALWAYS
+  // resolved from STAGE_REGISTRY via eventStageState.stageId (section 3's own
+  // explicit "never a currentStageIndex hack" requirement) — never touches
+  // currentStageIndex/bossEncounterIndex/STORY_STAGE_PLAN. Same {target-key,
+  // stageId} shape as BOSS_BATTLE_TARGETS/bossBattleState above, for the same
+  // reason: one fixed, never-randomized mapping, easy to extend later.
+  const EVENT_STAGE_TARGETS = {
+    b1: { stageId: 'event_b1_project_adam', label: 'PROJECT ADAM SITE' },
+    b2: { stageId: 'event_b2_adam_lab', label: 'ADAM LAB' },
+  };
+  const eventStageState = {
+    active: false,
+    stageId: null, // mirrors EVENT_STAGE_TARGETS[eventId].stageId — the ONE thing currentStage() reads while active
+    eventId: null, // 'b1' | 'b2'
+  };
+  // SECTION 23: persistent RUN inventory — deliberately separate from
+  // eventStageState (which is purely "is an EVENT STAGE currently on
+  // screen, and which one") and from worldItems' own per-object `collected`
+  // flag (which is just this visit's draw-time state). This is the one flag
+  // later PARTs' SECRET scenario / STORY progression will actually read.
+  // Reset only on a genuine fresh run (see resetModeState()'s own
+  // !preserveStoryProgress branch) — untouched by EVENT STAGE entry/exit or
+  // by a mid-run RETRY, exactly like currentStageIndex/bossEncounterIndex.
+  const runInventory = {
+    projectAdamCollected: false,
+  };
+
   // DARK OUT PART 3: BOSS BATTLE MODE — an independent battle/dev-test
   // context reachable from MAIN MENU, completely separate from STORY MODE's
   // own progression (currentStageIndex/bossEncounterIndex/STORY_STAGE_PLAN/
@@ -341,6 +369,14 @@
   // currentStage().img/.ready, etc.) picks up the right image with no
   // further changes needed anywhere else.
   function currentStage() {
+    // DARK OUT PART 6 SECTION 3: checked first, same reasoning as BOSS
+    // BATTLE MODE's own check just below — EVENT STAGE's background always
+    // comes from the fixed STAGE_REGISTRY mapping via eventStageState.stageId,
+    // never a currentStageIndex hack.
+    if (eventStageState.active) {
+      const entry = getStageRegistryEntry(eventStageState.stageId);
+      if (entry) return entry.background;
+    }
     // DARK OUT PART 3 SECTION 9: checked first, ahead of every existing
     // branch below — BOSS BATTLE MODE's background always comes from the
     // fixed STAGE_REGISTRY mapping above, never from STORY's STAGES[]/
@@ -1998,6 +2034,242 @@
   // ==========================================================================
   // END DARK OUT PART 2 registries.
   // ==========================================================================
+
+  // ==========================================================================
+  // DARK OUT PART 6: EVENT STAGE world items / event objects.
+  // ==========================================================================
+  // Small, generic "animated world object PLAYER can walk into" structure
+  // (section 24) — deliberately just the fields the spec itself lists, no
+  // speculative future fields. Currently only ever holds SECRET FILE:
+  // PROJECT ADAM (at most one entry at a time, b1 only), but the shape is
+  // generic enough that a later PART's BLOOD SAMPLE/ESCAPE NAVIGATOR pickups
+  // can reuse it without a rewrite.
+  const worldItems = [];
+  const WORLD_ITEM_PICKUP_RADIUS = 30; // first-pass, similar order to HEAL_ITEM_HIT_RADIUS(22)/PLAYER_HIT_RADIUS(22) — tunable
+  const PROJECT_ADAM_FRAME_MS = 220; // reuses HEAL_ITEM_FRAME_MS's own cadence (220ms) — no existing ITEM-animation timer to share yet, so matched to the closest precedent rather than invented from nothing
+  // World-space placement as a fraction of the PLAY AREA (never a raw pixel
+  // constant captured before W/H are known) — a safe, central, always-
+  // walkable-to default per section 7's own "壁位置を推測しない" instruction;
+  // tunable later without touching any collection/animation logic.
+  const PROJECT_ADAM_POS_FRAC = { x: 0.5, y: 0.42 };
+
+  // SECTION 10: a small, generic (never single-purpose) floating pickup-text
+  // mechanism — same draw-time-prune shape as the existing healPickupTexts,
+  // generalized to take its own text lines so BLOOD SAMPLE/ESCAPE NAVIGATOR
+  // pickups can reuse it later (section 24) instead of a copy-pasted second
+  // mechanism.
+  const WORLD_ITEM_PICKUP_TEXT_MS = 2500; // within spec's own "数秒後に自動消去" — a little longer than healPickupTexts' 1000ms since this is a 2-line notice, not a quick "+HP" flash
+  const worldItemPickupTexts = [];
+  function spawnWorldItemPickupText(lines, x, y, now) {
+    worldItemPickupTexts.push({ lines, x, y, startedAt: now });
+  }
+  function drawWorldItemPickupTexts(now) {
+    for (let i = worldItemPickupTexts.length - 1; i >= 0; i--) {
+      const t = worldItemPickupTexts[i];
+      const elapsed = now - t.startedAt;
+      if (elapsed >= WORLD_ITEM_PICKUP_TEXT_MS) { worldItemPickupTexts.splice(i, 1); continue; }
+      const u = elapsed / WORLD_ITEM_PICKUP_TEXT_MS;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, (1 - u) * 2); // holds near-full alpha then fades in the back half, rather than fading the whole time
+      ctx.font = 'bold 14px sans-serif';
+      ctx.fillStyle = '#e8e8e8';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      const drift = u * 20;
+      t.lines.forEach((line, idx) => {
+        ctx.fillText(line, t.x, t.y - drift - (t.lines.length - 1 - idx) * 16);
+      });
+      ctx.restore();
+    }
+  }
+
+  // SECTION 9: the official name is ALWAYS "SECRET FILE: PROJECT ADAM" — the
+  // pickup notice below reads it as two lines ("SECRET FILE:" / "PROJECT
+  // ADAM") purely for on-screen width, never a different/abbreviated label.
+  // Guarded by runInventory.projectAdamCollected so a repeat b1 visit (TEST
+  // B) never re-spawns an already-collected item, and by worldItems.length=0
+  // so leftover entries from ANY previous EVENT STAGE visit can never survive
+  // into this one.
+  function spawnProjectAdamItem() {
+    worldItems.length = 0;
+    if (runInventory.projectAdamCollected) return;
+    worldItems.push({
+      type: 'projectAdam',
+      x: W * PROJECT_ADAM_POS_FRAC.x,
+      y: H * PROJECT_ADAM_POS_FRAC.y,
+      frames: ITEM_SPRITES.projectAdam.frames,
+      frameIndex: 0,
+      frameTimer: 0,
+      frameMs: PROJECT_ADAM_FRAME_MS,
+      // SECTION 6: target on-screen body height, from PART 2's own
+      // getItemReferenceBodyHeightPx()/scaleMultiplier — recomputed per-frame
+      // at draw time (frames differ in native size) via computeBodyVisualScale(),
+      // never a single scale baked in here.
+      targetHeightPx: getItemReferenceBodyHeightPx() * ITEM_SPRITES.projectAdam.scaleMultiplier,
+      collected: false,
+    });
+  }
+
+  // SECTION 8: distance-based pickup (no existing PLAYER/ITEM walk-into
+  // pattern to reuse — healItem is destroyed by SHOOTING it, a different
+  // mechanic — so this is the "minimal distance judgement" the spec's own
+  // fallback explicitly allows). Animation keeps ticking regardless of
+  // pickup state via the frameTimer loop; the item is spliced out (never
+  // just hidden) the instant it's collected, per section 8's own "object
+  // disappears".
+  function updateWorldItems(dt, now) {
+    for (let i = worldItems.length - 1; i >= 0; i--) {
+      const item = worldItems[i];
+      item.frameTimer += dt * 1000;
+      while (item.frameTimer >= item.frameMs) {
+        item.frameTimer -= item.frameMs;
+        item.frameIndex = (item.frameIndex + 1) % item.frames.length;
+      }
+      if (Math.hypot(player.x - item.x, player.y - item.y) <= WORLD_ITEM_PICKUP_RADIUS) {
+        item.collected = true;
+        if (item.type === 'projectAdam') {
+          runInventory.projectAdamCollected = true;
+          spawnWorldItemPickupText(['SECRET FILE:', 'PROJECT ADAM'], item.x, item.y, now);
+        }
+        worldItems.splice(i, 1);
+      }
+    }
+  }
+
+  function drawWorldItems() {
+    for (const item of worldItems) {
+      const frame = item.frames[item.frameIndex];
+      if (!frame.ready) continue;
+      const scale = computeBodyVisualScale(frame, item.targetHeightPx);
+      const w = frame.nativeW * scale, h = frame.nativeH * scale;
+      ctx.drawImage(frame.img, item.x - w / 2, item.y - h / 2, w, h);
+    }
+  }
+
+  // SECTION 12-17: ADAM SPHERE — an EVENT OBJECT (never an ITEM, never a
+  // securityRobots-array enemy): no HP, no damage, no AI, doesn't disappear,
+  // doesn't follow the player. Kept as its own small dedicated state object
+  // rather than folded into worldItems, per section 25's own explicit
+  // permission to keep the two separate.
+  const ADAM_SPHERE_FRAME_MS = 220; // same first-pass cadence as PROJECT_ADAM_FRAME_MS — tunable independently later
+  const ADAM_SPHERE_POS_FRAC = { x: 0.5, y: 0.5 }; // dead-center — "ADAMが格納されている大型培養object" reads as a room's central fixture
+  const adamSphereState = {
+    visible: false,
+    x: 0, y: 0,
+    frameIndex: 0,
+    frameTimer: 0,
+    // SECTION 17: minimal state placeholder for the future activation
+    // sequence (sealed -> ready -> activating -> released) — no transition
+    // logic exists yet this PART, only the resting 'sealed' value.
+    state: 'sealed',
+  };
+  function spawnAdamSphere() {
+    adamSphereState.visible = true;
+    adamSphereState.x = W * ADAM_SPHERE_POS_FRAC.x;
+    adamSphereState.y = H * ADAM_SPHERE_POS_FRAC.y;
+    adamSphereState.frameIndex = 0;
+    adamSphereState.frameTimer = 0;
+    adamSphereState.state = 'sealed';
+  }
+  function updateAdamSphere(dt) {
+    if (!adamSphereState.visible) return;
+    adamSphereState.frameTimer += dt * 1000;
+    while (adamSphereState.frameTimer >= ADAM_SPHERE_FRAME_MS) {
+      adamSphereState.frameTimer -= ADAM_SPHERE_FRAME_MS;
+      adamSphereState.frameIndex = (adamSphereState.frameIndex + 1) % ADAM_SPHERE_SPRITES.length;
+    }
+  }
+  // SECTION 16: no collision of any kind is checked here on purpose — PLAYER
+  // bullets/body simply pass through (the PLAYER-bullet-vs-boss/barrel/DRONE
+  // collision loop never references adamSphereState at all), satisfying
+  // "damageを受けない/通過可能" with zero extra code rather than an explicit
+  // pass-through check.
+  function drawAdamSphere() {
+    if (!adamSphereState.visible) return;
+    const frame = ADAM_SPHERE_SPRITES[adamSphereState.frameIndex];
+    if (!frame.ready) return;
+    const scale = computeBodyVisualScale(frame, ADAM_SPHERE_TARGET_DIAMETER);
+    const w = frame.nativeW * scale, h = frame.nativeH * scale;
+    ctx.drawImage(frame.img, adamSphereState.x - w / 2, adamSphereState.y - h / 2, w, h);
+  }
+
+  // SECTION 3/21/22/29: the ONE place an EVENT STAGE is actually entered —
+  // mirrors enterBossBattleStage()'s own shape (defensive full combat-
+  // transient cleanup, then populate). Never spawns boss/DRONE/enemyBullets
+  // (section 28) and never touches currentStageIndex/bossEncounterIndex/
+  // STORY_STAGE_PLAN (section 30).
+  function enterEventStage(eventId) {
+    const target = EVENT_STAGE_TARGETS[eventId];
+    if (!target) return; // never crash on an unknown id — same defensive shape as startBossBattle()'s own guard
+    eventStageState.active = true;
+    eventStageState.eventId = eventId;
+    eventStageState.stageId = target.stageId;
+
+    // SECTION 29: defensive cleanup — combat-transient state must never
+    // leak INTO an EVENT STAGE (e.g. a debug entry straight from a BOSS
+    // BATTLE fight).
+    bullets.length = 0;
+    arcClawSlashes.length = 0;
+    explosions.length = 0;
+    enemyBullets.length = 0;
+    securityRobots.length = 0;
+    securityAttackSlotsInUse = 0;
+    boss.spawned = false;
+    boss.state = 'inactive';
+    boss.type = 'gabriel';
+    spawnBarrels(0); // section 28: purely an EVENT STAGE, no barrels either
+
+    resetPlayerToBattlePose();
+    player.dashing = false;
+    player.stunned = false;
+    recoverControlState();
+    resetFlashGrenade();
+    resetStealth();
+    updateStunVisuals();
+    cameraY = 0;
+    currentArea = 1;
+    area1Cleared = false;
+    area2Cleared = false;
+    stageTransition.active = false;
+    stageTransition.phase = null;
+
+    worldItems.length = 0;
+    adamSphereState.visible = false;
+    if (eventId === 'b1') spawnProjectAdamItem();
+    else if (eventId === 'b2') spawnAdamSphere();
+  }
+
+  // SECTION 22/29: cleanup on the way OUT of an EVENT STAGE — clears every
+  // event-transient object (worldItems/adamSphereState's own draw/animation
+  // state) but never touches runInventory.projectAdamCollected (section 23's
+  // own "persistent run state, never confused with transient draw state").
+  function exitEventStage() {
+    eventStageState.active = false;
+    eventStageState.eventId = null;
+    eventStageState.stageId = null;
+    worldItems.length = 0;
+    adamSphereState.visible = false;
+    worldItemPickupTexts.length = 0;
+  }
+
+  // SECTION 21: debug-only entry points — window.__game exposure only, never
+  // a MAIN MENU button (section 21's own explicit instruction). Combines the
+  // mode/screen transition BOSS BATTLE MODE's own startBossBattle() does with
+  // enterEventStage() above.
+  function enterEventStageForDebug(eventId) {
+    if (bossBattleState.active) exitBossBattle(); // defensive: a debug entry mid-BOSS-BATTLE must not leave bossBattleState half-active
+    gameState.mode = 'event';
+    gameState.paused = false;
+    enterEventStage(eventId);
+    setScreen('gameplay');
+  }
+  // SECTION 22: "safely return to MAIN MENU or an existing screen" — reuses
+  // returnToTopMenu() (BGM-restart-to-top + MAIN MENU) verbatim rather than
+  // inventing a second "go back" path.
+  function exitEventStageForDebug() {
+    exitEventStage();
+    returnToTopMenu();
+  }
 
   // SECTION C/D: official, untouched, non-AI-regenerated assets — exact
   // mapping per the request (1st image=SOUTH, 2nd=WEST, 3rd=EAST), visually
@@ -6252,6 +6524,7 @@
     if (!preserveStoryProgress) {
       currentStageIndex = 0;
       bossEncounterIndex = 0; // PART 5 SECTION Q: fresh per STORY run, same as currentStageIndex
+      runInventory.projectAdamCollected = false; // DARK OUT PART 6 SECTION 23: persistent RUN inventory, fresh only on a genuine new run — never on a mid-run RETRY
     }
     cameraY = 0;
     stageTransition.active = false;
@@ -7677,6 +7950,13 @@
     isRoidBossType, isGabrielFamilyBossType,
     resolveAdamBossFrame, adamWalkFrameIndex, getAdamCinematicImageInfo, getAdamClawMetrics,
     ADAM_BODY_TARGET_HEIGHT,
+    // Debug/verification only — DARK OUT PART 6: EVENT STAGE (PROJECT ADAM / ADAM SPHERE).
+    EVENT_STAGE_TARGETS, eventStageState, runInventory,
+    enterEventStage, exitEventStage, enterEventStageForDebug, exitEventStageForDebug,
+    worldItems, spawnProjectAdamItem, updateWorldItems, drawWorldItems,
+    worldItemPickupTexts, spawnWorldItemPickupText, drawWorldItemPickupTexts,
+    adamSphereState, spawnAdamSphere, updateAdamSphere, drawAdamSphere,
+    PROJECT_ADAM_FRAME_MS, ADAM_SPHERE_FRAME_MS, WORLD_ITEM_PICKUP_RADIUS, WORLD_ITEM_PICKUP_TEXT_MS,
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
     STAGES,
     get currentStageIndex() { return currentStageIndex; },
@@ -8043,7 +8323,15 @@
     // follow gate just below) — BOSS BATTLE MODE's GABRIEL fight needs the
     // exact same 2-area world/camera tracking STORY's own GABRIEL encounters
     // already get; TRAINING/SECURITY TRAINING behavior is unchanged.
-    if (gameState.mode === 'boss' || gameState.mode === 'training' || gameState.mode === 'securityTraining' || gameState.mode === 'bossBattle') {
+    // DARK OUT PART 6: 'event' added too — EVENT STAGE reuses this exact
+    // same TRAINING-style "single background, 2-area vertical world" camera
+    // tracking (never a fabricated single-fixed-screen special case) so the
+    // player can never walk off the top of the screen with the camera left
+    // frozen. boss.state can never reach 'dead' in 'event' mode (updateBoss()
+    // early-returns for it, same as TRAINING), so area1Cleared/area2Cleared
+    // stay structurally unreachable here exactly like they already are for
+    // TRAINING.
+    if (gameState.mode === 'boss' || gameState.mode === 'training' || gameState.mode === 'securityTraining' || gameState.mode === 'bossBattle' || gameState.mode === 'event') {
       currentArea = player.y < 0 ? 2 : 1;
       // AREA 1 clear (C-13): the one shared boss fully dissolved while the
       // player happened to be standing in AREA 1's band. boss.state can
@@ -8078,7 +8366,7 @@
     // never gated behind a "clear" flag, so this is always open for
     // TRAINING (unlike STORY's worldScrollUnlocked()).
     const scrollUnlockedHere = worldScrollUnlocked() || trainingWorldScrollUnlocked();
-    if ((gameState.mode === 'boss' || gameState.mode === 'training' || gameState.mode === 'securityTraining' || gameState.mode === 'bossBattle') && !stageTransition.active) {
+    if ((gameState.mode === 'boss' || gameState.mode === 'training' || gameState.mode === 'securityTraining' || gameState.mode === 'bossBattle' || gameState.mode === 'event') && !stageTransition.active) {
       // SECTION G: AREA 1 + AREA 2's own band is always unlocked now — only
       // the further post-clear bonus space beyond it stays gated.
       const minCameraY = scrollUnlockedHere ? -H - worldExtraAbove : -H;
@@ -8271,6 +8559,8 @@
 
     updateBarrels(dt, now);
     updateHealItem(dt); // PART7 SECTION S/Q: dt-driven, freezes during PAUSE like every other timer here
+    updateWorldItems(dt, now); // DARK OUT PART 6: PROJECT ADAM (and later, other) world-item animation + pickup — empty array outside EVENT STAGE, so this is a no-op everywhere else
+    updateAdamSphere(dt); // DARK OUT PART 6: ADAM SPHERE animation only — invisible/no-op outside EVENT STAGE b2
     updateSecurityRobots(dt, now);
     updateFlashGrenade(dt, now);
     updateScreenFlashes(dt);
@@ -8477,6 +8767,9 @@
     for (const b of barrels) if (b.alive || b.falling) drawBarrel(b);
     drawHealItem(); // PART7 SECTION T: sits in the worldExtraAbove bonus band, same painter layer as barrels
     drawHealPickupTexts(now); // PART8 SECTION W: "HP+30%！" floating text, world-space, drawn above the item's own layer
+    drawWorldItems(); // DARK OUT PART 6: PROJECT ADAM — same ground layer as barrels/healItem
+    drawAdamSphere(); // DARK OUT PART 6: ADAM SPHERE — same ground layer
+    drawWorldItemPickupTexts(now); // DARK OUT PART 6: "SECRET FILE: PROJECT ADAM" floating notice
     for (let i = barrelLandings.length - 1; i >= 0; i--) {
       const l = barrelLandings[i];
       if (now - l.startAt >= BARREL_LANDING_MS) { barrelLandings.splice(i, 1); continue; }
