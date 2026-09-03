@@ -202,6 +202,58 @@
   // across both AREA1 and AREA2 (re-randomized in resetModeState()).
   let securityTrainingBgIndex = 0;
 
+  // DARK OUT PART 1: the new-content STAGE REGISTRY — every NORMAL/EVENT/BOSS
+  // background for the upcoming ROID1/ROID2/ADAM content, registered as one
+  // flat, type-tagged table rather than three separate pools, so a single
+  // lookup (getStageRegistryEntry()) covers all of them. Deliberately reuses
+  // the exact same lazy-load shape TRAINING_BACKGROUNDS/STAGES already use
+  // (file/img/ready, populated via the same forEach-with-onload pattern) —
+  // no new asset-loading mechanism. floorLeftFrac/floorRightFrac are
+  // intentionally omitted here: these backgrounds aren't wired into any real
+  // walkable-floor/collision path yet (out of scope for this PART), so
+  // fabricating unmeasured fractions would be worse than leaving them unset
+  // — getFloorXRangeWorld() already treats "undefined" as "no floor data"
+  // and fails open, exactly like the legacy stage_b entry in STAGES[] does.
+  //
+  // NOT wired into currentStage() / gameState.mode dispatch this PART, per
+  // spec — STORY MODE and TRAINING MODE must keep reading STAGES[]/
+  // TRAINING_BACKGROUNDS exactly as before. This registry exists purely as
+  // an independently loadable, independently verifiable table for now;
+  // getStageRegistryEntry() below is its only access point.
+  //
+  // BOSS entries are fixed 1:1 per the spec (never randomized): c1=ROID1,
+  // c2=ROID2, c3=GABRIEL (all 3 encounters share it), c4=ADAM. EVENT entries
+  // are fixed to their real usage (b1=PROJECT ADAM pickup, b2=blood-sample
+  // hand-in/ADAM activation). NORMAL a1-a5's eventual STORY ordering is
+  // deliberately left undecided — they're registered as a flat, unordered
+  // pool, not STAGE1-5.
+  const STAGE_REGISTRY = [
+    { id: 'normal_a1', type: 'normal', background: { file: 'assets/stages/normal/a1.jpg' } },
+    { id: 'normal_a2', type: 'normal', background: { file: 'assets/stages/normal/a2.jpg' } },
+    { id: 'normal_a3', type: 'normal', background: { file: 'assets/stages/normal/a3.jpg' } },
+    { id: 'normal_a4', type: 'normal', background: { file: 'assets/stages/normal/a4.jpg' } },
+    { id: 'normal_a5', type: 'normal', background: { file: 'assets/stages/normal/a5.jpg' } },
+    { id: 'event_b1_project_adam', type: 'event', background: { file: 'assets/stages/event/b1.jpg' } },
+    { id: 'event_b2_adam_lab', type: 'event', background: { file: 'assets/stages/event/b2.jpg' } },
+    { id: 'boss_c1_roid1', type: 'boss', background: { file: 'assets/stages/boss/c1.jpg' } },
+    { id: 'boss_c2_roid2', type: 'boss', background: { file: 'assets/stages/boss/c2.jpg' } },
+    { id: 'boss_c3_gabriel', type: 'boss', background: { file: 'assets/stages/boss/c3.jpg' } },
+    { id: 'boss_c4_adam', type: 'boss', background: { file: 'assets/stages/boss/c4.jpg' } },
+  ];
+  STAGE_REGISTRY.forEach((s) => {
+    s.background.img = new Image();
+    s.background.ready = false;
+    s.background.img.onload = () => { s.background.ready = true; };
+    s.background.img.src = s.background.file;
+  });
+  // The one lookup point for STAGE_REGISTRY — returns the full entry
+  // ({id, type, background}) or null if the id doesn't exist. Used for
+  // dev/verification loading only this PART (see window.__game export);
+  // no gameplay code calls this yet.
+  function getStageRegistryEntry(id) {
+    return STAGE_REGISTRY.find((s) => s.id === id) || null;
+  }
+
   // SECTION D: the ONE place draw()/barrel-spawn/etc. read "the current
   // background" from — returns TRAINING's own pool while in TRAINING MODE,
   // STORY's STAGES otherwise, so every existing caller (draw()'s
@@ -6551,6 +6603,7 @@
     EXPLOSION_DAMAGE_RADIUS_REDUCTION, // debug/verification only — PART8 SECTION AC
     BULLET_DAMAGE, // debug/verification only — PART 2: the reused normal-attack damage constant for SECURITY ROBOT's laser
     TRAINING_BACKGROUNDS, get currentStage() { return currentStage(); }, // debug/verification only — SECTION D (this turn)
+    STAGE_REGISTRY, getStageRegistryEntry, // debug/verification only — DARK OUT PART 1
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
     STAGES,
     get currentStageIndex() { return currentStageIndex; },
