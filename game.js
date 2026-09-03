@@ -275,6 +275,16 @@
   // by a mid-run RETRY, exactly like currentStageIndex/bossEncounterIndex.
   const runInventory = {
     projectAdamCollected: false,
+    // DARK OUT PART 7 SECTION 1: BLOOD SAMPLE (1)/(2)/(3) + ESCAPE NAVIGATOR
+    // pickup flags — same persistent-RUN shape as projectAdamCollected above
+    // (never confused with worldItems' own per-visit `collected` field, reset
+    // only on a genuine new run, see resetModeState() below). Section 19/20/22
+    // deliberately do NOT wire these into DARK PHASE/ADAM SPHERE/EXIT logic
+    // this PART — flag storage only.
+    bloodSample1: false,
+    bloodSample2: false,
+    bloodSample3: false,
+    escapeNavigator: false,
   };
 
   // DARK OUT PART 3: BOSS BATTLE MODE — an independent battle/dev-test
@@ -2083,31 +2093,96 @@
     }
   }
 
-  // SECTION 9: the official name is ALWAYS "SECRET FILE: PROJECT ADAM" — the
-  // pickup notice below reads it as two lines ("SECRET FILE:" / "PROJECT
-  // ADAM") purely for on-screen width, never a different/abbreviated label.
-  // Guarded by runInventory.projectAdamCollected so a repeat b1 visit (TEST
-  // B) never re-spawns an already-collected item, and by worldItems.length=0
-  // so leftover entries from ANY previous EVENT STAGE visit can never survive
-  // into this one.
-  function spawnProjectAdamItem() {
-    worldItems.length = 0;
-    if (runInventory.projectAdamCollected) return;
+  // ==========================================================================
+  // DARK OUT PART 7: WORLD ITEM PROFILES — a small per-type lookup table
+  // (section 24's own explicitly-requested shape) resolving everything
+  // spawnWorldItem()/updateWorldItems() need to know about a given world
+  // item type: which ITEM_SPRITES group to draw, how fast it animates, which
+  // runInventory flag a pickup sets, and what pickup-notification text to
+  // show. Deliberately NOT a "huge ITEM class system" (section 33's own
+  // explicit prohibition) — just data, reused by the existing generic
+  // update/draw loops below. The profile key doubles as both the worldItems
+  // entry's own `type` field AND the ITEM_SPRITES registry key, so no
+  // separate name-mapping table is needed.
+  const ITEM_FRAME_MS = 220; // shared default cadence — reuses PROJECT_ADAM_FRAME_MS/HEAL_ITEM_FRAME_MS's own established 220ms precedent (section 10); PROJECT_ADAM_FRAME_MS is kept below as an alias so nothing that already reads it breaks.
+  const WORLD_ITEM_PROFILES = {
+    projectAdam: { inventoryKey: 'projectAdamCollected', frameMs: PROJECT_ADAM_FRAME_MS, pickupLines: ['SECRET FILE:', 'PROJECT ADAM'] },
+    bloodSample1: { inventoryKey: 'bloodSample1', frameMs: ITEM_FRAME_MS, pickupLines: ['BLOOD SAMPLE ①'] },
+    bloodSample2: { inventoryKey: 'bloodSample2', frameMs: ITEM_FRAME_MS, pickupLines: ['BLOOD SAMPLE ②'] },
+    bloodSample3: { inventoryKey: 'bloodSample3', frameMs: ITEM_FRAME_MS, pickupLines: ['BLOOD SAMPLE ③'] },
+    escapeNavigator: { inventoryKey: 'escapeNavigator', frameMs: ITEM_FRAME_MS, pickupLines: ['ESCAPE NAVIGATOR'] },
+  };
+
+  // SECTION 9/24: generic world-item spawner (section 24's own "future PARTs
+  // can reuse it" requirement) — resolves frames/scale from ITEM_SPRITES via
+  // the profile key (never a hardcoded image path), and refuses to spawn an
+  // already-collected item so no world item is ever re-obtainable in the
+  // same run (mirrors projectAdamCollected's own exact pre-existing rule).
+  // Does NOT clear worldItems itself — callers that need a fresh single-item
+  // stage (spawnProjectAdamItem below) clear it explicitly first.
+  function spawnWorldItem(type, x, y) {
+    const profile = WORLD_ITEM_PROFILES[type];
+    const sprite = ITEM_SPRITES[type];
+    if (!profile || !sprite) return; // unknown type never crashes — same defensive shape as enterEventStage()'s own target guard
+    if (runInventory[profile.inventoryKey]) return;
     worldItems.push({
-      type: 'projectAdam',
-      x: W * PROJECT_ADAM_POS_FRAC.x,
-      y: H * PROJECT_ADAM_POS_FRAC.y,
-      frames: ITEM_SPRITES.projectAdam.frames,
+      type,
+      x, y,
+      frames: sprite.frames,
       frameIndex: 0,
       frameTimer: 0,
-      frameMs: PROJECT_ADAM_FRAME_MS,
+      frameMs: profile.frameMs,
       // SECTION 6: target on-screen body height, from PART 2's own
       // getItemReferenceBodyHeightPx()/scaleMultiplier — recomputed per-frame
       // at draw time (frames differ in native size) via computeBodyVisualScale(),
       // never a single scale baked in here.
-      targetHeightPx: getItemReferenceBodyHeightPx() * ITEM_SPRITES.projectAdam.scaleMultiplier,
+      targetHeightPx: getItemReferenceBodyHeightPx() * sprite.scaleMultiplier,
       collected: false,
     });
+  }
+
+  // SECTION 9: the official name is ALWAYS "SECRET FILE: PROJECT ADAM" — the
+  // pickup notice below reads it as two lines ("SECRET FILE:" / "PROJECT
+  // ADAM") purely for on-screen width, never a different/abbreviated label.
+  // Guarded by runInventory.projectAdamCollected (now via spawnWorldItem's
+  // own generic guard) so a repeat b1 visit (TEST B) never re-spawns an
+  // already-collected item, and by worldItems.length=0 so leftover entries
+  // from ANY previous EVENT STAGE visit can never survive into this one.
+  // PART 7 SECTION 26: refactored onto the generic spawnWorldItem() above —
+  // behavior is unchanged (same guard, same position, same frames/scale).
+  function spawnProjectAdamItem() {
+    worldItems.length = 0;
+    spawnWorldItem('projectAdam', W * PROJECT_ADAM_POS_FRAC.x, H * PROJECT_ADAM_POS_FRAC.y);
+  }
+
+  // PART 7 SECTION 28: debug-only — places a world item of the given type at
+  // a safe position near the PLAYER's current location on whatever stage is
+  // currently active (EVENT or otherwise). window.__game exposure only,
+  // never a MAIN MENU button. Deliberately does NOT clear worldItems first
+  // (unlike spawnProjectAdamItem) so multiple debug items can coexist for
+  // testing hasAllBloodSamples() etc.
+  function debugSpawnWorldItem(type) {
+    spawnWorldItem(type, player.x, player.y - 60);
+  }
+
+  // PART 7 SECTION 21: minimal reward-API stub for PART8's future BOSS-defeat
+  // reward wiring — functionally identical to spawnWorldItem() today, kept as
+  // its own named entry point so PART8 can layer reward-specific behavior
+  // (e.g. a distinct drop animation) onto this call site without touching
+  // spawnWorldItem's own general-purpose contract. NOT called from any BOSS-
+  // defeat handler, or anywhere else, this PART (section 19's own explicit
+  // "STORY非contamination" requirement).
+  function spawnWorldItemReward(type, x, y) {
+    spawnWorldItem(type, x, y);
+  }
+
+  // PART 7 SECTION 23: pure, side-effect-free helper — reads runInventory
+  // only, never itself triggers ADAM SPHERE activation/ADAM spawn (section
+  // 22's own explicit "hasAllBloodSamples()自体はADAM SPHEREのactivationや
+  // ADAM自動出現をtriggerしない" requirement). Not called by any other
+  // function this PART.
+  function hasAllBloodSamples() {
+    return runInventory.bloodSample1 && runInventory.bloodSample2 && runInventory.bloodSample3;
   }
 
   // SECTION 8: distance-based pickup (no existing PLAYER/ITEM walk-into
@@ -2116,7 +2191,11 @@
   // fallback explicitly allows). Animation keeps ticking regardless of
   // pickup state via the frameTimer loop; the item is spliced out (never
   // just hidden) the instant it's collected, per section 8's own "object
-  // disappears".
+  // disappears". PART 7 SECTION 27: pickup handling generalized to read
+  // WORLD_ITEM_PROFILES[item.type] instead of a single hardcoded
+  // 'projectAdam' branch — PROJECT ADAM's own observable pickup behavior
+  // (runInventory.projectAdamCollected=true + the exact same two-line
+  // notification) is unchanged, it now just flows through the shared path.
   function updateWorldItems(dt, now) {
     for (let i = worldItems.length - 1; i >= 0; i--) {
       const item = worldItems[i];
@@ -2127,9 +2206,10 @@
       }
       if (Math.hypot(player.x - item.x, player.y - item.y) <= WORLD_ITEM_PICKUP_RADIUS) {
         item.collected = true;
-        if (item.type === 'projectAdam') {
-          runInventory.projectAdamCollected = true;
-          spawnWorldItemPickupText(['SECRET FILE:', 'PROJECT ADAM'], item.x, item.y, now);
+        const profile = WORLD_ITEM_PROFILES[item.type];
+        if (profile) {
+          runInventory[profile.inventoryKey] = true;
+          spawnWorldItemPickupText(profile.pickupLines, item.x, item.y, now);
         }
         worldItems.splice(i, 1);
       }
@@ -6525,6 +6605,10 @@
       currentStageIndex = 0;
       bossEncounterIndex = 0; // PART 5 SECTION Q: fresh per STORY run, same as currentStageIndex
       runInventory.projectAdamCollected = false; // DARK OUT PART 6 SECTION 23: persistent RUN inventory, fresh only on a genuine new run — never on a mid-run RETRY
+      runInventory.bloodSample1 = false; // DARK OUT PART 7 SECTION 2: same reset scoping as projectAdamCollected — fresh only on a genuine new run
+      runInventory.bloodSample2 = false;
+      runInventory.bloodSample3 = false;
+      runInventory.escapeNavigator = false;
     }
     cameraY = 0;
     stageTransition.active = false;
@@ -7957,6 +8041,9 @@
     worldItemPickupTexts, spawnWorldItemPickupText, drawWorldItemPickupTexts,
     adamSphereState, spawnAdamSphere, updateAdamSphere, drawAdamSphere,
     PROJECT_ADAM_FRAME_MS, ADAM_SPHERE_FRAME_MS, WORLD_ITEM_PICKUP_RADIUS, WORLD_ITEM_PICKUP_TEXT_MS,
+    // Debug/verification only — DARK OUT PART 7: BLOOD SAMPLE (1)/(2)/(3) / ESCAPE NAVIGATOR world items.
+    WORLD_ITEM_PROFILES, ITEM_FRAME_MS, spawnWorldItem, debugSpawnWorldItem,
+    spawnWorldItemReward, hasAllBloodSamples,
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
     STAGES,
     get currentStageIndex() { return currentStageIndex; },
