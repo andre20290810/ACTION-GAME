@@ -113,39 +113,34 @@
   // GAME CLEAR logic may key off. STAGES[] above (3 backgrounds) is indexed
   // by `bossEncounterIndex`, keeping each encounter's existing visual
   // identity (SECTION S-4).
-  // New-turn SECTION 20: the STAGE that used to sit here — { type: 'boss',
-  // encounterIndex: 0 }, GABRIEL ENCOUNTER 1, background STAGES[0]
-  // ('stage_b', assets/stage/stage_b_floor.jpg — the "A-01" floor with the
-  // up-arrow/">>>"/corner hazard-stripe motif) — has been removed from
-  // STORY progression entirely per this turn's request. The array is simply
-  // one entry shorter now (STAGE 5 becomes the new STAGE 4, etc. — pure
-  // array-position renumbering, see the comments below); bossEncounterIndex
-  // itself is deliberately left UNCHANGED at 1/2 for the two remaining
-  // GABRIEL fights (never renumbered to 0/1) so every encounter-specific
-  // system that keys off bossEncounterIndex — STAGES[] background lookup
-  // (currentStage()), BOSS_ENCOUNTER_BARREL_COUNTS, getBossDifficultyMultiplier(),
-  // the ENCOUNTER 2/3 DARK PHASE gate, and the ENCOUNTER 3 forced-STUN check
-  // — needs ZERO changes: they simply never see bossEncounterIndex===0
-  // again. STAGES[0]/BOSS_ENCOUNTER_BARREL_COUNTS[0]/difficulty index 0
-  // become intentionally unreachable configuration, left in place harmlessly
-  // (same convention as this file's other "legacy, no longer set" fields)
-  // rather than renumbered, which would risk touching every one of those
-  // systems for no functional gain.
+  // DARK OUT PART 3.7: GABRIEL ENCOUNTER 1 ({ type: 'boss', encounterIndex: 0 })
+  // was removed from this plan by an earlier turn (see that commit's own
+  // "remove GABRIEL ENCOUNTER 1 from STORY" message, git history commit
+  // 2b3a31d) and is restored here at its exact original array position —
+  // confirmed directly from git history (the plan's own original 10-entry
+  // form, commit fcfe732), never guessed. This is the confirmed final
+  // STORY shape: 3 GABRIEL encounters, background always c3.jpg (PART 3.6's
+  // own currentStage() routing already handles every 'boss'-type entry
+  // unconditionally, so nothing there needs to change), difficulty/DARK
+  // PHASE/forced-STUN still keyed off bossEncounterIndex 0/1/2 exactly as
+  // before (BOSS_ENCOUNTER_BARREL_COUNTS/BOSS_DIFFICULTY_TABLE already had
+  // 3 entries each — index 0 was simply unreachable until now, not absent).
   const STORY_STAGE_PLAN = [
     { type: 'drone', speedMult: 1.0, fixedCount: 3 },        // STAGE 1: fixed 3 (SECTION B — never randomized)
     { type: 'drone', speedMult: 1.0, fixedCount: 5 },        // STAGE 2: fixed 5
     { type: 'drone', speedMult: 1.0, fixedCount: 7 },        // STAGE 3: fixed 7
-    { type: 'drone', speedMult: 1.3 },                       // STAGE 4 (was STAGE 5) — no fixedCount: 3/5/7 random per AREA, unchanged
-    { type: 'drone', speedMult: 1.3 },                       // STAGE 5 (was STAGE 6)
-    { type: 'boss', encounterIndex: 1 },                     // STAGE 6 (was STAGE 7): GABRIEL ENCOUNTER 2 (DARK PHASE, 3 BARREL) — encounterIndex intentionally stays 1, see note above
-    { type: 'drone', speedMult: 1.5 },                       // STAGE 7 (was STAGE 8)
-    { type: 'drone', speedMult: 1.5 },                       // STAGE 8 (was STAGE 9)
-    { type: 'boss', encounterIndex: 2, final: true },        // STAGE 9 (was STAGE 10): GABRIEL ENCOUNTER 3, FINAL, 0 BARREL + 3 DRONE
+    { type: 'boss', encounterIndex: 0 },                     // STAGE 4: GABRIEL ENCOUNTER 1 — restored PART 3.7, original position per git history
+    { type: 'drone', speedMult: 1.3 },                       // STAGE 5 — no fixedCount: 3/5/7 random per AREA, unchanged
+    { type: 'drone', speedMult: 1.3 },                       // STAGE 6
+    { type: 'boss', encounterIndex: 1 },                     // STAGE 7: GABRIEL ENCOUNTER 2 (DARK PHASE, 3 BARREL)
+    { type: 'drone', speedMult: 1.5 },                       // STAGE 8
+    { type: 'drone', speedMult: 1.5 },                       // STAGE 9
+    { type: 'boss', encounterIndex: 2, final: true },        // STAGE 10: GABRIEL ENCOUNTER 3, FINAL, 0 BARREL + 3 DRONE
   ];
   // SECTION K/X: per-ENCOUNTER barrel count, indexed by bossEncounterIndex —
-  // ENCOUNTER1=5 (this turn: no longer reachable, see SECTION 20 note
-  // above), ENCOUNTER2=3 (down from 5), ENCOUNTER3=0 (replaced by the
-  // FINAL STAGE's 3 DRONEs instead, SECTION M-5).
+  // ENCOUNTER1=5 (reachable again as of PART 3.7), ENCOUNTER2=3 (down from
+  // 5), ENCOUNTER3=0 (replaced by the FINAL STAGE's 3 DRONEs instead,
+  // SECTION M-5).
   const BOSS_ENCOUNTER_BARREL_COUNTS = [5, 3, 0];
   let currentStageIndex = 0; // 0-9: raw STORY STAGE position (SECTION Q — NEVER the encounter index)
   let bossEncounterIndex = 0; // 0-2: which GABRIEL encounter this is (SECTION Q — the ONLY thing encounter-specific logic may key off)
