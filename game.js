@@ -285,6 +285,35 @@
   let bossBattleDefeatRemainingMs = 0;
   const BOSS_BATTLE_DEFEAT_DISPLAY_MS = 2000;
 
+  // DARK OUT PART 3.5: GABRIEL ENCOUNTER 3's own real bossEncounterIndex
+  // value, confirmed directly against STORY_STAGE_PLAN's own data (the
+  // 'boss', final:true entry carries encounterIndex: 2 — see the STORY_
+  // STAGE_PLAN table above) and BOSS_DIFFICULTY_TABLE's 3-tier shape (index
+  // 2 is its hardest/last entry, "encounter 1 == multiplier 1.00 baseline"
+  // per that table's own comment). Never guessed — read from the existing
+  // code, per spec section 4's explicit requirement.
+  const GABRIEL_ENCOUNTER_3_INDEX = 2;
+
+  // DARK OUT PART 3.5 SECTION 3: the ONE accessor every GABRIEL *combat
+  // variant* decision (DARK PHASE trigger/guarantee, ENCOUNTER-3-forced-
+  // STUN, difficulty scaling) reads instead of the raw bossEncounterIndex
+  // variable — STORY MODE gets the real, unchanged value; BOSS BATTLE
+  // MODE's own GABRIEL fight is always treated as GABRIEL 3's full combat
+  // profile (spec section 1), regardless of whatever STORY bossEncounterIndex
+  // currently happens to hold. Deliberately a pure, side-effect-free read —
+  // bossEncounterIndex itself is NEVER written here or anywhere in BOSS
+  // BATTLE MODE's own code (section 5's explicit "no temporary overwrite,
+  // no save-then-restore" prohibition). NEVER used for STORY-progression
+  // decisions (which GABRIEL encounter STORY is on, next-stage/reward/
+  // STORY_STAGE_PLAN/currentStage()'s own STAGES[] background lookup) —
+  // those all keep reading the raw bossEncounterIndex directly, unchanged.
+  function getGabrielCombatEncounterIndex() {
+    if (bossBattleState.active && bossBattleState.target === 'gabriel') {
+      return GABRIEL_ENCOUNTER_3_INDEX;
+    }
+    return bossEncounterIndex;
+  }
+
   // SECTION D: the ONE place draw()/barrel-spawn/etc. read "the current
   // background" from — returns TRAINING's own pool while in TRAINING MODE,
   // STORY's STAGES otherwise, so every existing caller (draw()'s
@@ -2453,7 +2482,11 @@
     // re-flash/double-STUN a player who is already in that state for some
     // other reason (idle watchdog, a previous ENCOUNTER 3 DARK PHASE loop,
     // etc).
-    if (bossEncounterIndex === 2 && !player.stunned) {
+    // DARK OUT PART 3.5: reads getGabrielCombatEncounterIndex() instead of
+    // the raw variable — BOSS BATTLE MODE's GABRIEL fight is always treated
+    // as ENCOUNTER 3 here (spec section 1), regardless of STORY's own
+    // bossEncounterIndex, which this never touches.
+    if (getGabrielCombatEncounterIndex() === GABRIEL_ENCOUNTER_3_INDEX && !player.stunned) {
       encounter3StunFlashRemainingMs = ENCOUNTER3_STUN_FLASH_TOTAL_MS;
       triggerStun(now);
     }
@@ -2797,8 +2830,11 @@
       // this doesn't rely solely on that indirect protection.
       // SECTION J (PART 5 SECTION Q/R keyed off bossEncounterIndex now):
       // ENCOUNTER 1 never sees DARK PHASE at all, organic AUTO-AIM trigger
-      // included — only ENCOUNTER 2/3 do.
-      if (bossEncounterIndex > 0 && boss.state !== 'flashdown' && boss.state !== 'darkphase' && !bossIsInCinematic()) {
+      // included — only ENCOUNTER 2/3 do. DARK OUT PART 3.5: reads
+      // getGabrielCombatEncounterIndex() so BOSS BATTLE MODE's GABRIEL
+      // (always ENCOUNTER-3-equivalent) sees this too, regardless of
+      // STORY's own bossEncounterIndex.
+      if (getGabrielCombatEncounterIndex() > 0 && boss.state !== 'flashdown' && boss.state !== 'darkphase' && !bossIsInCinematic()) {
         startBossDarkPhase(now);
         boss.darkPhaseTriggeredThisEncounter = true;
       }
@@ -3165,8 +3201,9 @@
     // SECTION J: DARK PHASE guarantee for ENCOUNTER 2/3 — if it hasn't
     // fired organically by the time HP crosses the halfway mark, force it
     // right here rather than leaving it purely up to whether the player
-    // happens to land 4 AUTO-AIM hits.
-    if (bossEncounterIndex > 0 && !boss.darkPhaseTriggeredThisEncounter &&
+    // happens to land 4 AUTO-AIM hits. DARK OUT PART 3.5: reads
+    // getGabrielCombatEncounterIndex() — see that function's own comment.
+    if (getGabrielCombatEncounterIndex() > 0 && !boss.darkPhaseTriggeredThisEncounter &&
         boss.hp <= BOSS_HP_MAX * DARK_PHASE_GUARANTEE_HP_FRAC &&
         (boss.state === 'chase' || boss.state === 'attack' || boss.state === 'defense')) {
       boss.darkPhaseTriggeredThisEncounter = true;
@@ -3210,8 +3247,11 @@
         }
         // SECTION N: scaled by the current ENCOUNTER's own movement
         // multiplier (1.00/1.10/1.20 for encounter 1/2/3) — never mutates
-        // the base BOSS_CHASE_SPEED constant itself.
-        const chaseSpeed = BOSS_CHASE_SPEED * getBossDifficultyMultiplier(bossEncounterIndex).movement;
+        // the base BOSS_CHASE_SPEED constant itself. DARK OUT PART 3.5:
+        // reads getGabrielCombatEncounterIndex() — BOSS BATTLE MODE's
+        // GABRIEL always gets ENCOUNTER 3's own multiplier (spec section 1's
+        // "GABRIEL 3相当の完全戦闘PROFILE").
+        const chaseSpeed = BOSS_CHASE_SPEED * getBossDifficultyMultiplier(getGabrielCombatEncounterIndex()).movement;
         vx = dirX * chaseSpeed;
         vy = dirY * chaseSpeed;
         boss.x += vx * dt;
@@ -3292,8 +3332,9 @@
       // SECTION N: higher attackFrequency means a SHORTER recovery (divide,
       // never multiply) — 1.15x frequency == cooldown / 1.15, exactly as
       // specified, so difficulty scaling never accidentally slows attacks
-      // down.
-      const recoverMs = BOSS_RECOVER_MS / getBossDifficultyMultiplier(bossEncounterIndex).attackFrequency;
+      // down. DARK OUT PART 3.5: reads getGabrielCombatEncounterIndex() —
+      // see that function's own comment.
+      const recoverMs = BOSS_RECOVER_MS / getBossDifficultyMultiplier(getGabrielCombatEncounterIndex()).attackFrequency;
       if (now - boss.stateEnteredAt >= recoverMs) {
         bossEnterState('chase', now);
       }
@@ -7092,6 +7133,7 @@
     ROID_BODY_TARGET_HEIGHT, ADAM_SPHERE_TARGET_DIAMETER, makeSpriteFrame, // debug/verification only — DARK OUT PART 2
     BOSS_BATTLE_TARGETS, bossBattleState, startBossBattle, exitBossBattle,
     get bossBattleDefeatRemainingMs() { return bossBattleDefeatRemainingMs; }, // debug/verification only — DARK OUT PART 3
+    getGabrielCombatEncounterIndex, GABRIEL_ENCOUNTER_3_INDEX, // debug/verification only — DARK OUT PART 3.5
     // Debug/verification only — stage world/camera/EXIT (PART 21-29).
     STAGES,
     get currentStageIndex() { return currentStageIndex; },
