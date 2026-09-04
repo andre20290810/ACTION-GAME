@@ -109,9 +109,37 @@
        SECRET are freely selectable this PART (no LOCK condition yet). -->
   <div id="scenario-select-overlay" hidden>
     <div class="boss-select-title">SCENARIO SELECT</div>
+    <!-- POST-v2.0 SECTION 3: no longer a direct game-start button — routes to
+         MAIN SCENARIO SUB MENU (DEMO PLAY/FULL PLAY/BACK) below. -->
     <button class="main-menu-item" id="scenario-select-main-btn">MAIN SCENARIO</button>
-    <button class="main-menu-item" id="scenario-select-secret-btn">SECRET SCENARIO</button>
+    <!-- POST-v2.0 SECTION 5: routes to SECRET SCENARIO SUB MENU, locked until
+         FULL PLAY's own TRUE ENDING is reached at least once (see
+         secretScenarioUnlocked in game.js). A separate id/class
+         (secret-locked-label) carries the small "LOCKED" hint text. -->
+    <button class="main-menu-item" id="scenario-select-secret-btn">SECRET SCENARIO<span id="scenario-select-secret-locked-label" class="locked-label">LOCKED</span></button>
     <button class="main-menu-item" id="scenario-select-back-btn">BACK</button>
+  </div>
+  <!-- POST-v2.0 SECTION 4: MAIN SCENARIO SUB MENU — DEMO PLAY is the existing
+       "main" scenario route renamed/rerouted (unchanged internals), FULL
+       PLAY is the existing "secret" scenario route renamed/rerouted
+       (unchanged internals). Neither existing STORY route is rebuilt. -->
+  <div id="main-scenario-sub-overlay" hidden>
+    <div class="boss-select-title">MAIN SCENARIO</div>
+    <button class="main-menu-item" id="main-scenario-sub-demo-btn">DEMO PLAY</button>
+    <button class="main-menu-item" id="main-scenario-sub-full-btn">FULL PLAY</button>
+    <button class="main-menu-item" id="main-scenario-sub-back-btn">BACK</button>
+  </div>
+  <!-- POST-v2.0 SECTION 5: SECRET SCENARIO SUB MENU — ARSENAL/GABRIEL/ADAM
+       MODE are new selection-state/routing hooks only; per spec section
+       5-4 no new internal scenario content is invented here — see game.js's
+       own comment at these buttons' click handlers for exactly how far each
+       one currently connects. -->
+  <div id="secret-scenario-sub-overlay" hidden>
+    <div class="boss-select-title">SECRET SCENARIO</div>
+    <button class="main-menu-item" id="secret-scenario-sub-arsenal-btn">ARSENAL MODE</button>
+    <button class="main-menu-item" id="secret-scenario-sub-gabriel-btn">GABRIEL MODE</button>
+    <button class="main-menu-item" id="secret-scenario-sub-adam-btn">ADAM MODE</button>
+    <button class="main-menu-item" id="secret-scenario-sub-back-btn">BACK</button>
   </div>
 </div>
 

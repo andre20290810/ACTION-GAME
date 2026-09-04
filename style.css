@@ -845,7 +845,7 @@ body {
    LOADING..." occupies) — real-device feedback confirmed the MENU items
    were overlapping it there. Anchored toward the bottom instead of
    centered so the whole 4-item group sits clearly below the logo. */
-#main-menu-overlay, #training-select-overlay, #boss-select-overlay, #scenario-select-overlay {
+#main-menu-overlay, #training-select-overlay, #boss-select-overlay, #scenario-select-overlay, #main-scenario-sub-overlay, #secret-scenario-sub-overlay {
   position: absolute;
   inset: 0;
   display: flex;
@@ -862,7 +862,7 @@ body {
   background: rgba(0, 0, 0, 0.2);
   touch-action: manipulation;
 }
-#main-menu-overlay[hidden], #training-select-overlay[hidden], #boss-select-overlay[hidden], #scenario-select-overlay[hidden] { display: none; }
+#main-menu-overlay[hidden], #training-select-overlay[hidden], #boss-select-overlay[hidden], #scenario-select-overlay[hidden], #main-scenario-sub-overlay[hidden], #secret-scenario-sub-overlay[hidden] { display: none; }
 .main-menu-item {
   font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
   font-weight: 700;
@@ -900,6 +900,17 @@ body {
   border-bottom-color: rgba(230, 60, 50, 0);
   text-shadow: none;
 }
+/* POST-v2.0 SECTION 5-3: a small, restrained "LOCKED" hint next to SECRET
+   SCENARIO while unset — never silent/no-feedback, never a large badge. */
+.locked-label {
+  display: inline-block;
+  margin-left: 0.6em;
+  font-size: 0.6em;
+  letter-spacing: 0.15em;
+  color: rgba(230, 60, 50, 0.75);
+  vertical-align: middle;
+}
+.locked-label[hidden] { display: none; }
 /* DARK OUT PART 3 SECTION 22: BOSS SELECT's own minimal title — same
    font-family/letter-spacing/uppercase convention as .main-menu-item
    above, just non-interactive and in the existing DARK OUT red accent. */
@@ -911,18 +922,22 @@ body {
   text-transform: uppercase;
   color: rgba(230, 60, 50, 0.9);
 }
-/* POST-v1.0 SECTION 17: BOSS SELECT has 6 rows (title + 4 targets + BACK)
-   vs SCENARIO SELECT's 4 (title + 2 + BACK) — same shared gap/font/align as
-   the block above, but bottom-anchoring that many rows pushes the top row
-   up into the "DARK OUT" logo band (~46-56vh, see the PART 11 comment
-   above). Anchored from just below the logo instead, growing downward,
-   so title position/font-size/row gap stay byte-identical to SCENARIO
-   SELECT's own values while the extra rows never reach the logo. */
-#boss-select-overlay {
-  justify-content: flex-start;
-  padding-top: 58vh;
-  padding-bottom: 0;
-}
+/* POST-v2.0 SECTION 1/6: the PART 11-era top-anchored override this rule
+   used to carry (justify-content:flex-start; padding-top:58vh) pushed BOSS
+   SELECT's BACK button below the fold on shorter real-device viewports —
+   confirmed via measurement at 375x667 (BACK rendered fully off-screen,
+   top-anchoring at 58vh plus 6 rows of content overflowing past the
+   viewport bottom with nothing to clamp it back on screen). Bottom-
+   anchoring (the shared rule above, same as SCENARIO SELECT/MAIN SUB
+   MENU/SECRET SUB MENU) guarantees BACK always sits exactly padding-bottom
+   (12vh) from the actual viewport bottom regardless of row count or
+   viewport height, which both fixes the regression and satisfies section
+   6's "BACK position unified across every SELECT-family menu" requirement
+   literally (identical padding-bottom on every one of them). The one
+   tradeoff — BOSS SELECT's title floats higher (closer to the DARK OUT
+   logo band) than SCENARIO SELECT's own title on tall viewports, since it
+   has more rows above BACK — is purely cosmetic text-over-video overlap,
+   not a functional/navigation-blocking issue like the BACK regression was. */
 
 /* SECTION Q/R: RESULT — a real DOM screen (like MAIN MENU), shown after the
    canvas-drawn "GAME CLEAR!!" overlay finishes. Kept modest/plain rather

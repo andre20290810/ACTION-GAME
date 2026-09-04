@@ -49,6 +49,11 @@
   // same relative composition (spawn position, barrel margins, ...) works
   // identically in both areas with no separate code path per area.
   function areaTopY(area) { return area === 2 ? -H : 0; }
+  // POST-v2.0 SECTION 26: the geometric center of a given AREA's own
+  // screen-sized band — AREA1: x=W/2, y=areaTopY(1)+H/2; AREA2: x=W/2,
+  // y=areaTopY(2)+H/2 (spec's own literal formulas). The one shared helper
+  // every standard pickup item's spawn position now resolves through.
+  function getAreaCenterPos(area) { return { x: W / 2, y: areaTopY(area) + H / 2 }; }
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -137,11 +142,19 @@
     { type: 'drone', speedMult: 1.5 },                       // STAGE 9
     { type: 'boss', encounterIndex: 2, final: true },        // STAGE 10: GABRIEL ENCOUNTER 3, FINAL, 0 BARREL + 3 DRONE
   ];
-  // SECTION K/X: per-ENCOUNTER barrel count, indexed by bossEncounterIndex —
-  // ENCOUNTER1=5 (reachable again as of PART 3.7), ENCOUNTER2=3 (down from
-  // 5), ENCOUNTER3=0 (replaced by the FINAL STAGE's 3 DRONEs instead,
-  // SECTION M-5).
-  const BOSS_ENCOUNTER_BARREL_COUNTS = [5, 3, 0];
+  // SECTION K/X: per-ENCOUNTER barrel count, indexed by bossEncounterIndex.
+  // POST-v2.0 SECTION 21: ENCOUNTER1/2 both now the same always-3 count as
+  // every other GABRIEL combat context (was 5/3) — updateBarrels()'s new
+  // per-barrel individual respawn keeps it at exactly 3 throughout the
+  // fight. ENCOUNTER3 stays 0 — a deliberate, unrelated replacement design
+  // (the FINAL STAGE's own 3 DRONEs + explosion-damages-GABRIEL mechanic,
+  // isFinalStoryStage()'s own updateBarrels() early-return guard below),
+  // never barrels, so it is intentionally excluded from the "always 3"
+  // mandate exactly like ROID1/ROID2 (replaced by 3 FAST DRONE escorts
+  // instead) and every DRONE/WHITE-SHADOW/MIXED/EVENT/cultivationLab/
+  // adamSphere/SECURITY-TRAINING stage (all deliberately barrel-free,
+  // documented in the completion report as an explicit scoping decision).
+  const BOSS_ENCOUNTER_BARREL_COUNTS = [3, 3, 0];
 
   // ==========================================================================
   // POST-v1.0 SECTIONS 24/29/44: data-driven MAIN/SECRET scenario plans —
@@ -301,12 +314,27 @@
   // lookup (getStageRegistryEntry()) covers all of them. Deliberately reuses
   // the exact same lazy-load shape TRAINING_BACKGROUNDS/STAGES already use
   // (file/img/ready, populated via the same forEach-with-onload pattern) —
-  // no new asset-loading mechanism. floorLeftFrac/floorRightFrac are
-  // intentionally omitted here: these backgrounds aren't wired into any real
-  // walkable-floor/collision path yet (out of scope for this PART), so
-  // fabricating unmeasured fractions would be worse than leaving them unset
-  // — getFloorXRangeWorld() already treats "undefined" as "no floor data"
-  // and fails open, exactly like the legacy stage_b entry in STAGES[] does.
+  // no new asset-loading mechanism.
+  //
+  // POST-v2.0 SECTION 13: floorLeftFrac/floorRightFrac ADDED here — this was
+  // the actual root cause of the real-device "AREA1/AREA2 wall missing"
+  // regression (confirmed via git-history investigation): every BOSS/EVENT
+  // fight has read its background from THIS registry since c9eb459/07957fc/
+  // 06ca7f8, but these fractions were left deliberately unmeasured back when
+  // the registry was still unused scaffolding — getFloorXRangeWorld()
+  // already treats "undefined" as "no floor data" and fails open, so
+  // clampPlayerToScreen()'s wall-clamp block and every segmentCrossesAreaWall()
+  // call site (CLAW slashes/DRONE lasers/AUTO AIM/player bullets) were
+  // silently no-ops for every boss fight this whole time. Measured the same
+  // way STAGES[]/TRAINING_BACKGROUNDS were — by inspecting each image's own
+  // visible side-wall/floor-edge geometry: c1/b1/b2 are corridor-style scenes
+  // with tanks/wall-panels along both sides (~18-22% margins); c4 is a cargo-
+  // lift shaft with clear vertical side panels (~20% margins, reusing
+  // TRAINING's own cargo_lift_e12_a measurement since it's visually the same
+  // kind of shaft); c2/c3 are wide-open aerial floor-plan scenes with no
+  // visible side walls at all (~8% margins, matching stage_a/lab_b03's own
+  // "wide open floor" reasoning). First-pass, tunable like every other
+  // floorLeftFrac/floorRightFrac value in this file.
   //
   // NOT wired into currentStage() / gameState.mode dispatch this PART, per
   // spec — STORY MODE and TRAINING MODE must keep reading STAGES[]/
@@ -326,12 +354,12 @@
     { id: 'normal_a3', type: 'normal', background: { file: 'assets/stages/normal/a3.jpg' } },
     { id: 'normal_a4', type: 'normal', background: { file: 'assets/stages/normal/a4.jpg' } },
     { id: 'normal_a5', type: 'normal', background: { file: 'assets/stages/normal/a5.jpg' } },
-    { id: 'event_b1_project_adam', type: 'event', background: { file: 'assets/stages/event/b1.jpg' } },
-    { id: 'event_b2_adam_lab', type: 'event', background: { file: 'assets/stages/event/b2.jpg' } },
-    { id: 'boss_c1_roid1', type: 'boss', background: { file: 'assets/stages/boss/c1.jpg' } },
-    { id: 'boss_c2_roid2', type: 'boss', background: { file: 'assets/stages/boss/c2.jpg' } },
-    { id: 'boss_c3_gabriel', type: 'boss', background: { file: 'assets/stages/boss/c3.jpg' } },
-    { id: 'boss_c4_adam', type: 'boss', background: { file: 'assets/stages/boss/c4.jpg' } },
+    { id: 'event_b1_project_adam', type: 'event', background: { file: 'assets/stages/event/b1.jpg', floorLeftFrac: 0.18, floorRightFrac: 0.82 } },
+    { id: 'event_b2_adam_lab', type: 'event', background: { file: 'assets/stages/event/b2.jpg', floorLeftFrac: 0.18, floorRightFrac: 0.82 } },
+    { id: 'boss_c1_roid1', type: 'boss', background: { file: 'assets/stages/boss/c1.jpg', floorLeftFrac: 0.22, floorRightFrac: 0.78 } },
+    { id: 'boss_c2_roid2', type: 'boss', background: { file: 'assets/stages/boss/c2.jpg', floorLeftFrac: 0.08, floorRightFrac: 0.92 } },
+    { id: 'boss_c3_gabriel', type: 'boss', background: { file: 'assets/stages/boss/c3.jpg', floorLeftFrac: 0.08, floorRightFrac: 0.92 } },
+    { id: 'boss_c4_adam', type: 'boss', background: { file: 'assets/stages/boss/c4.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.80 } },
   ];
   STAGE_REGISTRY.forEach((s) => {
     s.background.img = new Image();
@@ -497,7 +525,6 @@
   // the arrival replay, matching "BOSS-BATTLE-first-time" / RETRY-skips.
   const storyCinematicState = {
     sneakingPlayed: false,
-    droneArrivalPlayed: false,
     gabrielArrivalPlayed: [false, false, false],
     adamArrivalPlayed: false,
     bbGabrielArrivalPlayed: false,
@@ -1252,8 +1279,12 @@
   // Full draw box (including the image's own transparent margin); the
   // visible drum within it ends up ~26% of the player's height, inside
   // the requested 20-30% band.
-  const BARREL_DRAW_H = SPRITE_DRAW_H * 0.30;
-  const BARREL_HITBOX_RADIUS = 12; // scaled down to match the smaller draw size
+  // POST-v2.0 SECTION 22: +10% visible size, first-pass — BARREL_HITBOX_RADIUS
+  // scales by the exact same factor right below so the hitbox always matches
+  // what's drawn.
+  const BARREL_VISUAL_SCALE = 1.10;
+  const BARREL_DRAW_H = SPRITE_DRAW_H * 0.30 * BARREL_VISUAL_SCALE;
+  const BARREL_HITBOX_RADIUS = 12 * BARREL_VISUAL_SCALE; // scaled down to match the smaller draw size, then back up by BARREL_VISUAL_SCALE
   const BARREL_EXPLOSION_RADIUS = 300; // area-effect range, not tied to the sprite size (3x the previous 100) — PLAYER's own damage-adjacent knockback AND the boss's own knockback both still key off this exact, unchanged value (SECTION C's spec explicitly forbids touching either)
   // SECTION C (this turn): a separate, narrower radius for the BOSS's own
   // explosion DAMAGE reach check only (applyExplosionDamageToBoss() below)
@@ -1270,19 +1301,24 @@
   // so both explosion sources get the SAME 30% narrower damage reach.
   const EXPLOSION_DAMAGE_RADIUS_REDUCTION = 0.70; // new radius = old radius * 0.70 (a 30% DEcrease, not "30% of")
   const BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS = BARREL_EXPLOSION_RADIUS * 0.82 * EXPLOSION_DAMAGE_RADIUS_REDUCTION;
-  // SECTION E: always 5 barrels — every spawn/restock site below uses this
-  // one constant instead of the old random 2-4 range. Positions themselves
-  // are still randomized per-barrel every time via pickBarrelSpot().
-  const BARREL_COUNT = 5;
+  // SECTION E: always this many barrels — every spawn/restock site below
+  // uses this one constant instead of the old random 2-4 range. Positions
+  // themselves are still randomized per-barrel every time via
+  // pickBarrelSpot(). POST-v2.0 SECTION 21: lowered from 5 to 3 — every
+  // combat AREA (STORY GABRIEL encounters, BOSS BATTLE GABRIEL, BASIC
+  // TRAINING) now maintains exactly 3 at all times via the new per-barrel
+  // individual respawn in updateBarrels() below, replacing the old
+  // "wait until every barrel is gone, then drop a fresh batch" restock.
+  const BARREL_COUNT = 3;
   // SECTION F: blast knockback for whoever (player and/or boss) is caught
   // within BARREL_EXPLOSION_RADIUS — separate from damage (applyExplosionDamageToBoss()
   // above is unaffected). Distance-scaled: full strength at the barrel's
   // own center, tapering linearly to 0 exactly at the radius edge.
   const BARREL_EXPLOSION_KNOCKBACK_DISTANCE = 150; // max push, at point-blank — same order of magnitude as the other knockback distances in this file
   const BARREL_EXPLOSION_KNOCKBACK_SUPPRESS_MS = 260;
-  // Ceiling-drop restock: when every barrel on stage is gone, a fresh batch
-  // falls in from above instead of the field staying permanently empty.
-  const BARREL_RESTOCK_DELAY_MIN_MS = 1000, BARREL_RESTOCK_DELAY_MAX_MS = 2000;
+  // Ceiling-drop restock: an individually-destroyed barrel falls back in
+  // from above BARREL_RESPAWN_MS later (see updateBarrels()) instead of the
+  // field staying permanently empty until every barrel is gone.
   const BARREL_FALL_MS = 550; // ceiling -> landing duration
   const BARREL_FALL_HEIGHT = 460; // px above the landing spot the drop starts from (visual only)
 
@@ -1387,6 +1423,17 @@
   // release's own (unchanged) 0.90.
   const COUNTER_WINDUP_SCALE = COUNTER_STING_SCALE * 1.10;
   const COUNTER_ARC_CLAW_LIFETIME_MS = ARC_CLAW_LIFETIME_MS / 2; // "2x speed" = half the normal travel time along the SAME bezier geometry — see the 'counterArc' kind in updateArcClawSlashes()
+  // POST-v2.0 SECTION 20: ADAM-only — its own invincible-state 'straightclaw'
+  // COUNTER (both the south STRAIGHT CLAW thrust and the north/east/west
+  // COUNTER ARC CLAW variant) travels at 0.75x speed, first-pass. Applied as
+  // an extra divisor on the SAME lifetimeMs calculation both kinds already
+  // use in updateArcClawSlashes() below (dividing lifetime by <1 raises the
+  // travel duration, which is exactly "0.75x speed" for a fixed-distance,
+  // time-interpolated travel) — never touches GABRIEL's own equivalent
+  // attack, which reuses this exact same code path but is gated out via an
+  // explicit boss.type==='adam' check at the one call site. Telegraph/
+  // windup (STRAIGHT_CLAW_WINDUP_MS) is untouched per spec.
+  const ADAM_CLAW_SPEED_MULT = 0.75;
   // SECTION J: north/east/west COUNTER now rolls between the existing 2x
   // ARC CLAW and a new STRAIGHT CLAW variant (reusing spawnStraightClaw()'s
   // own already direction-agnostic straight-line thrust — the same shape
@@ -1909,6 +1956,13 @@
   // per-robot random pick within these bands (F-4) keeps every robot's
   // motion visibly distinct rather than uniform.
   const SECURITY_PATROL_RANGE_MIN = 40, SECURITY_PATROL_RANGE_MAX = 90; // px either side of patrolCenterX
+  // POST-v2.0 SECTION 18: a small guaranteed minimum patrol swing — see
+  // buildSecurityDrone()'s own floor-space clamp below. Deliberately much
+  // smaller than SECURITY_PATROL_RANGE_MIN (a real random patrol swing) so
+  // it can never reintroduce PART8's old "every DRONE bunches onto one X on
+  // a narrow floor" regression — it only rescues a drone that would
+  // otherwise get clamped all the way to a literal frozen 0px range.
+  const SECURITY_DRONE_MIN_VISIBLE_PATROL_PX = 14;
   // PART8 SECTION F: raised ~27% from the original 18-34 (F-3's old
   // "deliberately slow" design) — DRONEs were reported too easy to outrun/
   // outshoot. FAST_PATROL's existing 1.5x multiplier below (unchanged) already
@@ -2192,9 +2246,29 @@
   const ROID_BURST_TELEGRAPH_PULSE_MS = 300; // 900/300 = 3 pulses
   // SECTION E: ROID1 SNIPER MODE — first-pass constants, tunable.
   const ROID1_SNIPER_SHOT_COUNT = 4;
-  const ROID1_SNIPER_LOCK_MS = 650;
-  const ROID1_SNIPER_INTERSHOT_MS = 300;
-  const ROID1_SNIPER_BULLET_SPEED_MULT = 1.5;
+  // POST-v2.0 SECTION 16: ROID1-only attack slowdown, first-pass — attack/
+  // sniper interval x1.20 (LOCK_MS/INTERSHOT_MS both lengthened, since with
+  // no idle gap between volleys these two together ARE ROID1's whole
+  // sniper attack cadence), sniper lock duration also within the spec's
+  // 1.15-1.20 allowance (same 1.20 figure used for both here), projectile
+  // speed x0.85. Baked directly into these two constants/the bullet-speed
+  // multiplier below since SNIPER mode is 100% ROID1-exclusive (never
+  // reached by ROID2) — no type check needed here, unlike the shared BURST
+  // constants just above which DO need one (see fireRoidBullet()/
+  // updateRoidBoss()'s own ROID1_BURST_*_MULT usage) so ROID2's own BURST
+  // pace is untouched by this section.
+  const ROID1_SNIPER_LOCK_MS = 650 * 1.20;
+  const ROID1_SNIPER_INTERSHOT_MS = 300 * 1.20;
+  const ROID1_SNIPER_BULLET_SPEED_MULT = 1.5 * 0.85;
+  // POST-v2.0 SECTION 16: same attack-interval/projectile-speed multipliers,
+  // applied only when boss.type==='roid1' (BURST itself is shared with
+  // ROID2 — see ROID_BURST_SHOT_INTERVAL_MS/ROID_BURST_COOLDOWN_MS above —
+  // and ROID2's own pace must stay untouched this section). BURST's
+  // existing pre-attack telegraph (ROID_BURST_TELEGRAPH_MS/_PULSE_MS) is
+  // deliberately NOT included in either multiplier — spec: "preserved
+  // unchanged".
+  const ROID1_BURST_INTERVAL_MULT = 1.20;
+  const ROID1_BURST_BULLET_SPEED_MULT = 0.85;
   // SECTION G: ROID2 MISSILE AREA ATTACK — first-pass constants, tunable.
   const ROID2_MISSILE_COUNT = 3;
   const ROID2_MISSILE_WARNING_MS = 900;
@@ -2223,9 +2297,20 @@
   // the final DRONE_SNIPER_YELLOW_MS and fire (once) the instant it turns
   // yellow, then start the next cycle. The fired shot never re-tracks the
   // player afterward (straight travel to the locked point only).
-  const DRONE_SNIPER_CYCLE_MS = 2000;
+  // POST-v2.0 SECTION 17: attack cycle interval x1.20 (spec's own example:
+  // "a 2s cycle becomes ~2.4s") — applies to every DRONE using this SAME
+  // cycle (normal STORY drone-type stages AND ROID1/ROID2 escort DRONEs,
+  // both routed through the shared !legacyTrainingAI branch of
+  // updateSecurityRobots() below); SECURITY TRAINING's own separate legacy
+  // shadow-detection DRONE AI is untouched, and patrolSpeed/patrolRange
+  // (movement) are never read by this constant, satisfying "only attacks
+  // slow down, not movement".
+  const DRONE_SNIPER_CYCLE_MS = 2000 * 1.20;
   const DRONE_SNIPER_YELLOW_MS = 220;
   const DRONE_SNIPER_BULLET_DAMAGE = BULLET_DAMAGE;
+  // POST-v2.0 SECTION 17: projectile speed x0.85, applied in
+  // fireDroneSniperShot() below.
+  const DRONE_SNIPER_BULLET_SPEED_MULT = 0.85;
   // Warning-marker blink interval accelerates from this (slow, early in the
   // cycle) down toward a floor (fast, right before firing) — same
   // "blink faster as the shot approaches" idea as GABRIEL's own STUN-less
@@ -2255,6 +2340,32 @@
   const WHITE_SHADOW_DRIFT_RANGE_MAX = SECURITY_SCAN_RANGE_MAX * 1.20;
   const WHITE_SHADOW_DRIFT_SPEED_MIN = SECURITY_SCAN_SPEED_MIN * 1.35;
   const WHITE_SHADOW_DRIFT_SPEED_MAX = SECURITY_SCAN_SPEED_MAX * 1.35;
+  // POST-v2.0 SECTION 11: WHITE SHADOW's own visible size, ~20% larger than
+  // the shared SECURITY_SHADOW_RADIUS_X/Y it used to draw at verbatim — a
+  // dedicated multiplier here rather than scaling SECURITY_SHADOW_RADIUS_X/Y
+  // itself, since that constant is still shared with DRONE's own unrelated
+  // detection-shadow ellipse (getSecurityShadowCenter()/SECURITY_FOOT_DETECT_RADIUS
+  // callers) which section 11 must not affect. Collision (contact-trigger,
+  // section 10) scales with the same factor so the hitbox always matches
+  // what's drawn.
+  const WHITE_SHADOW_VISUAL_SCALE = 1.20;
+  const WHITE_SHADOW_RADIUS_X = SECURITY_SHADOW_RADIUS_X * WHITE_SHADOW_VISUAL_SCALE;
+  const WHITE_SHADOW_RADIUS_Y = SECURITY_SHADOW_RADIUS_Y * WHITE_SHADOW_VISUAL_SCALE;
+  // POST-v2.0 SECTION 10: the WHITE SHADOW's own "object/contact radius" —
+  // PLAYERがWHITE SHADOWを踏む (the player's own PLAYER_HIT_RADIUS overlapping
+  // this) is now the ONLY thing that triggers its MISSILE AREA ATTACK,
+  // replacing the old always-fires-at-the-player's-live-position-once-per-
+  // cooldown design. Matches the drawn ellipse's own X radius (its widest
+  // axis) so the visible body and the trigger zone agree.
+  const WHITE_SHADOW_CONTACT_RADIUS = WHITE_SHADOW_RADIUS_X;
+  // POST-v2.0 SECTION 9: the very first WHITE-SHADOW-ONLY stage (plan type
+  // 'whiteShadow' — never the 'mixed' type, which already declares its own
+  // deliberate whiteShadowCount:1 alongside its drones) now spawns this many
+  // at once instead of a single one, spaced out via
+  // WHITE_SHADOW_INITIAL_SPACING so they never start on literally the same
+  // coordinates.
+  const WHITE_SHADOW_INITIAL_COUNT = 3;
+  const WHITE_SHADOW_INITIAL_SPACING = WHITE_SHADOW_RADIUS_X * 2.6;
   // Body-derived hurtbox — a fraction of the SAME target body height ROID's
   // own draw already scales to (ROID_BODY_TARGET_HEIGHT), not GABRIEL's
   // fixed BOSS_HURT_RADIUS (that constant is GABRIEL's own measured torso
@@ -2414,6 +2525,27 @@
   // size, without touching CINEMATIC_DRAW_H itself (GABRIEL's own cinematic
   // sizing must stay byte-for-byte unchanged).
   const ADAM_CINEMATIC_TARGET_HEIGHT = CINEMATIC_DRAW_H * ADAM_SIZE_SCALE;
+
+  // POST-v2.0 SECTION 19: a per-POSE runtime scale table layered on top of
+  // ADAM_BODY_TARGET_HEIGHT — never a PNG re-export, and never touching
+  // ADAM_BODY_TARGET_HEIGHT itself (GABRIEL/BOSS BATTLE's own shared
+  // constants elsewhere are unaffected). Non-DEFENSE poses (IDLE/WALK/
+  // ATTACK and every other normal combat pose reusing those same frames —
+  // PRE_ATTACK/STRAIGHT CLAW windup/release all resolve to an ATTACK sprite
+  // in resolveAdamBossFrame() above) size up ~13%; DEFENSE north/east/west
+  // stay at the current (already-tuned, section-16-era) size; DEFENSE south
+  // specifically shrinks ~3%. Scoped to the COMBAT draw path only (drawBoss()
+  // below) — the separate INTRO/THRESHOLD/DYING/FLASH DOWN cinematic pose
+  // (getAdamCinematicImageInfo(), its own ADAM_CINEMATIC_TARGET_HEIGHT) is
+  // untouched, since it's not one of the "IDLE/WALK/ATTACK″ combat poses
+  // this section is scoped to.
+  const ADAM_POSE_SCALE_NON_DEFENSE = 1.13;
+  const ADAM_POSE_SCALE_DEFENSE_SOUTH = 0.97;
+  function getAdamPoseScaleMultiplier(name) {
+    if (name === 'defense_south') return ADAM_POSE_SCALE_DEFENSE_SOUTH;
+    if (name === 'defense_north' || name === 'defense_east' || name === 'defense_west') return 1.0;
+    return ADAM_POSE_SCALE_NON_DEFENSE;
+  }
 
   // WALK ping-pong... no — WALK is a plain 1->2->3->1 WRAP (spec section 12),
   // same shape as GABRIEL's own south/north 3-frame wrap (bossFrameName()),
@@ -2690,7 +2822,11 @@
   // constant captured before W/H are known) — a safe, central, always-
   // walkable-to default per section 7's own "壁位置を推測しない" instruction;
   // tunable later without touching any collection/animation logic.
-  const PROJECT_ADAM_POS_FRAC = { x: 0.5, y: 0.42 };
+  // POST-v2.0 SECTION 26: y moved from 0.42 to dead-center 0.5 — b1 (the
+  // PROJECT ADAM event site) is a single-room screen with no real AREA1/
+  // AREA2 split (areaTopY(1)===0 either way), so "spawn at the geometric
+  // center of its own AREA" is exactly W*0.5, H*0.5 here.
+  const PROJECT_ADAM_POS_FRAC = { x: 0.5, y: 0.5 };
 
   // SECTION 10: a small, generic (never single-purpose) floating pickup-text
   // mechanism — same draw-time-prune shape as the existing healPickupTexts,
@@ -2970,7 +3106,11 @@
           // adam_arrival.mp4/spawning ADAM. No adam_arrival, no ADAM combat,
           // ever, for MAIN.
           adamSphereState.visible = false;
-          spawnWorldItemReward('escapeNavigator', adamSphereState.x, adamSphereState.y + 100);
+          // POST-v2.0 SECTION 26: AREA-center spawn (getAreaCenterPos()),
+          // never the ADAM SPHERE's own position — spawnWorldItemReward()'s
+          // own existing player-clearance nudge still applies as the one
+          // permitted minimal safety offset.
+          { const c = getAreaCenterPos(currentArea); spawnWorldItemReward('escapeNavigator', c.x, c.y); }
           storyScenarioState.pendingReward = 'escapeNavigator';
           storyScenarioState.awaitingRewardPickup = true;
         } else {
@@ -3122,22 +3262,16 @@
       // STAGE 1) via updateStageTransition()'s hardcoded `currentStageIndex
       // += 1` STORY-advance branch, so this is a direct, instant call instead.
       exitEventStage();
-      // DARK OUT PART 9 SECTION K/X: SECRET's own drone_arrival.mp4 —
-      // MAIN's own copy plays earlier, in beginScenarioOpening() before
-      // STAGE 1's very first entry; SECRET instead plays it right here, at
-      // this exact b1->STAGE1 transition (after b1, before STAGE1 — never
-      // before b1), run-scoped so it never repeats on STAGE2/3's own later
-      // DRONE stages. enterStoryStage() itself is deferred into the movie's
-      // onComplete — `now` may be stale by the time a multi-second movie
-      // finishes, so a fresh performance.now() is used instead, same
-      // pattern as every other deferred spawnBoss()/beginAdam...() call in
-      // this file.
-      if (!storyCinematicState.droneArrivalPlayed) {
-        storyCinematicState.droneArrivalPlayed = true;
-        playEventMovie('drone_arrival', () => { enterStoryStage(performance.now()); });
-      } else {
-        enterStoryStage(now);
-      }
+      // POST-v2.0 SECTION 8: drone_arrival.mp4 no longer plays here — it used
+      // to play immediately at this b1->STAGE1 transition, which meant it
+      // could fire a SECOND time when SECRET_TEMPLATE_PLAN's own
+      // {type:'movie', key:'drone_arrival'} entry (correctly positioned
+      // after S1's WHITE-SHADOW-only stage clears, before S2's DRONE stage)
+      // was reached shortly after. drone_arrival.mp4 is now played exactly
+      // once, exclusively by that resolved-plan movie entry, for both MAIN
+      // and SECRET — this b1->STAGE1 transition goes straight to STAGE 1
+      // (S1, WHITE SHADOW) with no movie of its own.
+      enterStoryStage(now);
     } else if (type === 'escapeNavigator' && storyScenarioState.scenario) {
       // SECTION 15/30/32: MAIN (after GABRIEL3) or SECRET (after ADAM) —
       // either way, collecting it just marks escape-ready and stops
@@ -3160,11 +3294,17 @@
     if (!storyScenarioState.scenario) return;
     if (storyScenarioState.awaitingRewardPickup) return; // SECTION 17: never spawn a 2nd reward while one is still pending
 
+    // POST-v2.0 SECTION 26: every reward below now spawns at the CURRENT
+    // AREA's own geometric center (getAreaCenterPos()) rather than the
+    // boss's own corpse position — spawnWorldItemReward()'s existing
+    // player-clearance nudge still applies as the one permitted minimal
+    // safety offset.
+    const rewardCenter = getAreaCenterPos(currentArea);
     if (boss.type === 'adam') {
       // SECTION 30: the SECRET-only special STORY ADAM fight — always
       // ESCAPE NAVIGATOR (never reachable from MAIN, which never sets
       // storyScenarioState.stageOverrideId at all).
-      spawnWorldItemReward('escapeNavigator', boss.x, boss.y + 100);
+      spawnWorldItemReward('escapeNavigator', rewardCenter.x, rewardCenter.y);
       storyScenarioState.pendingReward = 'escapeNavigator';
       storyScenarioState.awaitingRewardPickup = true;
       return;
@@ -3179,7 +3319,7 @@
     const rewardByEncounter = ['bloodSample1', 'bloodSample2', 'bloodSample3'];
     const reward = rewardByEncounter[bossEncounterIndex];
     if (reward) {
-      spawnWorldItemReward(reward, boss.x, boss.y + 100);
+      spawnWorldItemReward(reward, rewardCenter.x, rewardCenter.y);
       storyScenarioState.pendingReward = reward;
       storyScenarioState.awaitingRewardPickup = true;
     }
@@ -3300,8 +3440,18 @@
       x, y,
       driftCenterX: x, driftRangeX: range, driftSpeed: speed, driftDir: Math.random() < 0.5 ? 1 : -1,
       hiddenUntil: -Infinity, // FLASH hide window — see updateFlashGrenade()
-      missile: { active: false, index: 0, nextLaunchAt: 0, missiles: [], cooldownUntil: 0 },
+      missile: { active: false, index: 0, nextLaunchAt: 0, missiles: [], cooldownUntil: 0, originX: 0, originY: 0 },
     });
+  }
+  // POST-v2.0 SECTION 9: spawns the first WHITE-SHADOW-ONLY stage's
+  // WHITE_SHADOW_INITIAL_COUNT shadows spread evenly around the normal
+  // storyWhiteShadowSpawnPos() center so none of them overlap at spawn.
+  function spawnInitialWhiteShadows() {
+    const base = storyWhiteShadowSpawnPos();
+    for (let i = 0; i < WHITE_SHADOW_INITIAL_COUNT; i++) {
+      const offset = (i - (WHITE_SHADOW_INITIAL_COUNT - 1) / 2) * WHITE_SHADOW_INITIAL_SPACING;
+      spawnWhiteShadow(base.x + offset, base.y);
+    }
   }
   function getNearestWhiteShadow() {
     let best = null, bestDist = Infinity;
@@ -3326,12 +3476,27 @@
       if (isWhiteShadowHidden(shadow, now)) continue; // SECTION 5-3: fully inert while FLASH-hidden — no new lock, no attack, no draw (see drawWhiteShadows())
       const m = shadow.missile;
       if (!m.active) {
-        // SECTION 5-2: STEALTH means no NEW target lock/attack begins.
-        if (!stealthed && now >= m.cooldownUntil) {
+        // POST-v2.0 SECTION 10: no more auto-fire-at-a-distance — the ONLY
+        // trigger now is physical contact ("PLAYERがWHITE SHADOWを踏む"):
+        // the player's own PLAYER_HIT_RADIUS overlapping this shadow's own
+        // WHITE_SHADOW_CONTACT_RADIUS. SECTION 12 (STEALTH immunity)
+        // continues to suppress a NEW trigger, unchanged. SECTION 25: this
+        // is physical contact, not "detection at range", so it deliberately
+        // ignores barrel-shadow cover (isPlayerBarrelShadowHiddenFrom())
+        // entirely — cover only ever blocks a distant reaction, and contact
+        // is never distant.
+        const contactDist = Math.hypot(player.x - shadow.x, player.y - shadow.y);
+        if (!stealthed && now >= m.cooldownUntil && contactDist <= WHITE_SHADOW_CONTACT_RADIUS + PLAYER_HIT_RADIUS) {
           m.active = true;
           m.index = 0;
           m.nextLaunchAt = now;
           m.missiles = [];
+          // SECTION 10: the blast center is the WHITE SHADOW's OWN position
+          // at the exact moment of contact, fixed for the whole volley —
+          // never re-reads player.x/y again, so moving away after triggering
+          // it can dodge the eventual impact.
+          m.originX = shadow.x;
+          m.originY = shadow.y;
         }
         continue;
       }
@@ -3340,7 +3505,7 @@
       if (stealthed) {
         m.index = WHITE_SHADOW_MISSILE_COUNT;
       } else if (m.index < WHITE_SHADOW_MISSILE_COUNT && now >= m.nextLaunchAt) {
-        m.missiles.push({ x: player.x, y: player.y, warnStartedAt: now, impacted: false });
+        m.missiles.push({ x: m.originX, y: m.originY, warnStartedAt: now, impacted: false });
         m.index++;
         m.nextLaunchAt = now + WHITE_SHADOW_MISSILE_STAGGER_MS;
       }
@@ -3369,7 +3534,7 @@
       ctx.globalAlpha = 0.6;
       ctx.fillStyle = 'rgba(255,255,255,1)';
       ctx.beginPath();
-      ctx.ellipse(shadow.x, shadow.y, SECURITY_SHADOW_RADIUS_X, SECURITY_SHADOW_RADIUS_Y, 0, 0, Math.PI * 2);
+      ctx.ellipse(shadow.x, shadow.y, WHITE_SHADOW_RADIUS_X, WHITE_SHADOW_RADIUS_Y, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
       for (const missile of shadow.missile.missiles) {
@@ -4103,7 +4268,13 @@
   function updateRoidTargetTracking(now) {
     const stealthed = now < player.stealthUntil;
     const flashLost = now < roidState.flashLostUntil;
-    const known = !stealthed && !flashLost;
+    // SECTION 24/25: barrel-shadow cover — a separate mechanic from STEALTH
+    // (isPlayerBarrelShadowHiddenFrom() never reads/touches player.stealthUntil),
+    // folded into this SAME "is the target known" gate so it consistently
+    // suppresses both facing-zone tracking and SNIPER/MISSILE/BURST
+    // acquisition exactly the way STEALTH already does for ROID.
+    const barrelHidden = isPlayerBarrelShadowHiddenFrom(boss);
+    const known = !stealthed && !flashLost && !barrelHidden;
     const wasKnown = roidState.targetKnown;
     roidState.targetKnown = known;
     if (known) {
@@ -4183,9 +4354,12 @@
     const muzzleX = drawX + drawW * profile.muzzleFracX;
     const muzzleY = drawY + drawH * profile.muzzleFracY;
     const angle = Math.atan2(player.y - muzzleY, player.x - muzzleX);
+    // SECTION 16: ROID1-only burst bullet speed x0.85 — ROID2's own BURST
+    // (same fireRoidBullet(), shared state machine) is untouched.
+    const speedMult = boss.type === 'roid1' ? ROID1_BURST_BULLET_SPEED_MULT : 1;
     enemyBullets.push({
       x: muzzleX, y: muzzleY,
-      vx: Math.cos(angle) * BULLET_SPEED, vy: Math.sin(angle) * BULLET_SPEED,
+      vx: Math.cos(angle) * BULLET_SPEED * speedMult, vy: Math.sin(angle) * BULLET_SPEED * speedMult,
       born: now,
     });
   }
@@ -4369,6 +4543,9 @@
         }
       }
     } else if (boss.state === 'firing') {
+      // SECTION 16: ROID1-only burst interval/cooldown x1.20 — ROID2's own
+      // BURST pace (same shared state machine) is untouched.
+      const intervalMult = boss.type === 'roid1' ? ROID1_BURST_INTERVAL_MULT : 1;
       if (stealthed) {
         // Interrupted mid-burst: no shots fired yet -> back to SEARCH
         // (never spend a cooldown on a burst that never actually fired);
@@ -4378,16 +4555,16 @@
           boss.state = 'search';
         } else {
           boss.state = 'cooldown';
-          roidState.cooldownUntil = now + ROID_BURST_COOLDOWN_MS;
+          roidState.cooldownUntil = now + ROID_BURST_COOLDOWN_MS * intervalMult;
         }
       } else if (now >= roidState.nextShotAt) {
         fireRoidBullet(now);
         roidState.burstShotsFired++;
         if (roidState.burstShotsFired >= ROID_BURST_SHOT_COUNT) {
           boss.state = 'cooldown';
-          roidState.cooldownUntil = now + ROID_BURST_COOLDOWN_MS;
+          roidState.cooldownUntil = now + ROID_BURST_COOLDOWN_MS * intervalMult;
         } else {
-          roidState.nextShotAt = now + ROID_BURST_SHOT_INTERVAL_MS;
+          roidState.nextShotAt = now + ROID_BURST_SHOT_INTERVAL_MS * intervalMult;
         }
       }
     } else if (boss.state === 'cooldown') {
@@ -4510,29 +4687,24 @@
     } else {
       ctx.drawImage(frame.img, dx, dy, w, h);
     }
-    // DARK OUT PART 10 SECTION E-5: SNIPER MODE lock-on telegraph — a red
-    // aim line from ROID1 to the currently-locking point plus a small
-    // target cross, both canvas-drawn (no new image assets). Only shown
-    // during the 'locking' phase — the intershot pause between locks is
-    // deliberately bare.
+    // POST-v2.0 SECTION 14: SNIPER MODE lock-on marker simplified to a
+    // plain "+" only, centered on the locked point — the old dashed aim
+    // line from ROID1 to the lock point and the growing crosshair radius
+    // are both gone (spec: no circles/long lines/large crosshair
+    // graphics), leaving a small, fixed-size, thin-lined, canvas-drawn "+"
+    // that reddens as the lock nears completion. Only shown during the
+    // 'locking' phase — the intershot pause between locks is deliberately
+    // bare.
     if (boss.state === 'sniper' && roidState.sniper.phase === 'locking') {
       const s = roidState.sniper;
       const t = Math.min(1, (now - s.phaseStartedAt) / ROID1_SNIPER_LOCK_MS);
       ctx.save();
-      ctx.strokeStyle = `rgba(255,40,30,${0.35 + 0.35 * t})`;
+      ctx.strokeStyle = `rgba(255,50,35,${0.5 + 0.4 * t})`;
       ctx.lineWidth = 1.5;
-      ctx.setLineDash([6, 6]);
+      const r = 8;
       ctx.beginPath();
-      ctx.moveTo(boss.x, boss.y);
-      ctx.lineTo(s.lockedX, s.lockedY);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      const crossR = 10 + 6 * t;
-      ctx.strokeStyle = `rgba(255,60,40,${0.5 + 0.4 * t})`;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(s.lockedX - crossR, s.lockedY); ctx.lineTo(s.lockedX + crossR, s.lockedY);
-      ctx.moveTo(s.lockedX, s.lockedY - crossR); ctx.lineTo(s.lockedX, s.lockedY + crossR);
+      ctx.moveTo(s.lockedX - r, s.lockedY); ctx.lineTo(s.lockedX + r, s.lockedY);
+      ctx.moveTo(s.lockedX, s.lockedY - r); ctx.lineTo(s.lockedX, s.lockedY + r);
       ctx.stroke();
       ctx.restore();
     }
@@ -5354,7 +5526,13 @@
     // at trigger time (boss.counterAttackKind) — south always keeps its own
     // STING regardless of that field.
     const usesStraightClaw = isSouth || boss.counterAttackKind === 'straightClaw';
-    const attackWindowMs = usesStraightClaw ? STRAIGHT_CLAW_ATTACK_MS : COUNTER_ARC_CLAW_LIFETIME_MS;
+    // SECTION 20: ADAM-only — matches the SAME divisor updateArcClawSlashes()
+    // applies to the actual visual/hitbox lifetime, so this state-timing
+    // window (which gates when recovery/return-to-chase happens) never ends
+    // before ADAM's now-slower COUNTER attack has actually finished
+    // travelling — keeping hitbox/visual/state in sync per spec.
+    const adamClawMult = boss.type === 'adam' ? ADAM_CLAW_SPEED_MULT : 1;
+    const attackWindowMs = (usesStraightClaw ? STRAIGHT_CLAW_ATTACK_MS : COUNTER_ARC_CLAW_LIFETIME_MS) / adamClawMult;
     // A-7/A-9: windup shows straight_claw_windup.png with zero damage/hit/
     // knockback for STRAIGHT_CLAW_WINDUP_MS; the player may move freely.
     // Exactly once, at the windup->release instant, lock the attack's
@@ -5432,6 +5610,22 @@
       if (boss.revealedShotX !== null) return { x: boss.revealedShotX, y: boss.revealedShotY };
       return { x: boss.lastKnownPlayerX, y: boss.lastKnownPlayerY };
     }
+    // POST-v2.0 SECTION 24/25: barrel-shadow cover (GABRIEL/ADAM both go
+    // through this one function) — a SEPARATE mechanic from STEALTH above,
+    // its own dedicated boss.barrelCoverLastKnown{X,Y} pair rather than
+    // reusing STEALTH's own revealedShot/lastKnownPlayer fields (which are
+    // only ever captured/cleared by STEALTH's own start/reveal logic and
+    // would otherwise go stale or conflict here). Frozen on whatever this
+    // function last resolved while NOT hidden; falls straight back to the
+    // live position the instant cover no longer applies.
+    if (isPlayerBarrelShadowHiddenFrom(boss)) {
+      return {
+        x: boss.barrelCoverLastKnownX !== undefined ? boss.barrelCoverLastKnownX : player.x,
+        y: boss.barrelCoverLastKnownY !== undefined ? boss.barrelCoverLastKnownY : player.y,
+      };
+    }
+    boss.barrelCoverLastKnownX = player.x;
+    boss.barrelCoverLastKnownY = player.y;
     return { x: player.x, y: player.y };
   }
 
@@ -5941,7 +6135,11 @@
       // other straightClaw use) — same total travel distance in half the
       // time, i.e. 2x average speed, without inventing a separate velocity
       // system in what is otherwise a purely time-based interpolation.
-      const lifetimeMs = isSting ? CLAW_STING_LIFETIME_MS : (isStraightClaw ? STRAIGHT_CLAW_ATTACK_MS / (s.speedMult || 1) : (isCounterArc ? COUNTER_ARC_CLAW_LIFETIME_MS : ARC_CLAW_LIFETIME_MS));
+      // SECTION 20: ADAM-only slowdown on the 'straightclaw' COUNTER kinds
+      // only (straightClaw/counterArc) — 'sting' (a different, non-COUNTER
+      // GABRIEL-only attack) and the normal 'slash' are untouched.
+      const adamClawMult = (boss.type === 'adam' && (isStraightClaw || isCounterArc)) ? ADAM_CLAW_SPEED_MULT : 1;
+      const lifetimeMs = isSting ? CLAW_STING_LIFETIME_MS : (isStraightClaw ? (STRAIGHT_CLAW_ATTACK_MS / (s.speedMult || 1)) / adamClawMult : (isCounterArc ? COUNTER_ARC_CLAW_LIFETIME_MS / adamClawMult : ARC_CLAW_LIFETIME_MS));
       const u = (now - s.startedAt) / lifetimeMs;
       if (u >= 1) { arcClawSlashes.splice(i, 1); continue; }
       const t = arcClawEase(Math.max(0, u));
@@ -6216,13 +6414,18 @@
     // screen host.
     // DARK OUT PART 8 SECTION 3: SCENARIO SELECT reuses this exact same
     // pattern too — one more overlay, no new screen host.
-    const showOpeningContainer = next === 'opening' || next === 'mainMenu' || next === 'trainingSelect' || next === 'bossSelect' || next === 'scenarioSelect';
+    // POST-v2.0 SECTIONS 3-5: two new sub-menu overlays (mainScenarioSub/
+    // secretScenarioSub) join this same persistent-video overlay pattern —
+    // no new screen host.
+    const showOpeningContainer = next === 'opening' || next === 'mainMenu' || next === 'trainingSelect' || next === 'bossSelect' || next === 'scenarioSelect' || next === 'mainScenarioSub' || next === 'secretScenarioSub';
     document.getElementById('opening-screen').hidden = !showOpeningContainer;
     document.getElementById('opening-overlay').hidden = next !== 'opening';
     document.getElementById('main-menu-overlay').hidden = next !== 'mainMenu';
     document.getElementById('training-select-overlay').hidden = next !== 'trainingSelect';
     document.getElementById('boss-select-overlay').hidden = next !== 'bossSelect';
     document.getElementById('scenario-select-overlay').hidden = next !== 'scenarioSelect';
+    document.getElementById('main-scenario-sub-overlay').hidden = next !== 'mainScenarioSub';
+    document.getElementById('secret-scenario-sub-overlay').hidden = next !== 'secretScenarioSub';
     document.getElementById('result-screen').hidden = next !== 'result';
     document.getElementById('game-over-screen').hidden = next !== 'gameover';
     // PLAY AREA / CONTROL AREA are only meaningful during actual gameplay —
@@ -6503,38 +6706,69 @@
   // BACK). Both scenario choices still route through the exact same
   // startMode('boss', scenario) everything else already uses.
   document.getElementById('main-menu-story-btn').addEventListener('click', () => setScreen('scenarioSelect'));
-  // DARK OUT PART 11 SECTION 3: opening.mp4 is now the TAP-TO-START screen's
-  // own ATTRACT movie (see beginAttractOpening()) — it must never play at
-  // STORY start any more. Selecting MAIN or SECRET now stops the MENU BGM
-  // and goes straight to sneaking.mp4 (common to both scenarios, run-
-  // scoped, never on RETRY), then — MAIN only — drone_arrival.mp4 (MAIN's
-  // own first DRONE STAGE is STORY STAGE 1, entered immediately; SECRET's
-  // own drone_arrival instead plays later, at the b1->STAGE1 PROJECT ADAM
-  // pickup transition — see onWorldItemPickup()), and ONLY THEN calls the
-  // existing startMode('boss', scenario) exactly once — never pre-running
-  // gameplay behind the movies, never duplicating PART8's own scenario-init
-  // logic. BOSS BATTLE MODE/TRAINING never reach this function.
+  // DARK OUT PART 11 SECTION 3, revised POST-v2.0 SECTIONS 7-8: opening.mp4
+  // is the TAP-TO-START screen's own ATTRACT movie (see beginAttractOpening())
+  // — it must never play at STORY start. Selecting DEMO PLAY/FULL PLAY now
+  // stops the MENU BGM, starts the GAMEPLAY BGM immediately (SECTION 7 —
+  // previously this only started once sneaking, and for MAIN also
+  // drone_arrival, had already finished, meaning the very start of STORY felt
+  // silent), then plays sneaking.mp4 (BGM keeps playing under it per the
+  // existing movie-audio policy, unchanged), and ONLY THEN calls
+  // startMode('boss', scenario) exactly once. drone_arrival.mp4 is NEVER
+  // played here any more (SECTION 8) — both MAIN_TEMPLATE_PLAN and
+  // SECRET_TEMPLATE_PLAN already carry their own
+  // {type:'movie', key:'drone_arrival'} entry positioned AFTER their first
+  // WHITE-SHADOW-only stage (M1/S1) and BEFORE their first DRONE stage
+  // (M2/S2) — the old pre-emptive play that used to run immediately after
+  // sneeking for the MAIN route was a stale duplicate from before that
+  // data-driven plan existed, and was the direct cause of the reported
+  // "sneaking directly followed by drone_arrival" bug (the correct,
+  // stage-plan-driven drone_arrival play was masked by this redundant early
+  // one always firing first). BOSS BATTLE MODE/TRAINING never reach this
+  // function.
   function beginScenarioOpening(scenario) {
     stopMenuBgm();
+    startGameplayBgm();
     playEventMovie('sneaking', () => {
-      const enterScenario = () => {
-        startGameplayBgm();
-        startMode('boss', scenario);
-        storyCinematicState.sneakingPlayed = true;
-      };
-      if (scenario === 'main') {
-        playEventMovie('drone_arrival', () => {
-          storyCinematicState.droneArrivalPlayed = true;
-          enterScenario();
-        });
-      } else {
-        enterScenario();
-      }
+      startMode('boss', scenario);
+      storyCinematicState.sneakingPlayed = true;
     });
   }
-  document.getElementById('scenario-select-main-btn').addEventListener('click', () => beginScenarioOpening('main'));
-  document.getElementById('scenario-select-secret-btn').addEventListener('click', () => beginScenarioOpening('secret'));
+  // POST-v2.0 SECTIONS 2-5: the TOP SCENARIO SELECT's two entries no longer
+  // start a run directly — each routes to its own SUB MENU. "MAIN SCENARIO"
+  // (existing internal scenario 'main') now surfaces as DEMO PLAY inside its
+  // sub menu; "SECRET SCENARIO" is a NEW, separate, unlockable sub menu
+  // (ARSENAL/GABRIEL/ADAM MODE) — not to be confused with the existing
+  // internal scenario 'secret', which is FULL PLAY inside the MAIN SCENARIO
+  // sub menu (spec's own naming: "現在のSECRET routeの実装内容→FULL PLAY").
+  document.getElementById('scenario-select-main-btn').addEventListener('click', () => setScreen('mainScenarioSub'));
+  document.getElementById('scenario-select-secret-btn').addEventListener('click', () => {
+    if (!isSecretScenarioUnlocked()) return; // SECTION 5-3: locked — no navigation, no silent no-feedback tap either (see the LOCKED label's own CSS)
+    setScreen('secretScenarioSub');
+  });
   document.getElementById('scenario-select-back-btn').addEventListener('click', () => setScreen('mainMenu'));
+
+  // POST-v2.0 SECTION 4: MAIN SCENARIO SUB MENU — DEMO PLAY/FULL PLAY reuse
+  // beginScenarioOpening('main'/'secret') byte-for-byte, exactly as the old
+  // scenario-select-main-btn/scenario-select-secret-btn used to; only the
+  // UI label/position moved, no STORY route internals changed.
+  document.getElementById('main-scenario-sub-demo-btn').addEventListener('click', () => beginScenarioOpening('main'));
+  document.getElementById('main-scenario-sub-full-btn').addEventListener('click', () => beginScenarioOpening('secret'));
+  document.getElementById('main-scenario-sub-back-btn').addEventListener('click', () => setScreen('scenarioSelect'));
+
+  // POST-v2.0 SECTION 5-4: ARSENAL/GABRIEL/ADAM MODE — no existing dedicated
+  // mode/route clearly corresponds to any of these three (BOSS BATTLE MODE's
+  // own GABRIEL/ADAM targets are a generic boss-select sandbox, a different
+  // purpose from a story-unlocked "MODE" — spec's own explicit "勝手に
+  // BOSS BATTLE等へ誤接続しない" warning), so each is currently a routing
+  // hook only: the SUB MENU/buttons exist and are clickable, but clicking
+  // does not start any game mode yet. See the completion report for exactly
+  // this reasoning per button.
+  document.getElementById('secret-scenario-sub-arsenal-btn').addEventListener('click', () => {});
+  document.getElementById('secret-scenario-sub-gabriel-btn').addEventListener('click', () => {});
+  document.getElementById('secret-scenario-sub-adam-btn').addEventListener('click', () => {});
+  document.getElementById('secret-scenario-sub-back-btn').addEventListener('click', () => setScreen('scenarioSelect'));
+  updateSecretScenarioLockUI(); // POST-v2.0 SECTION 5-2: reflect whatever was persisted from a previous session, before the player ever opens SCENARIO SELECT
   // PART 2 SECTION A: TRAINING now opens a BASIC/SECURITY submenu instead of
   // jumping straight into BASIC TRAINING — both submenu choices still route
   // through the exact same startMode() everything else already uses.
@@ -6666,6 +6900,30 @@
   // 2nd trigger practically unreachable.
   const storyEndingState = { active: false, started: false, route: null };
 
+  // POST-v2.0 SECTION 5: SECRET SCENARIO (the NEW top-level unlockable menu
+  // — ARSENAL/GABRIEL/ADAM MODE — never to be confused with the EXISTING
+  // internal storyScenarioState.scenario==='secret', which is FULL PLAY)
+  // unlocks permanently, across browser sessions, the first time FULL PLAY
+  // reaches its own TRUE ENDING (see beginStoryEscapeEnding()'s 'secret'
+  // route branch, the ONLY place true_ending plays). Wrapped in try/catch —
+  // localStorage can throw in some sandboxed/private-browsing contexts, and
+  // this feature degrading to "always locked" is far safer than a crash.
+  const SECRET_SCENARIO_UNLOCK_KEY = 'darkOutSecretScenarioUnlocked';
+  function isSecretScenarioUnlocked() {
+    try { return localStorage.getItem(SECRET_SCENARIO_UNLOCK_KEY) === '1'; } catch (e) { return false; }
+  }
+  function updateSecretScenarioLockUI() {
+    const unlocked = isSecretScenarioUnlocked();
+    const btn = document.getElementById('scenario-select-secret-btn');
+    const label = document.getElementById('scenario-select-secret-locked-label');
+    if (btn) btn.classList.toggle('main-menu-item-locked', !unlocked);
+    if (label) label.hidden = unlocked;
+  }
+  function unlockSecretScenario() {
+    try { localStorage.setItem(SECRET_SCENARIO_UNLOCK_KEY, '1'); } catch (e) {}
+    updateSecretScenarioLockUI();
+  }
+
   // Reached ONLY from the EXIT-reach branch in update(), and only when
   // worldScrollUnlocked()'s own O-1/O-2 escape-ready condition already held
   // — NEVER falls through to beginStageTransition()'s own currentStageIndex
@@ -6687,6 +6945,7 @@
       // Q: SECRET's own true ending — never plays MAIN's own movies.
       playEventMovie('true_ending', () => {
         storyEndingState.active = false;
+        unlockSecretScenario(); // POST-v2.0 SECTION 5-1: FULL PLAY reaching TRUE ENDING is the official unlock condition for the NEW top-level SECRET SCENARIO menu
         enterResultScreen();
       });
     } else {
@@ -6829,7 +7088,7 @@
         spawnWhiteShadow(storyWhiteShadowSpawnPos().x, storyWhiteShadowSpawnPos().y);
       } else { // 'whiteShadow'
         securityRobots.length = 0;
-        spawnWhiteShadow(storyWhiteShadowSpawnPos().x, storyWhiteShadowSpawnPos().y);
+        spawnInitialWhiteShadows(); // SECTION 9: WHITE_SHADOW_INITIAL_COUNT (3), not just 1
       }
       securityAttackSlotsInUse = 0;
     } else if (plan.type === 'movie') {
@@ -7089,25 +7348,18 @@
     frameElapsedMs: 0,
   };
 
-  // SECTION T: placed in the game's own REAL "3rd region" — the
-  // worldExtraAbove bonus band beyond AREA2 that worldScrollUnlocked()/
-  // trainingWorldScrollUnlocked() already open up once a STAGE's own clear
-  // condition is met (see exitWorldPos()) — never a fabricated new Area3.
-  // Sits in the lower-middle of that band: comfortably below the EXIT zone
-  // pinned at the band's very top (never on/over the EXIT), and comfortably
-  // above the AREA2<->bonus-band boundary door's own ±AREA_BOUNDARY_DOOR_
-  // BAND collision band (never straddling an Area-transition boundary).
-  // This private band never hosts a DRONE spawn (spawnFinalStageDrones()/
-  // populateSecurityDroneAreas() only ever place DRONEs within AREA1/AREA2
-  // themselves), so there is inherently no DRONE-overlap to additionally
-  // guard against here.
+  // POST-v2.0 SECTION 26: HEAL BOX/AMMO BOX now spawn at the geometric
+  // CENTER of whichever AREA they belong to (currentArea, at spawn time) —
+  // getAreaCenterPos()'s own literal spec formula — replacing the old
+  // worldExtraAbove "3rd region" bonus-band placement entirely. If a BARREL
+  // happens to occupy that exact spot, the BARREL yields (see
+  // pickBarrelSpot()'s own healItem/ammoItem avoidance) — the item itself is
+  // never displaced for that reason, only nudged a few px if it would
+  // otherwise land in EXACT overlap with the player or boss (unchanged
+  // clamp logic elsewhere never applied here since neither is ever mid-fight
+  // at literally this exact center point in practice).
   function getHealItemSpawnPos() {
-    const bandTop = -H - worldExtraAbove;
-    const bandBottom = -H;
-    const y = bandBottom - (bandBottom - bandTop) * 0.5;
-    const floor = getFloorXRangeWorld(); // Y-independent — see getFloorXRangeWorld()'s own comment
-    const x = floor ? (floor.left + floor.right) / 2 : W / 2;
-    return { x, y };
+    return getAreaCenterPos(currentArea);
   }
 
   // SECTION W: called from enterStoryStage() — every fresh STAGE entry
@@ -7276,6 +7528,13 @@
       if (isNearUIZone(x, y - areaTop)) continue; // isNearUIZone reads screen-space UI zones — offset back to a 0-based band first
       if (Math.hypot(x - playerX, y - playerY) < 90) continue; // clear of the player
       if (Math.hypot(x - bossX, y - bossY) < 110) continue; // clear of the boss
+      // POST-v2.0 SECTION 22: a respawning barrel must not land on top of an
+      // active pickup item either — item placement (section 26) itself takes
+      // priority when the two ever compete for the exact same spot (AREA
+      // center), so this is the barrel yielding to the item, never the
+      // reverse.
+      if (healItem.active && Math.hypot(x - healItem.x, y - healItem.y) < BARREL_DRAW_H * 2) continue;
+      if (ammoItem.active && Math.hypot(x - ammoItem.x, y - ammoItem.y) < BARREL_DRAW_H * 2) continue;
       let tooClose = false;
       for (const b of barrels) {
         if ((b.alive || b.falling) && Math.hypot(x - b.x, y - b.y) < BARREL_DRAW_H * 3) { tooClose = true; break; }
@@ -7325,6 +7584,14 @@
       barrels.push({ x: spot.x, y: spot.y, alive: true, respawnAt: 0, falling: false });
     }
     barrelRestockPending = false; // a fresh explicit spawn (mode start/RESTART) supersedes any pending restock
+    barrelRespawnQueue.length = 0; // SECTION 21: same reset — a fresh spawn/RESTART cancels any in-flight individual respawn timers from the previous life
+    // POST-v2.0 SECTION 21: the count this specific stage/mode call asked
+    // for is now also the ONGOING maintenance target updateBarrels() keeps
+    // topping back up to, one barrel at a time, as they're destroyed — a
+    // context that asks for 0 (ROID/DRONE/WHITE-SHADOW/EVENT/etc., all
+    // deliberately barrel-free) is never topped up; a context that asks for
+    // BARREL_COUNT (3) always stays at exactly 3.
+    barrelTargetCount = count;
   }
 
   // Drops `count` new barrels in from above, at safe random spots, landing
@@ -7368,12 +7635,28 @@
   // other stage/source) is never touched.
   const FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE_MULTIPLIER = 0.25;
   const FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE = BARREL_DAMAGE_BOSS * FINAL_STAGE_DRONE_EXPLOSION_BOSS_DAMAGE_MULTIPLIER;
-  // Restock state: fires whenever every barrel is gone (none alive, none
-  // currently falling in) — a single unified path for BOTH BOSS MODE and
-  // TRAINING MODE, replacing the old TRAINING-only per-barrel respawnAt
-  // timer so the two mechanisms can never both fire and double-spawn.
+  // Restock state — kept for external/debug-getter compatibility (see
+  // window.__game.barrelRestockPending/barrelRestockRemainingMs below),
+  // now mirroring barrelRespawnQueue's own soonest-pending entry rather
+  // than a single global "all destroyed" flag.
   let barrelRestockPending = false;
   let barrelRestockRemainingMs = 0;
+  // POST-v2.0 SECTION 21: the live per-mode/per-stage target barrel count
+  // (set by spawnBarrels()'s own `count` argument) that updateBarrels()
+  // keeps individually topping back up to below — 0 for every deliberately
+  // barrel-free context (ROID/DRONE/WHITE-SHADOW/MIXED/EVENT/cultivationLab/
+  // adamSphere/SECURITY TRAINING/FINAL STAGE), BARREL_COUNT (3) for every
+  // GABRIEL/BASIC-TRAINING combat context.
+  let barrelTargetCount = 0;
+  // POST-v2.0 SECTION 21: one entry per currently-destroyed barrel slot
+  // waiting to individually respawn — replaces the old "wait until literally
+  // every barrel is gone, then drop a whole fresh batch" behavior with
+  // "always keep exactly barrelTargetCount alive, topping up one at a time,
+  // BARREL_RESPAWN_MS after each individual loss" (spec section 21's own
+  // suggested constant/behavior). Each entry is just a respawnAt timestamp;
+  // multiple simultaneous losses each get their own independent timer.
+  const barrelRespawnQueue = [];
+  const BARREL_RESPAWN_MS = 1500;
   const barrelLandings = []; // small non-fiery "just landed" dust puffs — see drawBarrelLanding()
 
   // Brief, small camera shake on a barrel detonation — canvas-only, applied
@@ -7494,17 +7777,24 @@
         pendingCount++;
       }
     }
-    if (pendingCount === 0 && !barrelRestockPending) {
-      barrelRestockPending = true;
-      barrelRestockRemainingMs = BARREL_RESTOCK_DELAY_MIN_MS + Math.random() * (BARREL_RESTOCK_DELAY_MAX_MS - BARREL_RESTOCK_DELAY_MIN_MS);
-    }
-    if (barrelRestockPending) {
-      barrelRestockRemainingMs -= dt * 1000;
-      if (barrelRestockRemainingMs <= 0) {
-        barrelRestockPending = false;
-        spawnFallingBarrels(BARREL_COUNT, now); // SECTION E-1: restock is always a fresh, freshly-randomized set of 5
+    // POST-v2.0 SECTION 21: top back up to barrelTargetCount one at a time —
+    // any slot missing (destroyed and not already falling in, and not
+    // already queued to respawn) gets its own independent BARREL_RESPAWN_MS
+    // timer, instead of the old "wait until every single barrel is gone,
+    // then drop a whole fresh batch" behavior. A target of 0 (every
+    // deliberately barrel-free context) never queues anything.
+    const deficit = barrelTargetCount - pendingCount - barrelRespawnQueue.length;
+    for (let i = 0; i < deficit; i++) barrelRespawnQueue.push(now + BARREL_RESPAWN_MS);
+    for (let i = barrelRespawnQueue.length - 1; i >= 0; i--) {
+      if (now >= barrelRespawnQueue[i]) {
+        barrelRespawnQueue.splice(i, 1);
+        spawnFallingBarrels(1, now);
       }
     }
+    // External/debug-getter compatibility only (see window.__game below) —
+    // mirrors the queue's own soonest-pending entry.
+    barrelRestockPending = barrelRespawnQueue.length > 0;
+    barrelRestockRemainingMs = barrelRestockPending ? Math.max(0, Math.min(...barrelRespawnQueue) - now) : 0;
   }
 
   // ================= PART 2/3: SECURITY ROBOT (DRONE) placement/state/attack =================
@@ -7686,7 +7976,18 @@
     const floor = getFloorXRangeWorld();
     if (floor) {
       const maxRangeBySpace = Math.min(x - floor.left, floor.right - x) - SECURITY_ROBOT_DRAW_D * 0.5;
-      patrolRange = Math.max(0, Math.min(patrolRange, maxRangeBySpace));
+      const safeMaxRange = Math.max(0, maxRangeBySpace);
+      patrolRange = Math.min(patrolRange, safeMaxRange);
+      // POST-v2.0 SECTION 18: guarantee at least a small visible swing
+      // whenever ANY real room exists at all — an edge placement close to a
+      // narrow floor's wall (e.g. ROID1/ROID2's own narrower measured
+      // floors) used to unconditionally clamp all the way down to a literal
+      // frozen 0px range, which is the direct mechanism behind the reported
+      // "some DRONEs never move" bug. Never exceeds safeMaxRange, so this
+      // can't reintroduce the PART8 "every DRONE bunches onto one X"
+      // regression the body-only placement margin above was already
+      // deliberately keeping small to avoid.
+      if (safeMaxRange > 0) patrolRange = Math.max(patrolRange, Math.min(SECURITY_DRONE_MIN_VISIBLE_PATROL_PX, safeMaxRange));
     }
     return {
       x, y, // y is this robot's fixed row — only x ever changes (F: left/right only)
@@ -8136,7 +8437,11 @@
     const angle = Math.atan2(robot.lockedTargetY - muzzle.y, robot.lockedTargetX - muzzle.x);
     enemyBullets.push({
       x: muzzle.x, y: muzzle.y,
-      vx: Math.cos(angle) * BULLET_SPEED, vy: Math.sin(angle) * BULLET_SPEED,
+      // SECTION 17: x0.85 — every DRONE using this shot (normal STORY +
+      // ROID1/ROID2 escorts) slows down together, never the legacy
+      // SECURITY TRAINING laser (a separate, unrelated ray-hit mechanic).
+      vx: Math.cos(angle) * BULLET_SPEED * DRONE_SNIPER_BULLET_SPEED_MULT,
+      vy: Math.sin(angle) * BULLET_SPEED * DRONE_SNIPER_BULLET_SPEED_MULT,
       born: now,
     });
   }
@@ -8178,11 +8483,21 @@
         // SECTION 6-2/6-3/6-4: the 2s lock cycle — lock the player's CURRENT
         // position at cycle start, fire once in the final YELLOW_MS window,
         // then immediately begin the next cycle with a fresh lock.
+        // POST-v2.0 SECTION 24/25: barrel-shadow cover blocks every NEW lock
+        // here (both the very first one and each cycle's own re-lock) —
+        // never the "fire" step below, which only ever reuses a lock already
+        // acquired before cover applied (spec: in-flight attacks are never
+        // retroactively cancelled). While blocked, snipeCycleStartedAt stays
+        // -Infinity so drawDroneSniperWarning() (which already early-returns
+        // on that) correctly shows no marker either.
         if (robot.snipeCycleStartedAt === -Infinity) {
-          robot.snipeCycleStartedAt = now;
-          robot.lockedTargetX = player.x;
-          robot.lockedTargetY = player.y;
-          robot.snipeFired = false;
+          if (!isPlayerBarrelShadowHiddenFrom(robot)) {
+            robot.snipeCycleStartedAt = now;
+            robot.lockedTargetX = player.x;
+            robot.lockedTargetY = player.y;
+            robot.snipeFired = false;
+          }
+          continue;
         }
         const cycleElapsed = now - robot.snipeCycleStartedAt;
         if (!robot.snipeFired && cycleElapsed >= DRONE_SNIPER_CYCLE_MS - DRONE_SNIPER_YELLOW_MS) {
@@ -8190,10 +8505,14 @@
           robot.snipeFired = true;
         }
         if (cycleElapsed >= DRONE_SNIPER_CYCLE_MS) {
-          robot.snipeCycleStartedAt = now;
-          robot.lockedTargetX = player.x;
-          robot.lockedTargetY = player.y;
-          robot.snipeFired = false;
+          if (!isPlayerBarrelShadowHiddenFrom(robot)) {
+            robot.snipeCycleStartedAt = now;
+            robot.lockedTargetX = player.x;
+            robot.lockedTargetY = player.y;
+            robot.snipeFired = false;
+          } else {
+            robot.snipeCycleStartedAt = -Infinity; // lost track entirely — re-tries acquisition next tick via the branch above
+          }
         }
         continue;
       }
@@ -8385,14 +8704,15 @@
       visible = Math.floor(now / currentInterval) % 2 === 0;
     }
     if (!visible) return;
+    // POST-v2.0 SECTION 15: simplified to a plain "+" only — the surrounding
+    // ring this used to draw is gone (spec: no circles/large crosshair
+    // graphics), but the red-blink -> accelerate -> yellow -> SHOT timing
+    // above (color/visible/isYellow) is completely untouched.
     const x = robot.lockedTargetX, y = robot.lockedTargetY;
     ctx.save();
-    ctx.strokeStyle = `rgba(${color},0.85)`;
-    ctx.lineWidth = 2;
-    const r = 12;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.strokeStyle = `rgba(${color},0.9)`;
+    ctx.lineWidth = 1.5;
+    const r = 8;
     ctx.beginPath();
     ctx.moveTo(x - r, y); ctx.lineTo(x + r, y);
     ctx.moveTo(x, y - r); ctx.lineTo(x, y + r);
@@ -8421,10 +8741,61 @@
 
   // ================= END PART 2 SECURITY ROBOT logic =================
 
+  // POST-v2.0 SECTION 23: a natural, moderate ground drop-shadow extending
+  // toward world SOUTH (+Y) from each ALIVE barrel's own base — canvas
+  // ellipse only (no new image asset), soft/translucent rather than a solid
+  // black blob or an "attack effect" ring. This exact ellipse is also the
+  // section-24 cover-stealth detection zone (isPlayerBarrelShadowHiddenFrom()
+  // below reuses these same constants/geometry), so what the player sees as
+  // "standing in the shadow" is exactly what the mechanic checks.
+  const BARREL_SHADOW_LENGTH = BARREL_DRAW_H * 1.7; // south extent, first-pass
+  const BARREL_SHADOW_WIDTH = BARREL_DRAW_H * 0.55; // half-width at its widest
+  function barrelShadowEllipse(b) {
+    const baseY = b.y + BARREL_DRAW_H * 0.42; // same base-of-drum offset drawBarrelLanding()/the falling-shadow above already use
+    return { cx: b.x, cy: baseY + BARREL_SHADOW_LENGTH * 0.5, rx: BARREL_SHADOW_WIDTH, ry: BARREL_SHADOW_LENGTH * 0.5 };
+  }
+  function drawBarrelShadow(b) {
+    const s = barrelShadowEllipse(b);
+    ctx.save();
+    ctx.globalAlpha = 0.30;
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.ellipse(s.cx, s.cy, s.rx, s.ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  // POST-v2.0 SECTION 24: "cover stealth" — standing inside any alive
+  // barrel's own south shadow zone. A SEPARATE, detection-only mechanic from
+  // the manual STEALTH button (never reads/writes player.stealthUntil or
+  // its cooldown) — see isPlayerBarrelShadowHiddenFrom() below, the actual
+  // per-enemy check every AI target-acquisition site calls.
+  function isPlayerUnderBarrelShadowCover() {
+    for (const b of barrels) {
+      if (!b.alive) continue;
+      const s = barrelShadowEllipse(b);
+      const dx = (player.x - s.cx) / s.rx, dy = (player.y - s.cy) / s.ry;
+      if (dx * dx + dy * dy <= 1) return true;
+    }
+    return false;
+  }
+  // SECTION 24: the literal rule (spec's own wording) — "全ての敵キャラは主人
+  //公よりも南側にいない限り見つからない" while the player is under cover:
+  // an `enemy` positioned north of or level with the player (enemy.y <=
+  // player.y) cannot newly acquire the player while they're in cover;
+  // south of the player (enemy.y > player.y), detection is unaffected.
+  // `enemy` is just any {x,y} — boss, a DRONE robot, etc. Never mutates
+  // anything, never sets a global player flag — a pure per-call check each
+  // AI target-acquisition site below calls for itself.
+  function isPlayerBarrelShadowHiddenFrom(enemy) {
+    if (enemy.y > player.y) return false;
+    return isPlayerUnderBarrelShadowCover();
+  }
+
   function drawBarrel(b) {
     if (!barrelImg.complete || barrelImg.naturalWidth === 0) return;
     const aspect = barrelImg.naturalWidth / barrelImg.naturalHeight;
     const h = BARREL_DRAW_H, w = h * aspect;
+    if (!b.falling && b.alive) drawBarrelShadow(b); // SECTION 23: drawn first, underneath the drum itself
     if (b.falling) {
       const t = Math.min(1, (b.fallElapsedMs || 0) / BARREL_FALL_MS);
       const et = t * t; // accelerating, gravity-like
@@ -8782,7 +9153,6 @@
       // correctly skips replaying sneaking/drone_arrival/gabriel_arrival/
       // adam_arrival for whatever the player was just retrying.
       storyCinematicState.sneakingPlayed = false;
-      storyCinematicState.droneArrivalPlayed = false;
       storyCinematicState.gabrielArrivalPlayed = [false, false, false];
       storyCinematicState.adamArrivalPlayed = false;
       // DARK OUT PART 11 SECTION 8: same "fresh only on a genuine new run,
@@ -8883,14 +9253,19 @@
   // since the two must stay independent: this one NEVER reads/writes
   // currentStageIndex/bossEncounterIndex/STORY_STAGE_PLAN, and always spawns
   // whichever BOSS_BATTLE_TARGETS entry bossBattleState.target names (today,
-  // only GABRIEL is playable — see section 10-14). Barrels are intentionally
-  // 0 here (spec left this unspecified for BOSS BATTLE MODE; zero is the
-  // simplest, safest choice, documented in the completion report) — never
+  // only GABRIEL is playable — see section 10-14). ROID1/ROID2/ADAM keep 0
+  // barrels (ROID replaces them with 3 FAST DRONE escorts, section 10-I;
+  // ADAM has no established barrel precedent) — never
   // BOSS_ENCOUNTER_BARREL_COUNTS, which is bossEncounterIndex-indexed STORY
-  // data this mode must not read.
+  // data this mode must not read. POST-v2.0 SECTION 21: GABRIEL specifically
+  // now gets BARREL_COUNT (3) instead of the old blanket 0 — BOSS BATTLE is
+  // one of the three combat contexts section 21 explicitly requires always
+  // maintain exactly 3 barrels, and GABRIEL is the one BOSS BATTLE target
+  // that already uses barrels as a core mechanic everywhere else (STORY
+  // GABRIEL encounters, BASIC TRAINING).
   function enterBossBattleStage() {
     bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
-    spawnBarrels(0);
+    spawnBarrels(bossBattleState.target === 'gabriel' ? BARREL_COUNT : 0);
     bossBattleState.defeatHandled = false;
     if (bossBattleState.target === 'gabriel') {
       spawnBoss(performance.now());
@@ -10358,6 +10733,7 @@
     applyBodyHitToBoss, applyWeakPointHitToBoss, applyExplosionDamageToBoss, bossEnterState,
     getWeakPointScreenPos, arcClawSlashes, spawnArcClawSlash,
     gameState, barrels, explosions, bullets, spawnBarrels, startMode, explodeBarrel, // debug/verification only — SECTION F
+    isPlayerBarrelShadowHiddenFrom, isPlayerUnderBarrelShadowCover, // POST-v2.0 SECTION 24 — debug/verification only
     // Debug/verification only — SECTION G/H/I/J/T (LOADING/OPENING/MAIN MENU/BGM).
     setScreen, bgmAudio, startBgmOnce, BGM_VOLUME, returnToTopMenu, // returnToTopMenu debug/verification only — PART 3 SECTION D
     // Debug/verification only — DARK OUT PART 9: CINEMATIC INTEGRATION.
@@ -11802,7 +12178,9 @@
     if (boss.type === 'adam') {
       const frame = resolveAdamBossFrame(name, now);
       if (frame && frame.ready) {
-        const adamScale = computeBodyVisualScale(frame, ADAM_BODY_TARGET_HEIGHT);
+        // SECTION 19: per-pose scale layered on top of the shared target
+        // height — see getAdamPoseScaleMultiplier()'s own comment.
+        const adamScale = computeBodyVisualScale(frame, ADAM_BODY_TARGET_HEIGHT) * getAdamPoseScaleMultiplier(name);
         img = frame.img;
         w = frame.nativeW * adamScale;
         h = frame.nativeH * adamScale;
