@@ -20,7 +20,6 @@
   // call below can safely set it before anything else runs.
   let worldExtraAbove = 0;
   let cameraY = 0;
-  const WORLD_EXTRA_ABOVE_FACTOR = 1.3; // world opens up to 1.3x the screen height taller, post-victory
 
   // ---------- AREA 1 / AREA 2 vertical stage (SECTION C) ----------
   // The world is now always exactly 2 screens tall during BOSS MODE: AREA 1
@@ -65,7 +64,15 @@
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    worldExtraAbove = H * WORLD_EXTRA_ABOVE_FACTOR;
+    // HOTFIX SECTION 6: this bonus "3rd region" beyond AREA2 (previously
+    // 1.3x an extra screen height, used only to give the EXIT some walking
+    // room after a stage clears) was the actual root cause of "a normal
+    // STORY STAGE visually spans 3 AREAs" — real, walkable, camera-tracked
+    // world space beyond the two established combat areas. Normal combat
+    // stages must cap at exactly AREA1+AREA2, so this now stays 0; the EXIT
+    // itself (exitWorldPos()) still resolves correctly with this at 0 — it
+    // simply lands near AREA2's own top edge instead of further beyond it.
+    worldExtraAbove = 0;
   }
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', () => setTimeout(resize, 100));
@@ -562,6 +569,28 @@
   // stale and no-op, rather than firing its onComplete a second time or out
   // of order.
   let eventMovieTokenCounter = 0;
+  // HOTFIX SECTION 5: real-device reports of DEMO PLAY (MAIN route) losing
+  // its gameplay BGM entirely during/after sneaking.mp4 — FULL PLAY
+  // (SECRET route) shares this exact SAME beginScenarioOpening() function
+  // byte-for-byte, so this is very likely a real-device audio-session quirk
+  // (some browsers/OSes interrupt/pause an already-playing Audio element
+  // when a second, unmuted media element — sneaking.mp4 itself, never in
+  // ARRIVAL_MOVIE_KEYS so its own embedded audio plays alongside BGM —
+  // claims the audio route mid-movie) rather than a deterministic logic
+  // bug; it did not reproduce in headless testing. Rather than guess at the
+  // exact browser mechanism, every EVENT/SYSTEM movie completion (finish()/
+  // skipEventMovie() below) now re-asserts bgmAudio.play() if it has gone
+  // silently paused while STORY gameplay (gameState.mode==='boss') is still
+  // in progress and not mid-ENDING (storyEndingState explicitly pauses BGM
+  // on purpose — never fight that). A no-op whenever BGM is already
+  // correctly playing (the overwhelmingly common case), so this changes
+  // nothing about normal playback for either route.
+  function reassertGameplayBgmIfExpected() {
+    if (gameState.mode === 'boss' && !storyEndingState.active && bgmAudio.paused) {
+      bgmAudio.play().catch(() => {});
+    }
+  }
+
   const eventMovieState = {
     active: false,
     key: null,
@@ -633,6 +662,7 @@
       eventMovieTapFallbackEl.hidden = true;
       eventMovieTapFallbackEl.onclick = null;
       if (eventMovieState.resumeBgm) bgmAudio.play().catch(() => {});
+      reassertGameplayBgmIfExpected();
       if (onComplete) onComplete();
     }
     eventMovieVideoEl.onended = () => { if (eventMovieState.token === token) finish(); };
@@ -701,6 +731,7 @@
     eventMovieTapFallbackEl.hidden = true;
     eventMovieTapFallbackEl.onclick = null;
     if (resumeBgm) bgmAudio.play().catch(() => {});
+    reassertGameplayBgmIfExpected();
     if (onComplete) onComplete();
   }
 
@@ -1433,7 +1464,13 @@
   // attack, which reuses this exact same code path but is gated out via an
   // explicit boss.type==='adam' check at the one call site. Telegraph/
   // windup (STRAIGHT_CLAW_WINDUP_MS) is untouched per spec.
-  const ADAM_CLAW_SPEED_MULT = 0.75;
+  // HOTFIX SECTION 10: further x0.80 on top of the previous 0.75 (0.75 *
+  // 0.80 = 0.60) — still real-device "too fast" even after that first
+  // slowdown. Both read sites (updateArcClawSlashes()'s lifetimeMs and
+  // updateBossStraightClaw()'s own attackWindowMs state-timing gate) share
+  // this one constant, so visual travel and the hitbox/recovery timing stay
+  // synchronized exactly as before — only the number changes.
+  const ADAM_CLAW_SPEED_MULT = 0.75 * 0.80;
   // SECTION J: north/east/west COUNTER now rolls between the existing 2x
   // ARC CLAW and a new STRAIGHT CLAW variant (reusing spawnStraightClaw()'s
   // own already direction-agnostic straight-line thrust — the same shape
@@ -1709,6 +1746,21 @@
       const roidBlockadeY = boss.y + ROID_HURT_RADIUS;
       if (player.y < roidBlockadeY) player.y = roidBlockadeY;
     }
+    // HOTFIX SECTION 7: ADAM SPHERE is a strictly single-AREA context, same
+    // requirement as ROID above — AREA2 must never be enterable at all.
+    // ADAM SPHERE is its own STORY_STAGE_PLAN entry (plan.type==='adamSphere',
+    // see enterStoryStage()'s own branch) rather than the b1/b2 side-channel
+    // eventStageState covers, so adamSphereState.visible (true from
+    // spawnAdamSphere() onward) is the correct live flag to key off here.
+    // There is no boss position to key a blockade off, so this simply pins
+    // the player to AREA1's own band (world Y >= 0, the AREA1/AREA2
+    // boundary itself) for the whole event.
+    if (adamSphereState.visible && player.y < 0) player.y = 0;
+    // The b1/b2 EVENT STAGE side-channel (PROJECT ADAM SITE/ADAM LAB) is a
+    // simple walk-in-pickup stage with no combat at all, but shares the
+    // same single-screen intent — never lets the player scroll into a
+    // fabricated AREA2 either.
+    if (eventStageState.active && player.y < 0) player.y = 0;
     player.lastValidY = player.y;
   }
 
@@ -2238,6 +2290,21 @@
   // BURST instead, then the counter resets to 0 — net rotation SPECIAL,
   // SPECIAL, SPECIAL, BURST (75%/25%), shared by both ROID types.
   const ROID_BURST_AFTER_SPECIALS = 3;
+  // HOTFIX SECTION 1: the real root cause of "ROID feels invincible without
+  // STEALTH/FLASH" — SEARCH (the only state with zero invincibility gating
+  // in applyBodyHitToRoidBoss()) previously had ZERO minimum duration, so
+  // with the player's position known it re-entered SNIPER/MISSILE the very
+  // next frame, chaining 3 back-to-back fully-invincible specials with no
+  // real damageable gap between them. STEALTH/FLASH appeared to be required
+  // only because losing target (`!roidState.targetKnown`) is the ONLY other
+  // thing that keeps SEARCH from immediately re-triggering a special. This
+  // constant forces a real, visible damageable window between every special
+  // (not just once every ROID_BURST_AFTER_SPECIALS cycles via BURST) even
+  // with target fully known — normal gunfire now has a genuine chance to
+  // land without ever touching STEALTH/FLASH. SNIPER/MISSILE invincibility
+  // itself is completely untouched — this only delays how soon the NEXT one
+  // may begin.
+  const ROID_SEARCH_MIN_MS = 1800;
   // POST-v1.0 SECTIONS 9/12: shared BURST telegraph — ROID1/ROID2 both
   // flash/pulse their whole body for this long (canvas alpha overlay only,
   // no new art — see drawBossFlashTint()) immediately before any burst; the
@@ -2305,12 +2372,22 @@
   // shadow-detection DRONE AI is untouched, and patrolSpeed/patrolRange
   // (movement) are never read by this constant, satisfying "only attacks
   // slow down, not movement".
-  const DRONE_SNIPER_CYCLE_MS = 2000 * 1.20;
+  // HOTFIX SECTION 2: further x1.35 on top of the previous 1.20 (2000 *
+  // 1.20 * 1.35 = 3240ms, matching the spec's own "~3200ms" target).
+  const DRONE_SNIPER_CYCLE_MS = 2000 * 1.20 * 1.35;
   const DRONE_SNIPER_YELLOW_MS = 220;
+  // HOTFIX SECTION 2: the fire trigger previously fired the INSTANT the
+  // marker turned yellow (both used the same `CYCLE_MS - YELLOW_MS`
+  // threshold) — a real, felt-instantaneous 0ms gap. This now holds the
+  // shot back for a real, visible delay after yellow begins (within the
+  // spec's 100-200ms window) while the marker itself still turns yellow at
+  // the original moment, so the warning is genuinely readable before the
+  // shot fires.
+  const DRONE_SNIPER_FIRE_DELAY_AFTER_YELLOW_MS = 150;
   const DRONE_SNIPER_BULLET_DAMAGE = BULLET_DAMAGE;
-  // POST-v2.0 SECTION 17: projectile speed x0.85, applied in
-  // fireDroneSniperShot() below.
-  const DRONE_SNIPER_BULLET_SPEED_MULT = 0.85;
+  // POST-v2.0 SECTION 17 + HOTFIX SECTION 2: projectile speed x0.85, then a
+  // further x0.75 on top (0.85 * 0.75 = 0.6375) — clearly dodgeable by eye.
+  const DRONE_SNIPER_BULLET_SPEED_MULT = 0.85 * 0.75;
   // Warning-marker blink interval accelerates from this (slow, early in the
   // cycle) down toward a floor (fast, right before firing) — same
   // "blink faster as the shot approaches" idea as GABRIEL's own STUN-less
@@ -2361,11 +2438,10 @@
   // POST-v2.0 SECTION 9: the very first WHITE-SHADOW-ONLY stage (plan type
   // 'whiteShadow' — never the 'mixed' type, which already declares its own
   // deliberate whiteShadowCount:1 alongside its drones) now spawns this many
-  // at once instead of a single one, spaced out via
-  // WHITE_SHADOW_INITIAL_SPACING so they never start on literally the same
-  // coordinates.
+  // at once instead of a single one — see spawnInitialWhiteShadows()'s own
+  // HOTFIX SECTIONS 12-13 comment for their (vertical, equally-spaced)
+  // layout.
   const WHITE_SHADOW_INITIAL_COUNT = 3;
-  const WHITE_SHADOW_INITIAL_SPACING = WHITE_SHADOW_RADIUS_X * 2.6;
   // Body-derived hurtbox — a fraction of the SAME target body height ROID's
   // own draw already scales to (ROID_BODY_TARGET_HEIGHT), not GABRIEL's
   // fixed BOSS_HURT_RADIUS (that constant is GABRIEL's own measured torso
@@ -2514,7 +2590,18 @@
   // 新基準にする" is therefore just this 0.70 bumped by x1.05, applied to
   // every frame uniformly as before (so 16-2's "全frame差±5%以内" holds by
   // construction, not by coincidence).
-  const ADAM_SIZE_SCALE = 0.70 * 1.05;
+  // HOTFIX SECTION 9: an ADDITIONAL +10% on top of everything below —
+  // layered in at this single shared base (both ADAM_BODY_TARGET_HEIGHT
+  // and ADAM_CINEMATIC_TARGET_HEIGHT derive from ADAM_SIZE_SCALE, and
+  // neither is ever read by GABRIEL's own sizing), so it reaches the
+  // combat draw path, the DEFENSE/CLAW/PRE_ATTACK poses, AND the cinematic
+  // body pose uniformly in one place, while every pose-to-pose RATIO below
+  // (ADAM_POSE_SCALE_NON_DEFENSE/ADAM_POSE_SCALE_DEFENSE_SOUTH, applied on
+  // top of this same base) stays exactly as tuned — the whole thing simply
+  // scales up together. GABRIEL's own size is untouched since it never
+  // reads ADAM_SIZE_SCALE/ADAM_BODY_TARGET_HEIGHT/ADAM_CINEMATIC_TARGET_HEIGHT.
+  const ADAM_GLOBAL_SCALE = 1.10;
+  const ADAM_SIZE_SCALE = 0.70 * 1.05 * ADAM_GLOBAL_SCALE;
   const ADAM_BODY_TARGET_HEIGHT = BOSS_DRAW_H * ADAM_SIZE_SCALE;
   // SECTION A-1: the INTRO/THRESHOLD/DYING/FLASH DOWN cinematic sequences
   // (getAdamCinematicImageInfo() below) size ADAM against CINEMATIC_DRAW_H
@@ -3443,14 +3530,28 @@
       missile: { active: false, index: 0, nextLaunchAt: 0, missiles: [], cooldownUntil: 0, originX: 0, originY: 0 },
     });
   }
-  // POST-v2.0 SECTION 9: spawns the first WHITE-SHADOW-ONLY stage's
-  // WHITE_SHADOW_INITIAL_COUNT shadows spread evenly around the normal
-  // storyWhiteShadowSpawnPos() center so none of them overlap at spawn.
+  // HOTFIX SECTIONS 12-13: previously all 3 spawned at the exact same Y
+  // (only offset horizontally) — a flat horizontal line that read as
+  // unintentional/meaningless on real device. Now a VERTICAL, equally-
+  // spaced arrangement instead, spanning AREA1's own band at 25%/50%/75%
+  // of its height, with a slight X variance per-shadow (spec's own example
+  // fractions) rather than all 3 sharing one X too. The vertical gap alone
+  // (a full quarter of AREA1's height apart) is already far larger than
+  // 2*WHITE_SHADOW_RADIUS_X, so the 3 collision circles can never overlap
+  // regardless of the small X variance. This is ONLY about initial spawn
+  // layout — the existing contact-only attack mechanic (no auto-targeting,
+  // blast anchors to the shadow's own position at the moment of contact) is
+  // completely untouched.
   function spawnInitialWhiteShadows() {
-    const base = storyWhiteShadowSpawnPos();
+    const areaTop = areaTopY(1);
+    const positions = [
+      { x: W * 0.45, y: areaTop + H * 0.25 },
+      { x: W * 0.55, y: areaTop + H * 0.50 },
+      { x: W * 0.50, y: areaTop + H * 0.75 },
+    ];
     for (let i = 0; i < WHITE_SHADOW_INITIAL_COUNT; i++) {
-      const offset = (i - (WHITE_SHADOW_INITIAL_COUNT - 1) / 2) * WHITE_SHADOW_INITIAL_SPACING;
-      spawnWhiteShadow(base.x + offset, base.y);
+      const pos = positions[i] || positions[positions.length - 1];
+      spawnWhiteShadow(pos.x, pos.y);
     }
   }
   function getNearestWhiteShadow() {
@@ -3458,6 +3559,22 @@
     for (const shadow of whiteShadows) {
       const dist = Math.hypot(shadow.x - player.x, shadow.y - player.y);
       if (dist < bestDist) { bestDist = dist; best = shadow; }
+    }
+    return best;
+  }
+  // HOTFIX SECTION 3: DRONE analog of getNearestWhiteShadow() — used by
+  // canFlashTarget()/flashPress() so a no-boss stage (DRONE-only, or DRONE+
+  // WHITE SHADOW with no shadow currently in range) can still FLASH-target
+  // a DRONE. SECURITY TRAINING's own legacy shadow-detection DRONE is
+  // excluded (that AI never reads flashLostUntil, so blinding it would do
+  // nothing anyway — this only ever matters for the new LEFT/RIGHT SNIPER AI).
+  function getNearestActiveSecurityRobot() {
+    if (gameState.mode === 'securityTraining') return null;
+    let best = null, bestDist = Infinity;
+    for (const robot of securityRobots) {
+      if (robot.hp <= 0) continue;
+      const dist = Math.hypot(robot.x - player.x, robot.y - player.y);
+      if (dist < bestDist) { bestDist = dist; best = robot; }
     }
     return best;
   }
@@ -4406,6 +4523,7 @@
     // are untouched (enemyBullets is a separate array, never cleared here).
     if (!roidState.targetKnown) {
       boss.state = 'search';
+      boss.stateEnteredAt = now; // HOTFIX SECTION 1
       return;
     }
     if (s.phase === 'locking') {
@@ -4414,6 +4532,7 @@
         s.shotIndex++;
         if (s.shotIndex >= ROID1_SNIPER_SHOT_COUNT) {
           boss.state = 'search';
+          boss.stateEnteredAt = now; // HOTFIX SECTION 1
           roidState.specialsCompleted++; // POST-v1.0 SECTION 8: counts toward the next telegraphed BURST
           return;
         }
@@ -4471,6 +4590,7 @@
     // was lost and launching was cut short above).
     if (m.index >= ROID2_MISSILE_COUNT && m.missiles.every((x) => x.impacted)) {
       boss.state = 'search';
+      boss.stateEnteredAt = now; // HOTFIX SECTION 1
       roidState.specialsCompleted++; // POST-v1.0 SECTION 11: counts toward the next telegraphed BURST
       m.missiles = [];
     }
@@ -4510,6 +4630,7 @@
   function updateRoidBurstTelegraph(now) {
     if (!roidState.targetKnown) {
       boss.state = 'search';
+      boss.stateEnteredAt = now; // HOTFIX SECTION 1
       return;
     }
     if (now - roidState.burstTelegraphStartedAt >= ROID_BURST_TELEGRAPH_MS) {
@@ -4529,7 +4650,12 @@
     if (boss.state === 'missile') { updateRoidMissile(now); return; }
     const stealthed = !roidState.targetKnown;
     if (boss.state === 'search') {
-      if (!stealthed) {
+      // HOTFIX SECTION 1: require a real ROID_SEARCH_MIN_MS damageable
+      // window in SEARCH (target known, not attacking, not gated by
+      // applyBodyHitToRoidBoss()) before the NEXT special may begin — see
+      // the constant's own comment for why this was the actual root cause
+      // of "normal gunfire does nothing without STEALTH/FLASH".
+      if (!stealthed && now - boss.stateEnteredAt >= ROID_SEARCH_MIN_MS) {
         // POST-v1.0 SECTIONS 8/11: SNIPER (ROID1) / MISSILE (ROID2) is now
         // the PRIMARY attack — only every ROID_BURST_AFTER_SPECIALS-th cycle
         // does a (telegraphed) BURST instead, giving a SPECIAL,SPECIAL,
@@ -4553,6 +4679,7 @@
         // that finished normally.
         if (roidState.burstShotsFired <= 0) {
           boss.state = 'search';
+          boss.stateEnteredAt = now; // HOTFIX SECTION 1
         } else {
           boss.state = 'cooldown';
           roidState.cooldownUntil = now + ROID_BURST_COOLDOWN_MS * intervalMult;
@@ -4575,6 +4702,7 @@
         // ROID_BURST_AFTER_SPECIALS cycles go back to SNIPER/MISSILE.
         roidState.specialsCompleted = 0;
         boss.state = 'search';
+        boss.stateEnteredAt = now; // HOTFIX SECTION 1
       }
     }
   }
@@ -5114,11 +5242,16 @@
     if (!boss.spawned) {
       if (flashDisabledByCinematic() || flashCooldownRemainingMs > 0) return false;
       const shadow = getNearestWhiteShadow();
-      if (!shadow) return false;
       // WHITE SHADOW has no boss-style "too close" minimum — this is a
       // MAXIMUM throw range instead (must be within reach to hit it at all),
       // reusing FLASH_MIN_DISTANCE only as a same-scale reference number.
-      return Math.hypot(shadow.x - player.x, shadow.y - player.y) < FLASH_MIN_DISTANCE * 1.4;
+      if (shadow && Math.hypot(shadow.x - player.x, shadow.y - player.y) < FLASH_MIN_DISTANCE * 1.4) return true;
+      // HOTFIX SECTION 3: DRONE-only (or DRONE+WHITE SHADOW with no shadow
+      // in range) stages — FLASH can also target the nearest active DRONE,
+      // same distance-only gate (no boss-style hitbox to aim-lock onto).
+      const drone = getNearestActiveSecurityRobot();
+      if (drone && Math.hypot(drone.x - player.x, drone.y - player.y) < FLASH_MIN_DISTANCE * 1.4) return true;
+      return false;
     }
     if (flashDisabledByCinematic() || flashCooldownRemainingMs > 0) return false;
     if (boss.state === 'darkphase') return isAimedAtDarkPhaseHead();
@@ -6855,15 +6988,19 @@
     if (storyScenarioState.awaitingRewardPickup) return false;
     // SECTION 15-18: no longer restricted to portrait (H >= W) — see the
     // matching note above the currentArea/area1Cleared block in update().
-    // SECTION E (this turn, supersedes the previous "never kill-gated"
-    // design): a DRONE-type STORY STAGE now requires every DRONE in BOTH
-    // AREA1+AREA2 destroyed (isDroneStageCleared()) before the bonus
-    // EXIT-hunting band opens — until then this returns false, which
-    // clampPlayerToScreen() already uses to physically keep the player out
-    // of that band (E-1/E-2/E-5), so the EXIT itself is simply unreachable
-    // rather than reachable-but-inert. AREA1<->AREA2 crossing itself is
-    // completely unaffected (E-4) — only this bonus band beyond AREA2.
-    if (isStoryDroneStage()) return gameState.mode === 'boss' && !stageTransition.active && isDroneStageCleared();
+    // HOTFIX SECTION 4/16: reverts the old "SECTION E" full-elimination
+    // requirement below — normal (non-boss) combat stages (WHITE SHADOW/
+    // DRONE/MIXED/cultivationLab) must NOT require every enemy dead before
+    // the EXIT-hunting band opens; reaching the physical EXIT/doorway alive
+    // is sufficient on its own, exactly like TRAINING already works
+    // (trainingWorldScrollUnlocked() below never gates on a kill condition
+    // either). isDroneStageCleared() is kept (debug/verification only,
+    // still exposed on window.__game) but no longer read here — GABRIEL/
+    // ROID/ADAM boss defeats remain mandatory via the unchanged
+    // area2Cleared branch just below (boss.state==='dead'), and ADAM
+    // SPHERE's own exit condition is its sample-submission event, handled
+    // entirely separately (see the escapeReady branch above).
+    if (isStoryDroneStage()) return gameState.mode === 'boss' && !stageTransition.active;
     return gameState.mode === 'boss' && area2Cleared && !stageTransition.active;
   }
 
@@ -7975,8 +8112,25 @@
     // scheme (SECTION F), not just pickSecurityDroneCenterX().
     const floor = getFloorXRangeWorld();
     if (floor) {
-      const maxRangeBySpace = Math.min(x - floor.left, floor.right - x) - SECURITY_ROBOT_DRAW_D * 0.5;
-      const safeMaxRange = Math.max(0, maxRangeBySpace);
+      let maxRangeBySpace = Math.min(x - floor.left, floor.right - x) - SECURITY_ROBOT_DRAW_D * 0.5;
+      let safeMaxRange = Math.max(0, maxRangeBySpace);
+      // HOTFIX SECTION 14: the SECTION 18 guarantee just below only ever
+      // applies once safeMaxRange is ALREADY > 0 — a spawn point with
+      // literally ZERO room on either side (safeMaxRange clamped all the
+      // way to exactly 0, e.g. ROID's own narrow floor combined with its
+      // boss-avoidance zone occasionally landing an escort DRONE right at
+      // the floor's edge) fell straight through that guard, leaving
+      // patrolRange permanently 0 — a genuinely frozen DRONE, confirmed via
+      // a live 10s-movement regression test. Pull the spawn X itself back
+      // onto the floor by the minimum swing distance FIRST so real usable
+      // room always exists before the range is ever computed, rather than
+      // only ever clamping range down to a silent 0.
+      const minVisible = Math.min(SECURITY_DRONE_MIN_VISIBLE_PATROL_PX, Math.max(0, (floor.right - floor.left) / 2 - SECURITY_ROBOT_DRAW_D * 0.5));
+      if (safeMaxRange < minVisible) {
+        x = Math.max(floor.left + SECURITY_ROBOT_DRAW_D * 0.5 + minVisible, Math.min(floor.right - SECURITY_ROBOT_DRAW_D * 0.5 - minVisible, x));
+        maxRangeBySpace = Math.min(x - floor.left, floor.right - x) - SECURITY_ROBOT_DRAW_D * 0.5;
+        safeMaxRange = Math.max(0, maxRangeBySpace);
+      }
       patrolRange = Math.min(patrolRange, safeMaxRange);
       // POST-v2.0 SECTION 18: guarantee at least a small visible swing
       // whenever ANY real room exists at all — an edge placement close to a
@@ -8022,6 +8176,11 @@
       // (buildSecurityDrone() itself has no access to game-time).
       snipeCycleStartedAt: -Infinity,
       snipeFired: false,
+      // HOTFIX SECTION 3: per-robot FLASH blind window — same duration/role
+      // as roidState.flashLostUntil (see flashPress()'s !boss.spawned
+      // branch), independent per-DRONE so a stage with several DRONEs
+      // blinds them all together without sharing one shared timestamp field.
+      flashLostUntil: 0,
       // PART 5 SECTION B: CENTER SCANNER's own center-stop state machine —
       // null/inert for every other TYPE (their movement branch below never
       // reads these fields at all).
@@ -8490,8 +8649,14 @@
         // retroactively cancelled). While blocked, snipeCycleStartedAt stays
         // -Infinity so drawDroneSniperWarning() (which already early-returns
         // on that) correctly shows no marker either.
+        // HOTFIX SECTION 3: STEALTH/successful FLASH — unlike barrel cover
+        // above — DOES interrupt a lock already in progress, cancelling the
+        // not-yet-fired warning/shot outright (never just blocking the NEXT
+        // lock). Already-fired shots are untouched (enemyBullets is a
+        // separate array, never cleared here).
+        const droneTargetLost = (now < player.stealthUntil) || (now < robot.flashLostUntil);
         if (robot.snipeCycleStartedAt === -Infinity) {
-          if (!isPlayerBarrelShadowHiddenFrom(robot)) {
+          if (!droneTargetLost && !isPlayerBarrelShadowHiddenFrom(robot)) {
             robot.snipeCycleStartedAt = now;
             robot.lockedTargetX = player.x;
             robot.lockedTargetY = player.y;
@@ -8499,13 +8664,23 @@
           }
           continue;
         }
+        if (droneTargetLost && !robot.snipeFired) {
+          robot.snipeCycleStartedAt = -Infinity;
+          continue;
+        }
         const cycleElapsed = now - robot.snipeCycleStartedAt;
-        if (!robot.snipeFired && cycleElapsed >= DRONE_SNIPER_CYCLE_MS - DRONE_SNIPER_YELLOW_MS) {
+        // HOTFIX SECTION 2: fire DRONE_SNIPER_FIRE_DELAY_AFTER_YELLOW_MS
+        // after the marker turns yellow (see drawDroneSniperWarning(), which
+        // still turns yellow at CYCLE_MS - YELLOW_MS, unchanged), never the
+        // instant it turns yellow.
+        if (!robot.snipeFired && cycleElapsed >= DRONE_SNIPER_CYCLE_MS - DRONE_SNIPER_YELLOW_MS + DRONE_SNIPER_FIRE_DELAY_AFTER_YELLOW_MS) {
           fireDroneSniperShot(robot, now);
           robot.snipeFired = true;
         }
         if (cycleElapsed >= DRONE_SNIPER_CYCLE_MS) {
-          if (!isPlayerBarrelShadowHiddenFrom(robot)) {
+          if (!droneTargetLost && !isPlayerBarrelShadowHiddenFrom(robot)) {
+            // HOTFIX SECTION 3: always the player's CURRENT live position —
+            // never a stale one held over from before STEALTH/FLASH engaged.
             robot.snipeCycleStartedAt = now;
             robot.lockedTargetX = player.x;
             robot.lockedTargetY = player.y;
@@ -10247,15 +10422,26 @@
     if (flashCooldownRemainingMs > 0) return; // cooldown active: nothing happens at all, not even feedback
     // POST-v1.0 SECTION 5-3: FLASH is no longer a no-op with no boss spawned
     // — a WHITE SHADOW present in the stage is now also a valid target.
-    if ((!boss.spawned && whiteShadows.length === 0) || flashDisabledByCinematic()) return;
+    // HOTFIX SECTION 3: a DRONE (LEFT/RIGHT SNIPER AI) present now also
+    // counts, so DRONE-only stages with zero WHITE SHADOWs are no longer a
+    // guaranteed no-op either.
+    if ((!boss.spawned && whiteShadows.length === 0 && !getNearestActiveSecurityRobot()) || flashDisabledByCinematic()) return;
     lastPlayerInputAt = performance.now(); // SECTION B: FLASH counts as combat input for the watchdog
     if (!boss.spawned) {
-      // WHITE-SHADOW-ONLY throw path — no boss-state distance/cinematic
+      // WHITE-SHADOW/DRONE throw path — no boss-state distance/cinematic
       // rules apply at all (those are all boss-specific).
       const targetHit = canFlashTarget();
       flashCooldownRemainingMs = FLASH_COOLDOWN_MS;
       const shadow = getNearestWhiteShadow();
-      flashGrenade = { startX: player.x, startY: player.y, endX: shadow ? shadow.x : player.x, endY: shadow ? shadow.y : player.y, elapsedMs: 0, targetHit };
+      const drone = getNearestActiveSecurityRobot();
+      // Visual throw arcs toward whichever is actually the closer/valid
+      // target — never toward a shadow/drone the grenade wouldn't reach.
+      const shadowDist = shadow ? Math.hypot(shadow.x - player.x, shadow.y - player.y) : Infinity;
+      const droneDist = drone ? Math.hypot(drone.x - player.x, drone.y - player.y) : Infinity;
+      const aimAtDrone = droneDist < shadowDist;
+      const endX = aimAtDrone ? drone.x : (shadow ? shadow.x : player.x);
+      const endY = aimAtDrone ? drone.y : (shadow ? shadow.y : player.y);
+      flashGrenade = { startX: player.x, startY: player.y, endX, endY, elapsedMs: 0, targetHit };
       return;
     }
     // SECTION 11/19: COUNTER ATTACK (boss.state === 'straightclaw') and DARK
@@ -10378,6 +10564,17 @@
         if (!boss.spawned && targetHit) {
           for (const shadow of whiteShadows) {
             if (now >= shadow.hiddenUntil) shadow.hiddenUntil = now + WHITE_SHADOW_FLASH_HIDE_MS;
+          }
+          // HOTFIX SECTION 3: a successful FLASH also blinds every currently
+          // active DRONE's own target-tracking for FLASH_DOWN_MS (reusing
+          // the SAME loss-state duration ROID's own flashLostUntil already
+          // uses) — discards its locked target/warning marker and cancels
+          // any not-yet-fired shot (see updateSecurityRobots()'s own
+          // !legacyTrainingAI branch), never touching shots already in
+          // flight. Applies to every DRONE at once, same breadth as the
+          // WHITE SHADOW hide-all just above.
+          for (const robot of securityRobots) {
+            if (robot.hp > 0) robot.flashLostUntil = now + FLASH_DOWN_MS;
           }
         }
         if (boss.spawned && !flashDisabledByCinematic() && targetHit) {

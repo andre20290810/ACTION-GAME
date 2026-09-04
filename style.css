@@ -863,6 +863,27 @@ body {
   touch-action: manipulation;
 }
 #main-menu-overlay[hidden], #training-select-overlay[hidden], #boss-select-overlay[hidden], #scenario-select-overlay[hidden], #main-scenario-sub-overlay[hidden], #secret-scenario-sub-overlay[hidden] { display: none; }
+/* HOTFIX SECTION 11: BOSS SELECT has 6 rows total (title + 4 targets + BACK)
+   vs SCENARIO SELECT's 4 (title + 2 + BACK) — under the SHARED bottom-
+   anchored rule above (justify-content:flex-end), more rows above a
+   flush-to-bottom BACK button pushes the whole group's TOP edge higher up
+   the screen, which is exactly why BOSS SELECT's title was landing inside
+   the DARK OUT logo band (~46-56vh) even after the previous session's fix
+   (which only restored the shared bottom-anchor, without accounting for
+   BOSS SELECT's own larger row count). A byte-for-byte identical title Y
+   AND identical BACK Y is not achievable at once with 2 extra full-height
+   rows in between at real button font-size (the math: fitting 4 real-height
+   rows in the same span SCENARIO's 2 rows use would need a negative gap) —
+   so this reclaims vertical room instead: a smaller (but still clearly
+   separated) inter-row gap and a smaller bottom margin, calibrated so the
+   title clears the logo band with real margin across the 3 required test
+   viewports (390x844/375x667/320x568) and BACK stays fully on-screen with
+   its own safe margin. SCENARIO/TRAINING SELECT keep the original 21px
+   gap/12vh margin via the shared rule above, completely untouched. */
+#boss-select-overlay {
+  gap: 6px;
+  padding-bottom: 2vh;
+}
 .main-menu-item {
   font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
   font-weight: 700;
