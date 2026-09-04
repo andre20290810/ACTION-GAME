@@ -394,14 +394,6 @@ body {
   position: relative;
   z-index: 1;
 }
-#fire-ammo-label {
-  position: relative;
-  z-index: 1;
-  font-size: 8px;
-  font-weight: normal;
-  letter-spacing: 0;
-  opacity: 0.9;
-}
 
 /* SECTION E: STUN's CONTROL PANEL blackout — covers ONLY #control-area
    (its own position:relative anchors this), toggled by game.js's
@@ -919,6 +911,18 @@ body {
   text-transform: uppercase;
   color: rgba(230, 60, 50, 0.9);
 }
+/* POST-v1.0 SECTION 17: BOSS SELECT has 6 rows (title + 4 targets + BACK)
+   vs SCENARIO SELECT's 4 (title + 2 + BACK) — same shared gap/font/align as
+   the block above, but bottom-anchoring that many rows pushes the top row
+   up into the "DARK OUT" logo band (~46-56vh, see the PART 11 comment
+   above). Anchored from just below the logo instead, growing downward,
+   so title position/font-size/row gap stay byte-identical to SCENARIO
+   SELECT's own values while the extra rows never reach the logo. */
+#boss-select-overlay {
+  justify-content: flex-start;
+  padding-top: 58vh;
+  padding-bottom: 0;
+}
 
 /* SECTION Q/R: RESULT — a real DOM screen (like MAIN MENU), shown after the
    canvas-drawn "GAME CLEAR!!" overlay finishes. Kept modest/plain rather
@@ -1063,7 +1067,11 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(6, 8, 10, 0.72);
+  /* POST-v1.0 SECTION 19-2: fully opaque solid black while SETTING shows —
+     real-device feedback found the old semi-transparent scrim let the
+     gameplay/menu video underneath show through and hurt legibility. Never
+     a partial-alpha value again, from either entry point (MAIN MENU/PAUSE). */
+  background: #000000;
 }
 #setting-panel[hidden] { display: none; }
 
@@ -1148,48 +1156,61 @@ body {
    card) — a thin border for legibility around the life-option grid only,
    no heavy drop shadow. Shared by both PAUSE MENU's and MAIN MENU's own
    SETTING entry points. */
+/* POST-v1.0 SECTION 19-3: de-boxed to the same plain-text-over-background
+   convention as SCENARIO SELECT — no card background/border, no filled
+   life-option buttons. Shared by both PAUSE MENU's and MAIN MENU's own
+   SETTING entry points; the underlying data (playerMaxLife) is untouched. */
 #setting-panel-inner {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 10px;
+  gap: 18px;
   min-width: 200px;
-  padding: 16px 18px;
-  background: rgba(14, 16, 18, 0.75);
-  border: 1px solid rgba(150, 190, 210, 0.25);
+  padding: 0;
+  background: transparent;
+  border: none;
 }
 #setting-life-label {
-  color: rgba(190, 220, 235, 0.75);
-  font-family: sans-serif;
-  font-weight: 600;
-  font-size: 11px;
-  letter-spacing: 0.15em;
+  color: rgba(230, 60, 50, 0.9);
+  font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
   text-align: center;
   margin-top: 4px;
 }
 #setting-life-options {
   display: flex;
-  gap: 6px;
+  gap: 14px;
   justify-content: center;
 }
 .life-option-btn {
   flex: 1;
-  font-family: sans-serif;
-  font-weight: 600;
-  font-size: 12px;
-  color: rgba(225, 235, 240, 0.92);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(160, 200, 220, 0.4);
-  padding: 10px 4px;
+  font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: center;
+  color: rgba(235, 235, 238, 0.88);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid rgba(230, 60, 50, 0);
+  padding: 10px 2px;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  transition: color 120ms ease, border-color 120ms ease, text-shadow 120ms ease;
 }
 .life-option-btn:active {
-  background: rgba(150, 200, 230, 0.22);
+  color: #ffffff;
+  border-bottom-color: rgba(230, 60, 50, 0.85);
+  text-shadow: 0 0 14px rgba(230, 40, 30, 0.75);
 }
 .life-option-btn.selected {
-  background: rgba(150, 220, 180, 0.28);
-  border-color: rgba(150, 240, 190, 0.85);
+  color: #ffffff;
+  border-bottom-color: rgba(150, 240, 190, 0.85);
+  text-shadow: 0 0 10px rgba(150, 240, 190, 0.55);
 }
 #mode-resume-btn {
   color: rgba(160, 225, 180, 0.9);

@@ -84,6 +84,9 @@
        card/panel styling. Both choices route through the same startMode()
        everything else already uses. -->
   <div id="training-select-overlay" hidden>
+    <!-- POST-v1.0 SECTION 18: title added to match SCENARIO/BOSS SELECT's
+         own layout language (title, options, BACK). -->
+    <div class="boss-select-title">TRAINING SELECT</div>
     <button class="main-menu-item" id="training-select-basic-btn">BASIC TRAINING</button>
     <button class="main-menu-item" id="training-select-security-btn">SECURITY TRAINING</button>
     <button class="main-menu-item" id="training-select-back-btn">BACK</button>
@@ -242,8 +245,12 @@
             <circle class="fire-ring-bg" cx="50" cy="50" r="44"></circle>
             <circle id="fire-ring-progress" cx="50" cy="50" r="44"></circle>
           </svg>
+          <!-- POST-v1.0 SECTION 35: ammo count moved off the SHOT button
+               entirely (drawn under the LIFE gauge on canvas instead, see
+               drawAmmoHud() in game.js) — the button now shows only its
+               label, matching every other control button's plain-text
+               convention. -->
           <span id="fire-label">SHOT</span>
-          <span id="fire-ammo-label">30 / &infin;</span>
         </button>
       </div>
       <div id="dash-zone">

@@ -142,6 +142,104 @@
   // 5), ENCOUNTER3=0 (replaced by the FINAL STAGE's 3 DRONEs instead,
   // SECTION M-5).
   const BOSS_ENCOUNTER_BARREL_COUNTS = [5, 3, 0];
+
+  // ==========================================================================
+  // POST-v1.0 SECTIONS 24/29/44: data-driven MAIN/SECRET scenario plans —
+  // replaces the fixed 10-STAGE STORY_STAGE_PLAN above for any run with an
+  // active storyScenarioState.scenario (STORY_STAGE_PLAN itself is left
+  // completely untouched, still used verbatim by a raw/legacy/debug
+  // startMode('boss') call with no scenario). bossEncounterIndex's own 0/1/2
+  // GABRIEL semantics (difficulty/DARK PHASE/forced-STUN/barrel-count) are
+  // never renumbered — every 'boss'/boss:'gabriel' entry below still just
+  // carries an explicit encounterIndex exactly like the old plan did.
+  //
+  // Entry shapes:
+  //   {type:'whiteShadow'}                                — TYPE①
+  //   {type:'drone', count:N}                              — TYPE②
+  //   {type:'mixed', droneCount:N, whiteShadowCount:1}      — TYPE③
+  //   {type:'boss', boss:'roid1'|'roid2', dark?:true}
+  //   {type:'boss', boss:'gabriel', encounterIndex:0|1|2, final?:true}
+  //   {type:'movie', key:'drone_arrival'}                  — no gameplay, auto-advances once the movie ends
+  //   {type:'cultivationLab'}                               — non-combat waypoint, reuses event_b2_adam_lab bg/experiment_lab.mp4
+  //   {type:'adamSphere'}                                   — final 3-sample-submit event; branches MAIN (no ADAM) vs SECRET (ADAM combat) at runtime, see updateAdamSphere()
+  const RANDOM_STAGE_TEMPLATES = [
+    { type: 'whiteShadow' },
+    { type: 'drone', count: 3 },
+    { type: 'mixed', droneCount: 5, whiteShadowCount: 1 },
+  ];
+  const MAIN_TEMPLATE_PLAN = [
+    { type: 'whiteShadow' },                                   // M1
+    { type: 'movie', key: 'drone_arrival' },
+    { type: 'drone', count: 3 },                                // M2
+    { type: 'mixed', droneCount: 5, whiteShadowCount: 1 },       // M3
+    { type: 'boss', boss: 'roid1' },
+    { type: 'cultivationLab' },
+    { type: 'boss', boss: 'gabriel', encounterIndex: 0 },
+    { type: 'randomSlot', count: 2, noDuplicate: true },
+    { type: 'boss', boss: 'gabriel', encounterIndex: 1 },
+    { type: 'boss', boss: 'roid1', dark: true },
+    { type: 'boss', boss: 'gabriel', encounterIndex: 2, final: true },
+    { type: 'adamSphere' },
+  ];
+  const SECRET_TEMPLATE_PLAN = [
+    { type: 'whiteShadow' },                                   // S1
+    { type: 'movie', key: 'drone_arrival' },
+    { type: 'drone', count: 3 },                                // S2
+    { type: 'mixed', droneCount: 5, whiteShadowCount: 1 },       // S3
+    { type: 'boss', boss: 'roid1' },
+    { type: 'cultivationLab' },
+    { type: 'boss', boss: 'gabriel', encounterIndex: 0 },
+    { type: 'randomSlot', count: 1 },
+    { type: 'boss', boss: 'gabriel', encounterIndex: 1 },
+    { type: 'boss', boss: 'roid2' },
+    { type: 'randomSlot', count: 1 },
+    { type: 'boss', boss: 'gabriel', encounterIndex: 2, final: true },
+    { type: 'boss', boss: 'roid2', dark: true },
+    { type: 'adamSphere' },
+  ];
+  // POST-v1.0 SECTION 25/30/44: rolls every {type:'randomSlot'} placeholder
+  // in the template into `count` real entries drawn from RANDOM_STAGE_
+  // TEMPLATES, then flattens the whole thing into one array — called ONCE
+  // per fresh run (never on RETRY, see resetModeState()), so the choice is
+  // fixed for the whole run including across RETRY (spec sections 25/30).
+  // MAIN's own 2-slot roll never duplicates a type (noDuplicate); SECRET's
+  // two separate 1-slot rolls are independent and MAY repeat each other.
+  function rollRandomStageTemplates(count, noDuplicate) {
+    if (!noDuplicate) {
+      const picks = [];
+      for (let i = 0; i < count; i++) picks.push(RANDOM_STAGE_TEMPLATES[Math.floor(Math.random() * RANDOM_STAGE_TEMPLATES.length)]);
+      return picks;
+    }
+    const pool = RANDOM_STAGE_TEMPLATES.slice();
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    return pool.slice(0, count);
+  }
+  function buildResolvedStagePlan(scenario) {
+    const template = scenario === 'secret' ? SECRET_TEMPLATE_PLAN : MAIN_TEMPLATE_PLAN;
+    const resolved = [];
+    for (const entry of template) {
+      if (entry.type === 'randomSlot') {
+        resolved.push(...rollRandomStageTemplates(entry.count, entry.noDuplicate));
+      } else {
+        resolved.push(entry);
+      }
+    }
+    return resolved;
+  }
+  // POST-v1.0 SECTION 44: the ONE place every plan-position read goes through
+  // — a scenario run (MAIN/SECRET) reads its own resolvedPlan (built once,
+  // see buildResolvedStagePlan()); anything else (BOSS BATTLE MODE, a raw/
+  // legacy/debug startMode('boss') with no SCENARIO SELECT) falls back to
+  // the original, completely unmodified STORY_STAGE_PLAN.
+  function activeStagePlanArray() {
+    return storyScenarioState.scenario && storyScenarioState.resolvedPlan
+      ? storyScenarioState.resolvedPlan
+      : STORY_STAGE_PLAN;
+  }
+
   let currentStageIndex = 0; // 0-9: raw STORY STAGE position (SECTION Q — NEVER the encounter index)
   let bossEncounterIndex = 0; // 0-2: which GABRIEL encounter this is (SECTION Q — the ONLY thing encounter-specific logic may key off)
   // New-turn SECTION 3: true once the FINAL STAGE's own one-time 2nd DRONE
@@ -319,6 +417,11 @@
     // ADAM fight" apart from "resume the FINAL GABRIEL fight" (both share the
     // exact same currentStageIndex/bossEncounterIndex the whole time).
     stageOverrideId: null,
+    // POST-v1.0 SECTION 44/25/30: this run's own resolved MAIN/SECRET plan
+    // (STORY_STAGE_PLAN-shaped array — see buildResolvedStagePlan()), built
+    // ONCE on a genuine fresh run and never rebuilt on RETRY, so every
+    // random-stage choice is fixed for the run's whole lifetime.
+    resolvedPlan: null,
   };
 
   // DARK OUT PART 11 SECTION 8: MAIN-only ROID1 interlude boss, inserted
@@ -376,6 +479,10 @@
     main_bad_ending: 'assets/video/endings/main_bad_ending.mp4',
     true_ending: 'assets/video/endings/true_ending.mp4',
   };
+  // POST-v1.0 SECTION 20: the 4 BOSS ARRIVAL movies — played muted (gameplay
+  // BGM is the only audio during them). Every other registered key keeps
+  // its own embedded audio on (see playEventMovie()'s own mute assignment).
+  const ARRIVAL_MOVIE_KEYS = new Set(['gabriel_arrival', 'roid1_arrival', 'roid2_arrival', 'adam_arrival']);
 
   // SECTION W: run-scoped "has this one-time cinematic already played this
   // attempt" flags — a small, separate object from storyScenarioState (per
@@ -406,7 +513,18 @@
     // roid1ArrivalPlayed above (different reset scope: this one resets only
     // on a genuinely new MAIN run, never on RETRY of the interlude fight,
     // and is completely independent of whatever BOSS SELECT has done).
-    roid1InterludeArrivalPlayed: false,
+    roid1InterludeArrivalPlayed: false, // PART11-era interlude — kept, now permanently unused (see beginRoidInterlude()'s own comment)
+    // POST-v1.0 SECTIONS 24/29: the NEW sequential ROID1/ROID2 plan entries'
+    // own one-time arrival movies — each scenario visits normal ROID1/ROID2
+    // at most once, so a single flag per type suffices (darkened variants
+    // never play an arrival movie at all, per spec — straight to combat).
+    roid1ArrivalPlayed: false,
+    roid2ArrivalPlayed: false,
+    // POST-v1.0 SECTION 28: the cultivation-lab waypoint's own one-time
+    // experiment_lab.mp4 — separate from onWorldItemPickup()'s old
+    // bloodSample3-triggered play of the same movie key (now removed; the
+    // final ADAM SPHERE event no longer auto-plays a movie on entry).
+    experimentLabPlayed: false,
   };
 
   // SECTION G: the shared EVENT MOVIE PLAYER state — `token` is a per-play
@@ -465,7 +583,13 @@
     eventMovieTapFallbackEl.hidden = true;
     eventMovieTapFallbackEl.onclick = null;
     eventMovieVideoEl.loop = false;
-    eventMovieVideoEl.muted = false; // EVENT/SYSTEM movies use their own embedded audio, not muted like the looping menu background video
+    // POST-v1.0 SECTION 20: per-movie audio policy — the 4 BOSS ARRIVAL
+    // movies play muted (gameplay BGM is the only audio during them, per
+    // section 20-1); every other EVENT/SYSTEM movie (including GABRIEL's
+    // own down/defeated, which explicitly want their own audio playing
+    // SIMULTANEOUSLY with BGM per section 21) keeps its embedded audio on,
+    // same as before.
+    eventMovieVideoEl.muted = ARRIVAL_MOVIE_KEYS.has(key);
     eventMovieVideoEl.src = src;
     eventMovieVideoEl.currentTime = 0;
     eventMovieOverlayEl.hidden = false;
@@ -677,8 +801,8 @@
     if (gameState.mode === 'securityTraining') return TRAINING_BACKGROUNDS[securityTrainingBgIndex];
     // SECTION S: a DRONE-type STORY STAGE reads from the same TRAINING
     // background pool (never STAGES[], which is GABRIEL-encounter-only).
-    const plan = STORY_STAGE_PLAN[currentStageIndex];
-    if (plan && plan.type === 'drone') return TRAINING_BACKGROUNDS[storyDroneBgIndex];
+    const plan = activeStagePlanArray()[currentStageIndex];
+    if (plan && (plan.type === 'drone' || plan.type === 'mixed' || plan.type === 'whiteShadow')) return TRAINING_BACKGROUNDS[storyDroneBgIndex];
     // DARK OUT PART 3.6: every STORY GABRIEL encounter (ENCOUNTER 2/3 — the
     // only two actually reachable under the current STORY_STAGE_PLAN) now
     // shares the SAME c3.jpg background BOSS BATTLE MODE's own GABRIEL
@@ -781,21 +905,32 @@
   // (PART 6 SECTION A-2: DRONE systems must stay fully independent of
   // GABRIEL's own visibility/state), and never a raw stage-position number
   // compared directly (SECTION Q-4's own named bug class).
+  // POST-v1.0 SECTIONS 3/24: also true for 'whiteShadow'/'mixed'/
+  // 'cultivationLab' plan entries — all four share the SAME securityRobots-
+  // based clear-gate in worldScrollUnlocked() (isDroneStageCleared() reads
+  // true vacuously when securityRobots is empty, which whiteShadow-only and
+  // cultivationLab entries always leave it), and the SAME DRONE update/draw
+  // gate below.
   function isStoryDroneStage() {
     if (gameState.mode !== 'boss') return false;
-    const plan = STORY_STAGE_PLAN[currentStageIndex];
-    return !!plan && plan.type === 'drone';
+    const plan = activeStagePlanArray()[currentStageIndex];
+    return !!plan && (plan.type === 'drone' || plan.type === 'mixed' || plan.type === 'whiteShadow' || plan.type === 'cultivationLab');
   }
   function isFinalStoryStage() {
     if (gameState.mode !== 'boss') return false;
-    const plan = STORY_STAGE_PLAN[currentStageIndex];
+    const plan = activeStagePlanArray()[currentStageIndex];
     return !!plan && plan.type === 'boss' && plan.final === true;
   }
   // Gates every DRONE update/draw/FIRE-hit system: SECURITY TRAINING always,
   // plus any STORY STAGE that has DRONEs present at all (every DRONE-type
   // STAGE, and the FINAL STAGE alongside GABRIEL).
+  // POST-v1.0 SECTION 3: also active during a ROID1/ROID2 encounter (any
+  // scenario/BOSS BATTLE) — root cause of the "escort DRONEs never move"
+  // report was that this gate never covered the ROID-escort context at
+  // all, so updateSecurityRobots() (and the DRONE draw loop) early-returned
+  // every single frame the whole fight, leaving them frozen in place.
   function isSecurityDroneSystemActive() {
-    return gameState.mode === 'securityTraining' || isStoryDroneStage() || isFinalStoryStage();
+    return gameState.mode === 'securityTraining' || isStoryDroneStage() || isFinalStoryStage() || (boss.spawned && isRoidBossType(boss.type));
   }
 
   // ---------- Sprite loading ----------
@@ -2013,23 +2148,49 @@
   const ROID_BURST_SHOT_COUNT = 5;
   const ROID_BURST_SHOT_INTERVAL_MS = 300;
   const ROID_BURST_COOLDOWN_MS = 3000;
-  // SECTION C-2/C-3: which SEARCH frame each ROID type holds while facing
-  // the PLAYER's left/center/right side — determined by directly viewing
-  // each numbered frame (never guessed from the filename alone). ROID1's
-  // search_03 faces the viewer dead-on, search_04 is turned to its own
-  // right (reads as PLAYER-to-the-right), search_05 turned to its own left
-  // (PLAYER-to-the-left); search_01/02 are reserved for the target-unknown
-  // ping-pong loop only. ROID2's search_03 is its most forward-facing pose,
-  // search_05 turned toward its own left, search_01 toward its own right.
-  const ROID1_FACE_FRAME = { left: 4, center: 2, right: 3 };
-  const ROID2_FACE_FRAME = { left: 4, center: 2, right: 0 };
-  // SECTION C-3: hysteresis band — PLAYER must cross ZONE px past boss.x to
-  // switch OUT of 'center', but must come back within (ZONE-HYST) px to
-  // switch back, so hovering near a boundary can't flicker the held frame.
+  // POST-v1.0 SECTION 7: which SEARCH frame each ROID type holds for each of
+  // 5 facing zones — re-derived by directly viewing all 5 numbered frames of
+  // both ROID1 and ROID2 (never guessed from the filename alone). The old
+  // 3-zone {left,center,right} version only ever indexed 3 of the 5 search
+  // frames while the PLAYER's position was known (real combat), leaving
+  // frames 0/1 (files _01/_02) permanently unreachable outside the
+  // target-unknown ping-pong idle — this was the reported "frame1/frame2
+  // never appear" bug. Both ROID1 and ROID2's 5 search frames read as one
+  // continuous right-to-left turn sweep in file-number order: _01 is the
+  // most turned-toward-its-own-right pose (confirmed directly from the art:
+  // ROID1's _01 has its rifle muzzle at the far right edge of the frame),
+  // _03 is the dead-center frontal pose (confirmed symmetric on both ROID
+  // types), and _05 is the most turned-toward-its-own-left pose (rifle/gun
+  // muzzle at the far left edge) — with _02/_04 as the intermediate near
+  // poses on each side. All 5 zones now map 1:1 to all 5 frames for BOTH
+  // ROID types, so every frame is reachable via ordinary PLAYER left-right
+  // movement while targetKnown is true.
+  const ROID1_FACE_FRAME = { farRight: 0, right: 1, center: 2, left: 3, farLeft: 4 };
+  const ROID2_FACE_FRAME = { farRight: 0, right: 1, center: 2, left: 3, farLeft: 4 };
+  // SECTION C-3: hysteresis bands — PLAYER must cross ZONE/FAR_ZONE px past
+  // boss.x to switch OUT to the next zone outward, but must come back within
+  // (threshold-HYST) px to switch back inward, so hovering near a boundary
+  // can't flicker the held frame. FAR_ZONE is picked to still be reachable
+  // near the edge of a narrow mobile viewport (boss.x sits at W/2, PLAYER can
+  // reach roughly W/2 - halfPlayerWidth px off-center on a ~390px-wide
+  // screen), well clear of NEAR so all 5 zones are distinct and reachable.
   const ROID_FACE_ZONE_PX = 60;
+  const ROID_FACE_ZONE_FAR_PX = 120;
   const ROID_FACE_ZONE_HYST_PX = 20;
+  // POST-v1.0 SECTIONS 8/11: SNIPER (ROID1) / MISSILE (ROID2) are now the
+  // PRIMARY attack — reversed from PART10's "3 burst then 1 special" ratio.
+  // roidState.specialsCompleted counts consecutive completed SNIPER/MISSILE
+  // cycles; once it reaches this many, the NEXT cycle is a (telegraphed)
+  // BURST instead, then the counter resets to 0 — net rotation SPECIAL,
+  // SPECIAL, SPECIAL, BURST (75%/25%), shared by both ROID types.
+  const ROID_BURST_AFTER_SPECIALS = 3;
+  // POST-v1.0 SECTIONS 9/12: shared BURST telegraph — ROID1/ROID2 both
+  // flash/pulse their whole body for this long (canvas alpha overlay only,
+  // no new art — see drawBossFlashTint()) immediately before any burst; the
+  // burst's first shot only fires once this completes.
+  const ROID_BURST_TELEGRAPH_MS = 900;
+  const ROID_BURST_TELEGRAPH_PULSE_MS = 300; // 900/300 = 3 pulses
   // SECTION E: ROID1 SNIPER MODE — first-pass constants, tunable.
-  const ROID_SPECIAL_AFTER_BURSTS = 3; // shared trigger count for BOTH ROID1 SNIPER and ROID2 MISSILE
   const ROID1_SNIPER_SHOT_COUNT = 4;
   const ROID1_SNIPER_LOCK_MS = 650;
   const ROID1_SNIPER_INTERSHOT_MS = 300;
@@ -2040,6 +2201,60 @@
   const ROID2_MISSILE_STAGGER_MS = 450;
   const ROID2_MISSILE_BLAST_RADIUS = 80;
   const ROID2_MISSILE_DAMAGE = ROID_BULLET_DAMAGE;
+
+  // POST-v1.0 SECTION 14: ROID DEATH EFFECT — several staggered explosions
+  // around the body, blackening in sync, then a fade-out — previously ROID
+  // just vanished the instant HP hit 0 (boss.state->'dead' directly), with
+  // zero death effect at all. Reuses spawnExplosionVisual()/drawBossBlacken
+  // Tint() wholesale — no new image assets.
+  const ROID_DEATH_MS = 1300;
+  const ROID_DEATH_EXPLOSION_COUNT = 8;
+  const ROID_DEATH_EXPLOSION_WINDOW_MS = 950; // explosions spread across roughly the first ~73% of the sequence
+  const ROID_DEATH_BLACKEN_MS = 650; // reaches fully black partway through, then holds black while fading
+  const ROID_DEATH_FADE_START_MS = 800;
+
+  // POST-v1.0 SECTION 6: DRONE LEFT/RIGHT SNIPER AI — every STORY drone-type
+  // stage DRONE and every ROID escort DRONE now runs this instead of the old
+  // shadow-detection/laser-telegraph state machine (SECURITY TRAINING's own
+  // DRONE keeps that old system verbatim — see updateSecurityRobots()'s own
+  // mode branch). A continuous 2s cycle, independent of the player ever
+  // being "detected": lock the player's CURRENT position at cycle start,
+  // show an accelerating red-blink warning marker there, turn yellow for
+  // the final DRONE_SNIPER_YELLOW_MS and fire (once) the instant it turns
+  // yellow, then start the next cycle. The fired shot never re-tracks the
+  // player afterward (straight travel to the locked point only).
+  const DRONE_SNIPER_CYCLE_MS = 2000;
+  const DRONE_SNIPER_YELLOW_MS = 220;
+  const DRONE_SNIPER_BULLET_DAMAGE = BULLET_DAMAGE;
+  // Warning-marker blink interval accelerates from this (slow, early in the
+  // cycle) down toward a floor (fast, right before firing) — same
+  // "blink faster as the shot approaches" idea as GABRIEL's own STUN-less
+  // telegraphs elsewhere in this file, just linearly interpolated by cycle
+  // progress rather than a fixed cadence.
+  const DRONE_SNIPER_BLINK_START_MS = 300;
+  const DRONE_SNIPER_BLINK_END_MS = 80;
+
+  // POST-v1.0 SECTION 4/5: WHITE SHADOW — an independent stage hazard, no
+  // longer DRONE's own detection shadow. Does MISSILE AREA ATTACK (same
+  // warning-circle-then-impact shape as ROID2's own MISSILE MODE, reused as
+  // plain data here since WHITE SHADOW has no boss-style HP/state machine),
+  // ignores the player entirely during STEALTH, and vanishes completely for
+  // WHITE_SHADOW_FLASH_HIDE_MS on a successful FLASH.
+  const WHITE_SHADOW_FLASH_HIDE_MS = 5000;
+  const WHITE_SHADOW_MISSILE_COUNT = ROID2_MISSILE_COUNT;
+  const WHITE_SHADOW_MISSILE_WARNING_MS = ROID2_MISSILE_WARNING_MS;
+  const WHITE_SHADOW_MISSILE_STAGGER_MS = ROID2_MISSILE_STAGGER_MS;
+  const WHITE_SHADOW_MISSILE_BLAST_RADIUS = ROID2_MISSILE_BLAST_RADIUS;
+  const WHITE_SHADOW_MISSILE_DAMAGE = ROID2_MISSILE_DAMAGE;
+  const WHITE_SHADOW_CYCLE_COOLDOWN_MS = 1800; // pause between one missile volley ending and the next one's warning starting
+  // Section 5-4: movement range/speed — a first-pass 1.20x/1.35x bump over
+  // the OLD searchlight-shadow's own drift constants (SECURITY_SCAN_RANGE_*/
+  // SECURITY_SCAN_SPEED_*), since WHITE SHADOW is this same visual entity
+  // now living independently rather than tied to a DRONE's position.
+  const WHITE_SHADOW_DRIFT_RANGE_MIN = SECURITY_SCAN_RANGE_MIN * 1.20;
+  const WHITE_SHADOW_DRIFT_RANGE_MAX = SECURITY_SCAN_RANGE_MAX * 1.20;
+  const WHITE_SHADOW_DRIFT_SPEED_MIN = SECURITY_SCAN_SPEED_MIN * 1.35;
+  const WHITE_SHADOW_DRIFT_SPEED_MAX = SECURITY_SCAN_SPEED_MAX * 1.35;
   // Body-derived hurtbox — a fraction of the SAME target body height ROID's
   // own draw already scales to (ROID_BODY_TARGET_HEIGHT), not GABRIEL's
   // fixed BOSS_HURT_RADIUS (that constant is GABRIEL's own measured torso
@@ -2180,7 +2395,15 @@
   // reduced to 70% of that reference (ADAM_SIZE_SCALE), applied uniformly to
   // every ADAM body state (IDLE/WALK/DEFENSE/ATTACK, all 4 directions) via
   // this one shared target height.
-  const ADAM_SIZE_SCALE = 0.70;
+  // POST-v1.0 SECTION 16: real-device feedback reversed course — 70% now
+  // reads too SMALL. Every ADAM pose already normalizes to this exact same
+  // target height (computeBodyVisualScale() below, by construction), so the
+  // north-facing DEFENSE frame's current visible height already equals
+  // ADAM_BODY_TARGET_HEIGHT exactly — spec's own "北DEFENSE実測値の1.05倍を
+  // 新基準にする" is therefore just this 0.70 bumped by x1.05, applied to
+  // every frame uniformly as before (so 16-2's "全frame差±5%以内" holds by
+  // construction, not by coincidence).
+  const ADAM_SIZE_SCALE = 0.70 * 1.05;
   const ADAM_BODY_TARGET_HEIGHT = BOSS_DRAW_H * ADAM_SIZE_SCALE;
   // SECTION A-1: the INTRO/THRESHOLD/DYING/FLASH DOWN cinematic sequences
   // (getAdamCinematicImageInfo() below) size ADAM against CINEMATIC_DRAW_H
@@ -2683,6 +2906,11 @@
   // rather than folded into worldItems, per section 25's own explicit
   // permission to keep the two separate.
   const ADAM_SPHERE_FRAME_MS = 220; // same first-pass cadence as PROJECT_ADAM_FRAME_MS — tunable independently later
+  // POST-v1.0 SECTION 27-1: MAIN's own SPHERE never proceeds to ADAM combat
+  // — it's purely a slow, sealed background fixture the player submits
+  // samples to, so its rotation is deliberately much slower than SECRET's
+  // (which still uses the original ADAM_SPHERE_FRAME_MS, unchanged).
+  const ADAM_SPHERE_MAIN_FRAME_MS = 600;
   const ADAM_SPHERE_POS_FRAC = { x: 0.5, y: 0.5 }; // dead-center — "ADAMが格納されている大型培養object" reads as a room's central fixture
   // DARK OUT PART 8 SECTION 22: PLAYER-to-SPHERE contact distance for BLOOD
   // SAMPLE SUBMISSION — a bit larger than WORLD_ITEM_PICKUP_RADIUS (30) since
@@ -2714,16 +2942,18 @@
   }
   function updateAdamSphere(dt, now) {
     if (!adamSphereState.visible) return;
+    const frameMs = storyScenarioState.scenario === 'main' ? ADAM_SPHERE_MAIN_FRAME_MS : ADAM_SPHERE_FRAME_MS;
     adamSphereState.frameTimer += dt * 1000;
-    while (adamSphereState.frameTimer >= ADAM_SPHERE_FRAME_MS) {
-      adamSphereState.frameTimer -= ADAM_SPHERE_FRAME_MS;
+    while (adamSphereState.frameTimer >= frameMs) {
+      adamSphereState.frameTimer -= frameMs;
       adamSphereState.frameIndex = (adamSphereState.frameIndex + 1) % ADAM_SPHERE_SPRITES.length;
     }
-    // DARK OUT PART 8 SECTION 22/23/24/25: BLOOD SAMPLE SUBMISSION — SECRET
-    // scenario only, only once (bloodSamplesSubmitted guards re-entry even
-    // after the SPHERE state itself has moved on), only once all 3 samples
-    // are genuinely collected.
-    if (adamSphereState.state === 'sealed' && storyScenarioState.scenario === 'secret' &&
+    // DARK OUT PART 8 SECTION 22/23/24/25, POST-v1.0 SECTION 27: BLOOD SAMPLE
+    // SUBMISSION — now MAIN or SECRET alike (previously SECRET-only), only
+    // once (bloodSamplesSubmitted guards re-entry even after the SPHERE
+    // state itself has moved on), only once all 3 samples are genuinely
+    // collected.
+    if (adamSphereState.state === 'sealed' && (storyScenarioState.scenario === 'secret' || storyScenarioState.scenario === 'main') &&
         hasAllBloodSamples() && !storyScenarioState.bloodSamplesSubmitted) {
       if (Math.hypot(player.x - adamSphereState.x, player.y - adamSphereState.y) <= ADAM_SPHERE_SUBMIT_RADIUS) {
         storyScenarioState.bloodSamplesSubmitted = true; // SECTION 22: the inventory flags themselves stay true forever — this is the separate "submitted" flag
@@ -2734,19 +2964,30 @@
       adamSphereState.activationElapsedMs += dt * 1000;
       if (adamSphereState.activationElapsedMs >= ADAM_SPHERE_ACTIVATION_MS) {
         adamSphereState.state = 'released'; // SECTION 23
-        // DARK OUT PART 9 SECTION K: adam_arrival.mp4 plays here, BEFORE the
-        // existing beginAdamStoryBossTransition() runs — never duplicating
-        // that function, just deferring its one call into the movie's
-        // onComplete. This naturally satisfies "skipped on ADAM-fight
-        // RETRY" with no extra flag: a RETRY of the ADAM fight re-enters via
-        // resetModeState()'s own stageOverrideId==='boss_c4_adam' branch,
-        // which calls spawnBoss(now,'adam') directly and never re-runs this
-        // 'activating'->'released' transition at all (adamSphereState.
-        // visible is already false by then — see beginAdamStoryBossTransition()'s
-        // own exitEventStage() call), so this code path is unreachable on
-        // RETRY by construction, exactly preserving every PART8.1-verified
-        // RETRY guarantee.
-        playEventMovie('adam_arrival', () => { beginAdamStoryBossTransition(performance.now()); });
+        if (storyScenarioState.scenario === 'main') {
+          // POST-v1.0 SECTION 27: MAIN never proceeds to ADAM — SPHERE
+          // release grants ESCAPE NAVIGATOR directly instead of playing
+          // adam_arrival.mp4/spawning ADAM. No adam_arrival, no ADAM combat,
+          // ever, for MAIN.
+          adamSphereState.visible = false;
+          spawnWorldItemReward('escapeNavigator', adamSphereState.x, adamSphereState.y + 100);
+          storyScenarioState.pendingReward = 'escapeNavigator';
+          storyScenarioState.awaitingRewardPickup = true;
+        } else {
+          // DARK OUT PART 9 SECTION K: adam_arrival.mp4 plays here, BEFORE the
+          // existing beginAdamStoryBossTransition() runs — never duplicating
+          // that function, just deferring its one call into the movie's
+          // onComplete. This naturally satisfies "skipped on ADAM-fight
+          // RETRY" with no extra flag: a RETRY of the ADAM fight re-enters via
+          // resetModeState()'s own stageOverrideId==='boss_c4_adam' branch,
+          // which calls spawnBoss(now,'adam') directly and never re-runs this
+          // 'activating'->'released' transition at all (adamSphereState.
+          // visible is already false by then — see beginAdamStoryBossTransition()'s
+          // own exitEventStage() call), so this code path is unreachable on
+          // RETRY by construction, exactly preserving every PART8.1-verified
+          // RETRY guarantee.
+          playEventMovie('adam_arrival', () => { beginAdamStoryBossTransition(performance.now()); });
+        }
       }
     }
   }
@@ -2784,6 +3025,7 @@
     explosions.length = 0;
     enemyBullets.length = 0;
     securityRobots.length = 0;
+    whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
     securityAttackSlotsInUse = 0;
     boss.spawned = false;
     boss.state = 'inactive';
@@ -2896,14 +3138,6 @@
       } else {
         enterStoryStage(now);
       }
-    } else if (type === 'bloodSample3' && storyScenarioState.scenario === 'secret' && hasAllBloodSamples()) {
-      // SECTION 14/20: SECRET's own FINAL GABRIEL reward completes the set -> b2.
-      // DARK OUT PART 9 SECTION K: experiment_lab.mp4 plays BEFORE b2 is
-      // even entered — the ADAM SPHERE doesn't exist until enterStoryEventStage
-      // ('b2') runs (see enterEventStage()'s own spawnAdamSphere() call), so
-      // deferring b2 entry into the movie's onComplete already satisfies
-      // "before SPHERE submission can fire" with no separate gate needed.
-      playEventMovie('experiment_lab', () => { enterStoryEventStage('b2'); });
     } else if (type === 'escapeNavigator' && storyScenarioState.scenario) {
       // SECTION 15/30/32: MAIN (after GABRIEL3) or SECRET (after ADAM) —
       // either way, collecting it just marks escape-ready and stops
@@ -2937,18 +3171,16 @@
     }
 
     // GABRIEL-family STORY death, keyed by bossEncounterIndex (0/1/2 = GABRIEL 1/2/3).
-    if (storyScenarioState.scenario === 'secret') {
-      const rewardByEncounter = ['bloodSample1', 'bloodSample2', 'bloodSample3'];
-      const reward = rewardByEncounter[bossEncounterIndex];
-      if (reward) {
-        spawnWorldItemReward(reward, boss.x, boss.y + 100);
-        storyScenarioState.pendingReward = reward;
-        storyScenarioState.awaitingRewardPickup = true;
-      }
-    } else if (storyScenarioState.scenario === 'main' && bossEncounterIndex === GABRIEL_ENCOUNTER_3_INDEX) {
-      // SECTION 15/40: MAIN only ever rewards after the FINAL GABRIEL — 1/2 give nothing.
-      spawnWorldItemReward('escapeNavigator', boss.x, boss.y + 100);
-      storyScenarioState.pendingReward = 'escapeNavigator';
+    // POST-v1.0 SECTION 26: MAIN now grants the SAME Blood Sample①②③
+    // progression SECRET always has (previously MAIN granted nothing until
+    // G3's escapeNavigator) — escapeNavigator itself is granted later, by
+    // the end-of-story ADAM SPHERE event's own MAIN-only branch (see
+    // updateAdamSphere()), never here anymore for either scenario.
+    const rewardByEncounter = ['bloodSample1', 'bloodSample2', 'bloodSample3'];
+    const reward = rewardByEncounter[bossEncounterIndex];
+    if (reward) {
+      spawnWorldItemReward(reward, boss.x, boss.y + 100);
+      storyScenarioState.pendingReward = reward;
       storyScenarioState.awaitingRewardPickup = true;
     }
   }
@@ -2969,6 +3201,7 @@
     bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
     spawnBarrels(0); // SECTION 28-30: same "no barrels" choice PART5's own BOSS BATTLE ADAM made — simplest, safest default, undocumented otherwise in spec
     securityRobots.length = 0;
+    whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
     securityAttackSlotsInUse = 0;
     spawnBoss(now, 'adam'); // PART5's shared engine — same INTRO/CHASE/DEFENSE/ARC CLAW/STRAIGHT CLAW/DARK PHASE/FLASH/COUNTER/dying/dead as BOSS BATTLE ADAM
   }
@@ -3053,6 +3286,106 @@
   securityRobotImgs.east.src = 'assets/security/security_robot_east.png';
   let securityRobots = [];
   let securityAttackSlotsInUse = 0;
+
+  // ================= POST-v1.0 SECTION 4/5: WHITE SHADOW =================
+  // Independent stage hazard entity — no HP, no state shared with DRONE.
+  // No new image asset: reuses the exact same translucent-white oval look
+  // the old searchlight shadow had (drawSecurityShadow()'s own visual
+  // language), just as its own standalone entity now.
+  let whiteShadows = [];
+  function spawnWhiteShadow(x, y) {
+    const range = WHITE_SHADOW_DRIFT_RANGE_MIN + Math.random() * (WHITE_SHADOW_DRIFT_RANGE_MAX - WHITE_SHADOW_DRIFT_RANGE_MIN);
+    const speed = WHITE_SHADOW_DRIFT_SPEED_MIN + Math.random() * (WHITE_SHADOW_DRIFT_SPEED_MAX - WHITE_SHADOW_DRIFT_SPEED_MIN);
+    whiteShadows.push({
+      x, y,
+      driftCenterX: x, driftRangeX: range, driftSpeed: speed, driftDir: Math.random() < 0.5 ? 1 : -1,
+      hiddenUntil: -Infinity, // FLASH hide window — see updateFlashGrenade()
+      missile: { active: false, index: 0, nextLaunchAt: 0, missiles: [], cooldownUntil: 0 },
+    });
+  }
+  function getNearestWhiteShadow() {
+    let best = null, bestDist = Infinity;
+    for (const shadow of whiteShadows) {
+      const dist = Math.hypot(shadow.x - player.x, shadow.y - player.y);
+      if (dist < bestDist) { bestDist = dist; best = shadow; }
+    }
+    return best;
+  }
+  function isWhiteShadowHidden(shadow, now) {
+    return now < shadow.hiddenUntil;
+  }
+  function updateWhiteShadows(dt, now) {
+    const stealthed = now < player.stealthUntil;
+    for (const shadow of whiteShadows) {
+      // SECTION 5-4: drift left/right within its own range, independent of
+      // any DRONE — always moving regardless of hidden/STEALTH state (the
+      // hazard itself is still "there", just not attacking/visible).
+      shadow.x += shadow.driftDir * shadow.driftSpeed * dt;
+      if (shadow.x >= shadow.driftCenterX + shadow.driftRangeX) { shadow.x = shadow.driftCenterX + shadow.driftRangeX; shadow.driftDir = -1; }
+      else if (shadow.x <= shadow.driftCenterX - shadow.driftRangeX) { shadow.x = shadow.driftCenterX - shadow.driftRangeX; shadow.driftDir = 1; }
+      if (isWhiteShadowHidden(shadow, now)) continue; // SECTION 5-3: fully inert while FLASH-hidden — no new lock, no attack, no draw (see drawWhiteShadows())
+      const m = shadow.missile;
+      if (!m.active) {
+        // SECTION 5-2: STEALTH means no NEW target lock/attack begins.
+        if (!stealthed && now >= m.cooldownUntil) {
+          m.active = true;
+          m.index = 0;
+          m.nextLaunchAt = now;
+          m.missiles = [];
+        }
+        continue;
+      }
+      // STEALTH engaged mid-volley: already-launched missiles still land
+      // (matches ROID2's own MISSILE MODE STEALTH behavior), no new ones launch.
+      if (stealthed) {
+        m.index = WHITE_SHADOW_MISSILE_COUNT;
+      } else if (m.index < WHITE_SHADOW_MISSILE_COUNT && now >= m.nextLaunchAt) {
+        m.missiles.push({ x: player.x, y: player.y, warnStartedAt: now, impacted: false });
+        m.index++;
+        m.nextLaunchAt = now + WHITE_SHADOW_MISSILE_STAGGER_MS;
+      }
+      for (const missile of m.missiles) {
+        if (missile.impacted) continue;
+        if (now - missile.warnStartedAt >= WHITE_SHADOW_MISSILE_WARNING_MS) {
+          missile.impacted = true;
+          spawnExplosionVisual(missile.x, missile.y, now);
+          if (Math.hypot(player.x - missile.x, player.y - missile.y) <= WHITE_SHADOW_MISSILE_BLAST_RADIUS) {
+            applyDamageToPlayerLife(now, WHITE_SHADOW_MISSILE_DAMAGE);
+          }
+        }
+      }
+      if (m.index >= WHITE_SHADOW_MISSILE_COUNT && m.missiles.every((x) => x.impacted)) {
+        m.active = false;
+        m.missiles = [];
+        m.cooldownUntil = now + WHITE_SHADOW_CYCLE_COOLDOWN_MS;
+      }
+    }
+  }
+  function drawWhiteShadows(now) {
+    for (const shadow of whiteShadows) {
+      if (isWhiteShadowHidden(shadow, now)) continue; // SECTION 5-3: fully invisible while FLASH-hidden
+      ctx.save();
+      ctx.filter = 'blur(3px)';
+      ctx.globalAlpha = 0.6;
+      ctx.fillStyle = 'rgba(255,255,255,1)';
+      ctx.beginPath();
+      ctx.ellipse(shadow.x, shadow.y, SECURITY_SHADOW_RADIUS_X, SECURITY_SHADOW_RADIUS_Y, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      for (const missile of shadow.missile.missiles) {
+        if (missile.impacted) continue;
+        const t = Math.min(1, (now - missile.warnStartedAt) / WHITE_SHADOW_MISSILE_WARNING_MS);
+        ctx.save();
+        ctx.globalAlpha = 0.25 + 0.45 * t;
+        ctx.strokeStyle = '#ff3020';
+        ctx.lineWidth = 2 + 2 * t;
+        ctx.beginPath();
+        ctx.arc(missile.x, missile.y, WHITE_SHADOW_MISSILE_BLAST_RADIUS * (0.4 + 0.6 * t), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
 
   // ================= PART 5 SECTION A: DRONE behavior profiles =================
   // Every DRONE is assigned exactly one of these 4 named profiles at spawn
@@ -3462,17 +3795,26 @@
     // see updateRoidTargetTracking()) and which held facing zone to use
     // while it is.
     targetKnown: true,
-    facingZone: 'center', // 'left' | 'center' | 'right' — hysteresis-held, see ROID_FACE_ZONE_PX/HYST_PX
+    facingZone: 'center', // 'farLeft'|'left'|'center'|'right'|'farRight' — hysteresis-held, see ROID_FACE_ZONE_PX/FAR_PX/HYST_PX
     flashLostUntil: 0, // SECTION C-5: a successful FLASH blinds ROID for FLASH_DOWN_MS, same as GABRIEL's own flashdown duration
-    // SECTION E/G: completed normal bursts since the last SNIPER/MISSILE —
-    // reaching ROID_SPECIAL_AFTER_BURSTS triggers the special attack instead
-    // of another normal burst, then resets to 0.
-    burstsCompleted: 0,
+    // POST-v1.0 SECTIONS 8/11: completed SNIPER/MISSILE cycles since the
+    // last BURST — reaching ROID_BURST_AFTER_SPECIALS triggers a (telegraphed)
+    // BURST instead of another SNIPER/MISSILE, then resets to 0.
+    specialsCompleted: 0,
+    burstTelegraphStartedAt: 0, // POST-v1.0 SECTIONS 9/12: body-flash telegraph timer, see updateRoidBurstTelegraph()
     // SECTION E: ROID1 SNIPER MODE sub-state.
     sniper: { shotIndex: 0, phase: 'locking', phaseStartedAt: 0, lockedX: 0, lockedY: 0 },
     // SECTION G: ROID2 MISSILE MODE sub-state — `missiles` holds one entry
     // per missile: { x, y, warnStartedAt, launched, impacted }.
     missile: { index: 0, nextLaunchAt: 0, missiles: [] },
+    // POST-v1.0 SECTION 14: ROID death sequence sub-state — boss.state
+    // becomes 'roidDying' the instant HP hits 0 (never an instant 'dead',
+    // which used to leave ROID vanishing with zero death effect at all —
+    // see beginRoidDeath()/updateRoidDeath()/drawRoidBoss()'s own 'roidDying'
+    // branch).
+    dark: false, // true for the darkened late-STORY variant (tint only, same AI — see spawnRoidBoss())
+    deathStartedAt: 0,
+    deathExplosionsSpawned: 0,
   };
   // DARK OUT PART 4: ROID's own enemy-fire projectiles — a separate, minimal
   // array from the player's own `bullets` (never mixed with it, so the
@@ -3664,12 +4006,13 @@
   // as a problem, so its own spawn Y is left untouched (spec's own explicit
   // "ROID1指摘なのでROID2位置を必要以上に変更しない").
   const ROID1_SPAWN_Y_EXTRA = 46;
-  function spawnRoidBoss(type) {
+  function spawnRoidBoss(type, dark) {
     const profile = ROID_BOSS_PROFILES[type];
     if (!profile) return; // never crash on an unplayable/unknown target — mirrors startBossBattle()'s own guard
     boss.type = type;
     boss.name = profile.name;
     boss.spawned = true;
+    roidState.dark = !!dark; // POST-v1.0 SECTION 15: late-STORY darkened variant — same AI, tint only (see drawRoidBoss())
     boss.hp = ROID_MAX_HP;
     boss.state = 'search'; // no INTRO cinematic for ROID (spec section 32) — combat starts immediately
     boss.stateEnteredAt = performance.now();
@@ -3687,7 +4030,8 @@
     roidState.targetKnown = true;
     roidState.facingZone = 'center';
     roidState.flashLostUntil = 0;
-    roidState.burstsCompleted = 0;
+    roidState.specialsCompleted = 0;
+    roidState.burstTelegraphStartedAt = 0;
     roidState.sniper.shotIndex = 0; roidState.sniper.phase = 'locking'; roidState.sniper.phaseStartedAt = 0;
     roidState.missile.index = 0; roidState.missile.nextLaunchAt = 0; roidState.missile.missiles = [];
     enemyBullets.length = 0;
@@ -3702,6 +4046,7 @@
     // target. securityRobots is already cleared by resetModeState() just
     // before enterBossBattleStage() runs, so this always starts fresh.
     securityRobots.length = 0;
+    whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
     securityAttackSlotsInUse = 0;
     for (let i = 0; i < ROID_ESCORT_COUNT; i++) {
       const spot = pickSecurityDroneSpot(securityRobots, 1, DRONE_PLACEMENT_BODY_MARGIN,
@@ -3765,13 +4110,25 @@
       const dx = player.x - boss.x;
       let zone = roidState.facingZone;
       if (!wasKnown) zone = 'center'; // SECTION C-6: reacquire always starts from a fresh read, never the stale pre-loss zone
+      const NEAR = ROID_FACE_ZONE_PX, FAR = ROID_FACE_ZONE_FAR_PX, HYST = ROID_FACE_ZONE_HYST_PX;
+      // POST-v1.0 SECTION 7: 5-zone version of the same single-step-per-frame
+      // hysteresis the old 3-zone code used — only ever steps one zone
+      // outward/inward at a time (safe at 60fps since dx changes gradually),
+      // outward transitions use the nominal threshold, inward transitions
+      // require dx to have retreated HYST px past that same threshold.
       if (zone === 'center') {
-        if (dx > ROID_FACE_ZONE_PX) zone = 'right';
-        else if (dx < -ROID_FACE_ZONE_PX) zone = 'left';
+        if (dx > NEAR) zone = 'right';
+        else if (dx < -NEAR) zone = 'left';
       } else if (zone === 'right') {
-        if (dx < ROID_FACE_ZONE_PX - ROID_FACE_ZONE_HYST_PX) zone = 'center';
+        if (dx > FAR) zone = 'farRight';
+        else if (dx < NEAR - HYST) zone = 'center';
+      } else if (zone === 'farRight') {
+        if (dx < FAR - HYST) zone = 'right';
       } else if (zone === 'left') {
-        if (dx > -(ROID_FACE_ZONE_PX - ROID_FACE_ZONE_HYST_PX)) zone = 'center';
+        if (dx < -FAR) zone = 'farLeft';
+        else if (dx > -(NEAR - HYST)) zone = 'center';
+      } else if (zone === 'farLeft') {
+        if (dx > -(FAR - HYST)) zone = 'left';
       }
       roidState.facingZone = zone;
     }
@@ -3883,7 +4240,7 @@
         s.shotIndex++;
         if (s.shotIndex >= ROID1_SNIPER_SHOT_COUNT) {
           boss.state = 'search';
-          roidState.burstsCompleted = 0;
+          roidState.specialsCompleted++; // POST-v1.0 SECTION 8: counts toward the next telegraphed BURST
           return;
         }
         s.phase = 'intershot';
@@ -3940,23 +4297,76 @@
     // was lost and launching was cut short above).
     if (m.index >= ROID2_MISSILE_COUNT && m.missiles.every((x) => x.impacted)) {
       boss.state = 'search';
-      roidState.burstsCompleted = 0;
+      roidState.specialsCompleted++; // POST-v1.0 SECTION 11: counts toward the next telegraphed BURST
       m.missiles = [];
     }
   }
 
+  // POST-v1.0 SECTION 14: entered the instant ROID's HP hits 0 (see
+  // applyBodyHitToRoidBoss()) instead of jumping straight to 'dead' — see
+  // this const block's own comment (ROID_DEATH_MS etc.) for the timing.
+  function beginRoidDeath(now) {
+    boss.state = 'roidDying';
+    roidState.deathStartedAt = now;
+    roidState.deathExplosionsSpawned = 0;
+  }
+  function updateRoidDeath(now) {
+    const elapsed = now - roidState.deathStartedAt;
+    const targetCount = Math.min(ROID_DEATH_EXPLOSION_COUNT, Math.floor((elapsed / ROID_DEATH_EXPLOSION_WINDOW_MS) * ROID_DEATH_EXPLOSION_COUNT) + 1);
+    while (roidState.deathExplosionsSpawned < targetCount) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = Math.random() * ROID_BODY_TARGET_HEIGHT * 0.32;
+      spawnExplosionVisual(boss.x + Math.cos(angle) * radius, boss.y + Math.sin(angle) * radius * 0.6, now);
+      roidState.deathExplosionsSpawned++;
+    }
+    if (elapsed >= ROID_DEATH_MS) {
+      boss.state = 'dead';
+    }
+  }
+
+  // POST-v1.0 SECTIONS 9/12: shared BURST telegraph — body-flash for
+  // ROID_BURST_TELEGRAPH_MS before the burst's first shot. STEALTH/FLASH
+  // engaging mid-telegraph cancels it outright (never fires a shot), same
+  // as the old mid-burst-interrupt rule, and leaves specialsCompleted
+  // untouched so the still-owed BURST is retried next time target is known.
+  function beginRoidBurstTelegraph(now) {
+    boss.state = 'burstTelegraph';
+    roidState.burstTelegraphStartedAt = now;
+  }
+  function updateRoidBurstTelegraph(now) {
+    if (!roidState.targetKnown) {
+      boss.state = 'search';
+      return;
+    }
+    if (now - roidState.burstTelegraphStartedAt >= ROID_BURST_TELEGRAPH_MS) {
+      boss.state = 'firing';
+      roidState.burstShotsFired = 0;
+      roidState.nextShotAt = now;
+    }
+  }
+
   function updateRoidBoss(dt, now) {
+    if (boss.state === 'roidDying') { updateRoidDeath(now); return; }
     updateRoidTargetTracking(now);
     maintainRoidEscortDrones(now);
     updateRoidAnimation(dt);
+    if (boss.state === 'burstTelegraph') { updateRoidBurstTelegraph(now); return; }
     if (boss.state === 'sniper') { updateRoidSniper(now); return; }
     if (boss.state === 'missile') { updateRoidMissile(now); return; }
     const stealthed = !roidState.targetKnown;
     if (boss.state === 'search') {
       if (!stealthed) {
-        boss.state = 'firing';
-        roidState.burstShotsFired = 0;
-        roidState.nextShotAt = now; // first shot fires immediately on entering FIRING (spec section 12)
+        // POST-v1.0 SECTIONS 8/11: SNIPER (ROID1) / MISSILE (ROID2) is now
+        // the PRIMARY attack — only every ROID_BURST_AFTER_SPECIALS-th cycle
+        // does a (telegraphed) BURST instead, giving a SPECIAL,SPECIAL,
+        // SPECIAL,BURST rotation (was BURST,BURST,BURST,SPECIAL pre-v1.0).
+        if (roidState.specialsCompleted >= ROID_BURST_AFTER_SPECIALS) {
+          beginRoidBurstTelegraph(now);
+        } else if (boss.type === 'roid1') {
+          beginRoidSniper(now);
+        } else {
+          beginRoidMissile(now);
+        }
       }
     } else if (boss.state === 'firing') {
       if (stealthed) {
@@ -3984,16 +4394,10 @@
       // Cooldown always runs to completion regardless of STEALTH — never
       // rewound/extended by it (spec section 13).
       if (now >= roidState.cooldownUntil) {
-        // DARK OUT PART 10 SECTION E/G: every ROID_SPECIAL_AFTER_BURSTS-th
-        // completed burst goes into the SNIPER (ROID1) / MISSILE (ROID2)
-        // special attack instead of another normal SEARCH->FIRING cycle.
-        roidState.burstsCompleted++;
-        if (roidState.burstsCompleted >= ROID_SPECIAL_AFTER_BURSTS) {
-          if (boss.type === 'roid1') beginRoidSniper(now);
-          else beginRoidMissile(now);
-        } else {
-          boss.state = 'search';
-        }
+        // A BURST just completed — reset the rotation counter so the next
+        // ROID_BURST_AFTER_SPECIALS cycles go back to SNIPER/MISSILE.
+        roidState.specialsCompleted = 0;
+        boss.state = 'search';
       }
     }
   }
@@ -4009,11 +4413,13 @@
   // SNIPER/MISSILE special-attack window — restored to normal damageability
   // the instant either mode ends (boss.state leaves 'sniper'/'missile').
   function applyBodyHitToRoidBoss(now) {
-    if (boss.state === 'sniper' || boss.state === 'missile') return;
+    if (boss.state === 'sniper' || boss.state === 'missile' || boss.state === 'roidDying' || boss.state === 'dead') return;
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
     bossDamageBlinkStartAt = now; // reuses the existing generic (boss-agnostic) hit-flash timestamp/compositing helper
     if (boss.hp <= 0) {
-      boss.state = 'dead';
+      // POST-v1.0 SECTION 14: a real death sequence now, never an instant
+      // vanish — see beginRoidDeath()/updateRoidDeath().
+      beginRoidDeath(now);
     }
   }
 
@@ -4037,7 +4443,22 @@
     for (const b of enemyBullets) drawBullet(b); // same tracer visual as the player's own bullets
   }
 
+  // POST-v1.0 SECTION 15: DARKENED ROID1/ROID2 — late-STORY variant, runtime
+  // brightness/saturation reduction ONLY (no new art, no AI change). Canvas
+  // 2D's own `filter` property does this natively for every draw call this
+  // function makes below (including the offscreen-canvas-composited
+  // hit-tint/telegraph-flash/death-blacken helpers, since filter applies to
+  // whatever drawImage() paints onto ctx, whatever its source), so wrapping
+  // the whole function is simpler and safer than threading a dark flag
+  // through each of those helpers individually.
   function drawRoidBoss(now) {
+    if (!roidState.dark) { drawRoidBossInner(now); return; }
+    ctx.save();
+    ctx.filter = 'brightness(0.55) saturate(0.35)';
+    drawRoidBossInner(now);
+    ctx.restore();
+  }
+  function drawRoidBossInner(now) {
     const profile = roidState.profile;
     if (!profile) return;
     const firing = boss.state === 'firing';
@@ -4051,6 +4472,32 @@
     // given frame carries above or below the body itself.
     const dy = boss.y + ROID_BODY_TARGET_HEIGHT / 2 - frame.bodyBottomFrac * h;
     const dx = boss.x - w / 2;
+    // POST-v1.0 SECTION 14: death sequence — blackens in sync with
+    // ROID_DEATH_BLACKEN_MS, holds black, then fades out over the final
+    // stretch (ROID_DEATH_FADE_START_MS onward). The SNIPER/MISSILE
+    // telegraph overlays below are intentionally skipped once dying.
+    if (boss.state === 'roidDying') {
+      const elapsed = now - roidState.deathStartedAt;
+      const blackT = Math.min(1, elapsed / ROID_DEATH_BLACKEN_MS);
+      const alpha = elapsed > ROID_DEATH_FADE_START_MS
+        ? Math.max(0, 1 - (elapsed - ROID_DEATH_FADE_START_MS) / (ROID_DEATH_MS - ROID_DEATH_FADE_START_MS))
+        : 1;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      drawBossBlackenTint(frame.img, dx, dy, w, h, blackT);
+      ctx.restore();
+      return;
+    }
+    // POST-v1.0 SECTIONS 9/12: BURST telegraph — whole-body white flash,
+    // ROID_BURST_TELEGRAPH_PULSE_MS per pulse, for ROID_BURST_TELEGRAPH_MS
+    // total (~3 pulses) before the burst's first shot. Shared by ROID1/2.
+    if (boss.state === 'burstTelegraph') {
+      const elapsed = now - roidState.burstTelegraphStartedAt;
+      const phase = (elapsed % ROID_BURST_TELEGRAPH_PULSE_MS) / ROID_BURST_TELEGRAPH_PULSE_MS;
+      const flashT = 0.5 + 0.5 * Math.sin(phase * Math.PI * 2);
+      drawBossFlashTint(frame.img, dx, dy, w, h, flashT);
+      return;
+    }
     const blinkElapsed = now - bossDamageBlinkStartAt;
     if (blinkElapsed >= 0 && blinkElapsed < BOSS_DAMAGE_BLINK_TOTAL_MS) {
       const segment = Math.floor(blinkElapsed / BOSS_HIT_TINT_MS);
@@ -4488,7 +4935,20 @@
   // (boss.state === 'straightclaw') is the one deliberate exception to the
   // distance requirement (SECTION 11) — aim still fully applies.
   function canFlashTarget() {
-    if (!boss.spawned || flashDisabledByCinematic() || flashCooldownRemainingMs > 0) return false;
+    // POST-v1.0 SECTION 5-3: no boss at all (a WHITE-SHADOW-ONLY or DRONE+
+    // SHADOW STORY stage) — FLASH instead targets the nearest active WHITE
+    // SHADOW, distance-gated only (no AUTO AIM/reticle requirement; WHITE
+    // SHADOW has no boss-style hitbox for that system to lock onto).
+    if (!boss.spawned) {
+      if (flashDisabledByCinematic() || flashCooldownRemainingMs > 0) return false;
+      const shadow = getNearestWhiteShadow();
+      if (!shadow) return false;
+      // WHITE SHADOW has no boss-style "too close" minimum — this is a
+      // MAXIMUM throw range instead (must be within reach to hit it at all),
+      // reusing FLASH_MIN_DISTANCE only as a same-scale reference number.
+      return Math.hypot(shadow.x - player.x, shadow.y - player.y) < FLASH_MIN_DISTANCE * 1.4;
+    }
+    if (flashDisabledByCinematic() || flashCooldownRemainingMs > 0) return false;
     if (boss.state === 'darkphase') return isAimedAtDarkPhaseHead();
     if (!isAimingAtBoss()) return false;
     if (boss.state !== 'straightclaw') {
@@ -5283,10 +5743,20 @@
       // than called synchronously here, since freeze (SECTION H) only stops
       // the *update loop* from ticking further — it doesn't rewind work
       // already done this same tick.
+      // POST-v1.0 SECTION 22: the new GABRIEL video rule overrides PART11's
+      // "every encounter plays down then defeated" — only GABRIEL1
+      // (encounterIndex 0) still plays the full down->defeated pair;
+      // GABRIEL2/3 go straight from combat to gabriel_defeated alone (no
+      // down movie at all). BOSS BATTLE MODE and the ADAM STORY fight are
+      // unaffected, same as before.
       if (!bossBattleState.active && storyScenarioState.scenario && boss.type !== 'adam') {
-        playEventMovie('gabriel_down', () => {
+        if (bossEncounterIndex === 0) {
+          playEventMovie('gabriel_down', () => {
+            playEventMovie('gabriel_defeated', proceedWithDefeatRewards);
+          });
+        } else {
           playEventMovie('gabriel_defeated', proceedWithDefeatRewards);
-        });
+        }
       } else {
         proceedWithDefeatRewards();
       }
@@ -6132,15 +6602,19 @@
       return gameState.mode === 'boss' && !stageTransition.active;
     }
     // DARK OUT PART 8 SECTION 15/16/25/30: the FINAL GABRIEL STAGE — and the
-    // SECRET-only special ADAM STORY fight, which shares that exact same
-    // currentStageIndex/bossEncounterIndex the whole time (section 27) —
-    // never uses the walk-to-EXIT flow under scenario routing: reward-
-    // pickup/b2-transition/escapeReady handlers replace it entirely, and
-    // STORY_STAGE_PLAN has no index past this one for beginStageTransition()
-    // to advance into. A raw/legacy/debug run with no scenario selected
-    // (storyScenarioState.scenario === null) is completely unaffected —
-    // isFinalStoryStage() still triggers the original GAME CLEAR path.
-    if (storyScenarioState.scenario && isFinalStoryStage()) return false;
+    // SECRET-only special ADAM STORY fight never uses the walk-to-EXIT flow
+    // under scenario routing while active — the escapeReady branch above
+    // replaces it entirely, and beginAdamStoryBossTransition() never touches
+    // currentStageIndex, so there's nothing here to gate on.
+    // POST-v1.0 SECTION 24/29: the FINAL GABRIEL encounter (bossEncounterIndex
+    // 2) is no longer necessarily the run's own last plan entry — MAIN/SECRET
+    // both continue past it (darkened ROID / the ADAM SPHERE event), so it
+    // must NOT permanently lock the EXIT once its own reward is collected;
+    // the `awaitingRewardPickup` check just below already gates it correctly
+    // until then, same as GABRIEL1/2. A raw/legacy/debug run with no scenario
+    // selected (storyScenarioState.scenario === null) is unaffected either
+    // way — isFinalStoryStage() still triggers the original GAME CLEAR path
+    // there, via a completely different call site (updateBossDying()).
     // SECTION 10/12/17/18: a GABRIEL1/2 SECRET reward that has been spawned
     // but not yet collected must gate the EXIT band shut — see
     // handleStoryBossDefeatRewards()/onWorldItemPickup().
@@ -6304,23 +6778,124 @@
   // (updateStageTransition() above), so there is exactly one
   // implementation of "what does entering STORY STAGE N actually do"
   // (never scattered if/else — SECTION T's own explicit requirement).
+  // POST-v1.0 SECTION 24: a fixed single spawn point for a WHITE-SHADOW-ONLY
+  // or 'mixed' STAGE's own hazard — AREA1, roughly where ROID/GABRIEL's own
+  // spawn sits, since WHITE SHADOW is a single independent stage hazard
+  // (never per-AREA duplicated, matching its "1体" spec wording).
+  function storyWhiteShadowSpawnPos() {
+    return { x: W / 2, y: areaTopY(1) + Math.max(BOSS_DRAW_H * 0.55, H * 0.16) };
+  }
+  // POST-v1.0 SECTIONS 24/29: plays roid1_arrival.mp4/roid2_arrival.mp4
+  // exactly once per scenario run (never for a darkened variant — spec is
+  // silent on any darkened-variant cinematic, straight to combat), then
+  // spawns the ROID with `dark` threaded through.
+  function maybePlayStoryRoidArrival(type, dark, now) {
+    if (dark) { spawnRoidBoss(type, true); return; }
+    const flagKey = type === 'roid1' ? 'roid1ArrivalPlayed' : 'roid2ArrivalPlayed';
+    if (storyCinematicState[flagKey]) { spawnRoidBoss(type, false); return; }
+    storyCinematicState[flagKey] = true;
+    playEventMovie(type + '_arrival', () => { spawnRoidBoss(type, false); });
+  }
+  // POST-v1.0 SECTION 44: the ONE place that enters whatever the active plan
+  // array (activeStagePlanArray() — the run's own resolvedPlan under a
+  // scenario, else the legacy STORY_STAGE_PLAN) says currentStageIndex is —
+  // used by BOTH a brand-new STORY run (resetModeState()) and every stage-
+  // transition advance (updateStageTransition() above), so there is exactly
+  // one implementation of "what does entering STORY STAGE N actually do".
   function enterStoryStage(now) {
-    const plan = STORY_STAGE_PLAN[currentStageIndex];
+    const plan = activeStagePlanArray()[currentStageIndex];
     bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
     barrels.length = 0;
     barrelLandings.length = 0;
     barrelRestockPending = false;
     barrelRestockRemainingMs = 0;
-    spawnHealItem(); // PART7 SECTION W: fresh, unconsumed item every STAGE entry (drone-type and boss-type alike, since both open the SAME worldExtraAbove bonus band)
-    if (plan.type === 'drone') {
-      // SECTION F-6/F-8/X-1: no GABRIEL, no BOSS INTRO, zero barrels.
+    spawnStageClearReward(); // POST-v1.0 SECTION 38: HEAL BOX (damage taken>0) or AMMO BOX (no damage) — see its own comment
+    damageTakenThisStage = 0; // SECTION 38: reset the instant the NEW stage's own reward has already been decided above
+    if (plan.type === 'whiteShadow' || plan.type === 'drone' || plan.type === 'mixed') {
+      // SECTION F-6/F-8/X-1/POST-v1.0 SECTION 4-24: no GABRIEL/ROID, no BOSS
+      // INTRO, zero barrels — DRONE/WHITE SHADOW counts come straight from
+      // the plan entry now (never the old random-3/5/7 pick) except for the
+      // legacy STORY_STAGE_PLAN fallback, which still uses its own
+      // speedMult/fixedCount shape untouched.
       boss.spawned = false;
       boss.state = 'inactive';
       spawnBarrels(0);
       pickFreshStoryDroneBackground(); // SECTION S-1
-      populateSecurityDroneAreas(securityRobots, plan.speedMult, plan.fixedCount, true); // SECTION F-1/F-2/F-3/J/L: per-AREA 3/5/7 (or STAGE1/2/3's own fixed count — SECTION B), this STAGE's own speed multiplier baked in; new-turn SECTION 1: `true` guarantees at least one FAST_PATROL DRONE (every STAGE routed through this drone-type branch — 1/2/3/5/6/8/9 — needs one, per this turn's instructions)
+      whiteShadows.length = 0;
+      if (plan.type === 'drone') {
+        populateSecurityDroneAreas(securityRobots, plan.speedMult || 1.0, plan.count || plan.fixedCount, true);
+      } else if (plan.type === 'mixed') {
+        populateSecurityDroneAreas(securityRobots, 1.0, plan.droneCount, true);
+        spawnWhiteShadow(storyWhiteShadowSpawnPos().x, storyWhiteShadowSpawnPos().y);
+      } else { // 'whiteShadow'
+        securityRobots.length = 0;
+        spawnWhiteShadow(storyWhiteShadowSpawnPos().x, storyWhiteShadowSpawnPos().y);
+      }
       securityAttackSlotsInUse = 0;
-    } else { // 'boss': a GABRIEL ENCOUNTER
+    } else if (plan.type === 'movie') {
+      // POST-v1.0 SECTION 33: drone_arrival.mp4 — zero gameplay, plays once
+      // then advances straight to the NEXT plan entry (no player interaction,
+      // no EXIT walk, never a 2nd time since a resolved plan only ever
+      // visits its own array index once per run).
+      boss.spawned = false;
+      boss.state = 'inactive';
+      securityRobots.length = 0;
+      whiteShadows.length = 0;
+      spawnBarrels(0);
+      playEventMovie(plan.key, () => {
+        currentStageIndex += 1;
+        cameraY = 0;
+        currentArea = 1;
+        area1Cleared = false;
+        area2Cleared = false;
+        enterStoryStage(performance.now());
+      });
+    } else if (plan.type === 'cultivationLab') {
+      // POST-v1.0 SECTION 28: non-combat waypoint between the opening ROID1
+      // fight and GABRIEL1 — reuses event_b2_adam_lab's background/
+      // experiment_lab.mp4 visually, but is its own plan-sequenced STAGE
+      // (never eventStageState/enterEventStage()'s own b1/b2 side-channel,
+      // and never spawns the ADAM SPHERE itself — that's the separate,
+      // later 'adamSphere' entry). isStoryDroneStage() already includes this
+      // type so the EXIT opens immediately (nothing to defeat).
+      boss.spawned = false;
+      boss.state = 'inactive';
+      securityRobots.length = 0;
+      whiteShadows.length = 0;
+      spawnBarrels(0);
+      storyScenarioState.stageOverrideId = 'event_b2_adam_lab';
+      if (!storyCinematicState.experimentLabPlayed) {
+        storyCinematicState.experimentLabPlayed = true;
+        playEventMovie('experiment_lab', () => {});
+      }
+    } else if (plan.type === 'adamSphere') {
+      // POST-v1.0 SECTIONS 27/31: the real end-of-story 3-sample-submission
+      // event — MAIN vs SECRET branch entirely inside updateAdamSphere()'s
+      // own 'released' transition (MAIN never proceeds to ADAM combat).
+      boss.spawned = false;
+      boss.state = 'inactive';
+      securityRobots.length = 0;
+      whiteShadows.length = 0;
+      spawnBarrels(0);
+      storyScenarioState.stageOverrideId = 'event_b2_adam_lab';
+      spawnAdamSphere();
+    } else if (plan.type === 'boss' && (plan.boss === 'roid1' || plan.boss === 'roid2')) {
+      // POST-v1.0 SECTIONS 24/29/34: ROID1/ROID2 (normal or `dark`-tinted) as
+      // an ordinary sequential plan entry — reuses PART10's entire shared
+      // ROID engine wholesale via the SAME storyScenarioState.stageOverrideId
+      // mechanism the old PART11 interlude/SECRET ADAM fight already
+      // established (currentStage() already resolves boss_c1_roid1/
+      // boss_c2_roid2 generically, so no new background-routing code needed).
+      securityRobots.length = 0;
+      whiteShadows.length = 0;
+      securityAttackSlotsInUse = 0;
+      spawnBarrels(0);
+      currentArea = 1;
+      cameraY = 0;
+      storyScenarioState.stageOverrideId = plan.boss === 'roid1' ? 'boss_c1_roid1' : 'boss_c2_roid2';
+      maybePlayStoryRoidArrival(plan.boss, !!plan.dark, now);
+    } else { // 'boss', boss:'gabriel' (or the legacy plan's own {type:'boss'} shape, boss field absent)
+      storyScenarioState.stageOverrideId = null; // SECTION 44: clear whatever a preceding ROID/lab/sphere entry left behind
       bossEncounterIndex = plan.encounterIndex; // SECTION Q: the ONLY place this is ever set
       spawnBarrels(BOSS_ENCOUNTER_BARREL_COUNTS[bossEncounterIndex]); // SECTION K/X
       if (plan.final) {
@@ -6329,6 +6904,7 @@
         finalDroneRespawnedByArea = { 1: false, 2: false }; // PART8 SECTION AH: every (re-)entry into the FINAL STAGE — including RETRY — starts fresh at "wave 1, 2nd wave not yet spawned" for BOTH Areas independently
       } else {
         securityRobots.length = 0;
+        whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
         securityAttackSlotsInUse = 0;
         spawnBoss(now);
       }
@@ -6350,6 +6926,12 @@
   // own scenario-gating.
   function maybePlayStoryGabrielArrival() {
     if (!storyScenarioState.scenario) return;
+    // POST-v1.0 SECTION 22: the new GABRIEL video rule overrides PART11's
+    // own "same sequence every encounter" — only GABRIEL1 (encounterIndex 0)
+    // ever plays an arrival movie now; GABRIEL2/3 go straight into combat
+    // with no arrival, no down (see updateBossDying()'s own encounterIndex
+    // branch below for the matching down/defeated change).
+    if (bossEncounterIndex !== 0) return;
     if (storyCinematicState.gabrielArrivalPlayed[bossEncounterIndex]) return; // already played this run — RETRY of the same encounter reaches this same check and skips
     storyCinematicState.gabrielArrivalPlayed[bossEncounterIndex] = true;
     playEventMovie('gabriel_arrival', () => {});
@@ -6381,10 +6963,16 @@
           storyRoidInterludeState.active = false;
           storyRoidInterludeState.completed = true;
           storyRoidInterludeState.returnStageIndex = null;
-          storyScenarioState.stageOverrideId = null;
         } else {
           currentStageIndex += 1;
         }
+        // POST-v1.0 SECTION 44: unconditionally cleared on every advance —
+        // enterStoryStage() re-sets it itself if the NEW stage happens to be
+        // a ROID1/ROID2/cultivationLab/adamSphere entry (all of which use
+        // this same override mechanism); a plain GABRIEL/drone/whiteShadow/
+        // mixed entry needs it null so currentStage() falls through to its
+        // own background branch instead of reusing a stale override.
+        storyScenarioState.stageOverrideId = null;
         cameraY = 0;
         // SECTION C: the next stage always starts back at AREA 1, fully
         // closed up again — same two-area structure repeats fresh each time.
@@ -6556,8 +7144,11 @@
   // invented per-caller if any future text needs the same treatment.
   const HEAL_PICKUP_TEXT_MS = 1000; // within the requested 800-1200ms band
   const healPickupTexts = [];
-  function spawnHealPickupText(x, y, now) {
-    healPickupTexts.push({ x, y, startedAt: now });
+  // POST-v1.0 SECTIONS 41/42: `text` defaults to the original HEAL BOX
+  // message so every pre-existing call site (still HEAL-only) needs no
+  // change — AMMO BOX pickups pass their own message explicitly.
+  function spawnHealPickupText(x, y, now, text) {
+    healPickupTexts.push({ x, y, startedAt: now, text: text || 'HP MAX UP!' });
   }
   function drawHealPickupTexts(now) {
     for (let i = healPickupTexts.length - 1; i >= 0; i--) {
@@ -6571,7 +7162,7 @@
       ctx.fillStyle = '#3ddc5a'; // green, per SECTION W
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      ctx.fillText('HP+30%！', t.x, t.y - u * 24); // drifts upward while it fades
+      ctx.fillText(t.text, t.x, t.y - u * 24); // drifts upward while it fades
       ctx.restore();
     }
   }
@@ -6584,6 +7175,84 @@
     const w = HEAL_ITEM_DRAW_W * scale;
     const h = w * (img.naturalHeight / img.naturalWidth);
     ctx.drawImage(img, healItem.x - w / 2, healItem.y - h / 2, w, h);
+  }
+
+  // ==========================================================================
+  // POST-v1.0 SECTIONS 38-41: AMMO BOX — the SAME single-item/shoot-to-
+  // collect/worldExtraAbove-band mechanic HEAL BOX already uses, just a
+  // different asset set and a different effect (magazine capacity +10 +
+  // current ammo +10, never a life change). Per stage entry, exactly ONE of
+  // HEAL BOX or AMMO BOX spawns — never both — decided by
+  // spawnStageClearReward() below from this stage's own damageTakenThisStage.
+  // ==========================================================================
+  const AMMO_ITEM_IMAGES = [1, 2, 3, 4, 5].map((n) => {
+    const img = new Image();
+    img.src = `assets/objects/ammo_box_${n}.png`;
+    return img;
+  });
+  const AMMO_ITEM_FRAME_MS = HEAL_ITEM_FRAME_MS; // SECTION 39-3: shares the same 220ms cadence, spec's own explicit permission
+  const AMMO_ITEM_DRAW_W = HEAL_ITEM_DRAW_W; // same stage-prop footprint as HEAL BOX
+  const AMMO_ITEM_HIT_RADIUS = HEAL_ITEM_HIT_RADIUS;
+  const AMMO_CAPACITY_INITIAL = 30;
+  const AMMO_CAPACITY_PICKUP_BONUS = 10;
+  const AMMO_CAPACITY_MAX = 100;
+  const ammoItem = {
+    x: 0, y: 0,
+    active: false,
+    frameIndex: 0,
+    frameElapsedMs: 0,
+  };
+  function spawnAmmoItem() {
+    const pos = getHealItemSpawnPos(); // same fixed worldExtraAbove-band spot HEAL BOX uses — the two are mutually exclusive per stage, never placed together
+    ammoItem.x = pos.x;
+    ammoItem.y = pos.y;
+    ammoItem.active = true;
+    ammoItem.frameIndex = 0;
+    ammoItem.frameElapsedMs = 0;
+  }
+  function updateAmmoItem(dt) {
+    if (!ammoItem.active) return;
+    ammoItem.frameElapsedMs += dt * 1000;
+    while (ammoItem.frameElapsedMs >= AMMO_ITEM_FRAME_MS) {
+      ammoItem.frameElapsedMs -= AMMO_ITEM_FRAME_MS;
+      ammoItem.frameIndex = (ammoItem.frameIndex + 1) % AMMO_ITEM_IMAGES.length; // SECTION 39-3: strict 1->2->3->4->5->1
+    }
+  }
+  function drawAmmoItem() {
+    if (!ammoItem.active) return;
+    const img = AMMO_ITEM_IMAGES[ammoItem.frameIndex];
+    if (!img.complete || img.naturalWidth === 0) return;
+    const w = AMMO_ITEM_DRAW_W;
+    const h = w * (img.naturalHeight / img.naturalWidth);
+    ctx.drawImage(img, ammoItem.x - w / 2, ammoItem.y - h / 2, w, h);
+  }
+  // POST-v1.0 SECTION 41: magazine capacity +10 (capped at 100) AND current
+  // ammo +10 (clamped to the NEW capacity) — RELOAD (see FIRE_MAG_SIZE's own
+  // read sites) already fills to whatever FIRE_MAG_SIZE currently is, so no
+  // separate RELOAD-side change is needed once this is a mutable `let`.
+  function applyAmmoBoxPickup(now) {
+    FIRE_MAG_SIZE = Math.min(AMMO_CAPACITY_MAX, FIRE_MAG_SIZE + AMMO_CAPACITY_PICKUP_BONUS);
+    player.ammo = Math.min(FIRE_MAG_SIZE, player.ammo + AMMO_CAPACITY_PICKUP_BONUS);
+    spawnHealPickupText(ammoItem.x, ammoItem.y, now, `AMMO+${AMMO_CAPACITY_PICKUP_BONUS}!`); // reuses the same floating-text mechanism (SECTION W), just a different message
+  }
+
+  // POST-v1.0 SECTION 38: per-stage damage tracking — reset to 0 the instant
+  // a NEW stage is entered (see enterStoryStage()), read once right before
+  // that same reset to decide which box the STAGE just being left behind
+  // should have granted... actually decided for the STAGE being ENTERED,
+  // per spec's own "各stageごとにdamageTakenThisStageをtracking、stage entry
+  // で0へreset" — i.e. this reads the PREVIOUS stage's own damage total
+  // (accumulated right up until this exact moment) to decide this NEW
+  // stage's reward, then resets to 0 for the new stage itself.
+  let damageTakenThisStage = 0;
+  function spawnStageClearReward() {
+    healItem.active = false;
+    ammoItem.active = false;
+    if (damageTakenThisStage > 0) {
+      spawnHealItem();
+    } else {
+      spawnAmmoItem();
+    }
   }
 
   function pickBarrelSpot() {
@@ -6778,7 +7447,10 @@
       const angle = Math.atan2(player.y - barrel.y, player.x - barrel.x) || -Math.PI / 2;
       applyPlayerKnockbackAlongAngle(angle, BARREL_EXPLOSION_KNOCKBACK_DISTANCE * strength, BARREL_EXPLOSION_KNOCKBACK_SUPPRESS_MS, now);
     }
-    if (boss.spawned && !bossIsInCinematic() && boss.state !== 'darkphase' && boss.state !== 'teleport' && boss.state !== 'straightclaw') {
+    // POST-v1.0 SECTION 10/13: ROID1/ROID2 (and their darkened variants)
+    // are now fully immune to explosion knockback — position never moves
+    // from a barrel blast, only GABRIEL/ADAM still get pushed.
+    if (boss.spawned && !bossIsInCinematic() && boss.state !== 'darkphase' && boss.state !== 'teleport' && boss.state !== 'straightclaw' && !isRoidBossType(boss.type)) {
       const distToBoss = Math.hypot(boss.x - barrel.x, boss.y - barrel.y);
       if (distToBoss <= BARREL_EXPLOSION_RADIUS) {
         const strength = 1 - distToBoss / BARREL_EXPLOSION_RADIUS;
@@ -7043,6 +7715,12 @@
       lockedTargetX: 0, lockedTargetY: 0,
       laserOriginX: 0, laserOriginY: 0, laserEndX: 0, laserEndY: 0,
       laserRemainingMs: 0,
+      // POST-v1.0 SECTION 6: LEFT/RIGHT SNIPER AI state (STORY/ROID-escort
+      // context only — SECURITY TRAINING never reads these). -Infinity so
+      // the first update() tick initializes the cycle fresh from `now`
+      // (buildSecurityDrone() itself has no access to game-time).
+      snipeCycleStartedAt: -Infinity,
+      snipeFired: false,
       // PART 5 SECTION B: CENTER SCANNER's own center-stop state machine —
       // null/inert for every other TYPE (their movement branch below never
       // reads these fields at all).
@@ -7174,6 +7852,7 @@
   // every other DRONE STAGE's initial population).
   function spawnFinalStageDrones(now) {
     securityRobots.length = 0;
+    whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
     securityAttackSlotsInUse = 0;
     spawnFinalStageDronesForArea(1, false, now);
     spawnFinalStageDronesForArea(2, false, now);
@@ -7448,8 +8127,27 @@
     }
   }
 
+  // POST-v1.0 SECTION 6-5: fires exactly once per lock cycle — a straight,
+  // non-homing shot from the DRONE's own measured muzzle point to the
+  // ALREADY-locked point (never the player's live position), reusing the
+  // shared enemyBullets array/collision loop ROID's own fire already uses.
+  function fireDroneSniperShot(robot, now) {
+    const muzzle = getSecurityRobotMuzzlePos(robot);
+    const angle = Math.atan2(robot.lockedTargetY - muzzle.y, robot.lockedTargetX - muzzle.x);
+    enemyBullets.push({
+      x: muzzle.x, y: muzzle.y,
+      vx: Math.cos(angle) * BULLET_SPEED, vy: Math.sin(angle) * BULLET_SPEED,
+      born: now,
+    });
+  }
+
   function updateSecurityRobots(dt, now) {
     if (!isSecurityDroneSystemActive()) return;
+    // POST-v1.0 SECTION 6: SECURITY TRAINING keeps its own established
+    // shadow-detection/laser-telegraph DRONE entirely unchanged; every other
+    // context (STORY drone-type stages, ROID escorts) uses the new LEFT/
+    // RIGHT SNIPER AI below instead.
+    const legacyTrainingAI = gameState.mode === 'securityTraining';
     for (const robot of securityRobots) {
       if (robot.hp <= 0) continue; // SECTION E-4: a dead DRONE does nothing at all — no movement, scan, detection, telegraph, or laser
       // PART7 SECTION H: while a wave-2 DRONE is still falling, none of its
@@ -7462,6 +8160,44 @@
         }
         continue;
       }
+      if (!legacyTrainingAI) {
+        // POST-v1.0 SECTION 6-1: patrol is ALWAYS active now — no more
+        // "locks on and stops" behavior (that belonged to the old shadow-
+        // detection model). Horizontal-only, same swing/clamp math as before.
+        robot.x += robot.patrolDir * robot.patrolSpeed * dt;
+        if (robot.x >= robot.patrolCenterX + robot.patrolRange) {
+          robot.x = robot.patrolCenterX + robot.patrolRange;
+          robot.patrolDir = -1;
+        } else if (robot.x <= robot.patrolCenterX - robot.patrolRange) {
+          robot.x = robot.patrolCenterX - robot.patrolRange;
+          robot.patrolDir = 1;
+        }
+        robot.x = Math.max(SECURITY_ROBOT_DRAW_D, Math.min(W - SECURITY_ROBOT_DRAW_D, robot.x));
+        robot.dir = robot.patrolDir > 0 ? 'east' : 'west';
+
+        // SECTION 6-2/6-3/6-4: the 2s lock cycle — lock the player's CURRENT
+        // position at cycle start, fire once in the final YELLOW_MS window,
+        // then immediately begin the next cycle with a fresh lock.
+        if (robot.snipeCycleStartedAt === -Infinity) {
+          robot.snipeCycleStartedAt = now;
+          robot.lockedTargetX = player.x;
+          robot.lockedTargetY = player.y;
+          robot.snipeFired = false;
+        }
+        const cycleElapsed = now - robot.snipeCycleStartedAt;
+        if (!robot.snipeFired && cycleElapsed >= DRONE_SNIPER_CYCLE_MS - DRONE_SNIPER_YELLOW_MS) {
+          fireDroneSniperShot(robot, now);
+          robot.snipeFired = true;
+        }
+        if (cycleElapsed >= DRONE_SNIPER_CYCLE_MS) {
+          robot.snipeCycleStartedAt = now;
+          robot.lockedTargetX = player.x;
+          robot.lockedTargetY = player.y;
+          robot.snipeFired = false;
+        }
+        continue;
+      }
+      // ---- SECURITY TRAINING's own legacy shadow-detection AI, unchanged ----
       // SECTION F/M-4: the DRONE "locks on" and stops its own left/right
       // patrol the instant it notices the player (detected/telegraph/
       // attack), facing SOUTH toward them (F-7) — patrol (and its own
@@ -7550,6 +8286,10 @@
   // SCANNER's own centerScan sweep (SECTION G — never a separate color for
   // that TYPE).
   function drawSecurityShadow(robot) {
+    // POST-v1.0 SECTION 4: this searchlight visual is now SECURITY TRAINING's
+    // own DRONE only — everywhere else it's the independent WHITE SHADOW
+    // entity instead (drawWhiteShadows()), never tied to a DRONE's position.
+    if (gameState.mode !== 'securityTraining') return;
     if (robot.hp <= 0) return; // E-4: dead DRONEs cast no shadow
     if (robot.dropState === 'dropping') return; // PART7 SECTION H: no searchlight while still falling — matches no AI running yet
     const c = getSecurityShadowCenter(robot);
@@ -7621,6 +8361,43 @@
       ctx.fill();
       ctx.restore();
     }
+  }
+
+  // POST-v1.0 SECTION 6-3/6-4: the new DRONE sniper's own lock-point
+  // warning marker — red, blinking faster as the 2s cycle runs out, solid
+  // yellow for the final DRONE_SNIPER_YELLOW_MS (the shot fires the instant
+  // it turns yellow). STORY/ROID-escort context only; a no-op in SECURITY
+  // TRAINING (which never advances snipeCycleStartedAt at all).
+  function drawDroneSniperWarning(robot, now) {
+    if (gameState.mode === 'securityTraining') return;
+    if (robot.hp <= 0 || robot.dropState === 'dropping') return;
+    if (robot.snipeCycleStartedAt === -Infinity) return;
+    const cycleElapsed = now - robot.snipeCycleStartedAt;
+    const redPhaseMs = DRONE_SNIPER_CYCLE_MS - DRONE_SNIPER_YELLOW_MS;
+    const isYellow = cycleElapsed >= redPhaseMs;
+    let visible = true;
+    let color = '255,60,40';
+    if (isYellow) {
+      color = '255,220,40';
+    } else {
+      const t = Math.min(1, cycleElapsed / redPhaseMs);
+      const currentInterval = DRONE_SNIPER_BLINK_START_MS + (DRONE_SNIPER_BLINK_END_MS - DRONE_SNIPER_BLINK_START_MS) * t;
+      visible = Math.floor(now / currentInterval) % 2 === 0;
+    }
+    if (!visible) return;
+    const x = robot.lockedTargetX, y = robot.lockedTargetY;
+    ctx.save();
+    ctx.strokeStyle = `rgba(${color},0.85)`;
+    ctx.lineWidth = 2;
+    const r = 12;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - r, y); ctx.lineTo(x + r, y);
+    ctx.moveTo(x, y - r); ctx.lineTo(x, y + r);
+    ctx.stroke();
+    ctx.restore();
   }
 
   // SECTION M: straight-line beam from the exact muzzle origin to the exact
@@ -7937,6 +8714,8 @@
     player.ammoCooldownRemainingMs = 0;
     player.reloadType = null; // PART8 SECTION AI: no stale reload type left over across GAME OVER/RETRY/stage-start/mode-reset/TOP
     healItem.active = false; // PART7 SECTION W: cleared unconditionally here — the 'boss' branch below re-arms it fresh via enterStoryStage()'s own spawnHealItem() call; TRAINING/BASIC modes simply never re-arm it, so no leftover STORY item can ever show up there
+    ammoItem.active = false; // POST-v1.0 SECTION 38: same unconditional-clear scoping as healItem above
+    damageTakenThisStage = 0; // POST-v1.0 SECTION 38: fresh per-stage tracker, also reset every enterStoryStage() call
 
     bullets.length = 0;
     arcClawSlashes.length = 0;
@@ -8012,6 +8791,21 @@
       storyRoidInterludeState.active = false;
       storyRoidInterludeState.completed = false;
       storyRoidInterludeState.returnStageIndex = null;
+      storyCinematicState.roid1ArrivalPlayed = false;
+      storyCinematicState.roid2ArrivalPlayed = false;
+      storyCinematicState.experimentLabPlayed = false;
+      // POST-v1.0 SECTION 25/30/44: this run's own resolved MAIN/SECRET plan
+      // — rolled ONCE here, never rebuilt on RETRY (preserveStoryProgress
+      // skips this whole block), so every random-stage choice is fixed for
+      // the run's entire lifetime including across RETRY.
+      storyScenarioState.resolvedPlan = scenario ? buildResolvedStagePlan(scenario) : null;
+      // POST-v1.0 SECTIONS 41/42: AMMO/HEAL BOX run-scoped progression —
+      // fresh only on a genuine new run, preserved across RETRY exactly like
+      // runInventory/currentStageIndex above.
+      FIRE_MAG_SIZE = AMMO_CAPACITY_INITIAL;
+      player.ammo = FIRE_MAG_SIZE; // re-applied here since it was set from the OLD (possibly RETRY-persisted, larger) capacity earlier in this same function, before this reset
+      baseRunMaxLife = playerMaxLife;
+      healBoxPickupCount = 0;
     }
     cameraY = 0;
     stageTransition.active = false;
@@ -8043,6 +8837,7 @@
       spawnSecurityRobots();
     } else if (gameState.mode === 'boss') {
       securityRobots.length = 0;
+      whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
       securityAttackSlotsInUse = 0;
       // DARK OUT PART 8 SECTION 26/34: the SECRET-only special ADAM STORY
       // fight — RETRY must re-enter the SAME ADAM fight, never
@@ -8072,11 +8867,13 @@
       // mode must never touch (section 19). enterBossBattleStage() below
       // spawns GABRIEL directly, keyed only by bossBattleState.stageId.
       securityRobots.length = 0;
+      whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
       securityAttackSlotsInUse = 0;
       enterBossBattleStage();
     } else {
       spawnBarrels(BARREL_COUNT);
       securityRobots.length = 0;
+      whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
       securityAttackSlotsInUse = 0;
     }
   }
@@ -8218,6 +9015,7 @@
     arcClawSlashes.length = 0;
     explosions.length = 0;
     securityRobots.length = 0;
+    whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
     securityAttackSlotsInUse = 0;
     healItem.active = false;
     resetFlashGrenade();
@@ -8452,25 +9250,29 @@
 
   // ---------- SECTION Q/R: RESULT ----------
   // Every magic number lives HERE, not scattered across the scoring code —
-  // Q-4's own explicit instruction. Each of the 3 metrics contributes an
+  // Q-4's own explicit instruction. Each of the 2 metrics contributes an
   // equally-weighted 0-100 sub-score (never letting TIME alone decide the
   // rank): PLAY TIME scores linearly between timeGoodSec (full credit) and
   // timeBadSec (zero credit); DAMAGE TAKEN the same shape between
-  // damageGoodTotal/damageBadTotal; ACCURACY is already a 0-100 percentage.
-  // The mean of the 3 is bucketed by `composite`'s own descending
-  // thresholds into S/A/B/C, falling through to D otherwise.
+  // damageGoodTotal/damageBadTotal. The mean of the 2 is bucketed by
+  // `composite`'s own descending thresholds into S/A/B/C, falling through
+  // to D otherwise.
+  // POST-v1.0 SECTION 37: ACCURACY removed from the scoring entirely (per
+  // real-device feedback that missed/grazing shots shouldn't tank the
+  // rank) — RESULT's own ACCURACY stat display is untouched, this function
+  // simply never reads it anymore. Time/damage thresholds and the S/A/B/C/D
+  // tier system are otherwise unchanged.
   const RESULT_RANK_THRESHOLDS = {
     timeGoodSec: 300, timeBadSec: 900,
     damageGoodTotal: 100, damageBadTotal: 1000,
     composite: { S: 90, A: 75, B: 55, C: 35 },
   };
   function clamp01(v) { return Math.max(0, Math.min(1, v)); }
-  function computeResultRank(playTimeSec, accuracyFrac, damageTaken) {
+  function computeResultRank(playTimeSec, damageTaken) {
     const t = RESULT_RANK_THRESHOLDS;
     const timeScore = clamp01(1 - (playTimeSec - t.timeGoodSec) / (t.timeBadSec - t.timeGoodSec)) * 100;
     const damageScore = clamp01(1 - (damageTaken - t.damageGoodTotal) / (t.damageBadTotal - t.damageGoodTotal)) * 100;
-    const accuracyScore = accuracyFrac * 100;
-    const composite = (timeScore + damageScore + accuracyScore) / 3;
+    const composite = (timeScore + damageScore) / 2;
     if (composite >= t.composite.S) return 'S';
     if (composite >= t.composite.A) return 'A';
     if (composite >= t.composite.B) return 'B';
@@ -8484,8 +9286,8 @@
   }
   function enterResultScreen() {
     const playTimeSec = Math.max(0, (performance.now() - storyStartTime) - storyPausedAccumMs) / 1000; // Q-1: PAUSE time excluded
-    const accuracyFrac = shotsFired > 0 ? shotsHit / shotsFired : 0; // Q-2
-    const rank = computeResultRank(playTimeSec, accuracyFrac, totalDamageTaken);
+    const accuracyFrac = shotsFired > 0 ? shotsHit / shotsFired : 0; // Q-2 — display-only now, never fed into computeResultRank()
+    const rank = computeResultRank(playTimeSec, totalDamageTaken);
     document.getElementById('result-play-time').textContent = formatPlayTime(playTimeSec);
     document.getElementById('result-accuracy').textContent = `${Math.round(accuracyFrac * 100)}%`;
     document.getElementById('result-damage-taken').textContent = Math.round(totalDamageTaken);
@@ -8520,6 +9322,27 @@
   // panel to hide/restore around it, so BACK always returns to whichever
   // screen actually opened SETTING.
   let playerMaxLife = Infinity;
+  // POST-v1.0 SECTIONS 42/43: HEAL BOX rework — full heal + a MAX LIFE
+  // increase, replacing the old flat 30% heal entirely. baseRunMaxLife is
+  // whatever playerMaxLife (the SETTING's own value) was AT THE START of
+  // this run — captured once on a genuine fresh run only (resetModeState()'s
+  // own !preserveStoryProgress branch), never on RETRY, and never mutated by
+  // a later HEAL BOX pickup itself (only playerMaxLife changes). If the
+  // SETTING is Infinity, baseRunMaxLife stays Infinity and HEAL BOX pickups
+  // never touch playerMaxLife at all (section 42-6). healBoxPickupCount is
+  // run-scoped: 0 on a fresh run, preserved across RETRY (section 42-7).
+  const HEAL_BOX_MAX_LIFE_CAP = 999;
+  let baseRunMaxLife = Infinity;
+  let healBoxPickupCount = 0;
+  function applyHealBoxPickup() {
+    if (baseRunMaxLife === Infinity) {
+      player.life = Infinity; // playerMaxLife is already Infinity too — nothing to raise, just a full heal
+      return;
+    }
+    healBoxPickupCount++;
+    playerMaxLife = Math.min(HEAL_BOX_MAX_LIFE_CAP, baseRunMaxLife * (healBoxPickupCount + 1));
+    player.life = playerMaxLife;
+  }
   const pauseMenuPanel = document.getElementById('mode-menu-panel');
   const mainMenuPanelEl = document.getElementById('main-menu-overlay');
   const settingPanel = document.getElementById('setting-panel');
@@ -8860,17 +9683,16 @@
   const fireButton = document.getElementById('fire-button');
   let fireHeld = false;
 
-  // SECTION D: 30-shot magazine HUD — ammo count text + cooldown ring,
+  // SECTION D: 30-shot magazine HUD — cooldown ring only now (ammo count
+  // moved to drawAmmoHud() under the LIFE gauge, POST-v1.0 SECTION 35) —
   // same visual language/mechanism as the STEALTH cooldown ring (an SVG
   // circle whose stroke-dashoffset is driven from JS every frame).
-  const fireAmmoLabel = document.getElementById('fire-ammo-label');
   const fireRingProgress = document.getElementById('fire-ring-progress');
   const FIRE_RING_R = 44;
   const FIRE_RING_CIRCUMFERENCE = 2 * Math.PI * FIRE_RING_R;
   fireRingProgress.style.strokeDasharray = `${FIRE_RING_CIRCUMFERENCE}`;
 
   function updateFireHud() {
-    fireAmmoLabel.textContent = `${player.ammo} / ∞`;
     // 0% right at depletion, 100% once fully recovered; sits at "full ring"
     // (ready) whenever the magazine isn't currently depleted/cooling down.
     // PART8 SECTION B/C: the denominator depends on WHICH reload is running
@@ -8907,10 +9729,17 @@
     if (Math.floor(elapsed / RELOADING_TEXT_BLINK_MS) % 2 === 1) return; // off-phase: draw nothing this tick
     ctx.save();
     ctx.font = 'bold 13px sans-serif';
-    ctx.fillStyle = '#ff3b30';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.fillText('Reloading!', player.x, player.y - SPRITE_DRAW_H / 2 - 10);
+    // POST-v1.0 SECTION 36-2: fully uppercase + a black outline (stroke
+    // before fill) for legibility against bright/busy backgrounds — the red
+    // fill itself is unchanged.
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#000000';
+    ctx.strokeText('RELOADING!!', player.x, player.y - SPRITE_DRAW_H / 2 - 10);
+    ctx.fillStyle = '#ff3b30';
+    ctx.fillText('RELOADING!!', player.x, player.y - SPRITE_DRAW_H / 2 - 10);
     ctx.restore();
   }
 
@@ -9041,8 +9870,19 @@
     if (gameState.paused) return;
     if (player.stunned) return; // SECTION C: FLASH is one of the 6 controls STUN blocks — flashDisabledByCinematic() doesn't cover this on its own
     if (flashCooldownRemainingMs > 0) return; // cooldown active: nothing happens at all, not even feedback
-    if (!boss.spawned || flashDisabledByCinematic()) return;
+    // POST-v1.0 SECTION 5-3: FLASH is no longer a no-op with no boss spawned
+    // — a WHITE SHADOW present in the stage is now also a valid target.
+    if ((!boss.spawned && whiteShadows.length === 0) || flashDisabledByCinematic()) return;
     lastPlayerInputAt = performance.now(); // SECTION B: FLASH counts as combat input for the watchdog
+    if (!boss.spawned) {
+      // WHITE-SHADOW-ONLY throw path — no boss-state distance/cinematic
+      // rules apply at all (those are all boss-specific).
+      const targetHit = canFlashTarget();
+      flashCooldownRemainingMs = FLASH_COOLDOWN_MS;
+      const shadow = getNearestWhiteShadow();
+      flashGrenade = { startX: player.x, startY: player.y, endX: shadow ? shadow.x : player.x, endY: shadow ? shadow.y : player.y, elapsedMs: 0, targetHit };
+      return;
+    }
     // SECTION 11/19: COUNTER ATTACK (boss.state === 'straightclaw') and DARK
     // PHASE (boss.state === 'darkphase') are the two states where the
     // distance requirement is deliberately skipped. COUNTER must be
@@ -9154,6 +9994,17 @@
         // applies uniformly to every boss state (previously only DARK
         // PHASE required aim at all — outside it, a throw always succeeded
         // as long as the distance gate passed, aim-independent).
+        // POST-v1.0 SECTION 5-3: no boss — a successful throw (targetHit,
+        // computed against the nearest WHITE SHADOW at commit time in
+        // flashPress()) hides every currently-visible WHITE SHADOW in the
+        // stage for WHITE_SHADOW_FLASH_HIDE_MS (there is realistically at
+        // most one active per stage template, but this stays correct even
+        // if that ever changes).
+        if (!boss.spawned && targetHit) {
+          for (const shadow of whiteShadows) {
+            if (now >= shadow.hiddenUntil) shadow.hiddenUntil = now + WHITE_SHADOW_FLASH_HIDE_MS;
+          }
+        }
         if (boss.spawned && !flashDisabledByCinematic() && targetHit) {
           // DARK OUT PART 10 SECTION C-5: ROID1/ROID2 never use GABRIEL's
           // own 'flashdown' cinematic state at all (their own update/draw
@@ -9324,7 +10175,13 @@
   // records which duration is currently in effect, read by the SHOT ring
   // progress calc (updateFireHud()) and by triggerManualReload()'s own
   // "never shorten an in-progress auto reload" guard.
-  const FIRE_MAG_SIZE = 30;
+  // POST-v1.0 SECTION 41: mutable now (was a fixed const 30) — AMMO BOX
+  // pickups raise this at runtime (applyAmmoBoxPickup(), capped at
+  // AMMO_CAPACITY_MAX=100); every existing read site (RELOAD-fills-to-this,
+  // the reload-usable-range check, the HUD ring calc) already reads the
+  // variable directly, so they automatically fill to whatever the CURRENT
+  // capacity is with no further changes needed.
+  let FIRE_MAG_SIZE = AMMO_CAPACITY_INITIAL;
   const MANUAL_RELOAD_MS = 2000;
   const EMPTY_RELOAD_MS = 5000;
   const FIRE_COOLDOWN_MS = EMPTY_RELOAD_MS; // kept only for external/debug references to the old single-duration name; no internal logic reads this directly anymore
@@ -9449,6 +10306,7 @@
     playerHitFlashUntil = now + 150;
     playerHitBlinkRemainingMs = PLAYER_HIT_BLINK_TOTAL_MS;
     totalDamageTaken += amount; // SECTION Q-3: accumulates the real damage VALUE regardless of the LIFE setting — never zeroed out just because player.life === Infinity
+    damageTakenThisStage += amount; // POST-v1.0 SECTION 38: reset to 0 on every enterStoryStage() — decides that NEW stage's own HEAL-vs-AMMO reward
     // SECTION A/M (root-cause fix, this turn): LIFE reaching 0 on a finite
     // setting (Infinity can never satisfy this) used to leave the player
     // stuck in isBossIntroLocked()'s own silent permanent lock forever, with
@@ -9677,6 +10535,10 @@
     securityRobots, spawnSecurityRobots, securityDroneRowY, pickSecurityDroneCenterX,
     isPlayerInSecurityShadow, getSecurityShadowCenter, getSecurityRobotMuzzlePos,
     fireSecurityLaser, resolveSecurityLaserHit, updateSecurityRobots, distanceToSegment,
+    // POST-v1.0 SECTION 4/5/6 — debug/verification only.
+    whiteShadows, spawnWhiteShadow, getNearestWhiteShadow, isWhiteShadowHidden,
+    DRONE_SNIPER_CYCLE_MS, DRONE_SNIPER_YELLOW_MS, WHITE_SHADOW_FLASH_HIDE_MS,
+    ROID_DEATH_MS, isSecurityDroneSystemActive,
     applyDamageToSecurityDrone, spawnExplosionVisual,
     get securityAttackSlotsInUse() { return securityAttackSlotsInUse; },
     set securityAttackSlotsInUse(v) { securityAttackSlotsInUse = v; }, // debug/verification only
@@ -9701,6 +10563,11 @@
     pickSecurityBehaviorTypes, buildSecurityDrone, pickSecurityDroneCount, pickSecurityDroneSpot,
     populateSecurityDroneAreas, spawnFinalStageDrones, spawnFinalStageDronesForArea, updateCenterScannerMovement,
     STORY_STAGE_PLAN, BOSS_ENCOUNTER_BARREL_COUNTS,
+    // Debug/verification only — POST-v1.0 SECTIONS 24/29/44: data-driven
+    // MAIN/SECRET story plans.
+    RANDOM_STAGE_TEMPLATES, MAIN_TEMPLATE_PLAN, SECRET_TEMPLATE_PLAN,
+    buildResolvedStagePlan, activeStagePlanArray,
+    maybePlayStoryRoidArrival, storyWhiteShadowSpawnPos,
     get bossEncounterIndex() { return bossEncounterIndex; },
     set bossEncounterIndex(v) { bossEncounterIndex = v; }, // debug/verification only
     get storyDroneBgIndex() { return storyDroneBgIndex; },
@@ -9725,10 +10592,22 @@
     get W() { return W; }, get H() { return H; },
     get spriteAspect() { return spriteAspect; }, SPRITE_DRAW_H,
     // Debug/verification only — PART7: RELOAD system.
-    FIRE_MAG_SIZE, FIRE_COOLDOWN_MS, triggerManualReload,
+    get FIRE_MAG_SIZE() { return FIRE_MAG_SIZE; },
+    set FIRE_MAG_SIZE(v) { FIRE_MAG_SIZE = v; }, // POST-v1.0 SECTION 41: now mutable — was a plain (stale-snapshot) property before
+    FIRE_COOLDOWN_MS, triggerManualReload,
     // Debug/verification only — PART7: healing item system.
     healItem, spawnHealItem, getHealItemSpawnPos, HEAL_ITEM_HEAL_FRAC, HEAL_ITEM_IMAGES, HEAL_ITEM_HIT_RADIUS,
     HEAL_ITEM_FRAME1_SCALE, healPickupTexts, HEAL_PICKUP_TEXT_MS,
+    // Debug/verification only — POST-v1.0 SECTIONS 38-43: AMMO BOX + HEAL BOX rework.
+    ammoItem, spawnAmmoItem, spawnStageClearReward, applyAmmoBoxPickup, applyHealBoxPickup,
+    AMMO_ITEM_IMAGES, AMMO_ITEM_HIT_RADIUS, AMMO_CAPACITY_INITIAL, AMMO_CAPACITY_PICKUP_BONUS, AMMO_CAPACITY_MAX,
+    HEAL_BOX_MAX_LIFE_CAP,
+    get damageTakenThisStage() { return damageTakenThisStage; },
+    set damageTakenThisStage(v) { damageTakenThisStage = v; },
+    get baseRunMaxLife() { return baseRunMaxLife; },
+    set baseRunMaxLife(v) { baseRunMaxLife = v; },
+    get healBoxPickupCount() { return healBoxPickupCount; },
+    set healBoxPickupCount(v) { healBoxPickupCount = v; },
     // Debug/verification only — PART8: separate manual/auto reload durations,
     // counter-CLAW speed, and the shared Area-wall/LOS helper.
     MANUAL_RELOAD_MS, EMPTY_RELOAD_MS, COUNTER_CLAW_SPEED_MULTIPLIER, segmentCrossesAreaWall,
@@ -9872,7 +10751,11 @@
     // presence/fear mechanic (per the comment above), so sharing GABRIEL's
     // implementation as-is (spec's own explicit requirement) means sharing
     // this too, not a new behavior invented for BOSS BATTLE MODE.
-    const battleActiveForWatchdog = (gameState.mode === 'boss' || gameState.mode === 'bossBattle') && boss.spawned && !bossIsInCinematic();
+    // POST-v1.0 SECTION 1: STUN is now restricted to the GABRIEL family
+    // (GABRIEL/ADAM) only — ROID1/ROID2 (and their darkened variants) never
+    // trigger it, regardless of mode. isGabrielFamilyBossType() is the same
+    // membership check the ENCOUNTER-3 forced-STUN trigger already uses.
+    const battleActiveForWatchdog = (gameState.mode === 'boss' || gameState.mode === 'bossBattle') && boss.spawned && isGabrielFamilyBossType(boss.type) && !bossIsInCinematic();
     if (battleActiveForWatchdog && !player.stunned && gameClearRemainingMs <= 0) {
       if (detectControlStateCorruption() || now - lastPlayerInputAt >= CONTROL_WATCHDOG_IDLE_MS) {
         triggerStun(now);
@@ -9990,14 +10873,12 @@
           // the nonexistent STORY_STAGE_PLAN[10].
           if (storyScenarioState.scenario && storyScenarioState.escapeReady && runInventory.escapeNavigator) {
             beginStoryEscapeEnding(now);
-          } else if (storyScenarioState.scenario === 'main' && boss.type === 'gabriel' && bossEncounterIndex === 1 && boss.state === 'dead' && !storyRoidInterludeState.completed && !storyRoidInterludeState.active) {
-            // DARK OUT PART 11 SECTION 8: MAIN-only ROID1 interlude — walking
-            // to the EXIT right after GABRIEL2's own defeat sequence enters
-            // ROID1 combat instead of the normal next STAGE (whatever STAGE
-            // would have followed is recorded and resumed once ROID1 dies —
-            // see beginRoidInterlude()/finishRoidInterlude()).
-            beginRoidInterlude(now);
           } else {
+            // POST-v1.0 SECTIONS 24/29: ROID1/ROID2 (normal and darkened) are
+            // now ordinary sequential plan entries — the old PART11 MAIN-only
+            // ROID1-interlude branch that used to live here (beginRoidInterlude(),
+            // triggered right after GABRIEL2) is retired; storyRoidInterludeState
+            // itself is left defined/exposed but permanently unreachable.
             beginStageTransition(now); // updateStageTransition() itself branches STORY vs TRAINING advance by gameState.mode
           }
         }
@@ -10169,8 +11050,15 @@
       if (!consumed && healItem.active) {
         if (Math.hypot(b.x - healItem.x, b.y - healItem.y) <= HEAL_ITEM_HIT_RADIUS) {
           healItem.active = false;
-          player.life = playerMaxLife === Infinity ? Infinity : Math.min(playerMaxLife, player.life + playerMaxLife * HEAL_ITEM_HEAL_FRAC);
+          applyHealBoxPickup(); // POST-v1.0 SECTIONS 42/43: full heal + MAX LIFE increase, replaces the old flat 30% heal
           spawnHealPickupText(healItem.x, healItem.y, now); // PART8 SECTION W
+          consumed = true;
+        }
+      }
+      if (!consumed && ammoItem.active) {
+        if (Math.hypot(b.x - ammoItem.x, b.y - ammoItem.y) <= AMMO_ITEM_HIT_RADIUS) {
+          ammoItem.active = false;
+          applyAmmoBoxPickup(now); // POST-v1.0 SECTION 41: magazine capacity +10 (cap 100) + current ammo +10
           consumed = true;
         }
       }
@@ -10179,9 +11067,11 @@
 
     updateBarrels(dt, now);
     updateHealItem(dt); // PART7 SECTION S/Q: dt-driven, freezes during PAUSE like every other timer here
+    updateAmmoItem(dt); // POST-v1.0 SECTION 39-3: same dt-driven cadence as HEAL BOX
     updateWorldItems(dt, now); // DARK OUT PART 6: PROJECT ADAM (and later, other) world-item animation + pickup — empty array outside EVENT STAGE, so this is a no-op everywhere else
     updateAdamSphere(dt, now); // DARK OUT PART 6: ADAM SPHERE animation only — invisible/no-op outside EVENT STAGE b2. PART8: `now` also drives the SECRET-only BLOOD SAMPLE SUBMISSION/activation timer.
     updateSecurityRobots(dt, now);
+    updateWhiteShadows(dt, now);
     updateFlashGrenade(dt, now);
     updateScreenFlashes(dt);
     updateStealth(dt, now);
@@ -10396,6 +11286,7 @@
     // (not-yet-landed) barrels draw too, via their own in-air pose.
     for (const b of barrels) if (b.alive || b.falling) drawBarrel(b);
     drawHealItem(); // PART7 SECTION T: sits in the worldExtraAbove bonus band, same painter layer as barrels
+    drawAmmoItem(); // POST-v1.0 SECTION 38/39: mutually exclusive with HEAL BOX per stage, same painter layer
     drawHealPickupTexts(now); // PART8 SECTION W: "HP+30%！" floating text, world-space, drawn above the item's own layer
     drawWorldItems(); // DARK OUT PART 6: PROJECT ADAM — same ground layer as barrels/healItem
     drawAdamSphere(); // DARK OUT PART 6: ADAM SPHERE — same ground layer
@@ -10413,6 +11304,8 @@
     // from resetModeState() when gameState.mode === 'securityTraining'), so
     // this is a safe no-op in every other mode (SECTION S).
     for (const robot of securityRobots) drawSecurityShadow(robot);
+    for (const robot of securityRobots) drawDroneSniperWarning(robot, now);
+    drawWhiteShadows(now);
     for (const robot of securityRobots) drawSecurityRobot(robot, now); // PART 4 SECTION E: now() drives the per-robot hit-flash blink timing
 
     // DARK PHASE screen-darken: drawn HERE — under the bullets/claw attacks/
@@ -10479,6 +11372,7 @@
     // block above.
     drawBossHud(now);
     drawLifeHud(now);
+    drawAmmoHud(now);
     drawBossLifeHud(now);
 
     // Ambient stage lighting: a slow, gentle brightness drift instead of a
@@ -10988,6 +11882,23 @@
     ctx.drawImage(bossTintCanvas, dx, dy, w, h);
   }
 
+  // POST-v1.0 SECTIONS 9/12: shared BURST telegraph body-flash — same
+  // source-atop offscreen-canvas tint technique as drawBossWithHitTint()
+  // above, just a white fill instead of red, reused verbatim by both ROID1
+  // and ROID2's drawRoidBoss() while boss.state === 'burstTelegraph'.
+  function drawBossFlashTint(img, dx, dy, w, h, flashT) {
+    const cw = Math.max(1, Math.ceil(w)), ch = Math.max(1, Math.ceil(h));
+    bossTintCanvas.width = cw;
+    bossTintCanvas.height = ch;
+    bossTintCtx.clearRect(0, 0, cw, ch);
+    bossTintCtx.drawImage(img, 0, 0, cw, ch);
+    bossTintCtx.globalCompositeOperation = 'source-atop';
+    bossTintCtx.fillStyle = `rgba(255,255,255,${0.75 * flashT})`;
+    bossTintCtx.fillRect(0, 0, cw, ch);
+    bossTintCtx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(bossTintCanvas, dx, dy, w, h);
+  }
+
   // PART 5: the intro's "shadow reveal" — the EXISTING south_idle art
   // recolored to a flat black silhouette (source-in preserves only the
   // sprite's own alpha shape, so the silhouette's outline is pixel-for-
@@ -11380,6 +12291,37 @@
       }
       ctx.restore();
     }
+
+    // POST-v1.0 SECTION 23: procedural fire particles layered on top of the
+    // existing black+sand dissolve (never replacing it) — a small subset of
+    // the SAME dissolving cells (every 3rd one, keyed by index so the choice
+    // is stable frame-to-frame) doubles as a flame-origin point: a warm
+    // red/orange/yellow glow (additive 'lighter' blend) that rises and
+    // flickers, fading out alongside its own cell's already-existing
+    // sand-particle alpha curve. No new image assets — canvas gradients only.
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < boss.dyingParticles.length; i += 3) {
+      const p = boss.dyingParticles[i];
+      if (frac < p.dissolveAt) continue;
+      const localT = Math.min(1, (frac - p.dissolveAt) / Math.max(0.05, 1 - p.dissolveAt));
+      const alpha = Math.max(0, 1 - localT) * 0.8;
+      if (alpha <= 0.02) continue;
+      const flicker = 0.75 + 0.25 * Math.sin(now / 60 + i);
+      const rise = localT * 26; // drifts upward as it dissolves, independent of the sand grain's own sweep angle
+      const px = drawX + p.gx * DYING_CELL_SIZE + DYING_CELL_SIZE / 2;
+      const py = drawY + p.gy * DYING_CELL_SIZE + DYING_CELL_SIZE / 2 - rise;
+      const r = (3 + 3 * (1 - localT)) * flicker;
+      const grad = ctx.createRadialGradient(px, py, 0, px, py, r);
+      grad.addColorStop(0, `rgba(255,235,150,${alpha})`);
+      grad.addColorStop(0.5, `rgba(255,120,30,${alpha * 0.8})`);
+      grad.addColorStop(1, 'rgba(180,20,10,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   // SECTION G: called from draw() AFTER the camera-translate restore() —
@@ -11393,8 +12335,15 @@
     if (boss.state === 'intro' && boss.cinematicElapsed >= BOSS_INTRO_SHADOW_END && boss.cinematicElapsed < BOSS_INTRO_SOUTH_IDLE_END) {
       ctx.save();
       ctx.textAlign = 'center';
-      ctx.fillStyle = `rgba(255,60,60,${0.55 + 0.45 * Math.abs(Math.sin(now / 150))})`;
       ctx.font = 'bold 20px sans-serif';
+      // POST-v1.0 SECTION 36-1: black outline behind the red fill for
+      // legibility — stroke color/width fixed, only the existing red fill's
+      // own pulsing alpha is unaffected.
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#000000';
+      ctx.strokeText(`BOSS: ${boss.name}`, W / 2, H / 2);
+      ctx.fillStyle = `rgba(255,60,60,${0.55 + 0.45 * Math.abs(Math.sin(now / 150))})`;
       ctx.fillText(`BOSS: ${boss.name}`, W / 2, H / 2);
       ctx.restore();
     }
@@ -11437,29 +12386,41 @@
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, gaugeY + 0.5, HUD_BAR_W - 1, HUD_BAR_H - 1);
     if (stunned) {
-      // PART 3 SECTION B: "STUN" now renders INSIDE the LIFE gauge itself
-      // (small black text, centered) instead of as its own separate label
-      // next to "LIFE" — B-1/B-2/B-3. Drawn after the bar fill/stroke above
-      // so it sits on top of the orange fill without being covered by it;
-      // sized to the bar's own height so it never spills outside the gauge.
+      // POST-v1.0 SECTION 2: a single LIFE gauge only — the old separate
+      // thin status bar directly underneath (which made this read as "two
+      // gauges") is removed. "麻痺" renders centered inside the SAME bar,
+      // styled IDENTICALLY to BOSS LIFE's own "無敵" text (drawBossLifeHud()
+      // below) — thin (non-bold) white text, same font size, same
+      // textAlign/baseline — rather than the old bold black label.
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.font = `bold ${HUD_BAR_H}px sans-serif`;
-      ctx.fillStyle = '#000000';
-      ctx.fillText('STUN', x + HUD_BAR_W / 2, gaugeY + HUD_BAR_H / 2 + 0.5);
+      ctx.font = `${HUD_BAR_H}px sans-serif`;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText('麻痺', x + HUD_BAR_W / 2, gaugeY + HUD_BAR_H / 2 + 0.5);
       ctx.restore();
     }
-    if (stunned) {
-      // D-4: a thin, separate status gauge directly under the LIFE bar —
-      // this is NOT a LIFE value (always full-width) — purely a "currently
-      // STUNned" indicator, kept visually attached to the same HUD block
-      // (same x/width, orange, pulsing in sync with the bar above it).
-      const stunGaugeY = gaugeY + HUD_BAR_H + 3;
-      const stunGaugeH = 3;
-      ctx.fillStyle = `rgba(255,150,30,${pulseAlpha})`;
-      ctx.fillRect(x, stunGaugeY, HUD_BAR_W, stunGaugeH);
-    }
+    ctx.restore();
+  }
+
+  // POST-v1.0 SECTION 35: remaining-ammo counter, moved off the SHOT
+  // button (section 35-1) to directly under the LIFE gauge (35-2) — same
+  // screen-fixed top-left HUD block, drawn right after drawLifeHud() so it
+  // always sits just beneath it regardless of LIFE's own layout tweaks.
+  // Turns red at <=10 remaining (35-3); reserve is always shown as the
+  // existing "/ ∞" convention (infinite reserve, only the magazine is
+  // limited) — never a numeric reserve count.
+  const AMMO_HUD_LOW_THRESHOLD = 10;
+  function drawAmmoHud(now) {
+    const labelY = Math.max(10, H * 0.03) + 4;
+    const gaugeY = labelY + 12;
+    const x = HUD_MARGIN_X;
+    ctx.save();
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.fillStyle = player.ammo <= AMMO_HUD_LOW_THRESHOLD ? 'rgba(255,60,60,0.95)' : 'rgba(255,255,255,0.85)';
+    ctx.fillText(`残弾数:${player.ammo}/∞`, x, gaugeY + HUD_BAR_H + 14);
     ctx.restore();
   }
 
