@@ -126,7 +126,14 @@
   <div id="main-scenario-sub-overlay" hidden>
     <div class="boss-select-title">MAIN SCENARIO</div>
     <button class="main-menu-item" id="main-scenario-sub-demo-btn">DEMO PLAY</button>
-    <button class="main-menu-item" id="main-scenario-sub-full-btn">FULL PLAY</button>
+    <!-- HOTFIX SECTION 12: FULL PLAY is locked in the UI this batch — no
+         unlock condition exists yet, so this is permanently locked (unlike
+         SECRET SCENARIO's own unlockable main-menu-item-locked toggle above,
+         this one never has the class removed). The click handler in game.js
+         is a no-op while locked; the internal 'secret' scenario route itself
+         is untouched and still directly reachable via debug/window.__game
+         for verification (section 12-2). -->
+    <button class="main-menu-item main-menu-item-locked" id="main-scenario-sub-full-btn">FULL PLAY<span class="locked-label">LOCKED</span></button>
     <button class="main-menu-item" id="main-scenario-sub-back-btn">BACK</button>
   </div>
   <!-- POST-v2.0 SECTION 5: SECRET SCENARIO SUB MENU — ARSENAL/GABRIEL/ADAM

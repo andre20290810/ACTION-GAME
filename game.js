@@ -161,7 +161,11 @@
   // instead) and every DRONE/WHITE-SHADOW/MIXED/EVENT/cultivationLab/
   // adamSphere/SECURITY-TRAINING stage (all deliberately barrel-free,
   // documented in the completion report as an explicit scoping decision).
-  const BOSS_ENCOUNTER_BARREL_COUNTS = [3, 3, 0];
+  // HOTFIX SECTION 5/8: GABRIEL1/2/3 all get 5 barrels now (previously
+  // [3,3,0] — G3/FINAL STAGE used to get none at all). Hardcoded rather
+  // than referencing BARREL_COUNT since this constant is declared earlier
+  // in the file (before BARREL_COUNT's own declaration).
+  const BOSS_ENCOUNTER_BARREL_COUNTS = [5, 5, 5];
 
   // ==========================================================================
   // POST-v1.0 SECTIONS 24/29/44: data-driven MAIN/SECRET scenario plans —
@@ -590,6 +594,24 @@
       bgmAudio.play().catch(() => {});
     }
   }
+  // HOTFIX SECTION 14 (root-cause pass): the movie-end-only reassert above
+  // was confirmed insufficient — real-device testing kept showing silence
+  // DURING sneaking.mp4 itself (before it ever ends) and continuing INTO the
+  // first WHITE SHADOW stage. Two real gaps closed here:
+  // (1) sneaking.mp4 was never muted (unlike the 4 ARRIVAL movies), so on
+  //     iOS Safari its own unmuted audio track very likely claims the single
+  //     shared audio session and silently pauses the separately-playing
+  //     bgmAudio the instant the movie starts — see the 'muted' assignment
+  //     below, now covering 'sneaking' too (explicitly authorized, 14-3).
+  // (2) the reassert itself only ever ran at movie END — never DURING
+  //     playback, and never continuously once real WHITE SHADOW gameplay
+  //     began. bgmTimeupdateWatchdog (wired to eventMovieVideoEl's own
+  //     'timeupdate', which fires ~4x/sec while ANY movie plays) now covers
+  //     "during sneaking"; the throttled call inside loop() below covers
+  //     "during WHITE SHADOW stage" — together these give continuous
+  //     coverage at all 4 of section 14-5's required checkpoints, not just
+  //     "recovered after the movie ended".
+  function bgmTimeupdateWatchdog() { reassertGameplayBgmIfExpected(); }
 
   const eventMovieState = {
     active: false,
@@ -601,6 +623,11 @@
   const eventMovieOverlayEl = document.getElementById('event-movie-overlay');
   const eventMovieVideoEl = document.getElementById('event-movie-video');
   const eventMovieTapFallbackEl = document.getElementById('event-movie-tap-fallback');
+  // HOTFIX SECTION 14-2: fires ~4x/sec for as long as ANY movie is actually
+  // playing (including the whole length of sneaking.mp4, not just at its
+  // end) — registered once here rather than per-playEventMovie() call so it
+  // covers every movie uniformly with no extra wiring per call site.
+  eventMovieVideoEl.addEventListener('timeupdate', bgmTimeupdateWatchdog);
 
   // SECTION G/H/I/J: plays either a SYSTEM or an EVENT movie key through the
   // one shared overlay/video element. `onComplete` fires exactly once, after
@@ -645,7 +672,10 @@
     // own down/defeated, which explicitly want their own audio playing
     // SIMULTANEOUSLY with BGM per section 21) keeps its embedded audio on,
     // same as before.
-    eventMovieVideoEl.muted = ARRIVAL_MOVIE_KEYS.has(key);
+    // HOTFIX SECTION 14-3: sneaking.mp4 now muted too (explicitly authorized
+    // by the spec specifically to protect gameplay BGM continuity on iOS
+    // Safari) — see bgmTimeupdateWatchdog's own comment for why.
+    eventMovieVideoEl.muted = ARRIVAL_MOVIE_KEYS.has(key) || key === 'sneaking';
     eventMovieVideoEl.src = src;
     eventMovieVideoEl.currentTime = 0;
     eventMovieOverlayEl.hidden = false;
@@ -701,6 +731,7 @@
     eventMovieState.key = null;
     eventMovieState.onComplete = null;
     eventMovieVideoEl.onended = null;
+    eventMovieVideoEl.onerror = null; // HOTFIX SECTION 1/27: playEndingRoll()'s own error handler — cleared here too so a stale ENDING ROLL load-error can never fire after a cancel
     eventMovieVideoEl.pause();
     eventMovieVideoEl.removeAttribute('src');
     eventMovieVideoEl.load();
@@ -724,6 +755,7 @@
     eventMovieState.key = null;
     eventMovieState.onComplete = null;
     eventMovieVideoEl.onended = null;
+    eventMovieVideoEl.onerror = null; // HOTFIX SECTION 1/27: see cancelEventMovie()'s own matching comment
     eventMovieVideoEl.pause();
     eventMovieVideoEl.removeAttribute('src');
     eventMovieVideoEl.load();
@@ -1340,7 +1372,10 @@
   // TRAINING) now maintains exactly 3 at all times via the new per-barrel
   // individual respawn in updateBarrels() below, replacing the old
   // "wait until every barrel is gone, then drop a fresh batch" restock.
-  const BARREL_COUNT = 3;
+  // HOTFIX SECTION 5: reverted back to 5 (the value this constant held
+  // before the since-superseded POST-v2.0 SECTION 21 lowered it to 3) —
+  // explicit new spec instruction, overriding that earlier decision.
+  const BARREL_COUNT = 5;
   // SECTION F: blast knockback for whoever (player and/or boss) is caught
   // within BARREL_EXPLOSION_RADIUS — separate from damage (applyExplosionDamageToBoss()
   // above is unaffected). Distance-scaled: full strength at the barrel's
@@ -1426,6 +1461,16 @@
   // the close-range proximity COUNTER's own straightClaw (south direction)
   // keeps STRAIGHT_CLAW_ATTACK_MS completely unchanged.
   const COUNTER_CLAW_SPEED_MULTIPLIER = 2.0;
+  // HOTFIX SECTION 19: real-device testing still found GABRIEL's own COUNTER
+  // (DEFENSE-block-triggered) STRAIGHT CLAW too fast even after the above —
+  // an ADDITIONAL 40% slowdown (net effective speed = 2.0 * 0.60 = 1.2x base,
+  // down from the old flat 2.0x), applied ONLY to GABRIEL's own instance (see
+  // updateArcClawSlashes()'s own gating) via this dedicated constant — never
+  // shared with or reused from ADAM_CLAW_SPEED_MULT (section 19-1's own
+  // explicit "own separate constant" requirement). Normal ARC CLAW ('slash')
+  // and the close-range proximity COUNTER's own speedMult===1 instance are
+  // both completely untouched, same as before.
+  const GABRIEL_COUNTER_STRAIGHT_CLAW_SLOWDOWN = 0.60;
   const STRAIGHT_CLAW_RECOVERY_MS = 600; // straight_claw_release.png still shown; no new hit, GABRIEL still invulnerable
   const STRAIGHT_CLAW_OVERSHOOT = 1.3; // same convention as CLAW_STING_OVERSHOOT — travels past the locked point so it reads as a real thrust-through
   const STRAIGHT_CLAW_HIT_HALF_LEN_FWD = 26; // small margin ahead of the line's end point
@@ -1632,6 +1677,22 @@
     if (aimStickActive || performance.now() < aimDoubleTapLockUntil) {
       return player.aimOffset;
     }
+    // HOTFIX SECTION 6: ROID1/ROID2 have no weak point/DEFENSE precision-aim
+    // concept at all (plain body hitbox only), so un-aimed FIRE (AIM STICK
+    // never engaged) auto-tracks the ROID body directly instead of falling
+    // back to player.baseDir — real-device reports kept showing "un-aimed
+    // shots don't damage ROID", and the actual mechanism was never a
+    // damage-pipeline bug (applyBodyHitToRoidBoss/the bullet-vs-ROID hit
+    // test have no aim dependency at all — verified) but un-aimed fire
+    // simply follows player.baseDir, which drifts away from ROID the
+    // instant the player moves in any other direction via MOVE STICK,
+    // silently sending every subsequent un-aimed shot past it. This never
+    // touches player.baseDir itself (sprite facing/movement direction are
+    // completely unaffected) — only the FIRE trajectory for this one
+    // specific un-aimed case.
+    if (boss.spawned && isRoidBossType(boss.type) && boss.state !== 'dead' && boss.state !== 'roidDying') {
+      return Math.atan2(boss.y - player.y, boss.x - player.x);
+    }
     return BASE_ANGLE[player.baseDir];
   }
 
@@ -1677,6 +1738,65 @@
   function setBaseDir(dir) {
     if (dir === player.baseDir) return;
     forceSetBaseDir(dir);
+  }
+
+  // HOTFIX SECTION 22 (critical): PLAYER-BOSS solid-body physics — a real
+  // non-contact radius, completely independent of any attack/bullet/CLAW/
+  // FLASH/AIM hit-detection radius (22-4: never read by applyBodyHitToBoss()/
+  // applyWeakPointHitToBoss()/applyBodyHitToRoidBoss() or any targeting
+  // code — those all keep their own separate, unchanged radii). Shared by
+  // GABRIEL, ADAM, ROID1, ROID2 and their dark variants alike (22-5) since
+  // all 4 share the same boss.type discriminator isGabrielFamilyBossType()/
+  // isRoidBossType() already cover; dark ROID variants are still boss.type
+  // 'roid1'/'roid2' (only roidState.dark differs), so no extra check needed.
+  const PLAYER_BODY_RADIUS = 20; // a pure physical-collision size — deliberately its own constant, never PLAYER_HIT_RADIUS
+  const BOSS_SOLID_RADIUS = 55; // deliberately its own constant, never BOSS_HURT_RADIUS/ROID_HURT_RADIUS/any weak-point radius
+  const BOSS_SOLID_MIN_DIST = PLAYER_BODY_RADIUS + BOSS_SOLID_RADIUS + 6; // 22-1's own formula, +6 small margin
+  function isSolidCollisionBossType(type) {
+    return isGabrielFamilyBossType(type) || isRoidBossType(type);
+  }
+  // No physical presence at all during these — matches the exact same
+  // states the existing PLAYER-bullet-vs-boss collision loop already
+  // excludes (dead/teleport/dark-phase-hidden) — a hit-test correctly
+  // passes through the boss in these states, so physical collision must too.
+  function bossHasNoPhysicalPresence() {
+    return boss.state === 'dead' || boss.state === 'roidDying' || boss.state === 'teleport' || isDarkPhaseHidden();
+  }
+  // 22-2: when the PLAYER moves into the boss, the PLAYER (never the boss)
+  // is pushed back out to the boundary circle. Called from
+  // clampPlayerToScreen() below, right alongside every other player-position
+  // clamp, so it runs exactly once per frame after the player's own
+  // movement has already been applied.
+  function clampPlayerAwayFromBoss() {
+    if (!boss.spawned || !isSolidCollisionBossType(boss.type) || bossHasNoPhysicalPresence()) return;
+    let dx = player.x - boss.x, dy = player.y - boss.y;
+    let dist = Math.hypot(dx, dy);
+    if (dist < BOSS_SOLID_MIN_DIST) {
+      // Degenerate case: exactly overlapping (dist===0) has no defined push
+      // direction — fall back to straight up, same as every other "just
+      // pick a direction" default already used elsewhere (resetPlayerToBattlePose()'s
+      // own north-facing spawn convention).
+      if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+      const scale = BOSS_SOLID_MIN_DIST / dist;
+      player.x = boss.x + dx * scale;
+      player.y = boss.y + dy * scale;
+    }
+  }
+  // 22-3: when the BOSS itself moves toward the player, ITS OWN movement
+  // must also stop at the same shared boundary — called right after every
+  // place boss.x/boss.y is updated by the boss's own AI movement (GABRIEL's
+  // chase state; ROID1/ROID2 never roam per their own established design,
+  // so this is a no-op safety net for them, never actually triggered).
+  function clampBossAwayFromPlayer() {
+    if (!boss.spawned || !isSolidCollisionBossType(boss.type) || bossHasNoPhysicalPresence()) return;
+    let dx = boss.x - player.x, dy = boss.y - player.y;
+    let dist = Math.hypot(dx, dy);
+    if (dist < BOSS_SOLID_MIN_DIST) {
+      if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+      const scale = BOSS_SOLID_MIN_DIST / dist;
+      boss.x = player.x + dx * scale;
+      boss.y = player.y + dy * scale;
+    }
   }
 
   // SECTION G: AREA 1 and AREA 2 are both walkable from the very start of
@@ -1746,6 +1866,9 @@
       const roidBlockadeY = boss.y + ROID_HURT_RADIUS;
       if (player.y < roidBlockadeY) player.y = roidBlockadeY;
     }
+    // HOTFIX SECTION 22: real solid-body physics — applies on top of (never
+    // instead of) every clamp above, for every boss type (22-5).
+    clampPlayerAwayFromBoss();
     // HOTFIX SECTION 7: ADAM SPHERE is a strictly single-AREA context, same
     // requirement as ROID above — AREA2 must never be enterable at all.
     // ADAM SPHERE is its own STORY_STAGE_PLAN entry (plan.type==='adamSphere',
@@ -2460,7 +2583,6 @@
   // since the spec explicitly calls out cadence/damage as things NOT to
   // double.
   const ROID_ESCORT_COUNT = 3;
-  const ROID_ESCORT_RESPAWN_MS = 1500;
   // Muzzle origin as a fraction of the CURRENTLY DRAWN (scaled) FIRE-frame
   // bounding box — same shape as SECURITY_ROBOT_METRICS' muzzleFracX/Y,
   // visually estimated from each profile's representative FIRE frame (see
@@ -2626,7 +2748,16 @@
   // (getAdamCinematicImageInfo(), its own ADAM_CINEMATIC_TARGET_HEIGHT) is
   // untouched, since it's not one of the "IDLE/WALK/ATTACK″ combat poses
   // this section is scoped to.
-  const ADAM_POSE_SCALE_NON_DEFENSE = 1.13;
+  // HOTFIX SECTIONS 2-4: DEFENSE's current on-screen size is now the fixed
+  // baseline (real-device feedback approved it — never made bigger again).
+  // ATTACK (and every other NON-DEFENSE pose, already sharing this exact
+  // same multiplier below) instead gets an ADDITIONAL +20% on top of the
+  // previous 1.13, i.e. 1.13*1.20 — since IDLE/WALK/PRE_ATTACK/STRAIGHT
+  // CLAW windup-release ALL already resolve through this identical
+  // catch-all branch (getAdamPoseScaleMultiplier() below), this one number
+  // change alone makes ATTACK +20% AND brings IDLE/WALK/PRE_ATTACK/CLAW
+  // back into visual parity with it, by construction.
+  const ADAM_POSE_SCALE_NON_DEFENSE = 1.13 * 1.20;
   const ADAM_POSE_SCALE_DEFENSE_SOUTH = 0.97;
   function getAdamPoseScaleMultiplier(name) {
     if (name === 'defense_south') return ADAM_POSE_SCALE_DEFENSE_SOUTH;
@@ -2714,7 +2845,15 @@
     // — keeps ADAM's INTRO/THRESHOLD/DYING/FLASH DOWN cinematic size
     // consistent with its own new (70%) combat size, without touching
     // CINEMATIC_DRAW_H (GABRIEL's own cinematic sizing).
-    const scale = computeBodyVisualScale(frame, ADAM_CINEMATIC_TARGET_HEIGHT);
+    // HOTFIX SECTION 4-1: this cinematic pose is body-pose-equivalent to
+    // IDLE (it always draws ADAM_SPRITES.idle[...]), but was the ONE ADAM
+    // draw path that never applied ADAM_POSE_SCALE_NON_DEFENSE on top of
+    // the shared base — real-device feedback: ADAM's own arrival/INTRO
+    // appeared drastically smaller than its combat IDLE/WALK/ATTACK,
+    // "like a baby". Applying the same multiplier here brings INTRO/
+    // ARRIVAL/THRESHOLD/DYING/FLASH DOWN into the same visual size as
+    // every other non-DEFENSE combat pose, by construction.
+    const scale = computeBodyVisualScale(frame, ADAM_CINEMATIC_TARGET_HEIGHT) * ADAM_POSE_SCALE_NON_DEFENSE;
     const w = frame.nativeW * scale, h = frame.nativeH * scale;
     // Solve for the offY that makes the shared `boss.y - h/2 + offY` draw
     // formula (used verbatim by every GABRIEL cinematic draw call site)
@@ -2811,6 +2950,20 @@
     projectAdam: {
       scaleMultiplier: 0.35,
       useHealItemSize: true,
+      // HOTFIX SECTION 13: measured each frame's real alpha bounds directly
+      // (Python/PIL getbbox()) — every one of the 4 PNGs is opaque edge-to-
+      // edge with NO transparent padding at all (bbox === full canvas), so
+      // bodyTopFrac/bodyBottomFrac below were never real per-frame alpha
+      // measurements to begin with. The 4 canvases are tightly-cropped
+      // renders of the SAME rotating object at different angles, so their
+      // raw aspect ratios vary hugely (nativeH/nativeW: 0.95 / 1.13 / 2.15 /
+      // 1.35) — the OLD "fixed width, floating height" sizing
+      // (targetDrawWidth alone) let frame 3's extreme 2.15 ratio blow its
+      // rendered HEIGHT up to ~2.3x frame 1's, which is exactly the
+      // "one frame renders comically oversized" bug. useContainBox fits
+      // every frame within the SAME max(width,height) box instead, so no
+      // single frame's aspect ratio can ever spike its scale again.
+      useContainBox: true,
       frames: [
         makeSpriteFrame('assets/items/project_adam/project_adam_01.png', 1280, 1218, 0.20, 0.80),
         makeSpriteFrame('assets/items/project_adam/project_adam_02.png', 1138, 1280, 0.20, 0.80),
@@ -2994,6 +3147,13 @@
       // useHealItemSize's own comment on ITEM_SPRITES above. null for every
       // other item type (drawWorldItems() falls back to targetHeightPx then).
       targetDrawWidth: sprite.useHealItemSize ? HEAL_ITEM_DRAW_W : null,
+      // HOTFIX SECTION 13: PROJECT ADAM only (see its own ITEM_SPRITES
+      // comment) — "contain within a box" sizing so wildly different
+      // per-frame aspect ratios can never make one frame spike in scale.
+      // Same visual ballpark as the HEAL ITEM baseline (13-2): reuses
+      // HEAL_ITEM_DRAW_W as the box's max dimension, same as every other
+      // small pickup prop's own on-screen footprint.
+      containBoxSize: sprite.useContainBox ? HEAL_ITEM_DRAW_W : null,
       collected: false,
     });
   }
@@ -3112,7 +3272,14 @@
       // keeps the original height-based computeBodyVisualScale() path
       // completely unchanged.
       let w, h;
-      if (item.targetDrawWidth) {
+      if (item.containBoxSize) {
+        // HOTFIX SECTION 13: fit within a fixed max(width,height) box —
+        // see ITEM_SPRITES.projectAdam's own comment for why a plain
+        // fixed-width scale (the branch below) blows up on this item's
+        // extreme per-frame aspect-ratio spread.
+        const scale = item.containBoxSize / Math.max(frame.nativeW, frame.nativeH);
+        w = frame.nativeW * scale; h = frame.nativeH * scale;
+      } else if (item.targetDrawWidth) {
         w = item.targetDrawWidth;
         h = w * (frame.nativeH / frame.nativeW);
       } else {
@@ -3213,6 +3380,7 @@
           // own exitEventStage() call), so this code path is unreachable on
           // RETRY by construction, exactly preserving every PART8.1-verified
           // RETRY guarantee.
+          startBossBgm(); // BOSS BGM ADDENDUM: SECRET-route ADAM first-time transition — before the arrival movie starts, per addendum Section I (Outbreak 2 begins the instant actual ADAM combat begins)
           playEventMovie('adam_arrival', () => { beginAdamStoryBossTransition(performance.now()); });
         }
       }
@@ -3341,29 +3509,34 @@
       storyScenarioState.pendingReward = null;
     }
     if (type === 'projectAdam' && storyScenarioState.scenario === 'secret') {
-      // SECTION 7: b1 -> STORY STAGE 1, immediately and automatically once
-      // PROJECT ADAM is collected — no EXIT walk for this one transition,
-      // per section 7's own "安全な自動transitionで進んでよい／新規派手な演出
-      // は不要". Reusing beginStageTransition()'s own fade would have
-      // incorrectly advanced currentStageIndex (already 0, about to become
-      // STAGE 1) via updateStageTransition()'s hardcoded `currentStageIndex
-      // += 1` STORY-advance branch, so this is a direct, instant call instead.
+      // HOTFIX SECTION 11: b1 now fires AFTER STAGE 1 (WHITE SHADOW) clears,
+      // not before it (see updateStageTransition()'s STORY-advance branch) —
+      // currentStageIndex is already the plan index this event was entered
+      // FROM (STAGE 2's own index, e.g. the drone_arrival movie entry), so
+      // collecting the item here just resumes the plan exactly where the b1
+      // detour interrupted it — no further index change needed.
       exitEventStage();
-      // POST-v2.0 SECTION 8: drone_arrival.mp4 no longer plays here — it used
-      // to play immediately at this b1->STAGE1 transition, which meant it
-      // could fire a SECOND time when SECRET_TEMPLATE_PLAN's own
-      // {type:'movie', key:'drone_arrival'} entry (correctly positioned
-      // after S1's WHITE-SHADOW-only stage clears, before S2's DRONE stage)
-      // was reached shortly after. drone_arrival.mp4 is now played exactly
-      // once, exclusively by that resolved-plan movie entry, for both MAIN
-      // and SECRET — this b1->STAGE1 transition goes straight to STAGE 1
-      // (S1, WHITE SHADOW) with no movie of its own.
       enterStoryStage(now);
     } else if (type === 'escapeNavigator' && storyScenarioState.scenario) {
       // SECTION 15/30/32: MAIN (after GABRIEL3) or SECRET (after ADAM) —
       // either way, collecting it just marks escape-ready and stops
       // progression here (no EXIT/ENDING logic exists yet this PART).
       storyScenarioState.escapeReady = true;
+    } else if (type === 'bloodSample3' && storyScenarioState.scenario === 'main') {
+      // HOTFIX SECTION 23: DEMO's (MAIN's) final route must NEVER show ADAM
+      // SPHERE — picking up Blood Sample③ now unlocks the stage EXIT
+      // directly, exactly like collecting an actual ESCAPE NAVIGATOR would
+      // (the EXIT-reach dispatcher in update() checks these same 2 flags —
+      // see its own "scenario && escapeReady && runInventory.escapeNavigator"
+      // check — and routes straight into beginStoryEscapeEnding(), never
+      // beginStageTransition()'s normal STORY-advance, so the now-dead
+      // {type:'adamSphere'} MAIN_TEMPLATE_PLAN entry is never reached at
+      // all). SECRET is completely untouched — its own bloodSample3 pickup
+      // still falls through to no branch here, exactly as before, so its
+      // ADAM SPHERE → blood samples → ADAM combat design stays fully intact
+      // (section 25).
+      storyScenarioState.escapeReady = true;
+      runInventory.escapeNavigator = true;
     }
   }
 
@@ -3426,7 +3599,7 @@
     exitEventStage(); // SECTION 25: b2 cleanup — clears eventStageState/worldItems/adamSphereState.visible
     storyScenarioState.stageOverrideId = 'boss_c4_adam'; // SECTION 27
     bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
-    spawnBarrels(0); // SECTION 28-30: same "no barrels" choice PART5's own BOSS BATTLE ADAM made — simplest, safest default, undocumented otherwise in spec
+    spawnBarrels(BARREL_COUNT); // HOTFIX SECTION 5/8: ADAM now gets BARREL_COUNT (5) barrels too
     securityRobots.length = 0;
     whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
     securityAttackSlotsInUse = 0;
@@ -3449,6 +3622,8 @@
     storyRoidInterludeState.returnStageIndex = currentStageIndex + 1; // whatever STAGE would normally have followed G2
     storyScenarioState.stageOverrideId = 'boss_c1_roid1';
     bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
+    spawnBarrels(BARREL_COUNT); // HOTFIX SECTION 8: this interlude fight was missing its own barrel spawn entirely — now gets the same 5 as every other ROID1/ROID2 encounter
+    startBossBgm(); // BOSS BGM ADDENDUM: covers both branches below (first-time movie / already-played direct spawn)
     currentArea = 1;
     cameraY = 0;
     // 8-4: first-time-only arrival, own dedicated flag (never BOSS BATTLE's
@@ -3544,13 +3719,33 @@
   // completely untouched.
   function spawnInitialWhiteShadows() {
     const areaTop = areaTopY(1);
+    // HOTFIX SECTION 15-3 (critical): live-device/live-test measurement
+    // found the OLD 75%-of-H third position only ~34px from the player's
+    // own spawn point (resetPlayerToBattlePose(): x=W*0.50, y=areaTop+H*0.80)
+    // on real viewport aspect ratios — well inside WHITE_SHADOW_CONTACT_RADIUS
+    // + PLAYER_HIT_RADIUS (50px), so the MISSILE volley triggered the INSTANT
+    // the stage loaded, before the player ever moved. Shifted the whole
+    // vertical band up (20%/40%/60% instead of 25%/50%/75%) so even the
+    // closest shadow sits well clear of the player's spawn row, PLUS an
+    // explicit distance clamp below so this can never silently regress again
+    // regardless of future layout tweaks or viewport aspect ratio.
+    const playerSpawnX = W * 0.50;
+    const playerSpawnY = areaTop + H * 0.80;
+    const minSafeDist = WHITE_SHADOW_CONTACT_RADIUS + PLAYER_HIT_RADIUS + 60; // generous margin over the bare contact threshold
     const positions = [
-      { x: W * 0.45, y: areaTop + H * 0.25 },
-      { x: W * 0.55, y: areaTop + H * 0.50 },
-      { x: W * 0.50, y: areaTop + H * 0.75 },
+      { x: W * 0.45, y: areaTop + H * 0.20 },
+      { x: W * 0.55, y: areaTop + H * 0.40 },
+      { x: W * 0.50, y: areaTop + H * 0.60 },
     ];
     for (let i = 0; i < WHITE_SHADOW_INITIAL_COUNT; i++) {
       const pos = positions[i] || positions[positions.length - 1];
+      const dist = Math.hypot(pos.x - playerSpawnX, pos.y - playerSpawnY);
+      if (dist < minSafeDist) {
+        // Push straight further away from the player along the same
+        // vertical line, rather than trusting the hardcoded fraction alone.
+        const dirY = pos.y <= playerSpawnY ? -1 : 1;
+        pos.y = playerSpawnY + dirY * minSafeDist;
+      }
       spawnWhiteShadow(pos.x, pos.y);
     }
   }
@@ -4097,6 +4292,12 @@
     dark: false, // true for the darkened late-STORY variant (tint only, same AI — see spawnRoidBoss())
     deathStartedAt: 0,
     deathExplosionsSpawned: 0,
+    // HOTFIX SECTION 9: replaces the old per-robot ROID_ESCORT_RESPAWN_MS
+    // timed respawn — each of the 3 HP thresholds below is consumed at most
+    // once per run, the instant boss.hp crosses it, and only actually
+    // spawns a fresh batch if EVERY escort is already dead at that exact
+    // moment (see maintainRoidEscortDrones()).
+    escortThresholdsConsumed: { t75: false, t50: false, t25: false },
   };
   // DARK OUT PART 4: ROID's own enemy-fire projectiles — a separate, minimal
   // array from the player's own `bullets` (never mixed with it, so the
@@ -4316,6 +4517,9 @@
     roidState.burstTelegraphStartedAt = 0;
     roidState.sniper.shotIndex = 0; roidState.sniper.phase = 'locking'; roidState.sniper.phaseStartedAt = 0;
     roidState.missile.index = 0; roidState.missile.nextLaunchAt = 0; roidState.missile.missiles = [];
+    roidState.escortThresholdsConsumed.t75 = false;
+    roidState.escortThresholdsConsumed.t50 = false;
+    roidState.escortThresholdsConsumed.t25 = false;
     enemyBullets.length = 0;
     // Same fixed reference pose spawnBoss() places the player into, minus
     // the INTRO-only lockout fields (ROID has no cinematic to lock the
@@ -4330,39 +4534,52 @@
     securityRobots.length = 0;
     whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
     securityAttackSlotsInUse = 0;
+    spawnRoidEscortBatch();
+  }
+
+  // HOTFIX SECTION 9: the ONE place ROID_ESCORT_COUNT fresh escort DRONEs
+  // are actually created — used both for the initial spawn (spawnRoidBoss()
+  // above) and for a threshold-triggered batch respawn (maintainRoidEscortDrones()
+  // below). Any existing (dead) escort slots are removed first so this
+  // never accumulates stale entries — always exactly ROID_ESCORT_COUNT
+  // escorts in `securityRobots` immediately after this returns.
+  function spawnRoidEscortBatch() {
+    for (let i = securityRobots.length - 1; i >= 0; i--) {
+      if (securityRobots[i].isRoidEscort) securityRobots.splice(i, 1);
+    }
     for (let i = 0; i < ROID_ESCORT_COUNT; i++) {
       const spot = pickSecurityDroneSpot(securityRobots, 1, DRONE_PLACEMENT_BODY_MARGIN,
         [{ x: boss.x, y: boss.y, r: ROID_HURT_RADIUS * 1.5 }, { x: player.x, y: player.y }]);
       const escort = buildSecurityDrone(spot.x, spot.y, 'ROID_ESCORT', 1.0);
       escort.isRoidEscort = true;
-      escort.escortRespawnAt = 0;
       securityRobots.push(escort);
     }
   }
 
-  // DARK OUT PART 10 SECTION I-4: keeps exactly ROID_ESCORT_COUNT escort
-  // slots filled while the ROID boss is alive — a killed slot is replaced
-  // IN PLACE (never appended) ROID_ESCORT_RESPAWN_MS after its death, so
-  // the array length (and therefore the alive-or-about-to-respawn count)
-  // never exceeds ROID_ESCORT_COUNT and respawning stops the instant the
-  // boss itself dies (I-4's "never 4+ simultaneous", "stops once the boss
-  // is dead").
+  // HOTFIX SECTION 9: replaces the old per-robot ROID_ESCORT_RESPAWN_MS
+  // timed respawn entirely — the previous "always keep exactly 3 alive"
+  // behavior let the player permanently avoid ever facing 0 escorts by just
+  // trickle-killing them one at a time, which wasn't the intended design.
+  // New rule (spec's own explicit wording): the initial 3 are NOT
+  // automatically replaced as they die; a fresh batch of 3 only spawns the
+  // instant boss.hp crosses one of the 75/50/25% thresholds AND every
+  // escort is already dead at that exact moment — a threshold with any
+  // escort still alive is consumed with no spawn, and never retried later.
+  // Never respawns once the boss itself is dead/dying.
   function maintainRoidEscortDrones(now) {
-    if (boss.state === 'dead') return;
-    for (const robot of securityRobots) {
-      if (!robot.isRoidEscort || robot.hp > 0) continue;
-      if (!robot.escortRespawnAt) {
-        robot.escortRespawnAt = now + ROID_ESCORT_RESPAWN_MS;
-        continue;
-      }
-      if (now < robot.escortRespawnAt) continue;
-      const others = securityRobots.filter((r) => r !== robot);
-      const spot = pickSecurityDroneSpot(others, 1, DRONE_PLACEMENT_BODY_MARGIN,
-        [{ x: boss.x, y: boss.y, r: ROID_HURT_RADIUS * 1.5 }, { x: player.x, y: player.y }]);
-      const fresh = buildSecurityDrone(spot.x, spot.y, 'ROID_ESCORT', 1.0);
-      fresh.isRoidEscort = true;
-      fresh.escortRespawnAt = 0;
-      Object.assign(robot, fresh); // replace in place — same array slot/reference, never appended
+    if (boss.state === 'dead' || boss.state === 'roidDying') return;
+    const hpFrac = boss.hp / ROID_MAX_HP;
+    const thresholds = [
+      { key: 't75', frac: 0.75 },
+      { key: 't50', frac: 0.50 },
+      { key: 't25', frac: 0.25 },
+    ];
+    for (const t of thresholds) {
+      if (roidState.escortThresholdsConsumed[t.key]) continue;
+      if (hpFrac > t.frac) continue;
+      roidState.escortThresholdsConsumed[t.key] = true;
+      const aliveCount = securityRobots.filter((r) => r.isRoidEscort && r.hp > 0).length;
+      if (aliveCount === 0) spawnRoidEscortBatch();
     }
   }
 
@@ -5493,13 +5710,16 @@
       // fires per DEFENSE session (SECTION 16).
       boss.consecutiveGuardedShots += 1;
       if (boss.consecutiveGuardedShots >= STRAIGHT_CLAW_TRIGGER_GUARDS) {
-        // COUNTER ATTACK direction split (SECTION 2/3/4): captured ONCE,
-        // right now, from the player's position relative to GABRIEL at the
-        // exact instant the counter triggers — never re-evaluated later, so
-        // a player who repositions during the windup doesn't change which
-        // variant plays. 'down'/'up'/'left'/'right' -> DIR_TO_BOSS_KEY's own
-        // south/north/west/east naming, same mapping used everywhere else.
-        boss.counterDir = DIR_TO_BOSS_KEY[angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x))];
+        // COUNTER ATTACK direction split (SECTION 2/3/4, HOTFIX SECTION 20):
+        // captured ONCE, right now, from GABRIEL's own CURRENT facing
+        // (boss.dir) — never re-evaluated later, so a player who repositions
+        // during the windup doesn't change which variant plays. Previously
+        // this computed direction TOWARD THE PLAYER instead, which could
+        // fire the claw in a direction that visibly disagreed with GABRIEL's
+        // own sprite facing (e.g. sprite facing north while the player stood
+        // south) — locking to boss.dir guarantees the fired direction always
+        // matches whatever the sprite is currently showing.
+        boss.counterDir = DIR_TO_BOSS_KEY[boss.dir];
         // SECTION 13: this specific (DEFENSE-block) COUNTER is ALWAYS the
         // straight CLAW variant, deterministically — never the random
         // ARC CLAW roll the close-range proximity COUNTER below still uses.
@@ -5665,7 +5885,12 @@
     // before ADAM's now-slower COUNTER attack has actually finished
     // travelling — keeping hitbox/visual/state in sync per spec.
     const adamClawMult = boss.type === 'adam' ? ADAM_CLAW_SPEED_MULT : 1;
-    const attackWindowMs = (usesStraightClaw ? STRAIGHT_CLAW_ATTACK_MS : COUNTER_ARC_CLAW_LIFETIME_MS) / adamClawMult;
+    // HOTFIX SECTION 19: same GABRIEL-only slowdown updateArcClawSlashes()
+    // applies to the actual travelling hitbox — mirrored here so this state-
+    // timing window (recovery/return-to-chase) stays in sync and never ends
+    // before the now-slower COUNTER STRAIGHT CLAW has actually finished.
+    const gabrielCounterSlowdown = (boss.type === 'gabriel' && usesStraightClaw && boss.isDefenseCounter) ? GABRIEL_COUNTER_STRAIGHT_CLAW_SLOWDOWN : 1;
+    const attackWindowMs = (usesStraightClaw ? STRAIGHT_CLAW_ATTACK_MS / gabrielCounterSlowdown : COUNTER_ARC_CLAW_LIFETIME_MS) / adamClawMult;
     // A-7/A-9: windup shows straight_claw_windup.png with zero damage/hit/
     // knockback for STRAIGHT_CLAW_WINDUP_MS; the player may move freely.
     // Exactly once, at the windup->release instant, lock the attack's
@@ -5806,7 +6031,10 @@
     // stops this code from running at all until the counter resolves).
     if ((boss.state === 'chase' || boss.state === 'attack' || boss.state === 'defense') &&
         Math.hypot(player.x - boss.x, player.y - boss.y) <= BOSS_CLOSE_COUNTER_DISTANCE) {
-      boss.counterDir = DIR_TO_BOSS_KEY[angleToBucket(Math.atan2(player.y - boss.y, player.x - boss.x))];
+      // HOTFIX SECTION 20: same fix as the DEFENSE-guard-break COUNTER above
+      // — locked from GABRIEL's own current facing (boss.dir), never
+      // recomputed toward the player's position.
+      boss.counterDir = DIR_TO_BOSS_KEY[boss.dir];
       boss.counterAttackKind = (boss.counterDir !== 'south' && Math.random() < COUNTER_STRAIGHT_CLAW_PROB)
         ? 'straightClaw' : 'arcClaw';
       counterFlashRemainingMs = COUNTER_FLASH_TOTAL_MS;
@@ -5872,6 +6100,7 @@
         vy = dirY * chaseSpeed;
         boss.x += vx * dt;
         boss.y += vy * dt;
+        clampBossAwayFromPlayer(); // HOTFIX SECTION 22-3: the boss's own approach must also stop at the shared solid boundary
         boss.moving = true;
       }
     } else if (boss.state === 'preattack') {
@@ -6070,20 +6299,14 @@
       // than called synchronously here, since freeze (SECTION H) only stops
       // the *update loop* from ticking further — it doesn't rewind work
       // already done this same tick.
-      // POST-v1.0 SECTION 22: the new GABRIEL video rule overrides PART11's
-      // "every encounter plays down then defeated" — only GABRIEL1
-      // (encounterIndex 0) still plays the full down->defeated pair;
-      // GABRIEL2/3 go straight from combat to gabriel_defeated alone (no
-      // down movie at all). BOSS BATTLE MODE and the ADAM STORY fight are
+      // HOTFIX SECTION 16: GABRIEL1 now plays gabriel_defeated ONLY, matching
+      // GABRIEL2/3 — gabriel_down is never played for ANY of G1/G2/G3
+      // anymore (the previous "only G1 still plays down->defeated" rule from
+      // POST-v1.0 SECTION 22 is superseded by this batch's explicit
+      // instruction). BOSS BATTLE MODE and the ADAM STORY fight are
       // unaffected, same as before.
       if (!bossBattleState.active && storyScenarioState.scenario && boss.type !== 'adam') {
-        if (bossEncounterIndex === 0) {
-          playEventMovie('gabriel_down', () => {
-            playEventMovie('gabriel_defeated', proceedWithDefeatRewards);
-          });
-        } else {
-          playEventMovie('gabriel_defeated', proceedWithDefeatRewards);
-        }
+        playEventMovie('gabriel_defeated', proceedWithDefeatRewards);
       } else {
         proceedWithDefeatRewards();
       }
@@ -6272,7 +6495,13 @@
       // only (straightClaw/counterArc) — 'sting' (a different, non-COUNTER
       // GABRIEL-only attack) and the normal 'slash' are untouched.
       const adamClawMult = (boss.type === 'adam' && (isStraightClaw || isCounterArc)) ? ADAM_CLAW_SPEED_MULT : 1;
-      const lifetimeMs = isSting ? CLAW_STING_LIFETIME_MS : (isStraightClaw ? (STRAIGHT_CLAW_ATTACK_MS / (s.speedMult || 1)) / adamClawMult : (isCounterArc ? COUNTER_ARC_CLAW_LIFETIME_MS / adamClawMult : ARC_CLAW_LIFETIME_MS));
+      // HOTFIX SECTION 19: GABRIEL's own COUNTER STRAIGHT CLAW only (never
+      // ADAM's — 19-1's own scoping) — s.speedMult > 1 only ever happens for
+      // the boss.isDefenseCounter-triggered instance (COUNTER_CLAW_SPEED_MULTIPLIER,
+      // set at spawn), so this can never affect a normal ARC CLAW ('slash')
+      // or the close-range proximity COUNTER's own speedMult===1 instance.
+      const gabrielCounterSlowdown = (boss.type === 'gabriel' && isStraightClaw && (s.speedMult || 1) > 1) ? GABRIEL_COUNTER_STRAIGHT_CLAW_SLOWDOWN : 1;
+      const lifetimeMs = isSting ? CLAW_STING_LIFETIME_MS : (isStraightClaw ? (STRAIGHT_CLAW_ATTACK_MS / ((s.speedMult || 1) * gabrielCounterSlowdown)) / adamClawMult : (isCounterArc ? COUNTER_ARC_CLAW_LIFETIME_MS / adamClawMult : ARC_CLAW_LIFETIME_MS));
       const u = (now - s.startedAt) / lifetimeMs;
       if (u >= 1) { arcClawSlashes.splice(i, 1); continue; }
       const t = arcClawEase(Math.max(0, u));
@@ -6639,7 +6868,57 @@
   function startGameplayBgm() {
     stopMenuBgm();
     bgmAudio.currentTime = 0;
+    // HOTFIX SECTION 14-1: actually check/await the returned Promise instead
+    // of a bare fire-and-forget .catch(()=>{}) — a rejected play() here (a
+    // real possibility on iOS Safari even inside a user-gesture callback,
+    // e.g. if the audio session is still settling right after the MENU BGM
+    // was just paused above) previously failed completely silently with no
+    // retry, which is exactly the kind of gap that let bgmAudio end up
+    // paused for the whole sneaking sequence. One immediate retry attempt —
+    // still synchronously reachable from the SAME originating user gesture —
+    // covers that case; bgmTimeupdateWatchdog's continuous reassertion
+    // during the movie is the second, independent line of defense.
+    const p = bgmAudio.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => { bgmAudio.play().catch(() => {}); });
+    }
+  }
+
+  // ---------- BOSS BGM addendum: Outbreak 2 (GABRIEL/ADAM/ROID1/ROID2 only) ----------
+  // A THIRD, separate Audio instance — never reused/repointed, never played
+  // simultaneously with bgmAudio (outbreak_1_1, normal combat) or
+  // menuBgmAudio (Outbreak0, MENU family). startBossBgm() is called from
+  // the two shared boss-spawn entry points (spawnBoss() — GABRIEL AND ADAM,
+  // both STORY and BOSS BATTLE MODE — and spawnRoidBoss() — ROID1/ROID2,
+  // STORY interlude/plan entry AND BOSS BATTLE MODE), so every boss-fight
+  // start (including a GAME OVER -> RETRY re-entry, which re-calls the same
+  // spawn function) always restarts Outbreak 2 from 0:00, never resumes
+  // from wherever it last stopped. endBossBgmToNormalStage()/
+  // endBossBgmSilently() are the two "leaving a boss fight" exits — the
+  // first also starts outbreak_1_1 fresh from 0 (STORY advancing into a
+  // normal stage), the second just silences Outbreak 2 and lets whatever
+  // ELSE the caller does next (menu BGM, ending BGM-silence) take over.
+  const bossBgmAudio = new Audio('assets/audio/outbreak_2.mp3');
+  bossBgmAudio.loop = true;
+  bossBgmAudio.preload = 'auto';
+  bossBgmAudio.volume = BGM_VOLUME;
+  function startBossBgm() {
+    stopMenuBgm();
+    bgmAudio.pause();
+    bgmAudio.currentTime = 0;
+    bossBgmAudio.currentTime = 0;
+    bossBgmAudio.play().catch(() => {});
+  }
+  function endBossBgmToNormalStage() {
+    if (bossBgmAudio.paused) return; // already in normal-BGM territory — never touch bgmAudio's own continuous playback between two normal stages
+    bossBgmAudio.pause();
+    bossBgmAudio.currentTime = 0;
+    bgmAudio.currentTime = 0;
     bgmAudio.play().catch(() => {});
+  }
+  function endBossBgmSilently() {
+    bossBgmAudio.pause();
+    bossBgmAudio.currentTime = 0;
   }
   // Restores the exact MENU-BGM/MENU-background-video state on every return
   // to TOP MENU: gameplay BGM stopped, Outbreak0 resumed from 0 — never
@@ -6651,6 +6930,14 @@
   // mid-run, well after TAP TO START already fired.
   function startMenuBgmForTopMenu() {
     bgmAudio.pause(); // gameplay BGM is combat-only — must not keep playing once back at MENU
+    // BOSS BGM ADDENDUM Section 10/J: this is the ONE shared "return to TOP"
+    // path (returnToTopMenu()'s own comment) — covers STORY-mode QUIT out of
+    // an active GABRIEL/ROID/ADAM fight (which never goes through
+    // exitBossBattle(), that function being BOSS-BATTLE-MODE-only), on top
+    // of every route exitBossBattle() itself already handles. Stop+reset
+    // unconditionally so Outbreak 2 never keeps playing once back at MENU.
+    bossBgmAudio.pause();
+    bossBgmAudio.currentTime = 0;
     if (menuBgmStarted) {
       menuBgmAudio.currentTime = 0;
       menuBgmAudio.play().catch(() => {});
@@ -6886,7 +7173,13 @@
   // scenario-select-main-btn/scenario-select-secret-btn used to; only the
   // UI label/position moved, no STORY route internals changed.
   document.getElementById('main-scenario-sub-demo-btn').addEventListener('click', () => beginScenarioOpening('main'));
-  document.getElementById('main-scenario-sub-full-btn').addEventListener('click', () => beginScenarioOpening('secret'));
+  // HOTFIX SECTION 12: FULL PLAY is LOCKED in the UI this batch — no unlock
+  // condition given, so tapping it does nothing at all (never starts a
+  // game), permanently, until a future batch defines one. The underlying
+  // 'secret' scenario route itself (beginScenarioOpening('secret')) is
+  // completely unchanged and stays reachable for internal/debug testing via
+  // window.__game (section 12-2) — only this ONE UI entry point is gated.
+  document.getElementById('main-scenario-sub-full-btn').addEventListener('click', () => {});
   document.getElementById('main-scenario-sub-back-btn').addEventListener('click', () => setScreen('scenarioSelect'));
 
   // POST-v2.0 SECTION 5-4: ARSENAL/GABRIEL/ADAM MODE — no existing dedicated
@@ -7061,6 +7354,114 @@
     updateSecretScenarioLockUI();
   }
 
+  // ---------- HOTFIX SECTION 1/27: external ENDING ROLL video ----------
+  // The real ending-roll footage is ~120MB — section 38's own explicit
+  // "never commit the 120MB video to Git" constraint means it can never be
+  // a bundled local asset like every other movie in SYSTEM_MOVIES/
+  // EVENT_MOVIES. Instead it's streamed from an external HTTPS CDN/cloud
+  // URL, configured here. Set this to the real hosted URL once one exists —
+  // until then it stays empty and playEndingRoll() below always takes its
+  // own error-fallback path (27-1) immediately, without ever attempting a
+  // network request, so the game never breaks with this unset (section 1's
+  // own explicit requirement).
+  const ENDING_ROLL_VIDEO_URL = '';
+  // Only flip this once the configured CDN is CONFIRMED to send the right
+  // CORS headers (Access-Control-Allow-Origin) — crossOrigin set against a
+  // non-CORS-safe host silently blocks playback in some browsers entirely,
+  // which is worse than just leaving it unset (section 1's own "only if the
+  // CDN is CORS-safe" qualifier).
+  const ENDING_ROLL_CORS_SAFE = false;
+  // Reuses the SAME shared <video>/overlay element every other SYSTEM/EVENT
+  // movie already uses (never a second, separate movie engine — section 1's
+  // own explicit requirement) but is deliberately NOT a call to
+  // playEventMovie(): that function assumes a locally-bundled, already-
+  // registered SYSTEM_MOVIES/EVENT_MOVIES key and always preloads eagerly,
+  // neither of which applies to an external, potentially-120MB URL. Keyed
+  // off eventMovieState.key==='endingRoll' (a plain string, not the token
+  // counter playEventMovie() itself uses) purely to detect being superseded
+  // by a QUIT/RETRY mid-playback (cancelEventMovie()/skipEventMovie() both
+  // already reset eventMovieState.key generically) — this needs no
+  // coordination with playEventMovie()'s own token beyond that.
+  function playEndingRoll(onComplete) {
+    // Section 1: BGM must be fully silent throughout — stop+reset gameplay,
+    // boss, AND menu BGM alike, immediately before anything else here (the
+    // caller, beginStoryEscapeEnding(), already stops bgmAudio/bossBgmAudio
+    // for its own escape-movie chain — menuBgmAudio is stopped here too,
+    // defensively, since this helper must never assume what state it was
+    // called from).
+    bgmAudio.pause(); bgmAudio.currentTime = 0;
+    bossBgmAudio.pause(); bossBgmAudio.currentTime = 0;
+    menuBgmAudio.pause(); menuBgmAudio.currentTime = 0;
+
+    eventMovieState.active = true;
+    eventMovieState.key = 'endingRoll';
+    eventMovieState.onComplete = onComplete || null;
+    eventMovieState.resumeBgm = false; // 27-2: a load failure must never auto-resume any BGM — finish()/skipEventMovie() both read this
+
+    function showFallback(onTap) {
+      // 27-1: small, unobtrusive "TAP TO CONTINUE" — reuses the existing
+      // shared tap-fallback element (same one playEventMovie() itself uses
+      // for an autoplay-blocked retry), just wired to a different action.
+      eventMovieTapFallbackEl.hidden = false;
+      eventMovieTapFallbackEl.onclick = () => {
+        eventMovieTapFallbackEl.hidden = true;
+        eventMovieTapFallbackEl.onclick = null;
+        onTap();
+      };
+    }
+    function finish() {
+      if (eventMovieState.key !== 'endingRoll') return; // superseded by a cancel/skip — never double-fire onComplete
+      eventMovieState.active = false;
+      eventMovieState.key = null;
+      eventMovieState.onComplete = null;
+      eventMovieOverlayEl.hidden = true;
+      eventMovieVideoEl.onended = null;
+      eventMovieVideoEl.onerror = null;
+      eventMovieVideoEl.removeAttribute('src');
+      eventMovieVideoEl.load();
+      eventMovieTapFallbackEl.hidden = true;
+      eventMovieTapFallbackEl.onclick = null;
+      if (onComplete) onComplete();
+    }
+
+    if (!ENDING_ROLL_VIDEO_URL) {
+      // No URL configured yet — never attempt a network load at all, go
+      // straight to the fallback so the run can still reach RESULT.
+      eventMovieOverlayEl.hidden = false;
+      eventMovieVideoEl.removeAttribute('src');
+      showFallback(finish);
+      return;
+    }
+
+    eventMovieTapFallbackEl.hidden = true;
+    eventMovieTapFallbackEl.onclick = null;
+    eventMovieVideoEl.loop = false;
+    eventMovieVideoEl.muted = false; // the video's own embedded audio may play (section 1) — no existing BGM is playing underneath it (see above)
+    eventMovieVideoEl.preload = 'metadata'; // never full-preload a ~120MB file at game start (section 1)
+    eventMovieVideoEl.playsInline = true;
+    if (ENDING_ROLL_CORS_SAFE) eventMovieVideoEl.crossOrigin = 'anonymous';
+    else eventMovieVideoEl.removeAttribute('crossorigin');
+    eventMovieVideoEl.src = ENDING_ROLL_VIDEO_URL;
+    eventMovieVideoEl.currentTime = 0;
+    eventMovieOverlayEl.hidden = false;
+
+    eventMovieVideoEl.onended = finish;
+    eventMovieVideoEl.onerror = () => {
+      // 27-1: a genuine network/load failure — never hard-freeze.
+      if (eventMovieState.key !== 'endingRoll') return;
+      showFallback(finish);
+    };
+    eventMovieVideoEl.play().catch(() => {
+      if (eventMovieState.key !== 'endingRoll') return;
+      // Autoplay-blocked (distinct from a load failure) — same tap-to-retry
+      // shape, but retries .play() first rather than assuming the video
+      // itself is unreachable.
+      showFallback(() => {
+        eventMovieVideoEl.play().catch(() => showFallback(finish));
+      });
+    });
+  }
+
   // Reached ONLY from the EXIT-reach branch in update(), and only when
   // worldScrollUnlocked()'s own O-1/O-2 escape-ready condition already held
   // — NEVER falls through to beginStageTransition()'s own currentStageIndex
@@ -7078,6 +7479,13 @@
     // here is the only thing that stops it for this chain or once RESULT is
     // reached.
     bgmAudio.pause();
+    // BOSS BGM ADDENDUM Section M: escape/ENDING must stop AND fully reset
+    // BOTH tracks — this path is reachable straight from an ADAM/GABRIEL3
+    // boss fight (FULL/SECRET route) where Outbreak 2 could still be
+    // playing, so it must never keep playing into the escape movie/ENDING.
+    bgmAudio.currentTime = 0;
+    bossBgmAudio.pause();
+    bossBgmAudio.currentTime = 0;
     if (route === 'secret') {
       // Q: SECRET's own true ending — never plays MAIN's own movies.
       playEventMovie('true_ending', () => {
@@ -7093,8 +7501,13 @@
       // stack as the 1st movie's teardown, before any frame is painted.
       playEventMovie('main_escape', () => {
         playEventMovie('main_bad_ending', () => {
-          storyEndingState.active = false;
-          enterResultScreen(); // P-3: straight to RESULT — triggerGameClear()'s 2.5s overlay is never inserted here
+          // HOTFIX SECTION 1/23-5: the external ENDING ROLL now plays here,
+          // after the existing escape chain and before RESULT — never any
+          // additional story movie after it.
+          playEndingRoll(() => {
+            storyEndingState.active = false;
+            enterResultScreen(); // P-3: straight to RESULT — triggerGameClear()'s 2.5s overlay is never inserted here
+          });
         });
       });
     }
@@ -7186,6 +7599,7 @@
   // silent on any darkened-variant cinematic, straight to combat), then
   // spawns the ROID with `dark` threaded through.
   function maybePlayStoryRoidArrival(type, dark, now) {
+    startBossBgm(); // BOSS BGM ADDENDUM: covers all 3 branches below (dark/already-played/first-time), always before spawnRoidBoss()/any arrival movie
     if (dark) { spawnRoidBoss(type, true); return; }
     const flagKey = type === 'roid1' ? 'roid1ArrivalPlayed' : 'roid2ArrivalPlayed';
     if (storyCinematicState[flagKey]) { spawnRoidBoss(type, false); return; }
@@ -7200,6 +7614,16 @@
   // one implementation of "what does entering STORY STAGE N actually do".
   function enterStoryStage(now) {
     const plan = activeStagePlanArray()[currentStageIndex];
+    // BOSS BGM ADDENDUM Section F/G: this is the ONE funnel every STORY
+    // stage-advance passes through (updateStageTransition() above), so it's
+    // the right place to catch "just left a boss stage" — endBossBgmToNormalStage()
+    // itself no-ops (returns immediately) unless bossBgmAudio is currently
+    // playing, so this is silently a no-op on every ordinary (non-boss-exit)
+    // stage advance. If the NEW stage is itself another boss encounter, that
+    // branch's own startBossBgm() call further below immediately re-stops
+    // outbreak_1_1 and switches back to Outbreak 2, so no double-BGM window
+    // is ever actually audible (Section L).
+    endBossBgmToNormalStage();
     bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
     barrels.length = 0;
     barrelLandings.length = 0;
@@ -7268,13 +7692,33 @@
       // POST-v1.0 SECTIONS 27/31: the real end-of-story 3-sample-submission
       // event — MAIN vs SECRET branch entirely inside updateAdamSphere()'s
       // own 'released' transition (MAIN never proceeds to ADAM combat).
-      boss.spawned = false;
-      boss.state = 'inactive';
-      securityRobots.length = 0;
-      whiteShadows.length = 0;
-      spawnBarrels(0);
-      storyScenarioState.stageOverrideId = 'event_b2_adam_lab';
-      spawnAdamSphere();
+      // HOTFIX SECTION 23/24 (defense in depth): MAIN's own EXIT-reach
+      // dispatcher (update()) already intercepts bloodSample3 pickup and
+      // routes straight to beginStoryEscapeEnding() BEFORE this plan index
+      // is ever reached in normal play — this branch should be unreachable
+      // for MAIN by construction. If it's somehow still reached anyway (a
+      // future regression, stale save state, etc.), fail safe rather than
+      // ever spawning ADAM SPHERE for MAIN (section 24's explicit "must
+      // NEVER become true/must NEVER be called" requirements): grant the
+      // exact same escape-unlock and stop, never touching adamSphereState/
+      // stageOverrideId at all.
+      if (storyScenarioState.scenario === 'main') {
+        boss.spawned = false;
+        boss.state = 'inactive';
+        securityRobots.length = 0;
+        whiteShadows.length = 0;
+        spawnBarrels(0);
+        storyScenarioState.escapeReady = true;
+        runInventory.escapeNavigator = true;
+      } else {
+        boss.spawned = false;
+        boss.state = 'inactive';
+        securityRobots.length = 0;
+        whiteShadows.length = 0;
+        spawnBarrels(0);
+        storyScenarioState.stageOverrideId = 'event_b2_adam_lab';
+        spawnAdamSphere();
+      }
     } else if (plan.type === 'boss' && (plan.boss === 'roid1' || plan.boss === 'roid2')) {
       // POST-v1.0 SECTIONS 24/29/34: ROID1/ROID2 (normal or `dark`-tinted) as
       // an ordinary sequential plan entry — reuses PART10's entire shared
@@ -7285,7 +7729,9 @@
       securityRobots.length = 0;
       whiteShadows.length = 0;
       securityAttackSlotsInUse = 0;
-      spawnBarrels(0);
+      // HOTFIX SECTION 8: ROID1/ROID2 now get BARREL_COUNT (5) barrels
+      // alongside their escort DRONEs — no longer mutually exclusive.
+      spawnBarrels(BARREL_COUNT);
       currentArea = 1;
       cameraY = 0;
       storyScenarioState.stageOverrideId = plan.boss === 'roid1' ? 'boss_c1_roid1' : 'boss_c2_roid2';
@@ -7294,6 +7740,7 @@
       storyScenarioState.stageOverrideId = null; // SECTION 44: clear whatever a preceding ROID/lab/sphere entry left behind
       bossEncounterIndex = plan.encounterIndex; // SECTION Q: the ONLY place this is ever set
       spawnBarrels(BOSS_ENCOUNTER_BARREL_COUNTS[bossEncounterIndex]); // SECTION K/X
+      startBossBgm(); // BOSS BGM ADDENDUM: covers GABRIEL1/2 (else-branch spawnBoss) and GABRIEL3/FINAL (plan.final branch spawnBoss) with one call, always before either branch's spawnBoss()/arrival movie
       if (plan.final) {
         spawnBoss(now); // SECTION M: GABRIEL must exist before N-3's "avoid GABRIEL's own body" placement check can read boss.x/y
         spawnFinalStageDrones(now); // PART8 SECTION H: 3+3 DRONEs (one full wave1 per Area) alongside GABRIEL, all FAST_PATROL; wave 1 (initial spawn) never drops in — instant appear
@@ -7354,12 +7801,14 @@
         // += 1 on top of that — the interlude's own defeat-handler routes
         // here via the SAME beginStageTransition() call every other STORY
         // STAGE-advance already uses, so this is the ONE place to branch.
+        let justAdvancedPastStage1 = false;
         if (storyRoidInterludeState.active) {
           currentStageIndex = storyRoidInterludeState.returnStageIndex;
           storyRoidInterludeState.active = false;
           storyRoidInterludeState.completed = true;
           storyRoidInterludeState.returnStageIndex = null;
         } else {
+          justAdvancedPastStage1 = currentStageIndex === 0;
           currentStageIndex += 1;
         }
         // POST-v1.0 SECTION 44: unconditionally cleared on every advance —
@@ -7376,7 +7825,21 @@
         area1Cleared = false;
         area2Cleared = false;
         resetPlayerToBattlePose(); // SECTION H: same fixed intro pose spawnBoss() itself uses
-        enterStoryStage(now);
+        // HOTFIX SECTION 11: FULL PLAY's PROJECT ADAM SITE (b1) intro event
+        // now fires here — the FIRST time STAGE 1 (WHITE SHADOW) clears and
+        // advances to STAGE 2 — instead of before STAGE 1 (see startMode()'s
+        // 'boss' dispatch above, which now always goes straight to plan
+        // index 0 for both MAIN and SECRET). onWorldItemPickup()'s own
+        // 'projectAdam' branch continues on to enterStoryStage(now) at this
+        // SAME currentStageIndex once the item is collected, so plan[1]
+        // (drone_arrival) still plays exactly once, just slightly later than
+        // before. Guarded by runInventory.projectAdamCollected so this can
+        // never re-trigger later in the same run.
+        if (justAdvancedPastStage1 && storyScenarioState.scenario === 'secret' && !runInventory.projectAdamCollected) {
+          enterStoryEventStage('b1');
+        } else {
+          enterStoryStage(now);
+        }
       }
       stageTransition.phase = 'in';
       stageTransition.startedAt = now;
@@ -9321,6 +9784,20 @@
       storyScenarioState.bloodSamplesSubmitted = false;
       storyScenarioState.escapeReady = false;
       storyScenarioState.stageOverrideId = null;
+      // HOTFIX SECTION 26: defense-in-depth for the "unified run-state
+      // reset" requirement — exitStoryScenarioContext() (every QUIT/RESULT
+      // BACK route) already clears these, but a fresh run started directly
+      // via beginScenarioOpening() never calls that function, so clear them
+      // here too rather than trust every future entry point to remember to.
+      // Never touches persistent settings/unlocks (isSecretScenarioUnlocked()'s
+      // own localStorage flag lives entirely outside storyScenarioState/
+      // runInventory/eventStageState/adamSphereState — untouched by this
+      // block, exactly as section 26 requires).
+      if (eventStageState.active) exitEventStage();
+      adamSphereState.visible = false;
+      storyEndingState.active = false;
+      storyEndingState.started = false;
+      storyEndingState.route = null;
       // DARK OUT PART 9 SECTION W: STORY's own one-time cinematic flags are
       // fresh only on a genuine new run/RESTART, same scoping as
       // storyScenarioState itself just above — a mid-run RETRY
@@ -9390,6 +9867,7 @@
       // still pointing at the FINAL GABRIEL entry — see storyScenarioState.
       // stageOverrideId's own comment — and wrongly respawn GABRIEL instead).
       if (storyScenarioState.stageOverrideId === 'boss_c4_adam') {
+        startBossBgm(); // BOSS BGM ADDENDUM Section K: RETRY must restart Outbreak 2 from 0:00, never resume
         spawnBoss(performance.now(), 'adam');
       } else if (storyRoidInterludeState.active) {
         // DARK OUT PART 11 SECTION 8-7: MAIN's own ROID1 interlude — RETRY
@@ -9398,11 +9876,16 @@
         // GABRIEL2's own entry, and wrongly respawn GABRIEL2 instead). Same
         // "never replay the arrival movie" reasoning as ADAM's own branch
         // above — spawnRoidBoss() itself never touches the arrival flag.
+        startBossBgm(); // BOSS BGM ADDENDUM Section K: RETRY must restart Outbreak 2 from 0:00, never resume
         spawnRoidBoss('roid1');
-      } else if (!preserveStoryProgress && storyScenarioState.scenario === 'secret') {
-        // SECTION 5: a brand-new SECRET run starts at b1, not STORY STAGE 1.
-        enterStoryEventStage('b1');
       } else {
+        // HOTFIX SECTION 11: a genuinely fresh run (MAIN or SECRET/FULL PLAY
+        // alike) now always starts directly at plan index 0 (WHITE SHADOW
+        // STAGE 1) — SECRET used to detour through the b1 PROJECT ADAM SITE
+        // event FIRST, which is exactly the "starts somewhere else instead
+        // of its real first stage" bug this batch's spec calls out. b1 is
+        // never deleted — see updateStageTransition()'s own STORY-advance
+        // branch, which now fires it right after STAGE 1 clears instead.
         enterStoryStage(performance.now());
       }
     } else if (gameState.mode === 'bossBattle') {
@@ -9440,8 +9923,12 @@
   // GABRIEL encounters, BASIC TRAINING).
   function enterBossBattleStage() {
     bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
-    spawnBarrels(bossBattleState.target === 'gabriel' ? BARREL_COUNT : 0);
+    // HOTFIX SECTION 8: every BOSS BATTLE MODE target (GABRIEL/ADAM/ROID1/
+    // ROID2) now gets BARREL_COUNT (5) barrels — previously only GABRIEL
+    // did, ROID1/ROID2/ADAM got a blanket 0.
+    spawnBarrels(BARREL_COUNT);
     bossBattleState.defeatHandled = false;
+    startBossBgm(); // BOSS BGM ADDENDUM Section J/K: covers all 4 targets uniformly, both first entry and RETRY (this function is re-entered on RETRY without going back through startBossBattle())
     if (bossBattleState.target === 'gabriel') {
       spawnBoss(performance.now());
       // DARK OUT PART 9 SECTION K: BOSS-BATTLE-first-time arrival — the flag
@@ -9548,6 +10035,13 @@
   // STORY's own currentStageIndex/bossEncounterIndex/scenario/item state —
   // this function doesn't reference any of them.
   function exitBossBattle() {
+    // BOSS BGM ADDENDUM Section J / Section 10: every way a BOSS BATTLE MODE
+    // fight ends (defeat, PAUSE MENU QUIT, GAME OVER QUIT) routes through
+    // this one function — stop+reset Outbreak 2 here unconditionally (never
+    // auto-resume outbreak_1_1: the caller always sends the player back to
+    // BOSS SELECT or MAIN MENU next, which use their own existing MENU BGM
+    // convention, not gameplay BGM).
+    endBossBgmSilently();
     bossBattleState.active = false;
     bossBattleState.target = null;
     bossBattleState.stageId = null;
@@ -10838,15 +11332,30 @@
 
   let playerHitFlashUntil = 0;
 
-  // SECTION F: brief on/off blink of the PLAYER'S OWN SPRITE ONLY (never
-  // the whole screen — that's the separate playerHitFlashUntil red tint
-  // above, kept as-is) on any actual hit, even under infinite LIFE. Ticked
-  // in updateScreenFlashes(dt) alongside the other countdown timers so it
-  // freezes correctly during PAUSE; consumed in drawPlayer() by simply
-  // skipping that frame's draw call during each cycle's "off" half.
+  // SECTION F / HOTFIX SECTION 21: brief on/off blink of the PLAYER'S OWN
+  // SPRITE ONLY (never the whole screen — that's the separate
+  // playerHitFlashUntil red tint above, kept as-is) on any actual hit, even
+  // under infinite LIFE. Ticked in updateScreenFlashes(dt) alongside the
+  // other countdown timers so it freezes correctly during PAUSE.
+  // HOTFIX SECTION 21: extended from the old 300ms/3-cycle timing to the
+  // spec's own suggested PLAYER_DAMAGE_FLASH_MS=600 (kept as its own const,
+  // same value, for anyone searching by that name), still alternating every
+  // PLAYER_HIT_BLINK_CYCLE_MS/2=100ms (within the requested 80-100ms band).
+  // Real gap this closes: drawPlayer()'s own non-STEALTH branch previously
+  // ALWAYS drew the plain sprite regardless of hitBlinkPulseOn — despite
+  // this comment already describing "skip the draw on the off half", that
+  // only ever actually happened while STEALTH was simultaneously active
+  // (its own compositing branch is the only one that read the flag). A
+  // normal (non-STEALTH) hit was therefore completely invisible — no flash
+  // at all — which is the exact bug this section reports. Fixed by applying
+  // a genuine alpha dim (never a full skip — pure runtime canvas alpha
+  // flicker, no new assets, section 21-1) during the "off" half in BOTH
+  // branches now; never touches player.hitbox/control/input state (21-2).
   const PLAYER_HIT_BLINK_COUNT = 3;
-  const PLAYER_HIT_BLINK_TOTAL_MS = 300; // within the requested ~200-350ms band
-  const PLAYER_HIT_BLINK_CYCLE_MS = PLAYER_HIT_BLINK_TOTAL_MS / PLAYER_HIT_BLINK_COUNT;
+  const PLAYER_HIT_BLINK_TOTAL_MS = 600; // HOTFIX SECTION 21: was 300 — now matches PLAYER_DAMAGE_FLASH_MS
+  const PLAYER_DAMAGE_FLASH_MS = PLAYER_HIT_BLINK_TOTAL_MS; // alias — the spec's own suggested constant name
+  const PLAYER_HIT_BLINK_CYCLE_MS = PLAYER_HIT_BLINK_TOTAL_MS / PLAYER_HIT_BLINK_COUNT; // 200ms/cycle = 100ms on / 100ms off
+  const PLAYER_HIT_BLINK_DIM_ALPHA = 0.35; // "dim", never fully invisible — a flicker, not a disappearance
   let playerHitBlinkRemainingMs = 0;
 
   // SECTION P/Q: GAME CLEAR — a brief screen-space canvas overlay drawn
@@ -10933,10 +11442,14 @@
     isPlayerBarrelShadowHiddenFrom, isPlayerUnderBarrelShadowCover, // POST-v2.0 SECTION 24 — debug/verification only
     // Debug/verification only — SECTION G/H/I/J/T (LOADING/OPENING/MAIN MENU/BGM).
     setScreen, bgmAudio, startBgmOnce, BGM_VOLUME, returnToTopMenu, // returnToTopMenu debug/verification only — PART 3 SECTION D
+    bossBgmAudio, startBossBgm, endBossBgmToNormalStage, endBossBgmSilently, // debug/verification only — BOSS BGM ADDENDUM (Outbreak 2)
+    PLAYER_BODY_RADIUS, BOSS_SOLID_RADIUS, BOSS_SOLID_MIN_DIST, clampPlayerAwayFromBoss, clampBossAwayFromPlayer, // debug/verification only — HOTFIX SECTION 22
+    beginScenarioOpening, // debug/verification only — HOTFIX SECTION 12-2: FULL PLAY's UI entry is LOCKED, but its underlying 'secret' scenario route must stay directly launchable for internal verification
     // Debug/verification only — DARK OUT PART 9: CINEMATIC INTEGRATION.
     menuBgmAudio, startMenuBgmOnce, startGameplayBgm, stopMenuBgm,
     SYSTEM_MOVIES, EVENT_MOVIES, storyCinematicState, eventMovieState,
     storyEndingState, beginStoryEscapeEnding, // DARK OUT PART 10 — debug/verification only
+    playEndingRoll, ENDING_ROLL_VIDEO_URL, ENDING_ROLL_CORS_SAFE, // debug/verification only — HOTFIX SECTION 1/27
     storyRoidInterludeState, beginRoidInterlude, // DARK OUT PART 11 SECTION 8 — debug/verification only
     get attractPlaying() { return attractPlaying; }, beginAttractOpening, ATTRACT_OPENING_IDLE_MS, // DARK OUT PART 11 SECTION 2 — debug/verification only
     playEventMovie, cancelEventMovie, skipEventMovie,
@@ -11036,7 +11549,7 @@
     HUD_BAR_W, HUD_BAR_H, HUD_MARGIN_X, // debug/verification only — SECTION E/F/V
     applyMaxLifeSetting, openSettingPanel, closeSettingPanel,
     get playerHitBlinkRemainingMs() { return playerHitBlinkRemainingMs; },
-    PLAYER_HIT_BLINK_COUNT, PLAYER_HIT_BLINK_TOTAL_MS,
+    PLAYER_HIT_BLINK_COUNT, PLAYER_HIT_BLINK_TOTAL_MS, PLAYER_DAMAGE_FLASH_MS, PLAYER_HIT_BLINK_CYCLE_MS, PLAYER_HIT_BLINK_DIM_ALPHA,
     BOSS_INTRO_INITIAL_SHAKE_MS, BOSS_INTRO_SILENCE_MS, BOSS_INTRO_SHADOW_REVEAL_MS,
     BOSS_INTRO_LANDING_SHAKE_MS, BOSS_INTRO_POST_LANDING_PAUSE_MS, BOSS_INTRO_SOUTH_IDLE_MS,
     BOSS_INTRO_SOUTH_ATTACK_MS,
@@ -11183,7 +11696,7 @@
     set healBoxPickupCount(v) { healBoxPickupCount = v; },
     // Debug/verification only — PART8: separate manual/auto reload durations,
     // counter-CLAW speed, and the shared Area-wall/LOS helper.
-    MANUAL_RELOAD_MS, EMPTY_RELOAD_MS, COUNTER_CLAW_SPEED_MULTIPLIER, segmentCrossesAreaWall,
+    MANUAL_RELOAD_MS, EMPTY_RELOAD_MS, COUNTER_CLAW_SPEED_MULTIPLIER, GABRIEL_COUNTER_STRAIGHT_CLAW_SLOWDOWN, segmentCrossesAreaWall,
     // Debug/verification only — PART7: FINAL-STAGE DRONE drop-in.
     FINAL_DRONE_DROP_MS,
   };
@@ -12247,6 +12760,14 @@
       const stealthStrength = getStealthEffectStrength(now);
       if (stealthStrength > 0 && !hitBlinkPulseOn) {
         drawPlayerStealthed(img, dx, dy, drawW, drawH, stealthStrength, now);
+      } else if (playerHitBlinkRemainingMs > 0 && !hitBlinkPulseOn) {
+        // HOTFIX SECTION 21: the actual visible flash — dim (never fully
+        // skip) the plain sprite during each cycle's "off" half. Purely a
+        // draw-time alpha change; never touches player.x/y/hitbox/control.
+        ctx.save();
+        ctx.globalAlpha = PLAYER_HIT_BLINK_DIM_ALPHA;
+        ctx.drawImage(img, dx, dy, drawW, drawH);
+        ctx.restore();
       } else {
         ctx.drawImage(img, dx, dy, drawW, drawH);
       }
@@ -13072,9 +13593,21 @@
     return !!(window.matchMedia && window.matchMedia('(orientation: landscape)').matches);
   }
 
+  let lastBgmWatchdogAt = 0;
   function loop(now) {
     const dt = Math.min((now - lastTime) / 1000, 0.05);
     lastTime = now;
+    // HOTFIX SECTION 14-2/14-4: continuous coverage for the WHITE SHADOW
+    // stage that follows sneaking.mp4 — eventMovieVideoEl's own 'timeupdate'
+    // watchdog only fires while a movie is actually playing, so this throttled
+    // (every ~500ms, never every frame) call is the one that keeps bgmAudio
+    // reasserted through real STORY gameplay too, satisfying the "5 seconds
+    // into WHITE SHADOW gameplay" checkpoint (14-5) with the SAME continuous
+    // mechanism rather than a one-off check.
+    if (now - lastBgmWatchdogAt > 500) {
+      lastBgmWatchdogAt = now;
+      reassertGameplayBgmIfExpected();
+    }
     // lastTime still advances every frame either way, so dt is never a
     // huge catch-up jump the instant play resumes back in portrait.
     // SECTION J: the gameplay world (update()/draw(), which together own
