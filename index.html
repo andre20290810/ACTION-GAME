@@ -36,22 +36,27 @@
   </div>
 </div>
 
-<!-- SECTION H/D: OPENING — the official attached video as a muted/loop/
-     autoplay/playsinline background, sized via object-fit only (the source
-     file itself is never re-encoded/cropped). This SAME video keeps
-     playing behind BOTH the "DARK OUT"/"TAP TO START" overlay AND the
-     STORY/TRAINING/SETTING menu overlay that replaces it after the first
-     tap — see #main-menu-overlay below — never a second video element and
-     never a screen swap that would hide it. -->
+<!-- SECTION H/D: OPENING — a single persistent muted/loop/autoplay/
+     playsinline video, sized via object-fit only, whose .src is swapped by
+     game.js at exactly two moments: DARK OUT PART 11 SECTION 1/2/4 —
+     defaults to loading.mp4 (paired with TAP TO START, #opening-overlay
+     below), swaps to opening.mp4 for the idle ATTRACT loop, swaps to
+     start_display.mp4 the instant the user actually taps to start (see
+     onOpeningTap() in game.js) and stays there behind the MAIN MENU/
+     SCENARIO SELECT/BOSS SELECT/TRAINING SELECT overlay that replaces
+     #opening-overlay after that tap — see #main-menu-overlay below — never
+     a second video element. -->
 <div id="opening-screen" hidden>
-  <!-- PART 9 SECTION D/E: repointed from the old dark_out_opening.mp4 to
-       start_display.mp4 (the OPENING/MAIN MENU/SCENARIO SELECT/BOSS
-       SELECT/TRAINING SELECT background loop) — dark_out_opening.mp4 file
-       itself is left untouched on disk, simply no longer referenced.
-       start_display.mp4 already has "DARK OUT" burned into its own
-       footage throughout, so #opening-title below is hidden via CSS
-       rather than duplicating the title as separate overlay text. -->
-  <video id="opening-video" src="assets/video/system/start_display.mp4" muted loop autoplay playsinline webkit-playsinline="true"></video>
+  <!-- PART 11 SECTION 1: default src is loading.mp4 now (was start_
+       display.mp4) — TAP TO START must pair with the NOW LOADING footage,
+       never the MENU's own start_display.mp4 (real-device feedback: the
+       two were overlapping/hard to read). start_display.mp4 has "DARK
+       OUT" burned into its own footage throughout, so #opening-title below
+       stays hidden via CSS rather than duplicating the title as separate
+       overlay text — loading.mp4/opening.mp4 have no such burned-in title,
+       so this screen simply shows no separate title text either, per
+       spec's own silence on adding one here. -->
+  <video id="opening-video" src="assets/video/system/loading.mp4" muted loop autoplay playsinline webkit-playsinline="true"></video>
   <div id="opening-overlay">
     <div id="opening-title">DARK OUT</div>
     <div id="opening-tap-prompt">TAP TO START</div>

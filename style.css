@@ -719,7 +719,13 @@ body {
   height: 100%;
   object-fit: cover;
 }
+/* DARK OUT PART 11 SECTION 1-1: the visual gauge is removed outright per
+   real-device feedback — game.js's own internal readiness-tracking
+   (computeProgress()/tick()) is completely unchanged and still updates
+   this element's width every tick, it's simply never shown to the player
+   any more (loading.mp4 + TAP TO START is the only visible loading UI). */
 #loading-bar-track {
+  display: none;
   width: 50%; /* H-5: ~40-60% of screen width on portrait */
   max-width: 220px;
   height: 3px;
@@ -749,13 +755,21 @@ body {
   height: 100%;
   object-fit: cover;
 }
+/* DARK OUT PART 11 SECTION 1-2: real loading.mp4 frame inspection shows
+   "NOW LOADING..." sitting at roughly the vertical center (~46-52% of
+   frame height) — TAP TO START must sit clearly BELOW that, never
+   overlapping it, so this is anchored toward the bottom instead of
+   centered (was the direct cause of the real-device "DARK OUT text and TAP
+   TO START overlapping" complaint, since start_display.mp4's own "DARK
+   OUT" burn-in sits at that same center band too). */
 #opening-overlay {
   position: absolute;
   inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
+  padding-bottom: 20vh;
   gap: 22px;
   background: rgba(0, 0, 0, 0.15);
   touch-action: manipulation;
@@ -833,6 +847,12 @@ body {
    (#boss-select-overlay) joins the same shared rule for the same reason —
    no new design system, per spec section 22. DARK OUT PART 8: SCENARIO
    SELECT (#scenario-select-overlay) joins for the same reason again. */
+/* DARK OUT PART 11 SECTION 5-1: real start_display.mp4 frame inspection
+   shows "DARK OUT" burned into the footage at roughly the vertical center
+   (~46-56% of frame height, the exact same band loading.mp4's own "NOW
+   LOADING..." occupies) — real-device feedback confirmed the MENU items
+   were overlapping it there. Anchored toward the bottom instead of
+   centered so the whole 4-item group sits clearly below the logo. */
 #main-menu-overlay, #training-select-overlay, #boss-select-overlay, #scenario-select-overlay {
   position: absolute;
   inset: 0;
@@ -840,11 +860,12 @@ body {
   flex-direction: column;
   /* SECTION O: left-aligned instead of centered — O-2's own safe margin
      (5-10vw on a 390px-class portrait phone) keeps it clear of the screen
-     edge; vertical centering (justify-content) is untouched, only the
-     horizontal placement changes. */
+     edge; horizontal placement is unaffected by PART 11's vertical change
+     just above. */
   align-items: flex-start;
-  justify-content: center;
-  gap: 30px;
+  justify-content: flex-end;
+  padding-bottom: 12vh;
+  gap: 21px; /* PART 11 SECTION 5-3: 30px * 0.70 first-pass, compacting the 4-item group */
   padding-left: 8vw;
   background: rgba(0, 0, 0, 0.2);
   touch-action: manipulation;
@@ -853,7 +874,7 @@ body {
 .main-menu-item {
   font-family: 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif;
   font-weight: 700;
-  font-size: 20px;
+  font-size: 16px; /* PART 11 SECTION 5-2: 20px * 0.82 first-pass, still comfortably readable on iPhone portrait */
   letter-spacing: 0.3em;
   text-transform: uppercase;
   text-align: left; /* O-3 */
