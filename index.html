@@ -360,6 +360,14 @@
      rejected, never a permanent UI element. -->
 <div id="event-movie-overlay" hidden>
   <video id="event-movie-video" playsinline webkit-playsinline="true" preload="auto"></video>
+  <!-- HOTFIX 4 ADDENDUM SECTIONS L-Y: ENDING ROLL's own robust-preload
+       LOADING screen — reuses the SAME loading.mp4 footage every other
+       LOADING context in this app already uses (boot #loading-video,
+       menu/tap-to-start #opening-video), never a new asset. Sits in the
+       SAME overlay/z-index as #event-movie-video (just the sibling shown
+       instead, while ending_darkout.MOV preloads hidden in the other
+       element) so it can never show a black/frozen frame during the wait. -->
+  <video id="ending-loading-video" src="assets/video/system/loading.mp4" muted loop playsinline webkit-playsinline="true" hidden></video>
   <button id="event-movie-tap-fallback" hidden>TAP TO PLAY</button>
 </div>
 
@@ -369,6 +377,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=hotfix3"></script>
+<script src="game.js?v=hotfix4"></script>
 </body>
 </html>

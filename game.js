@@ -202,16 +202,25 @@
   //   {type:'movie', key:'drone_arrival'}                  — no gameplay, auto-advances once the movie ends
   //   {type:'cultivationLab'}                               — non-combat waypoint, reuses event_b2_adam_lab bg/experiment_lab.mp4
   //   {type:'adamSphere'}                                   — final 3-sample-submit event; branches MAIN (no ADAM) vs SECRET (ADAM combat) at runtime, see updateAdamSphere()
+  // HOTFIX 4 SECTIONS 7-9: 'count'/'droneCount' both dropped from the
+  // 'drone'/'mixed' entries below (was fixed 3 / fixed 5) — leaving them
+  // undefined makes populateSecurityDroneAreas() fall through to its own
+  // pickSecurityDroneCount() random-{3,5,7}-per-AREA roll, the EXACT same
+  // density SECURITY TRAINING's own DRONE-carrying stages already use (see
+  // enterSecurityTrainingStage()), rather than inventing a separate density
+  // number. pickSecurityDroneSpot()'s own existing even-spacing/no-overlap/
+  // player-clearance placement logic is unchanged, so this can never spawn
+  // enemies on top of each other or next to the player's start position.
   const RANDOM_STAGE_TEMPLATES = [
     { type: 'whiteShadow' },
-    { type: 'drone', count: 3 },
-    { type: 'mixed', droneCount: 5, whiteShadowCount: 1 },
+    { type: 'drone' },
+    { type: 'mixed', whiteShadowCount: 1 },
   ];
   const MAIN_TEMPLATE_PLAN = [
     { type: 'whiteShadow' },                                   // M1
     { type: 'movie', key: 'drone_arrival' },
-    { type: 'drone', count: 3 },                                // M2
-    { type: 'mixed', droneCount: 5, whiteShadowCount: 1 },       // M3
+    { type: 'drone' },                                          // M2 — HOTFIX 4 SECTIONS 7-9: random 3/5/7-per-AREA (was fixed 3), matching TRAINING's own density
+    { type: 'mixed', whiteShadowCount: 1 },                     // M3 — HOTFIX 4 SECTIONS 7-9: random 3/5/7-per-AREA drones (was fixed 5)
     { type: 'boss', boss: 'roid1' },
     { type: 'cultivationLab' },
     { type: 'boss', boss: 'gabriel', encounterIndex: 0 },
@@ -335,6 +344,15 @@
   // across both AREA1 and AREA2 (re-randomized in resetModeState()).
   let securityTrainingBgIndex = 0;
 
+  // HOTFIX 4 SECTIONS 1-6: SECURITY TRAINING is now a fixed 5-stage cycle
+  // (0=WHITE SHADOW only, 1=BARREL+DRONE, 2=WHITE SHADOW+DRONE, 3=ADAM+
+  // BARRELs, 4=DRONE+ROID1) instead of the old "same DRONE-only population
+  // forever" loop — see enterSecurityTrainingStage(). Wraps back to 0 after
+  // stage 4 so TRAINING stays endlessly repeatable, exactly like it already
+  // was before this rebuild.
+  let trainingStageIndex = 0;
+  const TRAINING_STAGE_COUNT = 5;
+
   // DARK OUT PART 1: the new-content STAGE REGISTRY — every NORMAL/EVENT/BOSS
   // background for the upcoming ROID1/ROID2/ADAM content, registered as one
   // flat, type-tagged table rather than three separate pools, so a single
@@ -387,6 +405,13 @@
     { id: 'boss_c2_roid2', type: 'boss', background: { file: 'assets/stages/boss/c2.jpg', floorLeftFrac: 0.08, floorRightFrac: 0.92 } },
     { id: 'boss_c3_gabriel', type: 'boss', background: { file: 'assets/stages/boss/c3.jpg', floorLeftFrac: 0.08, floorRightFrac: 0.92 } },
     { id: 'boss_c4_adam', type: 'boss', background: { file: 'assets/stages/boss/c4.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.80 } },
+    // HOTFIX 4 "ADAM SPHERE STAGE BACKGROUND" addendum: the user's own
+    // attached reference image (EXPERIMENT LAB C-10, LEVEL 4 — large blue
+    // cultivation tanks both sides, distinct from C-09/c4.jpg/b1.jpg/b2.jpg,
+    // confirmed no existing asset match) added verbatim, unedited, as the
+    // ONE background for the new MAIN SCENARIO post-GABRIEL3 ADAM SPHERE
+    // STAGE — never reused for any other stage.
+    { id: 'boss_c10_adam_sphere_main', type: 'boss', background: { file: 'assets/stages/boss/c10_adam_sphere_main.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.80 } },
   ];
   STAGE_REGISTRY.forEach((s) => {
     s.background.img = new Image();
@@ -660,6 +685,7 @@
   const eventMovieOverlayEl = document.getElementById('event-movie-overlay');
   const eventMovieVideoEl = document.getElementById('event-movie-video');
   const eventMovieTapFallbackEl = document.getElementById('event-movie-tap-fallback');
+  const endingLoadingVideoEl = document.getElementById('ending-loading-video'); // HOTFIX 4 ADDENDUM SECTIONS L-Y
   // HOTFIX SECTION 14-2: fires ~4x/sec for as long as ANY movie is actually
   // playing (including the whole length of sneaking.mp4, not just at its
   // end) — registered once here rather than per-playEventMovie() call so it
@@ -784,6 +810,13 @@
     eventMovieOverlayEl.hidden = true;
     eventMovieTapFallbackEl.hidden = true;
     eventMovieTapFallbackEl.onclick = null;
+    // HOTFIX 4 ADDENDUM SECTIONS L-Y: a cancel mid-preload (RETRY/QUIT
+    // while ENDING ROLL's own LOADING screen is still showing) must stop
+    // the looping LOADING footage and free any in-flight blob: URL too —
+    // otherwise both would keep running/leaking in the background even
+    // though the overlay itself is hidden.
+    if (!endingLoadingVideoEl.hidden) { endingLoadingVideoEl.hidden = true; endingLoadingVideoEl.pause(); }
+    if (endingRollObjectUrl) { URL.revokeObjectURL(endingRollObjectUrl); endingRollObjectUrl = null; }
   }
 
   // SECTION U: debug-only skip — window.__game exposure only, never a
@@ -808,6 +841,10 @@
     eventMovieOverlayEl.hidden = true;
     eventMovieTapFallbackEl.hidden = true;
     eventMovieTapFallbackEl.onclick = null;
+    // HOTFIX 4 ADDENDUM SECTIONS L-Y: same LOADING-footage/blob-URL cleanup
+    // as cancelEventMovie() above, for a debug-only skip mid-preload.
+    if (!endingLoadingVideoEl.hidden) { endingLoadingVideoEl.hidden = true; endingLoadingVideoEl.pause(); }
+    if (endingRollObjectUrl) { URL.revokeObjectURL(endingRollObjectUrl); endingRollObjectUrl = null; }
     if (resumeBgm) bgmAudio.play().catch(() => {});
     reassertGameplayBgmIfExpected();
     if (onComplete) onComplete();
@@ -1051,6 +1088,24 @@
     if (gameState.mode !== 'boss') return false;
     const plan = activeStagePlanArray()[currentStageIndex];
     return !!plan && (plan.type === 'drone' || plan.type === 'mixed' || plan.type === 'whiteShadow' || plan.type === 'cultivationLab');
+  }
+  // HOTFIX 4 SECTIONS 18-21: PROJECT ADAM SITE (the cultivation lab waypoint)
+  // is AREA1-only — no AREA2 is ever generated for it. Same "ask the active
+  // plan entry" pattern isStoryDroneStage() already uses just above.
+  function isCultivationLabStage() {
+    if (gameState.mode !== 'boss') return false;
+    const plan = activeStagePlanArray()[currentStageIndex];
+    return !!plan && plan.type === 'cultivationLab';
+  }
+  // HOTFIX 4 SECTIONS 22-32/ADDENDUM F-K: true only while the MAIN SCENARIO's
+  // own new post-GABRIEL3 ADAM SPHERE STAGE (real ADAM combat, on the new
+  // C-10 background) is the active stage — checked via stageOverrideId
+  // (set only by that one enterStoryStage() branch) rather than plan.type,
+  // since plan.type==='adamSphere' is ALSO used by SECRET's own inert-sphere/
+  // real-fight-elsewhere flow and by MAIN's own (now-replaced) old inert
+  // branch; this id is unique to the new MAIN combat stage.
+  function isMainAdamSphereStage() {
+    return storyScenarioState.stageOverrideId === 'boss_c10_adam_sphere_main';
   }
   function isFinalStoryStage() {
     if (gameState.mode !== 'boss') return false;
@@ -1913,6 +1968,21 @@
       const roidBlockadeY = boss.y + ROID_HURT_RADIUS;
       if (player.y < roidBlockadeY) player.y = roidBlockadeY;
     }
+    // HOTFIX 4 SECTIONS 22-32: the MAIN SCENARIO's own new ADAM SPHERE
+    // STAGE blocks NORTH movement past ADAM while it's genuinely still
+    // alive/fighting — same "corridor-width blockade at the boss's own
+    // established hurt-radius" pattern ROID1/ROID2's own AREA1 blockade
+    // just above already uses, reusing the SAME BOSS_HURT_RADIUS every
+    // GABRIEL-family boss's own body-hit test already uses (never a
+    // separately-guessed margin). East/west/south movement is completely
+    // untouched. Lifts the instant ADAM's own 5s multi-explosion defeat
+    // sequence begins (boss.state==='adamSphereMainDying') — see
+    // beginAdamSphereMainDefeat() — not only once it fully finishes, since
+    // ADAM is already non-attacking/being-destroyed from that point on.
+    if (isMainAdamSphereStage() && boss.spawned && boss.state !== 'dead' && boss.state !== 'adamSphereMainDying') {
+      const adamSphereBlockadeY = boss.y + BOSS_HURT_RADIUS;
+      if (player.y < adamSphereBlockadeY) player.y = adamSphereBlockadeY;
+    }
     // HOTFIX SECTION 22: real solid-body physics — applies on top of (never
     // instead of) every clamp above, for every boss type (22-5).
     clampPlayerAwayFromBoss();
@@ -1931,6 +2001,12 @@
     // same single-screen intent — never lets the player scroll into a
     // fabricated AREA2 either.
     if (eventStageState.active && player.y < 0) player.y = 0;
+    // HOTFIX 4 SECTIONS 18-21: the real STORY-run PROJECT ADAM SITE waypoint
+    // (plan.type==='cultivationLab' — distinct from the eventStageState b1/b2
+    // debug side-channel just above, but the exact same "AREA1-only" intent)
+    // gets the identical pin — this stage must never be enterable into a
+    // phantom AREA2 either, regardless of how far the player walks north.
+    if (isCultivationLabStage() && player.y < 0) player.y = 0;
     player.lastValidY = player.y;
   }
 
@@ -3171,8 +3247,15 @@
   // mechanism.
   const WORLD_ITEM_PICKUP_TEXT_MS = 2500; // within spec's own "数秒後に自動消去" — a little longer than healPickupTexts' 1000ms since this is a 2-line notice, not a quick "+HP" flash
   const worldItemPickupTexts = [];
+  // HOTFIX 4 SECTIONS 33-38: `x`/`y` are no longer stored/read at all — every
+  // item's pickup text now follows the LIVE player position every frame
+  // (drawWorldItemPickupTexts() below reads player.x/player.y directly),
+  // never a position frozen at the item's own pickup spot, so it never
+  // drifts away from the player as they keep moving. Kept as parameters
+  // (ignored) purely so updateWorldItems()'s existing call site needs no
+  // change.
   function spawnWorldItemPickupText(lines, x, y, now) {
-    worldItemPickupTexts.push({ lines, x, y, startedAt: now });
+    worldItemPickupTexts.push({ lines, startedAt: now });
   }
   function drawWorldItemPickupTexts(now) {
     for (let i = worldItemPickupTexts.length - 1; i >= 0; i--) {
@@ -3183,12 +3266,23 @@
       ctx.save();
       ctx.globalAlpha = Math.min(1, (1 - u) * 2); // holds near-full alpha then fades in the back half, rather than fading the whole time
       ctx.font = 'bold 14px sans-serif';
-      ctx.fillStyle = '#e8e8e8';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      const drift = u * 20;
+      // HOTFIX 4 SECTIONS 33-38: overlaid directly on/in front of the PLAYER's
+      // own sprite (same "front layer, same position as player" concept as
+      // HOTFIX 3's Blood Sample icon overlay just below) — anchored a fixed
+      // offset above the player's own head, never drifting further away
+      // over the notice's lifetime. Same black-outline-then-fill styling
+      // drawReloadingText() already uses for its own player-anchored text.
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#000000';
+      const anchorY = player.y - SPRITE_DRAW_H / 2 - 14;
       t.lines.forEach((line, idx) => {
-        ctx.fillText(line, t.x, t.y - drift - (t.lines.length - 1 - idx) * 16);
+        const ly = anchorY - (t.lines.length - 1 - idx) * 16;
+        ctx.strokeText(line, player.x, ly);
+        ctx.fillStyle = '#e8e8e8';
+        ctx.fillText(line, player.x, ly);
       });
       ctx.restore();
     }
@@ -3664,22 +3758,17 @@
       // either way, collecting it just marks escape-ready and stops
       // progression here (no EXIT/ENDING logic exists yet this PART).
       storyScenarioState.escapeReady = true;
-    } else if (type === 'bloodSample3' && storyScenarioState.scenario === 'main') {
-      // HOTFIX SECTION 23: DEMO's (MAIN's) final route must NEVER show ADAM
-      // SPHERE — picking up Blood Sample③ now unlocks the stage EXIT
-      // directly, exactly like collecting an actual ESCAPE NAVIGATOR would
-      // (the EXIT-reach dispatcher in update() checks these same 2 flags —
-      // see its own "scenario && escapeReady && runInventory.escapeNavigator"
-      // check — and routes straight into beginStoryEscapeEnding(), never
-      // beginStageTransition()'s normal STORY-advance, so the now-dead
-      // {type:'adamSphere'} MAIN_TEMPLATE_PLAN entry is never reached at
-      // all). SECRET is completely untouched — its own bloodSample3 pickup
-      // still falls through to no branch here, exactly as before, so its
-      // ADAM SPHERE → blood samples → ADAM combat design stays fully intact
-      // (section 25).
-      storyScenarioState.escapeReady = true;
-      runInventory.escapeNavigator = true;
     }
+    // HOTFIX 4 SECTIONS 22-32: the old MAIN-only "picking up Blood Sample③
+    // unlocks the EXIT directly, skipping the {type:'adamSphere'}
+    // MAIN_TEMPLATE_PLAN entry entirely" short-circuit (which used to live
+    // here as its own `type === 'bloodSample3' && scenario === 'main'`
+    // branch) is REMOVED per today's explicit override of that old "DEMO
+    // never shows ADAM SPHERE" rule — bloodSample3 now falls through with
+    // no special handling, exactly like bloodSample1/bloodSample2 already
+    // do, so the normal walk-to-EXIT -> beginStageTransition() ->
+    // currentStageIndex+=1 flow naturally reaches enterStoryStage()'s real
+    // 'adamSphere' MAIN combat branch below instead of bypassing it.
   }
 
   // SECTION 10-16/19/26/30/31: the ONE place a GABRIEL-family STORY boss
@@ -4505,7 +4594,7 @@
     // `now - stateEnteredAt` — the latter would jump forward by however
     // long a real-world PAUSE lasted the instant it resumes, effectively
     // skipping the rest of the cinematic instead of continuing it.
-    if (state === 'intro' || state === 'threshold' || state === 'dying' || state === 'flashdown') {
+    if (state === 'intro' || state === 'threshold' || state === 'dying' || state === 'flashdown' || state === 'adamSphereMainDying') {
       boss.cinematicElapsed = 0;
     }
   }
@@ -4975,6 +5064,9 @@
         if (Math.hypot(player.x - missile.x, player.y - missile.y) <= ROID2_MISSILE_BLAST_RADIUS) {
           applyDamageToPlayerLife(now, ROID2_MISSILE_DAMAGE);
         }
+        // HOTFIX 4 SECTION 13-17: a missile's impact point counts as
+        // "physically touching" whatever BARREL sits there too.
+        tryExplodeBarrelAtPoint(missile.x, missile.y, now);
       }
     }
     // Mode ends once every missile launched so far has impacted AND no more
@@ -5047,6 +5139,10 @@
       if (Math.hypot(player.x - c.x, player.y - c.y) <= ROID1_COVER_COUNTER_BLAST_RADIUS) {
         applyDamageToPlayerLife(now, ROID1_COVER_COUNTER_DAMAGE);
       }
+      // HOTFIX 4 SECTION 13-17: this counter is aimed squarely at whatever
+      // BARREL the player was just hiding behind, so it counts as an
+      // enemy missile-type attack touching that barrel too.
+      tryExplodeBarrelAtPoint(c.x, c.y, now);
       roidState.coverCounter = null;
     }
   }
@@ -5160,6 +5256,15 @@
       }
       if (!isPlayerInvulnerable() && Math.hypot(b.x - player.x, b.y - player.y) <= PLAYER_HIT_RADIUS) {
         applyDamageToPlayerLife(now, ROID_BULLET_DAMAGE);
+        enemyBullets.splice(i, 1);
+        continue;
+      }
+      // HOTFIX 4 SECTION 13-17: this single array already carries EVERY
+      // travelling enemy gunfire shot (DRONE sniper shots, ROID1/ROID2 burst
+      // AND ROID1 sniper bullets — see fireDroneSniperShot/fireRoidBullet/
+      // fireRoidSniperBullet, all of which push here) — so one check here
+      // covers all of "DRONEの弾, ROID1の銃撃, ROID2の銃撃" at once.
+      if (tryExplodeBarrelAtPoint(b.x, b.y, now)) {
         enemyBullets.splice(i, 1);
       }
     }
@@ -5403,6 +5508,13 @@
   }
 
   function startBossDying(now) {
+    // HOTFIX 4 ADDENDUM SECTIONS F-K: the MAIN SCENARIO's own ADAM SPHERE
+    // STAGE replaces the normal GABRIEL-family dissolve-particle DYING
+    // cinematic (and updateBossDying()'s own movie/reward flow, which is
+    // built around GABRIEL's gabriel_defeated movie and SECRET-ADAM's own
+    // walk-up-and-collect ESCAPE NAVIGATOR — neither applies here) with the
+    // new dedicated 5s-multi-explosion -> GAME CLEAR!! -> escape sequence.
+    if (isMainAdamSphereStage()) { beginAdamSphereMainDefeat(now); return; }
     boss.downFacing = DIR_TO_BOSS_KEY[boss.dir]; // same one-time capture as startBossThreshold()
     arcClawSlashes.length = 0; // no lingering attack hazards during the death cinematic
     boss.dyingParticlesBuilt = false;
@@ -6209,9 +6321,13 @@
   function updateBoss(dt, now) {
     // DARK OUT PART 3: BOSS BATTLE MODE's GABRIEL fight reuses this EXACT
     // function (no copy) — widened from 'boss'-only so its own spawnBoss()
-    // call (see startBossBattle()) actually gets an AI. TRAINING/SECURITY
-    // TRAINING never spawn a boss and are unaffected by this widening.
-    if (gameState.mode !== 'boss' && gameState.mode !== 'bossBattle') return;
+    // call (see startBossBattle()) actually gets an AI.
+    // HOTFIX 4 SECTIONS 1-6: widened again for SECURITY TRAINING's own new
+    // STAGE 4 (ADAM) — boss.spawned stays false for every OTHER TRAINING
+    // stage (enterSecurityTrainingStage() only ever calls spawnBoss() for
+    // STAGE 4), so this remains a no-op everywhere else in TRAINING exactly
+    // like before.
+    if (gameState.mode !== 'boss' && gameState.mode !== 'bossBattle' && gameState.mode !== 'securityTraining') return;
     // PART 5 SECTION T: GABRIEL is now always spawned explicitly, the
     // instant a boss-type STORY_STAGE_PLAN entry is entered (see
     // enterStoryStage()) — there is no longer a delay-timer auto-spawn (the
@@ -6231,6 +6347,7 @@
     if (boss.state === 'intro') { updateBossIntro(dt, now); return; }
     if (boss.state === 'threshold') { updateBossThreshold(dt, now); return; }
     if (boss.state === 'dying') { updateBossDying(dt, now); return; }
+    if (boss.state === 'adamSphereMainDying') { updateAdamSphereMainDying(dt, now); return; } // HOTFIX 4 ADDENDUM SECTIONS F-K
     if (boss.state === 'flashdown') { updateBossFlashDown(dt, now); return; }
     if (boss.state === 'darkphase') { updateBossDarkPhase(dt, now); return; }
     if (boss.state === 'teleport') { updateBossTeleport(dt, now); return; }
@@ -6543,6 +6660,49 @@
       } else {
         proceedWithDefeatRewards();
       }
+    }
+  }
+
+  // HOTFIX 4 ADDENDUM SECTIONS F-K: MAIN SCENARIO's own ADAM SPHERE STAGE —
+  // ADAM HP hitting 0 here (intercepted in startBossDying() above) enters
+  // this dedicated state instead of the normal GABRIEL-family DYING
+  // cinematic: ~5s of continuous, staggered explosions (mirrors
+  // updateRoidDeath()'s own multi-explosion timing/spread verbatim, reusing
+  // spawnExplosionVisual() again rather than a new effect) — ADAM is
+  // already fully non-attacking/non-damaging throughout, since none of
+  // updateBoss()'s CHASE/ATTACK/DEFENSE branches run for this state — then
+  // "GAME CLEAR!!" (the SAME existing overlay/timing every other GAME CLEAR
+  // already uses — see triggerGameClear()/GAME_CLEAR_DISPLAY_MS) which then
+  // continues into the SAME existing MAIN escape/ending flow
+  // (beginStoryEscapeEnding(), see its own branch in updateScreenFlashes())
+  // instead of RESULT. ESCAPE NAVIGATOR/escapeReady are granted internally
+  // right here rather than spawned as a walk-up pickup, so the player is
+  // never left waiting around after the fight already ended.
+  const ADAM_SPHERE_MAIN_DEATH_MS = 5000;
+  const ADAM_SPHERE_MAIN_DEATH_EXPLOSION_COUNT = 10;
+  function beginAdamSphereMainDefeat(now) {
+    boss.adamSphereMainDeathExplosionsSpawned = 0;
+    bossEnterState('adamSphereMainDying', now);
+  }
+  function updateAdamSphereMainDying(dt, now) {
+    boss.cinematicElapsed += dt * 1000;
+    const elapsed = boss.cinematicElapsed;
+    const targetCount = Math.min(
+      ADAM_SPHERE_MAIN_DEATH_EXPLOSION_COUNT,
+      Math.floor((elapsed / ADAM_SPHERE_MAIN_DEATH_MS) * ADAM_SPHERE_MAIN_DEATH_EXPLOSION_COUNT) + 1
+    );
+    while (boss.adamSphereMainDeathExplosionsSpawned < targetCount) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = Math.random() * BOSS_DRAW_H * 0.35;
+      spawnExplosionVisual(boss.x + Math.cos(angle) * radius, boss.y + Math.sin(angle) * radius * 0.6, now);
+      boss.adamSphereMainDeathExplosionsSpawned++;
+    }
+    if (elapsed >= ADAM_SPHERE_MAIN_DEATH_MS) {
+      boss.state = 'dead';
+      boss.deadAt = now;
+      runInventory.escapeNavigator = true;
+      storyScenarioState.escapeReady = true;
+      triggerGameClear(now);
     }
   }
 
@@ -7143,6 +7303,27 @@
   bossBgmAudio.loop = true;
   bossBgmAudio.preload = 'auto';
   bossBgmAudio.volume = BGM_VOLUME;
+  // HOTFIX 4 ADDENDUM SECTIONS A-E: real-device (iOS Safari) reports of BGM
+  // audibly cutting out every time an EVENT MOVIE's own <video> starts —
+  // starting a new media element competes with this page's already-playing
+  // background <audio> for the OS's single audio session, and iOS can pause
+  // our track out from under us without our code ever calling .pause()
+  // itself. The existing ~500ms poll (loop()'s own throttled
+  // reassertGameplayBgmIfExpected() call) already recovers from this kind
+  // of external interruption (the same mechanism the old "device MUTE/
+  // UNMUTE" interruption case already relied on), but a up-to-500ms silent
+  // gap still reads as an audible stutter. Reacting to the audio element's
+  // own 'pause' event catches it within milliseconds instead. This can
+  // never fight our OWN deliberate pauses or create a loop: musicContext is
+  // always updated to the new value BEFORE we ever call .pause()/.play() in
+  // every transition function in this file, so syncMusicContext() here
+  // simply finds that track already correctly paused and no-ops for it —
+  // it only ever resumes whichever track musicContext says SHOULD be
+  // playing right now.
+  function handleUnexpectedBgmPause() { syncMusicContext(); }
+  menuBgmAudio.addEventListener('pause', handleUnexpectedBgmPause);
+  bgmAudio.addEventListener('pause', handleUnexpectedBgmPause);
+  bossBgmAudio.addEventListener('pause', handleUnexpectedBgmPause);
   function startBossBgm() {
     musicContext = 'boss'; // HOTFIX 2 SECTION 5: boss BGM only — menu/normal both stopped below/by this context
     stopMenuBgm();
@@ -7566,10 +7747,18 @@
     return (gameState.mode === 'training' || gameState.mode === 'securityTraining') && !stageTransition.active;
   }
   function exitWorldPos() {
+    // HOTFIX 4 SECTIONS 18-21: PROJECT ADAM SITE (cultivation lab) is AREA1-
+    // only — its own EXIT sits just south of AREA1's own top edge (the exact
+    // same "areaTop - worldExtraAbove + EXIT_ZONE_H/2 + 20" formula every
+    // other stage already uses, just anchored to areaTopY(1) instead of
+    // areaTopY(2)) since there is no AREA2 for it to sit beyond. This is the
+    // "same-AREA exit" the stage now uses — reaching it never requires (and,
+    // per the player.y>=0 pin above, never permits) crossing into AREA2.
+    const topEdge = isCultivationLabStage() ? areaTopY(1) : areaTopY(2);
     // Anchored an extra H further north than before this batch, since AREA
     // 2's own full-screen band now sits between the original screen and
     // this bonus space.
-    return { x: W / 2, y: -H - worldExtraAbove + EXIT_ZONE_H / 2 + 20 };
+    return { x: W / 2, y: topEdge - worldExtraAbove + EXIT_ZONE_H / 2 + 20 };
   }
 
   // DARK OUT PART 10 SECTION O/P/Q/R/S: ESCAPE READY -> EXIT -> ENDING.
@@ -7616,7 +7805,12 @@
   // makes playEndingRoll() below take its own error-fallback path (27-1)
   // immediately, without ever attempting a network request, so the game
   // never breaks either way.
-  const ENDING_ROLL_VIDEO_URL = 'https://pub-c78c0b31663b4a5692c914b87616b615.r2.dev/ending_darkout.MOV';
+  // HOTFIX 4 ADDENDUM SECTIONS L-Y: same host/path as before, but the R2
+  // object's own CONTENT has been replaced this batch — the explicit
+  // `?v=hotfix4-ending2` cache-busting query (permitted verbatim by the
+  // ADDENDUM) guards against a mobile browser/CDN edge serving back a stale
+  // cached copy of the OLD video from the exact same URL.
+  const ENDING_ROLL_VIDEO_URL = 'https://pub-c78c0b31663b4a5692c914b87616b615.r2.dev/ending_darkout.MOV?v=hotfix4-ending2';
   // Only flip this once the configured CDN is CONFIRMED to send the right
   // CORS headers (Access-Control-Allow-Origin) — crossOrigin set against a
   // non-CORS-safe host silently blocks playback in some browsers entirely,
@@ -7634,6 +7828,20 @@
   // by a QUIT/RETRY mid-playback (cancelEventMovie()/skipEventMovie() both
   // already reset eventMovieState.key generically) — this needs no
   // coordination with playEventMovie()'s own token beyond that.
+  // HOTFIX 4 ADDENDUM SECTIONS L-Y: how long the LOADING screen is willing
+  // to wait for ending_darkout.MOV to become genuinely safely-playable
+  // before concluding this is a real failure (never just "momentarily
+  // slow") and falling back to TAP TO CONTINUE. Generous on purpose — this
+  // is a large video and a slow/throttled connection must still be given a
+  // real chance to finish buffering rather than bailing early.
+  const ENDING_ROLL_LOAD_MAX_WAIT_MS = 45000;
+  // Once buffered.end() stops growing for this long while already covering
+  // most of the duration, treat it as "stable enough to start" rather than
+  // waiting for a literal 100% download that may never quite finish
+  // (chunked/streamed responses can leave the last few bytes pending
+  // indefinitely) — this is the "stability observed over time" check.
+  const ENDING_ROLL_BUFFER_STABLE_MS = 600;
+  let endingRollObjectUrl = null; // revoked in finish() below — never leaked
   function playEndingRoll(onComplete) {
     // Section 1/18: BGM must be fully silent throughout — stop+reset
     // gameplay, boss, AND menu BGM alike, immediately before anything else
@@ -7655,6 +7863,7 @@
       // 27-1: small, unobtrusive "TAP TO CONTINUE" — reuses the existing
       // shared tap-fallback element (same one playEventMovie() itself uses
       // for an autoplay-blocked retry), just wired to a different action.
+      hideEndingLoading();
       eventMovieTapFallbackEl.hidden = false;
       eventMovieTapFallbackEl.onclick = () => {
         eventMovieTapFallbackEl.hidden = true;
@@ -7662,16 +7871,37 @@
         onTap();
       };
     }
+    function showEndingLoading() {
+      // HOTFIX 4 ADDENDUM SECTIONS L-Y: reuses the SAME loading.mp4 footage
+      // every other LOADING context already uses (never a new asset),
+      // looping continuously so there is never a black/frozen frame while
+      // ending_darkout.MOV preloads in the background.
+      eventMovieOverlayEl.hidden = false;
+      eventMovieVideoEl.hidden = true;
+      endingLoadingVideoEl.hidden = false;
+      endingLoadingVideoEl.currentTime = 0;
+      endingLoadingVideoEl.play().catch(() => {}); // muted+loop — autoplay-block here is harmless, just a missed loop restart
+    }
+    function hideEndingLoading() {
+      endingLoadingVideoEl.hidden = true;
+      endingLoadingVideoEl.pause();
+      eventMovieVideoEl.hidden = false;
+    }
+    function revokeObjectUrlIfAny() {
+      if (endingRollObjectUrl) { URL.revokeObjectURL(endingRollObjectUrl); endingRollObjectUrl = null; }
+    }
     function finish() {
       if (eventMovieState.key !== 'endingRoll') return; // superseded by a cancel/skip — never double-fire onComplete
       eventMovieState.active = false;
       eventMovieState.key = null;
       eventMovieState.onComplete = null;
       eventMovieOverlayEl.hidden = true;
+      hideEndingLoading();
       eventMovieVideoEl.onended = null;
       eventMovieVideoEl.onerror = null;
       eventMovieVideoEl.removeAttribute('src');
       eventMovieVideoEl.load();
+      revokeObjectUrlIfAny();
       eventMovieTapFallbackEl.hidden = true;
       eventMovieTapFallbackEl.onclick = null;
       if (onComplete) onComplete();
@@ -7688,42 +7918,125 @@
 
     eventMovieTapFallbackEl.hidden = true;
     eventMovieTapFallbackEl.onclick = null;
-    eventMovieVideoEl.loop = false;
-    eventMovieVideoEl.muted = false; // the video's own embedded audio may play (section 1) — no existing BGM is playing underneath it (see above)
-    eventMovieVideoEl.preload = 'metadata'; // never full-preload a ~120MB file at game start (section 1)
-    eventMovieVideoEl.playsInline = true;
-    if (ENDING_ROLL_CORS_SAFE) eventMovieVideoEl.crossOrigin = 'anonymous';
-    else eventMovieVideoEl.removeAttribute('crossorigin');
-    eventMovieVideoEl.src = ENDING_ROLL_VIDEO_URL;
-    eventMovieVideoEl.currentTime = 0;
     eventMovieOverlayEl.hidden = false;
+    showEndingLoading();
 
-    eventMovieVideoEl.onended = finish;
-    eventMovieVideoEl.onerror = () => {
-      // 27-1: a genuine network/load failure — never hard-freeze.
-      if (eventMovieState.key !== 'endingRoll') return;
-      showFallback(finish);
-    };
-    eventMovieVideoEl.play().catch(() => {
-      if (eventMovieState.key !== 'endingRoll') return;
-      // HOTFIX 2 SECTION 17/19 (bug found in this batch's own live test): a
-      // genuinely unreachable src rejects BOTH this play() promise AND fires
-      // its own 'error' event above — whichever handler runs second used to
-      // unconditionally overwrite the fallback's onclick, so a real load
-      // failure's tap sometimes ended up wired to a pointless play() retry
-      // instead of finish(), silently stranding the player. Checking for an
-      // already-present MediaError here means a genuine load failure always
-      // wins and wires straight to finish(), regardless of firing order;
-      // only a TRUE autoplay-block (no underlying media error at all) gets
-      // the retry-first behavior.
-      if (eventMovieVideoEl.error) {
+    // Once the src (blob: or the direct R2 URL) is confirmed safely
+    // playable, this actually starts playback — never called speculatively
+    // "just in case", only once one of the two preload strategies below
+    // has genuinely confirmed readiness.
+    function beginConfirmedPlayback() {
+      if (eventMovieState.key !== 'endingRoll') return; // superseded mid-preload
+      hideEndingLoading();
+      eventMovieVideoEl.currentTime = 0;
+      eventMovieVideoEl.onended = finish;
+      eventMovieVideoEl.onerror = () => {
+        // 27-1: a genuine network/load failure — never hard-freeze.
+        if (eventMovieState.key !== 'endingRoll') return;
         showFallback(finish);
-        return;
-      }
-      showFallback(() => {
-        eventMovieVideoEl.play().catch(() => showFallback(finish));
+      };
+      // Once playback has genuinely started, this file's own contract
+      // (ADDENDUM section L-Y) is "never pause()/play() again for
+      // non-error reasons, never recreate the video element" — the only
+      // handlers wired past this point are onended (normal completion) and
+      // onerror (a genuine mid-playback failure), never a resume-after-
+      // pause watchdog of any kind.
+      eventMovieVideoEl.play().catch(() => {
+        if (eventMovieState.key !== 'endingRoll') return;
+        // HOTFIX 2 SECTION 17/19: a genuinely unreachable src rejects BOTH
+        // this play() promise AND fires its own 'error' event — checking
+        // for an already-present MediaError means a genuine load failure
+        // always wins and wires straight to finish(), regardless of firing
+        // order; only a TRUE autoplay-block gets the retry-first behavior.
+        if (eventMovieVideoEl.error) { showFallback(finish); return; }
+        showFallback(() => {
+          eventMovieVideoEl.play().catch(() => showFallback(finish));
+        });
       });
-    });
+    }
+
+    // FALLBACK STRATEGY (also the only strategy whenever ENDING_ROLL_CORS_
+    // SAFE is false, i.e. the configured CDN's CORS headers are not yet
+    // confirmed — see that const's own comment): set the direct R2 URL as
+    // .src with preload='auto' and poll actual buffered readiness rather
+    // than trusting a single loadedmetadata/canplaythrough event alone
+    // (iOS Safari's canplaythrough is not fully reliable per the ADDENDUM's
+    // own explicit instruction) — combines readyState>=HAVE_ENOUGH_DATA,
+    // buffered.length>0, and buffered.end() reaching MOST/ALL of duration,
+    // held stable (unchanged) for ENDING_ROLL_BUFFER_STABLE_MS before
+    // considering it safe to start.
+    function preloadViaBufferedPolling() {
+      eventMovieVideoEl.loop = false;
+      eventMovieVideoEl.muted = false; // the video's own embedded audio may play (section 1) — no existing BGM is playing underneath it (see above)
+      eventMovieVideoEl.playsInline = true;
+      eventMovieVideoEl.removeAttribute('crossorigin'); // no CORS header confirmed for this path — never set crossOrigin against a non-CORS-safe host (silently blocks playback in some browsers)
+      eventMovieVideoEl.preload = 'auto';
+      eventMovieVideoEl.src = ENDING_ROLL_VIDEO_URL;
+      eventMovieVideoEl.load();
+
+      const startedAt = performance.now();
+      let lastBufferedEnd = -1;
+      let stableSinceMs = 0;
+      function poll(nowTick) {
+        if (eventMovieState.key !== 'endingRoll') return; // superseded mid-preload
+        if (eventMovieVideoEl.error) { showFallback(finish); return; } // genuine load failure — never infinite-loading
+        const elapsed = nowTick - startedAt;
+        const hasEnoughData = eventMovieVideoEl.readyState >= 4; // HAVE_ENOUGH_DATA
+        let coveredEnough = false;
+        const buffered = eventMovieVideoEl.buffered;
+        const duration = eventMovieVideoEl.duration;
+        if (buffered && buffered.length > 0 && isFinite(duration) && duration > 0) {
+          const bufEnd = buffered.end(buffered.length - 1);
+          coveredEnough = bufEnd >= duration * 0.97; // "most/all of duration", never a strict 100%-or-nothing requirement
+          if (bufEnd > lastBufferedEnd) { lastBufferedEnd = bufEnd; stableSinceMs = nowTick; }
+        }
+        const stableLongEnough = (nowTick - stableSinceMs) >= ENDING_ROLL_BUFFER_STABLE_MS;
+        if (hasEnoughData && coveredEnough && stableLongEnough) {
+          beginConfirmedPlayback();
+          return;
+        }
+        if (elapsed > ENDING_ROLL_LOAD_MAX_WAIT_MS) {
+          // Only a genuine timeout after a generous wait counts as failure —
+          // never a premature fallback just because loading is momentarily
+          // slow (ADDENDUM's own explicit requirement).
+          showFallback(finish);
+          return;
+        }
+        setTimeout(() => poll(performance.now()), 200);
+      }
+      poll(performance.now());
+    }
+
+    // FIRST CHOICE (only attempted once the configured CDN's CORS headers
+    // are actually confirmed — ENDING_ROLL_CORS_SAFE, see its own comment):
+    // fetch() the full video, convert to a Blob, and play from a local
+    // blob: URL — this eliminates any further network stalls entirely once
+    // the fetch itself completes, since playback then reads purely from
+    // memory. Falls back to buffered-polling on ANY fetch/blob error
+    // (network failure, non-CORS-safe response, etc.) rather than ever
+    // leaving the LOADING screen stuck.
+    if (ENDING_ROLL_CORS_SAFE) {
+      fetch(ENDING_ROLL_VIDEO_URL, { mode: 'cors' })
+        .then((resp) => { if (!resp.ok) throw new Error('ending roll fetch: bad status ' + resp.status); return resp.blob(); })
+        .then((blob) => {
+          if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
+          revokeObjectUrlIfAny(); // defensive — never double-download/leak if this somehow re-entered
+          endingRollObjectUrl = URL.createObjectURL(blob);
+          eventMovieVideoEl.loop = false;
+          eventMovieVideoEl.muted = false;
+          eventMovieVideoEl.playsInline = true;
+          eventMovieVideoEl.removeAttribute('crossorigin'); // a blob: URL is always same-origin — crossOrigin has no meaning here
+          eventMovieVideoEl.preload = 'auto';
+          eventMovieVideoEl.src = endingRollObjectUrl;
+          beginConfirmedPlayback();
+        })
+        .catch(() => {
+          if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
+          preloadViaBufferedPolling();
+        });
+    } else {
+      preloadViaBufferedPolling();
+    }
   }
 
   // Reached ONLY from the EXIT-reach branch in update(), and only when
@@ -7795,6 +8108,57 @@
   // BASIC TRAINING and SECURITY TRAINING (K-1/O-1); the SECURITY-only
   // block at the end is skipped entirely for BASIC TRAINING (O-2 — DRONEs
   // never appear there).
+  // HOTFIX 4 SECTIONS 1-6: the ONE place that populates whichever SECURITY
+  // TRAINING stage trainingStageIndex currently points at — called by BOTH a
+  // brand-new SECURITY TRAINING session (resetModeState()) and every AREA2-
+  // EXIT stage advance (advanceTrainingStage() below), the same "one central
+  // implementation" pattern enterStoryStage() already uses for STORY MODE.
+  // Every enemy population below reuses an EXISTING spawn/AI function
+  // verbatim — spawnInitialWhiteShadows()/spawnSecurityRobots() (itself
+  // populateSecurityDroneAreas()'s own even-spacing placement)/spawnBoss('adam')/
+  // spawnRoidBoss('roid1') — never a new enemy type, AI, or sprite, and
+  // WHITE_SHADOW_INITIAL_COUNT/spawnSecurityRobots()'s own {3,5,7}-per-AREA
+  // roll are never reduced, only recombined per stage.
+  function enterSecurityTrainingStage(now) {
+    securityRobots.length = 0;
+    whiteShadows.length = 0;
+    boss.spawned = false; // clears whatever the PREVIOUS stage's ADAM/ROID1 left behind the instant a new stage is entered
+    securityAttackSlotsInUse = 0;
+    enemyBullets.length = 0;
+    const stage = trainingStageIndex % TRAINING_STAGE_COUNT;
+    if (stage === 0) {
+      // STAGE 1: WHITE SHADOW only.
+      spawnBarrels(0);
+      spawnInitialWhiteShadows();
+    } else if (stage === 1) {
+      // STAGE 2: BARREL + DRONE, multiple of each.
+      spawnBarrels(BARREL_COUNT);
+      spawnSecurityRobots();
+    } else if (stage === 2) {
+      // STAGE 3: WHITE SHADOW + DRONE simultaneously.
+      spawnBarrels(0);
+      spawnSecurityRobots();
+      spawnInitialWhiteShadows();
+    } else if (stage === 3) {
+      // STAGE 4: ADAM + multiple BARRELs — reuses the exact same spawnBoss()
+      // engine (INTRO/CHASE/DEFENSE/ARC CLAW/STRAIGHT CLAW/DARK PHASE/dying)
+      // every other ADAM fight in this file already runs on; updateBoss()'s
+      // own mode gate is widened above so this AI actually ticks here.
+      spawnBarrels(BARREL_COUNT);
+      spawnBoss(now, 'adam');
+    } else {
+      // STAGE 5: DRONE + ROID1 — spawnRoidBoss() already spawns
+      // ROID_ESCORT_COUNT FAST DRONE escorts alongside ROID1 (see
+      // spawnRoidEscortBatch()), which alone satisfies "DRONE + ROID1
+      // simultaneous" with zero extra spawn code. ROID1 keeps its existing
+      // ROID_COMBAT_START_GRACE_MS opening grace unchanged — roidState.
+      // combatStartAt/isRoidCombatStartGraceActive() are entirely mode-
+      // agnostic, so it applies here exactly as it does in STORY/BOSS BATTLE.
+      spawnBarrels(0);
+      spawnRoidBoss('roid1', false);
+    }
+  }
+
   function advanceTrainingStage(now) {
     // SECTION M: a fresh random background, excluding the one just used
     // when the pool has more than one candidate (M-3) — AREA1/AREA2 within
@@ -7817,15 +8181,17 @@
     barrelLandings.length = 0;
     barrelRestockPending = false;
     barrelRestockRemainingMs = 0;
-    // SECTION G/N: SECURITY TRAINING keeps its 0-barrel stage; BASIC
-    // TRAINING keeps the existing BARREL_COUNT.
-    spawnBarrels(gameState.mode === 'securityTraining' ? 0 : BARREL_COUNT);
     if (gameState.mode === 'securityTraining') {
-      // N: fresh 3+3 DRONEs — full HP, patrol/scan re-randomized, every
-      // attack/laser/cooldown state reset — spawnSecurityRobots() always
-      // builds entirely new robot objects from scratch (same as a fresh
-      // session/RESTART), so nothing carries over from the previous STAGE.
-      spawnSecurityRobots();
+      // HOTFIX 4 SECTIONS 1-6: advance to the next of the 5 fixed stages
+      // (wrapping back to STAGE 1 after STAGE 5, keeping TRAINING endlessly
+      // repeatable exactly like before this rebuild) instead of the old
+      // "always re-roll the same DRONE-only population" behavior.
+      trainingStageIndex = (trainingStageIndex + 1) % TRAINING_STAGE_COUNT;
+      enterSecurityTrainingStage(now);
+    } else {
+      // BASIC TRAINING keeps the existing BARREL_COUNT and never touches
+      // securityRobots/whiteShadows/boss at all — fully unchanged.
+      spawnBarrels(BARREL_COUNT);
     }
     // N-3: nothing here touches player.stunned or the idle watchdog clock
     // — STUN is already fully disabled for both TRAINING modes (SECTION A).
@@ -7992,13 +8358,32 @@
       // exact same escape-unlock and stop, never touching adamSphereState/
       // stageOverrideId at all.
       if (storyScenarioState.scenario === 'main') {
+        // HOTFIX 4 SECTIONS 22-32: MAIN now routes into a REAL ADAM combat
+        // encounter here — explicitly overriding the old POST-v1.0 SECTION
+        // 27 "MAIN never proceeds to ADAM combat" rule per today's explicit
+        // instruction (see onWorldItemPickup()'s own updated comment for
+        // the matching upstream removal of the old bloodSample3 EXIT-skip
+        // that used to make this branch unreachable for MAIN). Reuses the
+        // exact same spawnBoss() engine (INTRO/CHASE/DEFENSE/ARC CLAW/
+        // STRAIGHT CLAW/DARK PHASE/dying) every other ADAM/GABRIEL fight in
+        // this file already runs on, on the new dedicated C-10 background
+        // (boss_c10_adam_sphere_main — see STAGE_REGISTRY), with
+        // BARREL_COUNT (5) BARRELs scattered via the SAME existing
+        // spawnBarrels() placement every other BARREL-carrying stage uses
+        // (never tightly packed around ADAM specifically).
         boss.spawned = false;
-        boss.state = 'inactive';
         securityRobots.length = 0;
         whiteShadows.length = 0;
-        spawnBarrels(0);
-        storyScenarioState.escapeReady = true;
-        runInventory.escapeNavigator = true;
+        // HOTFIX 4 SECTIONS 39-44: a boss stage — zero HEAL/AMMO, same
+        // suppression the ROID1/ROID2/GABRIEL boss branches already apply,
+        // undoing whatever the unconditional spawnStageClearReward() call
+        // at the top of this function just spawned.
+        healItem.active = false;
+        ammoItem.active = false;
+        worldItems.length = 0;
+        storyScenarioState.stageOverrideId = 'boss_c10_adam_sphere_main';
+        spawnBarrels(BARREL_COUNT);
+        spawnBoss(now, 'adam');
       } else {
         boss.spawned = false;
         boss.state = 'inactive';
@@ -8267,7 +8652,14 @@
   // clamp logic elsewhere never applied here since neither is ever mid-fight
   // at literally this exact center point in practice).
   function getHealItemSpawnPos() {
-    return getAreaCenterPos(currentArea);
+    // HOTFIX 4 SECTIONS 39-44: HEAL/AMMO only ever stay active for a 2-area
+    // non-boss normal STAGE (every boss/cultivationLab/adamSphere branch in
+    // enterStoryStage() explicitly sets healItem.active/ammoItem.active back
+    // to false immediately after spawnStageClearReward() fires) — so this
+    // now always resolves to AREA2's own center specifically, never
+    // whichever area the player happens to be standing in at stage-entry
+    // time, and never an "AREA1 fallback" of any kind.
+    return getAreaCenterPos(2);
   }
 
   // SECTION W: called from enterStoryStage() — every fresh STAGE entry
@@ -8307,8 +8699,13 @@
   // POST-v1.0 SECTIONS 41/42: `text` defaults to the original HEAL BOX
   // message so every pre-existing call site (still HEAL-only) needs no
   // change — AMMO BOX pickups pass their own message explicitly.
+  // HOTFIX 4 SECTIONS 33-38: `x`/`y` are no longer stored/read — HEAL/AMMO's
+  // own pickup text now follows the LIVE player position every frame too
+  // (drawHealPickupTexts() below reads player.x/player.y directly), the
+  // same unification applied to spawnWorldItemPickupText() above. Kept as
+  // parameters (ignored) so every existing call site needs no change.
   function spawnHealPickupText(x, y, now, text) {
-    healPickupTexts.push({ x, y, startedAt: now, text: text || 'HP MAX UP!' });
+    healPickupTexts.push({ startedAt: now, text: text || 'HP MAX UP!' });
   }
   function drawHealPickupTexts(now) {
     for (let i = healPickupTexts.length - 1; i >= 0; i--) {
@@ -8319,10 +8716,18 @@
       ctx.save();
       ctx.globalAlpha = 1 - u; // fades out over the full duration
       ctx.font = 'bold 14px sans-serif';
-      ctx.fillStyle = '#3ddc5a'; // green, per SECTION W
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
-      ctx.fillText(t.text, t.x, t.y - u * 24); // drifts upward while it fades
+      // HOTFIX 4 SECTIONS 33-38: same player-anchored, black-outline
+      // presentation as the unified world-item pickup text above, instead
+      // of drifting away from the item's own fixed pickup spot.
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#000000';
+      const ly = player.y - SPRITE_DRAW_H / 2 - 14;
+      ctx.strokeText(t.text, player.x, ly);
+      ctx.fillStyle = '#3ddc5a'; // green, per SECTION W
+      ctx.fillText(t.text, player.x, ly);
       ctx.restore();
     }
   }
@@ -8711,6 +9116,38 @@
     // restocking is now unified for both modes in updateBarrels() below,
     // triggered once every barrel is gone, so the two paths can never
     // double-spawn.
+  }
+
+  // HOTFIX 4 SECTIONS 13-17: shared enemy-projectile-vs-barrel collision —
+  // every enemy attack that physically reaches a barrel now blows it up
+  // through this ONE helper instead of duplicating the check at each enemy
+  // attack's own call site. Always routes through the existing
+  // explodeBarrel() verbatim — this never touches its established
+  // visual/damage/knockback/respawn rules, it only adds new trigger sources
+  // for the exact same explosion. Point form (bullets/missile impacts) stops
+  // at the first barrel it touches, matching the existing player-bullet-vs-
+  // barrel behavior above; the segment form (DRONE's instant laser ray) can
+  // touch more than one barrel along its length, so it checks all of them.
+  function tryExplodeBarrelAtPoint(x, y, now) {
+    for (const barrel of barrels) {
+      if (!barrel.alive) continue;
+      if (Math.hypot(x - barrel.x, y - barrel.y) <= BARREL_HITBOX_RADIUS) {
+        explodeBarrel(barrel, now);
+        return true;
+      }
+    }
+    return false;
+  }
+  function tryExplodeBarrelsAlongSegment(x1, y1, x2, y2, now) {
+    let hitAny = false;
+    for (const barrel of barrels) {
+      if (!barrel.alive) continue;
+      if (distanceToSegment(barrel.x, barrel.y, x1, y1, x2, y2) <= BARREL_HITBOX_RADIUS) {
+        explodeBarrel(barrel, now);
+        hitAny = true;
+      }
+    }
+    return hitAny;
   }
 
   // dt-driven (not absolute-deadline) countdowns so restock waiting and the
@@ -9278,6 +9715,10 @@
       // never a bypassing `player.life -=` or an invented damage number.
       applyDamageToPlayerLife(now, BULLET_DAMAGE);
     }
+    // HOTFIX 4 SECTION 13-17: the DRONE's beam is a ray/line-damage attack
+    // (not a travelling point), so any BARREL the ray passes through also
+    // gets caught here via the segment form of the shared helper.
+    tryExplodeBarrelsAlongSegment(robot.laserOriginX, robot.laserOriginY, robot.laserEndX, robot.laserEndY, now);
   }
 
   // SECTION E-4/N: applies FIRE damage to one DRONE — the ONE place its HP
@@ -10257,8 +10698,12 @@
     // never touches securityRobots at all (G-1/G-2/PART3 SECTION S).
     if (gameState.mode === 'securityTraining') {
       securityTrainingBgIndex = Math.floor(Math.random() * TRAINING_BACKGROUNDS.length);
-      spawnBarrels(0);
-      spawnSecurityRobots();
+      // HOTFIX 4 SECTIONS 1-6: every fresh session/RESTART always starts
+      // back at STAGE 1 (WHITE SHADOW only) of the 5-stage cycle, then
+      // defers the actual population to the same enterSecurityTrainingStage()
+      // advanceTrainingStage() itself uses on every later AREA2 EXIT.
+      trainingStageIndex = 0;
+      enterSecurityTrainingStage(performance.now());
     } else if (gameState.mode === 'boss') {
       securityRobots.length = 0;
       whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
@@ -11428,7 +11873,17 @@
     if (playerHitBlinkRemainingMs > 0) playerHitBlinkRemainingMs = Math.max(0, playerHitBlinkRemainingMs - dt * 1000);
     if (gameClearRemainingMs > 0) {
       gameClearRemainingMs = Math.max(0, gameClearRemainingMs - dt * 1000);
-      if (gameClearRemainingMs === 0) enterResultScreen();
+      if (gameClearRemainingMs === 0) {
+        // HOTFIX 4 ADDENDUM SECTIONS F-K/Z: the MAIN SCENARIO ADAM SPHERE
+        // STAGE's own GAME CLEAR!! (see completeAdamSphereMainDefeat()
+        // above via updateAdamSphereMainDying()) continues into the SAME
+        // existing MAIN escape/ending flow every other MAIN run reaches by
+        // walking to the EXIT, never straight to RESULT — isMainAdamSphereStage()
+        // stays true here since nothing else in MAIN_TEMPLATE_PLAN follows
+        // this, its own last entry.
+        if (isMainAdamSphereStage()) beginStoryEscapeEnding(performance.now());
+        else enterResultScreen();
+      }
     }
     // DARK OUT PART 3 SECTION 16: BOSS BATTLE MODE's own separate "BOSS
     // DEFEATED" hold — ticks alongside GAME CLEAR's above but never calls
@@ -11854,6 +12309,7 @@
     applyBodyHitToBoss, applyWeakPointHitToBoss, applyExplosionDamageToBoss, bossEnterState,
     getWeakPointScreenPos, arcClawSlashes, spawnArcClawSlash,
     gameState, barrels, explosions, bullets, spawnBarrels, startMode, explodeBarrel, // debug/verification only — SECTION F
+    tryExplodeBarrelAtPoint, tryExplodeBarrelsAlongSegment, updateRoidMissile, beginRoidMissile, updateRoidCoverCounter, // HOTFIX 4 SECTIONS 13-17 — debug/verification only
     isPlayerBarrelShadowHiddenFrom, isPlayerUnderBarrelShadowCover, // POST-v2.0 SECTION 24 — debug/verification only
     // Debug/verification only — SECTION G/H/I/J/T (LOADING/OPENING/MAIN MENU/BGM).
     setScreen, bgmAudio, startBgmOnce, BGM_VOLUME, returnToTopMenu, // returnToTopMenu debug/verification only — PART 3 SECTION D
@@ -12012,7 +12468,7 @@
     set area1Cleared(v) { area1Cleared = v; }, // debug/verification only
     get area2Cleared() { return area2Cleared; },
     set area2Cleared(v) { area2Cleared = v; }, // debug/verification only
-    CAMERA_FOLLOW_RATE, areaTopY, clampPlayerToScreen,
+    CAMERA_FOLLOW_RATE, areaTopY, clampPlayerToScreen, getAreaCenterPos, // HOTFIX 4 SECTIONS 39-44 — debug/verification only
     // Debug/verification only — SECTION K/L/O (3-STAGE/3-encounter STORY
     // progression) and SECTION P/Q/R (GAME CLEAR / RESULT stats).
     get gameClearRemainingMs() { return gameClearRemainingMs; },
@@ -12052,6 +12508,9 @@
     set securityAttackSlotsInUse(v) { securityAttackSlotsInUse = v; }, // debug/verification only
     get securityTrainingBgIndex() { return securityTrainingBgIndex; },
     set securityTrainingBgIndex(v) { securityTrainingBgIndex = v; }, // debug/verification only
+    get trainingStageIndex() { return trainingStageIndex; },
+    set trainingStageIndex(v) { trainingStageIndex = v; }, // HOTFIX 4 SECTIONS 1-6 — debug/verification only
+    TRAINING_STAGE_COUNT, enterSecurityTrainingStage, // HOTFIX 4 SECTIONS 1-6 — debug/verification only
     SECURITY_ROBOT_COUNT, SECURITY_ROBOTS_PER_AREA,
     SECURITY_TELEGRAPH_MS, SECURITY_LASER_VISUAL_MS,
     SECURITY_LASER_COOLDOWN_MIN_MS, SECURITY_LASER_COOLDOWN_MAX_MS,
@@ -12078,9 +12537,12 @@
     maybePlayStoryRoidArrival, storyWhiteShadowSpawnPos,
     get bossEncounterIndex() { return bossEncounterIndex; },
     set bossEncounterIndex(v) { bossEncounterIndex = v; }, // debug/verification only
+    get damageTakenThisStage() { return damageTakenThisStage; },
+    set damageTakenThisStage(v) { damageTakenThisStage = v; }, // HOTFIX 4 SECTIONS 39-44 — debug/verification only
     get storyDroneBgIndex() { return storyDroneBgIndex; },
     set storyDroneBgIndex(v) { storyDroneBgIndex = v; }, // debug/verification only
-    isStoryDroneStage, isFinalStoryStage, isSecurityDroneSystemActive,
+    isStoryDroneStage, isFinalStoryStage, isSecurityDroneSystemActive, isCultivationLabStage, // HOTFIX 4 SECTIONS 18-21 — debug/verification only
+    isMainAdamSphereStage, beginAdamSphereMainDefeat, updateAdamSphereMainDying, ADAM_SPHERE_MAIN_DEATH_MS, bossFrameName, // HOTFIX 4 SECTIONS 22-32/ADDENDUM F-K — debug/verification only
     enterStoryStage, pickFreshStoryDroneBackground,
     // Debug/verification only — this turn: input-lock root-cause fix
     // (SECTION A), all-DRONE-kill EXIT gating (SECTION E), RETRY (SECTION J).
@@ -12105,7 +12567,7 @@
     FIRE_COOLDOWN_MS, triggerManualReload,
     // Debug/verification only — PART7: healing item system.
     healItem, spawnHealItem, getHealItemSpawnPos, HEAL_ITEM_HEAL_FRAC, HEAL_ITEM_IMAGES, HEAL_ITEM_HIT_RADIUS,
-    HEAL_ITEM_FRAME1_SCALE, healPickupTexts, HEAL_PICKUP_TEXT_MS,
+    HEAL_ITEM_FRAME1_SCALE, healPickupTexts, HEAL_PICKUP_TEXT_MS, spawnHealPickupText,
     // Debug/verification only — POST-v1.0 SECTIONS 38-43: AMMO BOX + HEAL BOX rework.
     ammoItem, spawnAmmoItem, spawnStageClearReward, applyAmmoBoxPickup, applyHealBoxPickup,
     AMMO_ITEM_IMAGES, AMMO_ITEM_HIT_RADIUS, AMMO_CAPACITY_INITIAL, AMMO_CAPACITY_PICKUP_BONUS, AMMO_CAPACITY_MAX,
@@ -12796,10 +13258,8 @@
     for (const b of barrels) if (b.alive || b.falling) drawBarrel(b);
     drawHealItem(); // PART7 SECTION T: sits in the worldExtraAbove bonus band, same painter layer as barrels
     drawAmmoItem(); // POST-v1.0 SECTION 38/39: mutually exclusive with HEAL BOX per stage, same painter layer
-    drawHealPickupTexts(now); // PART8 SECTION W: "HP+30%！" floating text, world-space, drawn above the item's own layer
     drawWorldItems(); // DARK OUT PART 6: PROJECT ADAM — same ground layer as barrels/healItem
     drawAdamSphere(); // DARK OUT PART 6: ADAM SPHERE — same ground layer
-    drawWorldItemPickupTexts(now); // DARK OUT PART 6: "SECRET FILE: PROJECT ADAM" floating notice
     for (let i = barrelLandings.length - 1; i >= 0; i--) {
       const l = barrelLandings[i];
       if (now - l.startAt >= BARREL_LANDING_MS) { barrelLandings.splice(i, 1); continue; }
@@ -12853,6 +13313,14 @@
       if (bossVisible) drawBoss(now);
     }
     drawBloodSampleOverlay(now); // HOTFIX 3 SECTIONS 22-27: always drawn immediately after the player, regardless of the boss painter-sort above, so it's never hidden behind either
+    // HOTFIX 4 SECTIONS 33-38: EVERY item's pickup text (HEAL/AMMO/Blood
+    // Sample/ESCAPE NAVIGATOR/SECRET FILE) now draws here too — directly on/
+    // in front of the player's own sprite, same layer as the Blood Sample
+    // icon overlay just above (never the old ground-layer, item-position-
+    // anchored floating text) — both coexist without conflict since one
+    // draws an icon and the other draws text, at the same anchor concept.
+    drawHealPickupTexts(now);
+    drawWorldItemPickupTexts(now);
     drawReloadingText(now); // PART7 SECTION P: drawn in this same world-translated block so it follows the player through camera scroll
 
     // PART 2: laser beams draw crossing over the player/boss layer, so the
@@ -13239,6 +13707,13 @@
       // so it's already "where the player was relative to the boss when
       // the attack started" — exactly what picks the sprite here. Each
       // direction has its own dedicated release-moment render now.
+      // HOTFIX 4 SECTIONS 26-27: the MAIN SCENARIO's own ADAM SPHERE STAGE
+      // forces the attack VISUAL to always read as the south-facing release
+      // pose regardless of which way the player actually is — boss.dir
+      // itself (and every hit-detection/knockback-angle calc that reads it,
+      // e.g. the ARC CLAW/CLAW STING spawn angle) is completely untouched;
+      // only the SPRITE KEY returned here is overridden.
+      if (isMainAdamSphereStage()) return 'attack_south_release';
       const atkKey = DIR_TO_BOSS_KEY[boss.dir];
       if (atkKey === 'north') return 'attack_north';
       if (atkKey === 'south') return 'attack_south_release';
@@ -13292,6 +13767,12 @@
     // 'dead' is the true terminal state, reached only after DYING's particle
     // dissolve finishes — there is nothing left to draw by then.
     if (boss.state === 'dead') return;
+    // HOTFIX 4 ADDENDUM SECTIONS F-K: ADAM's body itself is never drawn
+    // during its own MAIN-SCENARIO-only 5s multi-explosion death window —
+    // the explosions alone (drawn separately via the shared `explosions`
+    // array's own unconditional draw loop) read as "being destroyed" with nothing to
+    // undermine that by leaving ADAM's own sprite idling underneath.
+    if (boss.state === 'adamSphereMainDying') return;
     // DARK OUT PART 4: ROID1/ROID2 use their own draw path entirely — never
     // GABRIEL's cinematic-state dispatch or its fixed BOSS_DRAW_W/H frame
     // draw below.

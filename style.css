@@ -1274,6 +1274,15 @@ body {
   height: 100%;
   object-fit: contain;
 }
+/* HOTFIX 4 ADDENDUM SECTIONS L-Y: same sizing as #event-movie-video — only
+   one of the two is ever unhidden at a time (see playEndingRoll() in
+   game.js). */
+#ending-loading-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+#ending-loading-video[hidden] { display: none; }
 /* SECTION J: iOS play()-rejection fallback — a plain tap target, never a
    permanent UI element (only shown while [hidden] is explicitly removed by
    playEventMovie()'s own play().catch() handler in game.js). */
