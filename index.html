@@ -171,6 +171,10 @@
   <div id="result-panel">
     <div id="result-title">RESULT</div>
     <div class="result-stat"><span class="result-stat-label">PLAY TIME</span><span id="result-play-time" class="result-stat-value"></span></div>
+    <!-- HOTFIX 4.1 ADDENDUM: CONTINUE (GAME OVER -> RETRY count this run) is
+         now, alongside PLAY TIME, one of the two inputs RANK is actually
+         computed from — see computeResultRank() in game.js. -->
+    <div class="result-stat"><span class="result-stat-label">CONTINUE</span><span id="result-continue" class="result-stat-value"></span></div>
     <div class="result-stat"><span class="result-stat-label">ACCURACY</span><span id="result-accuracy" class="result-stat-value"></span></div>
     <div class="result-stat"><span class="result-stat-label">DAMAGE TAKEN</span><span id="result-damage-taken" class="result-stat-value"></span></div>
     <div class="result-stat"><span class="result-stat-label">RANK</span><span id="result-rank" class="result-stat-value"></span></div>
@@ -213,7 +217,11 @@
       <button class="life-option-btn" data-life="200">200</button>
       <button class="life-option-btn" data-life="300">300</button>
       <button class="life-option-btn" data-life="500">500</button>
-      <button class="life-option-btn" data-life="infinity">&infin;</button>
+      <!-- HOTFIX 4.1 SECTIONS 19-24: LOCKED — the ∞ MAX LIFE option can no
+           longer be selected (native `disabled` blocks both click events
+           and the existing per-button listener below); the official base/
+           default LIFE is now the finite 500 (see game.js playerMaxLife). -->
+      <button class="life-option-btn life-option-btn-locked" data-life="infinity" disabled>&infin;<span class="locked-label">LOCKED</span></button>
     </div>
     <button class="mode-btn" id="setting-back-btn">BACK</button>
   </div>

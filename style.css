@@ -1248,6 +1248,24 @@ body {
   border-bottom-color: rgba(150, 240, 190, 0.85);
   text-shadow: 0 0 10px rgba(150, 240, 190, 0.55);
 }
+/* HOTFIX 4.1 SECTIONS 19-24: same dimmed/non-interactive language as
+   .main-menu-item-locked, just scoped to this narrower flex button — the
+   LOCKED hint stacks onto its own line since the button itself is too
+   narrow to fit it beside the ∞ glyph. */
+.life-option-btn-locked {
+  opacity: 0.45;
+  cursor: default;
+}
+.life-option-btn-locked:active {
+  color: rgba(235, 235, 238, 0.88);
+  border-bottom-color: rgba(230, 60, 50, 0);
+  text-shadow: none;
+}
+.life-option-btn-locked .locked-label {
+  display: block;
+  margin-left: 0;
+  font-size: 0.5em;
+}
 #mode-resume-btn {
   color: rgba(160, 225, 180, 0.9);
 }

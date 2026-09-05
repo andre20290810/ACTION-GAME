@@ -226,7 +226,15 @@
     { type: 'boss', boss: 'gabriel', encounterIndex: 0 },
     { type: 'randomSlot', count: 2, noDuplicate: true },
     { type: 'boss', boss: 'gabriel', encounterIndex: 1 },
-    { type: 'boss', boss: 'roid1', dark: true },
+    // HOTFIX 4.1 ADDENDUM SECTIONS 13-17: the 2nd {boss:'roid1', dark:true}
+    // entry that used to sit here was a genuine duplicate STAGE PLAN entry
+    // (ROID1 appearing a 2nd time within one MAIN run, confirmed via this
+    // very array — never a duplicate spawn call/visual overlap) — removed
+    // outright, never merely hidden. GABRIEL2 -> GABRIEL3(final) -> adamSphere
+    // now follow directly, same as they always did positionally. TRAINING
+    // STAGE 5's own DRONE+ROID1 (enterSecurityTrainingStage()) and the
+    // internal BOSS BATTLE debug ROID1 target are both untouched — this
+    // array is MAIN-scenario-only.
     { type: 'boss', boss: 'gabriel', encounterIndex: 2, final: true },
     { type: 'adamSphere' },
   ];
@@ -1968,19 +1976,16 @@
       const roidBlockadeY = boss.y + ROID_HURT_RADIUS;
       if (player.y < roidBlockadeY) player.y = roidBlockadeY;
     }
-    // HOTFIX 4 SECTIONS 22-32: the MAIN SCENARIO's own new ADAM SPHERE
-    // STAGE blocks NORTH movement past ADAM while it's genuinely still
-    // alive/fighting — same "corridor-width blockade at the boss's own
-    // established hurt-radius" pattern ROID1/ROID2's own AREA1 blockade
-    // just above already uses, reusing the SAME BOSS_HURT_RADIUS every
-    // GABRIEL-family boss's own body-hit test already uses (never a
-    // separately-guessed margin). East/west/south movement is completely
-    // untouched. Lifts the instant ADAM's own 5s multi-explosion defeat
-    // sequence begins (boss.state==='adamSphereMainDying') — see
-    // beginAdamSphereMainDefeat() — not only once it fully finishes, since
-    // ADAM is already non-attacking/being-destroyed from that point on.
-    if (isMainAdamSphereStage() && boss.spawned && boss.state !== 'dead' && boss.state !== 'adamSphereMainDying') {
-      const adamSphereBlockadeY = boss.y + BOSS_HURT_RADIUS;
+    // HOTFIX 4.1: the MAIN SCENARIO's own ADAM SPHERE STAGE blocks NORTH
+    // movement past ADAM SPHERE while it's genuinely still alive/fighting —
+    // same "corridor-width blockade at a fixed radius" pattern ROID1/
+    // ROID2's own AREA1 blockade just above already uses. East/west/south
+    // movement is completely untouched. Lifts the instant ADAM SPHERE's own
+    // 5s multi-explosion defeat sequence begins (adamSphereCombatState.dying)
+    // — not only once it fully finishes, since it is already non-attacking/
+    // being-destroyed from that point on.
+    if (isMainAdamSphereStage() && adamSphereCombatState.active && !adamSphereCombatState.dying) {
+      const adamSphereBlockadeY = adamSphereCombatState.y + ADAM_SPHERE_COMBAT_HIT_RADIUS;
       if (player.y < adamSphereBlockadeY) player.y = adamSphereBlockadeY;
     }
     // HOTFIX SECTION 22: real solid-body physics — applies on top of (never
@@ -3267,19 +3272,23 @@
       ctx.globalAlpha = Math.min(1, (1 - u) * 2); // holds near-full alpha then fades in the back half, rather than fading the whole time
       ctx.font = 'bold 14px sans-serif';
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
-      // HOTFIX 4 SECTIONS 33-38: overlaid directly on/in front of the PLAYER's
-      // own sprite (same "front layer, same position as player" concept as
-      // HOTFIX 3's Blood Sample icon overlay just below) — anchored a fixed
-      // offset above the player's own head, never drifting further away
-      // over the notice's lifetime. Same black-outline-then-fill styling
+      ctx.textBaseline = 'middle';
+      // HOTFIX 4.1 SECTIONS 14-17 CORRECTION: overlaid DIRECTLY ON the
+      // PLAYER's own sprite body — centered on player.x/player.y itself,
+      // the SAME anchor point drawBloodSampleOverlay() below already draws
+      // its own icon at — never offset above the head/north of the player
+      // (HOTFIX 4's own "fixed offset above the head" was a misreading of
+      // the spec and is corrected here). Draw order (player sprite first,
+      // this text after) is unchanged — see its call site right after
+      // drawPlayer()/drawBoss(). Same black-outline-then-fill styling
       // drawReloadingText() already uses for its own player-anchored text.
       ctx.lineJoin = 'round';
       ctx.lineWidth = 3;
       ctx.strokeStyle = '#000000';
-      const anchorY = player.y - SPRITE_DRAW_H / 2 - 14;
+      const lineHeight = 16;
+      const blockHeight = (t.lines.length - 1) * lineHeight;
       t.lines.forEach((line, idx) => {
-        const ly = anchorY - (t.lines.length - 1 - idx) * 16;
+        const ly = player.y - blockHeight / 2 + idx * lineHeight;
         ctx.strokeText(line, player.x, ly);
         ctx.fillStyle = '#e8e8e8';
         ctx.fillText(line, player.x, ly);
@@ -4594,7 +4603,7 @@
     // `now - stateEnteredAt` — the latter would jump forward by however
     // long a real-world PAUSE lasted the instant it resumes, effectively
     // skipping the rest of the cinematic instead of continuing it.
-    if (state === 'intro' || state === 'threshold' || state === 'dying' || state === 'flashdown' || state === 'adamSphereMainDying') {
+    if (state === 'intro' || state === 'threshold' || state === 'dying' || state === 'flashdown') {
       boss.cinematicElapsed = 0;
     }
   }
@@ -5508,13 +5517,6 @@
   }
 
   function startBossDying(now) {
-    // HOTFIX 4 ADDENDUM SECTIONS F-K: the MAIN SCENARIO's own ADAM SPHERE
-    // STAGE replaces the normal GABRIEL-family dissolve-particle DYING
-    // cinematic (and updateBossDying()'s own movie/reward flow, which is
-    // built around GABRIEL's gabriel_defeated movie and SECRET-ADAM's own
-    // walk-up-and-collect ESCAPE NAVIGATOR — neither applies here) with the
-    // new dedicated 5s-multi-explosion -> GAME CLEAR!! -> escape sequence.
-    if (isMainAdamSphereStage()) { beginAdamSphereMainDefeat(now); return; }
     boss.downFacing = DIR_TO_BOSS_KEY[boss.dir]; // same one-time capture as startBossThreshold()
     arcClawSlashes.length = 0; // no lingering attack hazards during the death cinematic
     boss.dyingParticlesBuilt = false;
@@ -6347,7 +6349,6 @@
     if (boss.state === 'intro') { updateBossIntro(dt, now); return; }
     if (boss.state === 'threshold') { updateBossThreshold(dt, now); return; }
     if (boss.state === 'dying') { updateBossDying(dt, now); return; }
-    if (boss.state === 'adamSphereMainDying') { updateAdamSphereMainDying(dt, now); return; } // HOTFIX 4 ADDENDUM SECTIONS F-K
     if (boss.state === 'flashdown') { updateBossFlashDown(dt, now); return; }
     if (boss.state === 'darkphase') { updateBossDarkPhase(dt, now); return; }
     if (boss.state === 'teleport') { updateBossTeleport(dt, now); return; }
@@ -6663,47 +6664,149 @@
     }
   }
 
-  // HOTFIX 4 ADDENDUM SECTIONS F-K: MAIN SCENARIO's own ADAM SPHERE STAGE —
-  // ADAM HP hitting 0 here (intercepted in startBossDying() above) enters
-  // this dedicated state instead of the normal GABRIEL-family DYING
-  // cinematic: ~5s of continuous, staggered explosions (mirrors
-  // updateRoidDeath()'s own multi-explosion timing/spread verbatim, reusing
-  // spawnExplosionVisual() again rather than a new effect) — ADAM is
-  // already fully non-attacking/non-damaging throughout, since none of
-  // updateBoss()'s CHASE/ATTACK/DEFENSE branches run for this state — then
-  // "GAME CLEAR!!" (the SAME existing overlay/timing every other GAME CLEAR
-  // already uses — see triggerGameClear()/GAME_CLEAR_DISPLAY_MS) which then
-  // continues into the SAME existing MAIN escape/ending flow
+  // HOTFIX 4.1 SECTIONS 1-13: ADAM SPHERE — the round rotating object (see
+  // ADAM_SPHERE_SPRITES/adamSphereState above), NOT the humanoid boss.type
+  // ==='adam' engine. HOTFIX 4 incorrectly used spawnBoss(now,'adam') for
+  // both TRAINING STAGE 4 and this MAIN FINAL BATTLE; this is the corrected
+  // combat version of the SPHERE itself — entirely separate state from the
+  // existing decorative `adamSphereState` (SECRET/MAIN blood-sample-
+  // submission sealed pod, still completely untouched), used by BOTH
+  // SECURITY TRAINING's STAGE 4 and MAIN's post-GABRIEL3 FINAL BATTLE.
+  // Git history (015e1ca "Add Project Adam and Adam Sphere events")
+  // confirms ADAM SPHERE has never had HP/attack/AI of its own before this
+  // batch — there is no pre-existing combat logic to "reuse" beyond the
+  // sprite's own rotation animation, so this adds the minimal new attack
+  // loop the spec calls for, built from EXISTING lower-level primitives
+  // only: ADAM_SPHERE_SPRITES' own 4-frame rotation loop (unchanged), the
+  // shared enemyBullets projectile pipeline every DRONE/ROID shot already
+  // uses (so it automatically also benefits from the existing enemy-
+  // projectile-vs-barrel explosion wiring), and spawnExplosionVisual() for
+  // its own death sequence. No new image assets, no humanoid ADAM sprite/
+  // state (IDLE/WALK/ATTACK/DEFENSE/ARC CLAW/STRAIGHT CLAW/DARK PHASE) is
+  // ever touched by this object.
+  const adamSphereCombatState = {
+    active: false,
+    x: 0, y: 0,
+    hp: 0,
+    frameIndex: 0,
+    frameTimer: 0,
+    nextAttackAt: 0,
+    attackVisualUntil: 0, // while now < this, drawAdamSphereCombat() forces the south-facing frame regardless of rotation phase
+    dying: false,
+    deathStartedAt: 0,
+    deathExplosionsSpawned: 0,
+  };
+  const ADAM_SPHERE_COMBAT_MAX_HP = BOSS_HP_MAX; // reuses the existing boss HP pool rather than inventing a new number — this is a FINAL-BATTLE-caliber encounter
+  const ADAM_SPHERE_COMBAT_HIT_RADIUS = ADAM_SPHERE_TARGET_DIAMETER / 2; // same body-footprint convention as every other hurtbox in this file (radius = half the drawn diameter)
+  const ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS = 1800; // lock-on-and-fire cadence
+  const ADAM_SPHERE_COMBAT_ATTACK_VISUAL_MS = 400; // how long the forced south-facing attack frame holds before the rotation loop resumes
+  // SECTIONS 6/8/46: adam_sphere_01.png is the ONE frame among the existing
+  // 4-frame rotation loop whose glowing sensor faces the viewer/PLAYER
+  // straight-on (frames 2-4 show it rotated to the side/hidden — confirmed
+  // by direct visual inspection of the 4 source PNGs) — i.e. the sphere's
+  // own "south-facing" view. Attack visuals lock to this index; the lock-
+  // on/attack-angle math below still always aims at the PLAYER's real
+  // position, completely independent of which frame is drawn.
+  const ADAM_SPHERE_SOUTH_FRAME_INDEX = 0;
+  // ~5s of continuous, staggered explosions (mirrors updateRoidDeath()'s own
+  // multi-explosion timing/spread verbatim, reusing spawnExplosionVisual()
+  // again rather than a new effect) — ADAM SPHERE stops attacking/dealing
+  // damage the instant HP hits 0 (updateAdamSphereCombat() below returns
+  // early into the dying branch, never reaching the lock-on/fire code) —
+  // then "GAME CLEAR!!" (the SAME existing overlay/timing every other GAME
+  // CLEAR already uses — see triggerGameClear()/GAME_CLEAR_DISPLAY_MS)
+  // which continues into the SAME existing MAIN escape/ending flow
   // (beginStoryEscapeEnding(), see its own branch in updateScreenFlashes())
   // instead of RESULT. ESCAPE NAVIGATOR/escapeReady are granted internally
   // right here rather than spawned as a walk-up pickup, so the player is
   // never left waiting around after the fight already ended.
   const ADAM_SPHERE_MAIN_DEATH_MS = 5000;
   const ADAM_SPHERE_MAIN_DEATH_EXPLOSION_COUNT = 10;
-  function beginAdamSphereMainDefeat(now) {
-    boss.adamSphereMainDeathExplosionsSpawned = 0;
-    bossEnterState('adamSphereMainDying', now);
+  function spawnAdamSphereCombat(x, y, now) {
+    adamSphereCombatState.active = true;
+    adamSphereCombatState.x = x;
+    adamSphereCombatState.y = y;
+    adamSphereCombatState.hp = ADAM_SPHERE_COMBAT_MAX_HP;
+    adamSphereCombatState.frameIndex = 0;
+    adamSphereCombatState.frameTimer = 0;
+    adamSphereCombatState.nextAttackAt = now + ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS;
+    adamSphereCombatState.attackVisualUntil = 0;
+    adamSphereCombatState.dying = false;
+    adamSphereCombatState.deathStartedAt = 0;
+    adamSphereCombatState.deathExplosionsSpawned = 0;
   }
-  function updateAdamSphereMainDying(dt, now) {
-    boss.cinematicElapsed += dt * 1000;
-    const elapsed = boss.cinematicElapsed;
-    const targetCount = Math.min(
-      ADAM_SPHERE_MAIN_DEATH_EXPLOSION_COUNT,
-      Math.floor((elapsed / ADAM_SPHERE_MAIN_DEATH_MS) * ADAM_SPHERE_MAIN_DEATH_EXPLOSION_COUNT) + 1
-    );
-    while (boss.adamSphereMainDeathExplosionsSpawned < targetCount) {
-      const angle = Math.random() * Math.PI * 2;
-      const radius = Math.random() * BOSS_DRAW_H * 0.35;
-      spawnExplosionVisual(boss.x + Math.cos(angle) * radius, boss.y + Math.sin(angle) * radius * 0.6, now);
-      boss.adamSphereMainDeathExplosionsSpawned++;
+  // The ONE place ADAM SPHERE's own combat HP ever decreases — called from
+  // the PLAYER-bullet collision loop below, the same pattern every other
+  // damageable enemy in this file uses.
+  function applyDamageToAdamSphereCombat(amount, now) {
+    const s = adamSphereCombatState;
+    if (!s.active || s.dying) return;
+    s.hp = Math.max(0, s.hp - amount);
+    if (s.hp <= 0) {
+      s.dying = true;
+      s.deathStartedAt = now;
+      s.deathExplosionsSpawned = 0;
     }
-    if (elapsed >= ADAM_SPHERE_MAIN_DEATH_MS) {
-      boss.state = 'dead';
-      boss.deadAt = now;
-      runInventory.escapeNavigator = true;
-      storyScenarioState.escapeReady = true;
-      triggerGameClear(now);
+  }
+  function updateAdamSphereCombat(dt, now) {
+    const s = adamSphereCombatState;
+    if (!s.active) return;
+    if (s.dying) {
+      const elapsed = now - s.deathStartedAt;
+      const targetCount = Math.min(
+        ADAM_SPHERE_MAIN_DEATH_EXPLOSION_COUNT,
+        Math.floor((elapsed / ADAM_SPHERE_MAIN_DEATH_MS) * ADAM_SPHERE_MAIN_DEATH_EXPLOSION_COUNT) + 1
+      );
+      while (s.deathExplosionsSpawned < targetCount) {
+        const angle = Math.random() * Math.PI * 2;
+        const radius = Math.random() * ADAM_SPHERE_TARGET_DIAMETER * 0.4;
+        spawnExplosionVisual(s.x + Math.cos(angle) * radius, s.y + Math.sin(angle) * radius * 0.6, now);
+        s.deathExplosionsSpawned++;
+      }
+      if (elapsed >= ADAM_SPHERE_MAIN_DEATH_MS) {
+        s.active = false;
+        // HOTFIX 4.1 SECTION 13: only the MAIN FINAL BATTLE route grants the
+        // escape/GAME CLEAR progression — TRAINING STAGE 4's own ADAM
+        // SPHERE (isMainAdamSphereStage() false there) simply disappears,
+        // exactly like any other defeated TRAINING enemy.
+        if (isMainAdamSphereStage()) {
+          runInventory.escapeNavigator = true;
+          storyScenarioState.escapeReady = true;
+          triggerGameClear(now);
+        }
+      }
+      return; // no rotation/lock-on/attack while dying
     }
+    s.frameTimer += dt * 1000;
+    while (s.frameTimer >= ADAM_SPHERE_FRAME_MS) {
+      s.frameTimer -= ADAM_SPHERE_FRAME_MS;
+      s.frameIndex = (s.frameIndex + 1) % ADAM_SPHERE_SPRITES.length;
+    }
+    // Lock-on + attack: aims fresh at the PLAYER's live position every shot
+    // (a real lock-on, never a stale/telegraphed point) and fires through
+    // the SAME enemyBullets pipeline DRONE/ROID gunfire already uses — same
+    // bullet visual (drawBullet()), same PLAYER-hit damage, same existing
+    // enemy-projectile-vs-barrel explosion wiring, no new projectile type.
+    if (now >= s.nextAttackAt) {
+      s.nextAttackAt = now + ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS;
+      s.attackVisualUntil = now + ADAM_SPHERE_COMBAT_ATTACK_VISUAL_MS;
+      const angle = Math.atan2(player.y - s.y, player.x - s.x);
+      enemyBullets.push({ x: s.x, y: s.y, vx: Math.cos(angle) * BULLET_SPEED, vy: Math.sin(angle) * BULLET_SPEED, born: now });
+    }
+  }
+  function drawAdamSphereCombat(now) {
+    const s = adamSphereCombatState;
+    if (!s.active) return;
+    // HOTFIX 4.1 SECTIONS 6/8/46: forced south-facing sprite during the
+    // attack visual window, regardless of the rotation loop's own current
+    // phase — the lock-on/fire angle above is completely unaffected by this,
+    // it only changes which of the 4 existing frames gets drawn.
+    const frameIdx = now < s.attackVisualUntil ? ADAM_SPHERE_SOUTH_FRAME_INDEX : s.frameIndex;
+    const frame = ADAM_SPHERE_SPRITES[frameIdx];
+    if (!frame.ready) return;
+    const scale = computeBodyVisualScale(frame, ADAM_SPHERE_TARGET_DIAMETER);
+    const w = frame.nativeW * scale, h = frame.nativeH * scale;
+    ctx.drawImage(frame.img, s.x - w / 2, s.y - h / 2, w, h);
   }
 
   // ---------- ARC CLAW SLASH / CLAW STING (both share one array/shape) ----------
@@ -7157,6 +7260,12 @@
   let pauseStartedAt = 0;
   let shotsFired = 0, shotsHit = 0; // Q-2: normal FIRE bullets only, never FLASH
   let totalDamageTaken = 0; // Q-3: accumulated in applyDamageToPlayerLife() regardless of the LIFE setting
+  // HOTFIX 4.1 ADDENDUM SECTION 1-12: RANK's only two inputs now. continueCount
+  // counts GAME OVER->RETRY only (never PAUSE/movie/stage transitions), reset
+  // exactly where the rest of this RESULT-scoring state resets (a genuinely
+  // NEW STORY run below), never by RETRY itself.
+  let continueCount = 0;
+  let gameOverEnteredAt = 0; // set by triggerGameOver(); used to exclude GAME OVER dwell time from PLAY TIME on RETRY, same pattern as storyPausedAccumMs/PAUSE
 
   function setScreen(next) {
     gameState.screen = next;
@@ -7871,11 +7980,13 @@
         onTap();
       };
     }
+    let endingLoadingStartedAt = 0; // HOTFIX 4.1 ADDENDUM: this wait must not count toward PLAY TIME, same exclusion mechanism as PAUSE/GAME OVER
     function showEndingLoading() {
       // HOTFIX 4 ADDENDUM SECTIONS L-Y: reuses the SAME loading.mp4 footage
       // every other LOADING context already uses (never a new asset),
       // looping continuously so there is never a black/frozen frame while
       // ending_darkout.MOV preloads in the background.
+      endingLoadingStartedAt = performance.now();
       eventMovieOverlayEl.hidden = false;
       eventMovieVideoEl.hidden = true;
       endingLoadingVideoEl.hidden = false;
@@ -7883,6 +7994,10 @@
       endingLoadingVideoEl.play().catch(() => {}); // muted+loop — autoplay-block here is harmless, just a missed loop restart
     }
     function hideEndingLoading() {
+      if (!endingLoadingVideoEl.hidden && endingLoadingStartedAt) {
+        storyPausedAccumMs += performance.now() - endingLoadingStartedAt; // HOTFIX 4.1 ADDENDUM: exclude ENDING ROLL preload wait from PLAY TIME
+      }
+      endingLoadingStartedAt = 0;
       endingLoadingVideoEl.hidden = true;
       endingLoadingVideoEl.pause();
       eventMovieVideoEl.hidden = false;
@@ -7961,10 +8076,23 @@
     // .src with preload='auto' and poll actual buffered readiness rather
     // than trusting a single loadedmetadata/canplaythrough event alone
     // (iOS Safari's canplaythrough is not fully reliable per the ADDENDUM's
-    // own explicit instruction) — combines readyState>=HAVE_ENOUGH_DATA,
-    // buffered.length>0, and buffered.end() reaching MOST/ALL of duration,
-    // held stable (unchanged) for ENDING_ROLL_BUFFER_STABLE_MS before
-    // considering it safe to start.
+    // own explicit instruction) — combines readyState>=HAVE_FUTURE_DATA,
+    // buffered.length>0, and buffered.end() reaching MOST of duration, held
+    // stable for ENDING_ROLL_BUFFER_STABLE_MS before considering it safe to
+    // start.
+    // HOTFIX 4.1 SECTION 39/10-36: iOS Safari's own readyState/buffered
+    // reporting for a large progressively-downloaded file is not guaranteed
+    // to ever cleanly reach the "ideal" thresholds below, even on a
+    // perfectly healthy connection — a naive "hit ENDING_ROLL_LOAD_MAX_WAIT_MS
+    // -> TAP TO CONTINUE" rule would then misreport a genuinely-fine
+    // download as a failure. So the timeout branch no longer treats
+    // "still not at the ideal threshold" as failure by itself: if ANY real
+    // data has already buffered (readyState>=HAVE_CURRENT_DATA and some
+    // buffered range exists) once the generous wait is exhausted, playback
+    // starts anyway — accepting a small residual stall risk instead of a
+    // guaranteed dead stop — and TAP TO CONTINUE is reserved for the true
+    // zero-progress case (a real video.error, or literally nothing buffered
+    // at all after this long).
     function preloadViaBufferedPolling() {
       eventMovieVideoEl.loop = false;
       eventMovieVideoEl.muted = false; // the video's own embedded audio may play (section 1) — no existing BGM is playing underneath it (see above)
@@ -7981,25 +8109,36 @@
         if (eventMovieState.key !== 'endingRoll') return; // superseded mid-preload
         if (eventMovieVideoEl.error) { showFallback(finish); return; } // genuine load failure — never infinite-loading
         const elapsed = nowTick - startedAt;
-        const hasEnoughData = eventMovieVideoEl.readyState >= 4; // HAVE_ENOUGH_DATA
-        let coveredEnough = false;
+        const readyState = eventMovieVideoEl.readyState;
         const buffered = eventMovieVideoEl.buffered;
         const duration = eventMovieVideoEl.duration;
-        if (buffered && buffered.length > 0 && isFinite(duration) && duration > 0) {
-          const bufEnd = buffered.end(buffered.length - 1);
-          coveredEnough = bufEnd >= duration * 0.97; // "most/all of duration", never a strict 100%-or-nothing requirement
+        let bufEnd = 0;
+        let coveredFrac = 0;
+        if (buffered && buffered.length > 0) {
+          bufEnd = buffered.end(buffered.length - 1);
+          if (isFinite(duration) && duration > 0) coveredFrac = bufEnd / duration;
           if (bufEnd > lastBufferedEnd) { lastBufferedEnd = bufEnd; stableSinceMs = nowTick; }
         }
         const stableLongEnough = (nowTick - stableSinceMs) >= ENDING_ROLL_BUFFER_STABLE_MS;
-        if (hasEnoughData && coveredEnough && stableLongEnough) {
+        // Ideal case: comfortably buffered (90%+, never a strict 100%-or-
+        // nothing requirement) and stable — start now, well ahead of the
+        // timeout.
+        if (readyState >= 3 && coveredFrac >= 0.90 && stableLongEnough) {
           beginConfirmedPlayback();
           return;
         }
         if (elapsed > ENDING_ROLL_LOAD_MAX_WAIT_MS) {
-          // Only a genuine timeout after a generous wait counts as failure —
-          // never a premature fallback just because loading is momentarily
-          // slow (ADDENDUM's own explicit requirement).
-          showFallback(finish);
+          if (readyState >= 2 && bufEnd > 0) {
+            // Real progress exists, just short of the ideal bar after a
+            // generous wait — start rather than block indefinitely or
+            // scare the player with an error for a connection that IS
+            // actually working.
+            beginConfirmedPlayback();
+          } else {
+            // Truly nothing usable loaded after this long — a genuine
+            // failure, not momentary slowness.
+            showFallback(finish);
+          }
           return;
         }
         setTimeout(() => poll(performance.now()), 200);
@@ -8122,7 +8261,8 @@
   function enterSecurityTrainingStage(now) {
     securityRobots.length = 0;
     whiteShadows.length = 0;
-    boss.spawned = false; // clears whatever the PREVIOUS stage's ADAM/ROID1 left behind the instant a new stage is entered
+    boss.spawned = false; // clears whatever the PREVIOUS stage's ROID1 left behind the instant a new stage is entered
+    adamSphereCombatState.active = false; // HOTFIX 4.1: clears whatever the PREVIOUS stage's ADAM SPHERE left behind
     securityAttackSlotsInUse = 0;
     enemyBullets.length = 0;
     const stage = trainingStageIndex % TRAINING_STAGE_COUNT;
@@ -8140,12 +8280,14 @@
       spawnSecurityRobots();
       spawnInitialWhiteShadows();
     } else if (stage === 3) {
-      // STAGE 4: ADAM + multiple BARRELs — reuses the exact same spawnBoss()
-      // engine (INTRO/CHASE/DEFENSE/ARC CLAW/STRAIGHT CLAW/DARK PHASE/dying)
-      // every other ADAM fight in this file already runs on; updateBoss()'s
-      // own mode gate is widened above so this AI actually ticks here.
+      // STAGE 4: ADAM SPHERE + multiple BARRELs. HOTFIX 4.1 CORRECTION: this
+      // was HOTFIX 4's spawnBoss(now,'adam') (the humanoid boss engine) —
+      // wrong entity entirely. ADAM SPHERE is the separate rotating-orb
+      // object (see spawnAdamSphereCombat()/adamSphereCombatState above),
+      // never the humanoid ADAM's IDLE/WALK/ATTACK/DEFENSE/ARC CLAW/
+      // STRAIGHT CLAW/DARK PHASE engine.
       spawnBarrels(BARREL_COUNT);
-      spawnBoss(now, 'adam');
+      spawnAdamSphereCombat(W / 2, areaTopY(currentArea) + H * 0.4, now);
     } else {
       // STAGE 5: DRONE + ROID1 — spawnRoidBoss() already spawns
       // ROID_ESCORT_COUNT FAST DRONE escorts alongside ROID1 (see
@@ -8358,20 +8500,24 @@
       // exact same escape-unlock and stop, never touching adamSphereState/
       // stageOverrideId at all.
       if (storyScenarioState.scenario === 'main') {
-        // HOTFIX 4 SECTIONS 22-32: MAIN now routes into a REAL ADAM combat
-        // encounter here — explicitly overriding the old POST-v1.0 SECTION
-        // 27 "MAIN never proceeds to ADAM combat" rule per today's explicit
-        // instruction (see onWorldItemPickup()'s own updated comment for
-        // the matching upstream removal of the old bloodSample3 EXIT-skip
-        // that used to make this branch unreachable for MAIN). Reuses the
-        // exact same spawnBoss() engine (INTRO/CHASE/DEFENSE/ARC CLAW/
-        // STRAIGHT CLAW/DARK PHASE/dying) every other ADAM/GABRIEL fight in
-        // this file already runs on, on the new dedicated C-10 background
+        // HOTFIX 4 SECTIONS 22-32: MAIN now routes into a real ADAM SPHERE
+        // combat encounter here — explicitly overriding the old POST-v1.0
+        // SECTION 27 "MAIN never proceeds to ADAM combat" rule per that
+        // day's explicit instruction (see onWorldItemPickup()'s own updated
+        // comment for the matching upstream removal of the old bloodSample3
+        // EXIT-skip that used to make this branch unreachable for MAIN).
+        // HOTFIX 4.1 CORRECTION: HOTFIX 4 wrongly used spawnBoss(now,'adam')
+        // (the humanoid boss engine) here — the correct entity is ADAM
+        // SPHERE, the separate rotating-orb object (see
+        // spawnAdamSphereCombat()/adamSphereCombatState above), never the
+        // humanoid ADAM's IDLE/WALK/ATTACK/DEFENSE/ARC CLAW/STRAIGHT CLAW/
+        // DARK PHASE engine. Uses the dedicated C-10 background
         // (boss_c10_adam_sphere_main — see STAGE_REGISTRY), with
         // BARREL_COUNT (5) BARRELs scattered via the SAME existing
         // spawnBarrels() placement every other BARREL-carrying stage uses
-        // (never tightly packed around ADAM specifically).
+        // (never tightly packed around ADAM SPHERE specifically).
         boss.spawned = false;
+        adamSphereCombatState.active = false; // cleared before spawning fresh below — never carries HP/state over from a previous attempt
         securityRobots.length = 0;
         whiteShadows.length = 0;
         // HOTFIX 4 SECTIONS 39-44: a boss stage — zero HEAL/AMMO, same
@@ -8383,7 +8529,7 @@
         worldItems.length = 0;
         storyScenarioState.stageOverrideId = 'boss_c10_adam_sphere_main';
         spawnBarrels(BARREL_COUNT);
-        spawnBoss(now, 'adam');
+        spawnAdamSphereCombat(W / 2, areaTopY(currentArea) + H * 0.4, now);
       } else {
         boss.spawned = false;
         boss.state = 'inactive';
@@ -8717,17 +8863,17 @@
       ctx.globalAlpha = 1 - u; // fades out over the full duration
       ctx.font = 'bold 14px sans-serif';
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
-      // HOTFIX 4 SECTIONS 33-38: same player-anchored, black-outline
-      // presentation as the unified world-item pickup text above, instead
-      // of drifting away from the item's own fixed pickup spot.
+      ctx.textBaseline = 'middle';
+      // HOTFIX 4.1 SECTIONS 14-17 CORRECTION: same player-anchored, black-
+      // outline presentation as the unified world-item pickup text above —
+      // centered DIRECTLY ON player.x/player.y (the sprite body itself),
+      // never offset above the head.
       ctx.lineJoin = 'round';
       ctx.lineWidth = 3;
       ctx.strokeStyle = '#000000';
-      const ly = player.y - SPRITE_DRAW_H / 2 - 14;
-      ctx.strokeText(t.text, player.x, ly);
+      ctx.strokeText(t.text, player.x, player.y);
       ctx.fillStyle = '#3ddc5a'; // green, per SECTION W
-      ctx.fillText(t.text, player.x, ly);
+      ctx.fillText(t.text, player.x, player.y);
       ctx.restore();
     }
   }
@@ -10859,6 +11005,7 @@
       storyStartTime = performance.now();
       storyPausedAccumMs = 0;
       shotsFired = 0; shotsHit = 0; totalDamageTaken = 0;
+      continueCount = 0; // HOTFIX 4.1 ADDENDUM: only a genuinely NEW run resets this, never RETRY
     }
   }
 
@@ -11165,22 +11312,19 @@
   // rank) — RESULT's own ACCURACY stat display is untouched, this function
   // simply never reads it anymore. Time/damage thresholds and the S/A/B/C/D
   // tier system are otherwise unchanged.
-  const RESULT_RANK_THRESHOLDS = {
-    timeGoodSec: 300, timeBadSec: 900,
-    damageGoodTotal: 100, damageBadTotal: 1000,
-    composite: { S: 90, A: 75, B: 55, C: 35 },
-  };
-  function clamp01(v) { return Math.max(0, Math.min(1, v)); }
-  function computeResultRank(playTimeSec, damageTaken) {
-    const t = RESULT_RANK_THRESHOLDS;
-    const timeScore = clamp01(1 - (playTimeSec - t.timeGoodSec) / (t.timeBadSec - t.timeGoodSec)) * 100;
-    const damageScore = clamp01(1 - (damageTaken - t.damageGoodTotal) / (t.damageBadTotal - t.damageGoodTotal)) * 100;
-    const composite = (timeScore + damageScore) / 2;
-    if (composite >= t.composite.S) return 'S';
-    if (composite >= t.composite.A) return 'A';
-    if (composite >= t.composite.B) return 'B';
-    if (composite >= t.composite.C) return 'C';
-    return 'D';
+  // HOTFIX 4.1 ADDENDUM SECTIONS 1-12: RANK is now judged on exactly two
+  // inputs — CONTINUE count (GAME OVER->RETRY count this run) and TOTAL
+  // PLAY TIME (see continueCount/storyPausedAccumMs above) — never
+  // accuracy/shotsHit/shotsFired/damage/remaining LIFE, which the old
+  // composite formula below used to read. Only S is spec'd concretely
+  // (continueCount===0 && playTimeSec<=900); every rank below S is
+  // deliberately left as a single placeholder rather than inventing new
+  // A/B/C numeric thresholds the user never specified — see the
+  // completion report for how this was handled.
+  const RESULT_RANK_S_MAX_SEC = 900; // 15:00
+  function computeResultRank(continueCount, playTimeSec) {
+    if (continueCount === 0 && playTimeSec <= RESULT_RANK_S_MAX_SEC) return 'S';
+    return '-';
   }
   function formatPlayTime(sec) {
     const m = Math.floor(sec / 60);
@@ -11188,10 +11332,11 @@
     return `${m}:${String(s).padStart(2, '0')}`;
   }
   function enterResultScreen() {
-    const playTimeSec = Math.max(0, (performance.now() - storyStartTime) - storyPausedAccumMs) / 1000; // Q-1: PAUSE time excluded
-    const accuracyFrac = shotsFired > 0 ? shotsHit / shotsFired : 0; // Q-2 — display-only now, never fed into computeResultRank()
-    const rank = computeResultRank(playTimeSec, totalDamageTaken);
+    const playTimeSec = Math.max(0, (performance.now() - storyStartTime) - storyPausedAccumMs) / 1000; // PAUSE/GAME OVER/ENDING ROLL preload time all excluded via storyPausedAccumMs
+    const accuracyFrac = shotsFired > 0 ? shotsHit / shotsFired : 0; // display-only — never fed into computeResultRank()
+    const rank = computeResultRank(continueCount, playTimeSec); // HOTFIX 4.1 ADDENDUM: CONTINUE count + PLAY TIME only, accuracy/damage excluded
     document.getElementById('result-play-time').textContent = formatPlayTime(playTimeSec);
+    document.getElementById('result-continue').textContent = continueCount;
     document.getElementById('result-accuracy').textContent = `${Math.round(accuracyFrac * 100)}%`;
     document.getElementById('result-damage-taken').textContent = Math.round(totalDamageTaken);
     document.getElementById('result-rank').textContent = rank;
@@ -11224,7 +11369,10 @@
   // a separate copy each. settingOpenedFrom remembers which menu's own
   // panel to hide/restore around it, so BACK always returns to whichever
   // screen actually opened SETTING.
-  let playerMaxLife = Infinity;
+  // HOTFIX 4.1 SECTIONS 19-24: the ∞ MAX LIFE option is now LOCKED (see the
+  // 'infinity'-data button's own disabled attribute in index.html) — the
+  // official default/base LIFE is now the finite 500, never Infinity.
+  let playerMaxLife = 500;
   // POST-v1.0 SECTIONS 42/43: HEAL BOX rework — full heal + a MAX LIFE
   // increase, replacing the old flat 30% heal entirely. baseRunMaxLife is
   // whatever playerMaxLife (the SETTING's own value) was AT THE START of
@@ -11235,7 +11383,11 @@
   // never touch playerMaxLife at all (section 42-6). healBoxPickupCount is
   // run-scoped: 0 on a fresh run, preserved across RETRY (section 42-7).
   const HEAL_BOX_MAX_LIFE_CAP = 999;
-  let baseRunMaxLife = Infinity;
+  // HOTFIX 4.1 SECTIONS 19-24: the ∞ SETTING is locked, so this can no
+  // longer actually become Infinity through normal play — the Infinity
+  // branch in applyHealBoxPickup() below is kept only as harmless defense-
+  // in-depth (never reachable via the UI anymore).
+  let baseRunMaxLife = 500;
   let healBoxPickupCount = 0;
   function applyHealBoxPickup() {
     if (baseRunMaxLife === Infinity) {
@@ -11875,12 +12027,11 @@
       gameClearRemainingMs = Math.max(0, gameClearRemainingMs - dt * 1000);
       if (gameClearRemainingMs === 0) {
         // HOTFIX 4 ADDENDUM SECTIONS F-K/Z: the MAIN SCENARIO ADAM SPHERE
-        // STAGE's own GAME CLEAR!! (see completeAdamSphereMainDefeat()
-        // above via updateAdamSphereMainDying()) continues into the SAME
-        // existing MAIN escape/ending flow every other MAIN run reaches by
-        // walking to the EXIT, never straight to RESULT — isMainAdamSphereStage()
-        // stays true here since nothing else in MAIN_TEMPLATE_PLAN follows
-        // this, its own last entry.
+        // STAGE's own GAME CLEAR!! (see updateAdamSphereCombat()'s dying
+        // branch above) continues into the SAME existing MAIN escape/ending
+        // flow every other MAIN run reaches by walking to the EXIT, never
+        // straight to RESULT — isMainAdamSphereStage() stays true here since
+        // nothing else in MAIN_TEMPLATE_PLAN follows this, its own last entry.
         if (isMainAdamSphereStage()) beginStoryEscapeEnding(performance.now());
         else enterResultScreen();
       }
@@ -12284,6 +12435,7 @@
   // visible; GAME OVER has no such requirement and the spec calls for an
   // immediate, complete stop instead.
   function triggerGameOver(now) {
+    gameOverEnteredAt = now; // HOTFIX 4.1 ADDENDUM: dwell time on this screen is excluded from PLAY TIME via retryCurrentRun()'s own storyPausedAccumMs add, same pattern as PAUSE
     setScreen('gameover');
   }
 
@@ -12298,7 +12450,28 @@
   // returnToTopMenu() ever resets it), so RETRY naturally continues from
   // its current playback position instead of restarting at 0.
   function retryCurrentRun() {
+    // HOTFIX 4.1 SECTIONS 25-29: an explicit snapshot/restore around
+    // resetModeState() — live testing (real SECRET FILE pickup -> real
+    // countdown ticking -> real LIFE-depletion GAME OVER -> this exact
+    // RETRY button, at both the cultivation lab stage and a later GABRIEL
+    // stage) already shows resetModeState(true)'s own !preserveStoryProgress
+    // guard correctly skips the "genuinely fresh run" reset that would zero
+    // this out (see its own comment there) — this wrap adds an unconditional
+    // guarantee on top, so the TIME LIMIT HUD can never be silently lost to
+    // any future code path here, only a genuinely NEW run may ever reset it.
+    const savedTimerActive = secretFileTimerState.active;
+    const savedTimerRemainingMs = secretFileTimerState.remainingMs;
     resetModeState(true);
+    secretFileTimerState.active = savedTimerActive;
+    secretFileTimerState.remainingMs = savedTimerRemainingMs;
+    // HOTFIX 4.1 ADDENDUM SECTIONS 1-12: this button is the ONE and ONLY
+    // place a CONTINUE is recorded (per the sole caller confirmed above),
+    // and the ONE place GAME OVER screen dwell time is excluded from PLAY
+    // TIME — same storyPausedAccumMs accumulator PAUSE already uses, so
+    // there is exactly one "time excluded from PLAY TIME" mechanism, never
+    // a second parallel one.
+    continueCount++;
+    storyPausedAccumMs += performance.now() - gameOverEnteredAt;
     gameState.paused = false;
     setScreen('gameplay');
   }
@@ -12378,7 +12551,7 @@
     set currentStageIndex(v) { currentStageIndex = v; }, // debug/verification only
     get cameraY() { return cameraY; },
     get worldExtraAbove() { return worldExtraAbove; },
-    worldScrollUnlocked, trainingWorldScrollUnlocked, exitWorldPos, beginStageTransition, advanceTrainingStage,
+    worldScrollUnlocked, trainingWorldScrollUnlocked, exitWorldPos, beginStageTransition, advanceTrainingStage, stageTransition, // debug/verification only
     get basicTrainingBgIndex() { return basicTrainingBgIndex; },
     set basicTrainingBgIndex(v) { basicTrainingBgIndex = v; }, // debug/verification only
     get stageTransition() { return stageTransition; },
@@ -12484,7 +12657,11 @@
     set shotsHit(v) { shotsHit = v; }, // debug/verification only
     get totalDamageTaken() { return totalDamageTaken; },
     set totalDamageTaken(v) { totalDamageTaken = v; }, // debug/verification only
-    RESULT_RANK_THRESHOLDS, computeResultRank, formatPlayTime, enterResultScreen,
+    get continueCount() { return continueCount; },
+    set continueCount(v) { continueCount = v; }, // debug/verification only
+    get gameOverEnteredAt() { return gameOverEnteredAt; },
+    set gameOverEnteredAt(v) { gameOverEnteredAt = v; }, // debug/verification only
+    RESULT_RANK_S_MAX_SEC, computeResultRank, formatPlayTime, enterResultScreen,
     // Debug/verification only — SECTION A (root-cause fix)/B (watchdog)/C
     // (STUN)/G-H-I (REBOOT)/J (ENCOUNTER 3 forced STUN)/M (GAME OVER).
     isStunLocked, recoverControlState, detectControlStateCorruption, triggerStun,
@@ -12542,7 +12719,8 @@
     get storyDroneBgIndex() { return storyDroneBgIndex; },
     set storyDroneBgIndex(v) { storyDroneBgIndex = v; }, // debug/verification only
     isStoryDroneStage, isFinalStoryStage, isSecurityDroneSystemActive, isCultivationLabStage, // HOTFIX 4 SECTIONS 18-21 — debug/verification only
-    isMainAdamSphereStage, beginAdamSphereMainDefeat, updateAdamSphereMainDying, ADAM_SPHERE_MAIN_DEATH_MS, bossFrameName, // HOTFIX 4 SECTIONS 22-32/ADDENDUM F-K — debug/verification only
+    isMainAdamSphereStage, ADAM_SPHERE_MAIN_DEATH_MS, bossFrameName, // HOTFIX 4 SECTIONS 22-32/ADDENDUM F-K — debug/verification only
+    adamSphereCombatState, spawnAdamSphereCombat, applyDamageToAdamSphereCombat, updateAdamSphereCombat, drawAdamSphereCombat, ADAM_SPHERE_COMBAT_HIT_RADIUS, ADAM_SPHERE_SOUTH_FRAME_INDEX, // HOTFIX 4.1 — debug/verification only
     enterStoryStage, pickFreshStoryDroneBackground,
     // Debug/verification only — this turn: input-lock root-cause fix
     // (SECTION A), all-DRONE-kill EXIT gating (SECTION E), RETRY (SECTION J).
@@ -12576,6 +12754,7 @@
     set damageTakenThisStage(v) { damageTakenThisStage = v; },
     get baseRunMaxLife() { return baseRunMaxLife; },
     set baseRunMaxLife(v) { baseRunMaxLife = v; },
+    get playerMaxLife() { return playerMaxLife; }, // HOTFIX 4.1 SECTIONS 19-24 — debug/verification only
     get healBoxPickupCount() { return healBoxPickupCount; },
     set healBoxPickupCount(v) { healBoxPickupCount = v; },
     // Debug/verification only — PART8: separate manual/auto reload durations,
@@ -13011,6 +13190,16 @@
           }
         }
       }
+      // HOTFIX 4.1: normal FIRE hitting the (attacking) ADAM SPHERE — same
+      // plain body-hitbox pattern as ROID1/ROID2 above, reusing the same
+      // BULLET_DAMAGE per-shot value every other non-boss-specific hit uses.
+      if (!consumed && adamSphereCombatState.active && !adamSphereCombatState.dying) {
+        if (Math.hypot(b.x - adamSphereCombatState.x, b.y - adamSphereCombatState.y) <= ADAM_SPHERE_COMBAT_HIT_RADIUS) {
+          shotsHit++;
+          applyDamageToAdamSphereCombat(BULLET_DAMAGE, now);
+          consumed = true;
+        }
+      }
       // PART7 SECTION U/V: the player's own bullet (this loop is the SHOT
       // pipeline only — DRONE LASER/GABRIEL CLAW/enemy projectiles/DRONE
       // explosion/player contact/DASH/STEALTH/FLASH never reach this code
@@ -13041,6 +13230,7 @@
     updateAmmoItem(dt); // POST-v1.0 SECTION 39-3: same dt-driven cadence as HEAL BOX
     updateWorldItems(dt, now); // DARK OUT PART 6: PROJECT ADAM (and later, other) world-item animation + pickup — empty array outside EVENT STAGE, so this is a no-op everywhere else
     updateAdamSphere(dt, now); // DARK OUT PART 6: ADAM SPHERE animation only — invisible/no-op outside EVENT STAGE b2. PART8: `now` also drives the SECRET-only BLOOD SAMPLE SUBMISSION/activation timer.
+    updateAdamSphereCombat(dt, now); // HOTFIX 4.1: the SEPARATE attacking ADAM SPHERE (TRAINING STAGE 4 / MAIN FINAL BATTLE) — no-op unless spawnAdamSphereCombat() has been called
     updateSecurityRobots(dt, now);
     updateWhiteShadows(dt, now);
     updateFlashGrenade(dt, now);
@@ -13260,6 +13450,7 @@
     drawAmmoItem(); // POST-v1.0 SECTION 38/39: mutually exclusive with HEAL BOX per stage, same painter layer
     drawWorldItems(); // DARK OUT PART 6: PROJECT ADAM — same ground layer as barrels/healItem
     drawAdamSphere(); // DARK OUT PART 6: ADAM SPHERE — same ground layer
+    drawAdamSphereCombat(now); // HOTFIX 4.1: the SEPARATE attacking ADAM SPHERE — same ground layer, no-op unless active
     for (let i = barrelLandings.length - 1; i >= 0; i--) {
       const l = barrelLandings[i];
       if (now - l.startAt >= BARREL_LANDING_MS) { barrelLandings.splice(i, 1); continue; }
@@ -13707,13 +13898,6 @@
       // so it's already "where the player was relative to the boss when
       // the attack started" — exactly what picks the sprite here. Each
       // direction has its own dedicated release-moment render now.
-      // HOTFIX 4 SECTIONS 26-27: the MAIN SCENARIO's own ADAM SPHERE STAGE
-      // forces the attack VISUAL to always read as the south-facing release
-      // pose regardless of which way the player actually is — boss.dir
-      // itself (and every hit-detection/knockback-angle calc that reads it,
-      // e.g. the ARC CLAW/CLAW STING spawn angle) is completely untouched;
-      // only the SPRITE KEY returned here is overridden.
-      if (isMainAdamSphereStage()) return 'attack_south_release';
       const atkKey = DIR_TO_BOSS_KEY[boss.dir];
       if (atkKey === 'north') return 'attack_north';
       if (atkKey === 'south') return 'attack_south_release';
@@ -13767,12 +13951,6 @@
     // 'dead' is the true terminal state, reached only after DYING's particle
     // dissolve finishes — there is nothing left to draw by then.
     if (boss.state === 'dead') return;
-    // HOTFIX 4 ADDENDUM SECTIONS F-K: ADAM's body itself is never drawn
-    // during its own MAIN-SCENARIO-only 5s multi-explosion death window —
-    // the explosions alone (drawn separately via the shared `explosions`
-    // array's own unconditional draw loop) read as "being destroyed" with nothing to
-    // undermine that by leaving ADAM's own sprite idling underneath.
-    if (boss.state === 'adamSphereMainDying') return;
     // DARK OUT PART 4: ROID1/ROID2 use their own draw path entirely — never
     // GABRIEL's cinematic-state dispatch or its fixed BOSS_DRAW_W/H frame
     // draw below.
