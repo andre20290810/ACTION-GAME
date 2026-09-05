@@ -54,6 +54,18 @@
   // every standard pickup item's spawn position now resolves through.
   function getAreaCenterPos(area) { return { x: W / 2, y: areaTopY(area) + H / 2 }; }
 
+  // HOTFIX 3 SECTION 4: the TIME LIMIT HUD's own Y position needs to clear
+  // #pause-zone's REAL bottom edge — which itself depends on
+  // env(safe-area-inset-top), a value that only CSS can see (no fixed
+  // constant here can be correct across every iPhone's own notch/Dynamic
+  // Island height). Read directly from the live DOM element (inside
+  // resize(), the one place W/H themselves are already derived the same
+  // way from playArea's own getBoundingClientRect()) rather than guessing.
+  // document.getElementById('pause-zone') is used directly here (not the
+  // `pauseZone` const declared much further below) since this function's
+  // own unconditional call at module-load time (see below) runs before
+  // that later `const` declaration is reached.
+  let pauseZoneBottomY = 36; // fallback matching the CSS's own no-notch case (10px top + 26px height) until the first real resize() below
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const rect = playArea.getBoundingClientRect();
@@ -64,6 +76,10 @@
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const pauseZoneEl = document.getElementById('pause-zone');
+    if (pauseZoneEl) {
+      pauseZoneBottomY = pauseZoneEl.getBoundingClientRect().bottom - rect.top;
+    }
     // HOTFIX SECTION 6: this bonus "3rd region" beyond AREA2 (previously
     // 1.3x an extra screen height, used only to give the EXIT some walking
     // room after a stage clears) was the actual root cause of "a normal
@@ -697,7 +713,15 @@
     // (POST-v1.0 SECTION 20) and last batch's "mute sneaking.mp4" fix
     // (HOTFIX SECTION 14-3, now reverted). Only the external ENDING ROLL
     // (playEndingRoll(), a separate code path) ever silences BGM entirely.
-    eventMovieVideoEl.muted = false;
+    // HOTFIX 3 SECTION 2-3: gabriel_arrival is the ONE exception to the
+    // "every movie's own audio ON" policy above — real-device spec now
+    // wants ONLY Outbreak 2 (already playing under it via startBossBgm(),
+    // called before this movie fires — see maybePlayStoryGabrielArrival())
+    // audible during GABRIEL's arrival, never layered with the video's own
+    // embedded track. Every other movie (sneaking/drone_arrival/ROID+ADAM
+    // arrivals/gabriel_defeated/ENDING) is completely untouched — scoped to
+    // this exact key only, never a second mute-everything regression.
+    eventMovieVideoEl.muted = key === 'gabriel_arrival';
     eventMovieVideoEl.src = src;
     eventMovieVideoEl.currentTime = 0;
     eventMovieOverlayEl.hidden = false;
@@ -2783,15 +2807,21 @@
   const ADAM_GLOBAL_SCALE = 1.10;
   const ADAM_SIZE_SCALE = 0.70 * 1.05 * ADAM_GLOBAL_SCALE;
   const ADAM_BODY_TARGET_HEIGHT = BOSS_DRAW_H * ADAM_SIZE_SCALE;
-  // SECTION A-1: the INTRO/THRESHOLD/DYING/FLASH DOWN cinematic sequences
-  // (getAdamCinematicImageInfo() below) size ADAM against CINEMATIC_DRAW_H
-  // instead of ADAM_BODY_TARGET_HEIGHT (that constant is GABRIEL's own
-  // cinematic-pose target, shared verbatim so ADAM's cinematic beats read at
-  // the same scale GABRIEL's do) — applying the same ADAM_SIZE_SCALE to it
-  // here keeps ADAM's cinematic size consistent with its own new combat
-  // size, without touching CINEMATIC_DRAW_H itself (GABRIEL's own cinematic
-  // sizing must stay byte-for-byte unchanged).
-  const ADAM_CINEMATIC_TARGET_HEIGHT = CINEMATIC_DRAW_H * ADAM_SIZE_SCALE;
+  // HOTFIX 3 SECTIONS 28-34: previously sized against CINEMATIC_DRAW_H
+  // (= BOSS_DRAW_H * CINEMATIC_SCALE, CINEMATIC_SCALE=0.783) so ADAM's own
+  // INTRO/THRESHOLD/DYING/FLASH DOWN cinematic pose would "read at the same
+  // scale GABRIEL's do" — but that 0.783 reduction exists ONLY for
+  // GABRIEL's own two hand-tuned photo compositions (a deliberately
+  // smaller cinematic framing), and real-device testing confirms ADAM's
+  // falling/landing pose still reading ~22% smaller than its own combat
+  // south ATTACK size specifically because of this borrowed reduction —
+  // the SOURCE OF TRUTH here is ADAM's own combat size, not GABRIEL's
+  // photo-framing convention. Sized directly against ADAM_BODY_TARGET_HEIGHT
+  // (the exact same target combat poses already use) instead, so falling/
+  // landing/intimidation (all of which route through
+  // getAdamCinematicImageInfo()) match combat exactly. GABRIEL's own
+  // CINEMATIC_DRAW_H/CINEMATIC_SCALE are completely untouched.
+  const ADAM_CINEMATIC_TARGET_HEIGHT = ADAM_BODY_TARGET_HEIGHT;
 
   // POST-v2.0 SECTION 19: a per-POSE runtime scale table layered on top of
   // ADAM_BODY_TARGET_HEIGHT — never a PNG re-export, and never touching
@@ -3124,7 +3154,15 @@
   // PROJECT ADAM event site) is a single-room screen with no real AREA1/
   // AREA2 split (areaTopY(1)===0 either way), so "spawn at the geometric
   // center of its own AREA" is exactly W*0.5, H*0.5 here.
-  const PROJECT_ADAM_POS_FRAC = { x: 0.5, y: 0.5 };
+  // HOTFIX 3 SECTIONS 15-16: measured directly from event_b1_project_adam's
+  // own pixels (the background is drawn "cover"-style with zero vertical
+  // cropping at this game's own portrait aspect ratios — see
+  // getStageDrawMetrics() — so an image-space Y fraction maps straight
+  // through to this screen fraction) — the central large tank+silhouette's
+  // own glow spans roughly y=0.35-0.55 of the image height, so y=0.60 lands
+  // just south of its base/control panel, never inside or above it. x=0.5
+  // matches the tank's own horizontal center.
+  const PROJECT_ADAM_POS_FRAC = { x: 0.5, y: 0.60 };
 
   // SECTION 10: a small, generic (never single-purpose) floating pickup-text
   // mechanism — same draw-time-prune shape as the existing healPickupTexts,
@@ -3313,10 +3351,47 @@
           runInventory[profile.inventoryKey] = true;
           spawnWorldItemPickupText(profile.pickupLines, item.x, item.y, now);
         }
+        // HOTFIX 3 SECTIONS 22-27: Blood Sample①②③ specifically (never
+        // PROJECT ADAM/ESCAPE NAVIGATOR/any other world item) also gets a
+        // brief overlay drawn directly on top of the PLAYER's own sprite —
+        // see drawBloodSampleOverlay() — in addition to, not instead of,
+        // the existing floating pickup-text notice above.
+        if (item.type === 'bloodSample1' || item.type === 'bloodSample2' || item.type === 'bloodSample3') {
+          bloodSampleOverlayState.active = true;
+          bloodSampleOverlayState.key = item.type;
+          bloodSampleOverlayState.startedAt = now;
+        }
         onWorldItemPickup(item.type, now); // DARK OUT PART 8: scenario-progression side effects — a no-op unless a MAIN/SECRET scenario is actually active
         worldItems.splice(i, 1);
       }
     }
+  }
+
+  // HOTFIX 3 SECTIONS 22-27: Blood Sample①②③'s own pickup presentation —
+  // never floating above/north of the player, never in a fixed HUD/center
+  // position (section 23's own explicit clarification of what "above the
+  // player" does NOT mean here) — instead drawn directly overlaid on the
+  // PLAYER's own sprite, at the player's exact position, for a brief window
+  // after pickup. Sized at 0.70x the item's own existing normal world-sprite
+  // size (the same targetDrawWidth/HEAL_ITEM_DRAW_W convention
+  // drawWorldItems() already uses for this same item — never a separately
+  // invented size) — no new asset, no PNG changes.
+  const BLOOD_SAMPLE_OVERLAY_MS = 1200;
+  const bloodSampleOverlayState = { active: false, key: null, startedAt: 0 };
+  function drawBloodSampleOverlay(now) {
+    if (!bloodSampleOverlayState.active) return;
+    if (now - bloodSampleOverlayState.startedAt >= BLOOD_SAMPLE_OVERLAY_MS) {
+      bloodSampleOverlayState.active = false;
+      return;
+    }
+    const sprite = ITEM_SPRITES[bloodSampleOverlayState.key];
+    if (!sprite) return;
+    const frameIdx = Math.floor(now / ITEM_FRAME_MS) % sprite.frames.length;
+    const frame = sprite.frames[frameIdx];
+    if (!frame.ready) return;
+    const w = HEAL_ITEM_DRAW_W * 0.70;
+    const h = w * (frame.nativeH / frame.nativeW);
+    ctx.drawImage(frame.img, player.x - w / 2, player.y - h / 2, w, h);
   }
 
   function drawWorldItems() {
@@ -7382,10 +7457,14 @@
   // straight to BOSS SELECT (no intermediate menu), same reasoning as
   // TRAINING's own submenu above (one more overlay on the SAME persistent-
   // video container, no new screen host).
-  document.getElementById('main-menu-bossbattle-btn').addEventListener('click', () => {
-    if (bossBattleState.active) { exitBossBattle(); setMusicContext('menu'); } // defensive only — never active from MAIN MENU in any reachable flow
-    setScreen('bossSelect');
-  });
+  // HOTFIX 3 SECTION 35-37: LOCKED in the UI this batch — no unlock
+  // condition given, so tapping it does nothing at all (never starts a
+  // game), permanently, until a future batch defines one — same "UI entry
+  // gated, internal route untouched" shape as main-scenario-sub-full-btn's
+  // own click handler just below in this file. startBossBattle()/
+  // enterBossBattleStage() themselves are completely unchanged and stay
+  // reachable via window.__game for internal/debug verification.
+  document.getElementById('main-menu-bossbattle-btn').addEventListener('click', () => {});
   document.getElementById('boss-select-roid1-btn').addEventListener('click', () => startBossBattle('roid1'));
   document.getElementById('boss-select-roid2-btn').addEventListener('click', () => startBossBattle('roid2'));
   document.getElementById('boss-select-gabriel-btn').addEventListener('click', () => startBossBattle('gabriel'));
@@ -7857,18 +7936,30 @@
       });
     } else if (plan.type === 'cultivationLab') {
       // POST-v1.0 SECTION 28: non-combat waypoint between the opening ROID1
-      // fight and GABRIEL1 — reuses event_b2_adam_lab's background/
-      // experiment_lab.mp4 visually, but is its own plan-sequenced STAGE
-      // (never eventStageState/enterEventStage()'s own b1/b2 side-channel,
-      // and never spawns the ADAM SPHERE itself — that's the separate,
-      // later 'adamSphere' entry). isStoryDroneStage() already includes this
-      // type so the EXIT opens immediately (nothing to defeat).
+      // fight and GABRIEL1 — reuses experiment_lab.mp4 visually, but is its
+      // own plan-sequenced STAGE (never eventStageState/enterEventStage()'s
+      // own b1/b2 side-channel, and never spawns the ADAM SPHERE itself —
+      // that's the separate, later 'adamSphere' entry). isStoryDroneStage()
+      // already includes this type so the EXIT opens immediately (nothing
+      // to defeat).
+      // HOTFIX 3 SECTIONS 11-13: this used to point at event_b2_adam_lab
+      // (b2.jpg) — real-device screenshots proved that's the WRONG room:
+      // b2.jpg is "LEVEL 4", a plain corridor of many small plant/coral
+      // specimen tanks with nothing in the center. The user's attached
+      // reference image (a "LEVEL 5" chamber, fewer/larger tanks, one
+      // central tank holding a human silhouette) turned out to already
+      // exist in this repo, pixel-for-pixel, as event_b1_project_adam
+      // (b1.jpg, label "PROJECT ADAM SITE") — previously wired only into
+      // the old debug-only EVENT STAGE 'b1' side-channel
+      // (enterStoryEventStage('b1')), never into this real STORY-run
+      // waypoint. That mismatch (b2 instead of b1) was the actual root
+      // cause, not a missing asset — no new image needed here.
       boss.spawned = false;
       boss.state = 'inactive';
       securityRobots.length = 0;
       whiteShadows.length = 0;
       spawnBarrels(0);
-      storyScenarioState.stageOverrideId = 'event_b2_adam_lab';
+      storyScenarioState.stageOverrideId = 'event_b1_project_adam';
       // HOTFIX 2 SECTIONS 46-48: enterStoryStage()'s own unconditional
       // spawnStageClearReward() call above (every stage entry gets a HEAL or
       // AMMO box) was never meant to reach this non-combat waypoint — undo
@@ -7924,6 +8015,14 @@
       // mechanism the old PART11 interlude/SECRET ADAM fight already
       // established (currentStage() already resolves boss_c1_roid1/
       // boss_c2_roid2 generically, so no new background-routing code needed).
+      // HOTFIX 3 SECTIONS 18-21: this branch was missed by the previous
+      // batch's GABRIEL-only HEAL/AMMO suppression fix — a genuine separate
+      // gap, not a duplicate of that fix. Official ROID1/ROID2 rewards are
+      // whatever the escort-DRONE/BARREL mechanics themselves grant; a
+      // generic HEAL/AMMO box has no place here either.
+      healItem.active = false;
+      ammoItem.active = false;
+      worldItems.length = 0;
       securityRobots.length = 0;
       whiteShadows.length = 0;
       securityAttackSlotsInUse = 0;
@@ -8520,12 +8619,21 @@
     const totalSec = Math.ceil(secretFileTimerState.remainingMs / 1000);
     const mm = Math.floor(totalSec / 60);
     const ss = totalSec % 60;
-    const label = `SECRET FILE ${mm}:${String(ss).padStart(2, '0')}`;
+    // HOTFIX 3 SECTION 5: the on-screen countdown label is "TIME LIMIT" —
+    // never "SECRET FILE" (that string stays exactly where it already was,
+    // the world item's own official pickup name in
+    // WORLD_ITEM_PROFILES.projectAdam.pickupLines, completely untouched).
+    const label = `TIME LIMIT ${mm}:${String(ss).padStart(2, '0')}`;
     ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     ctx.font = 'bold 13px sans-serif';
-    const x = W / 2, y = Math.max(10, H * 0.03) + 14;
+    // HOTFIX 3 SECTION 4: anchored off pauseZoneBottomY (PAUSE's own real,
+    // safe-area-aware bottom edge — see resize()) plus a clear visible gap,
+    // rather than a fixed H-fraction that had no idea where PAUSE actually
+    // sits on a given device (the real cause of the reported overlap on
+    // devices with a tall safe-area-inset-top).
+    const x = W / 2, y = pauseZoneBottomY + 20;
     // Black outline behind the yellow fill (spec's own "optional black
     // outline") so it reads clearly over any background/lighting.
     ctx.lineWidth = 3;
@@ -10217,6 +10325,18 @@
   // GABRIEL encounters, BASIC TRAINING).
   function enterBossBattleStage() {
     bullets.length = 0; arcClawSlashes.length = 0; explosions.length = 0;
+    // HOTFIX 3 SECTIONS 18-21: BOSS BATTLE MODE is a genuinely separate
+    // spawn path from enterStoryStage() (never calls spawnStageClearReward()
+    // at all) — resetModeState()'s own unconditional healItem.active=false/
+    // ammoItem.active=false already covers a fresh entry, but this explicit
+    // clear here (redundant with that, never relied on alone) guarantees no
+    // item state from whatever the player was doing immediately before
+    // (STORY MODE, a previous BOSS BATTLE run, TRAINING) can ever carry into
+    // any of the 4 targets — GABRIEL/ADAM/ROID1/ROID2 all funnel through
+    // this one function.
+    healItem.active = false;
+    ammoItem.active = false;
+    worldItems.length = 0;
     // HOTFIX SECTION 8: every BOSS BATTLE MODE target (GABRIEL/ADAM/ROID1/
     // ROID2) now gets BARREL_COUNT (5) barrels — previously only GABRIEL
     // did, ROID1/ROID2/ADAM got a blanket 0.
@@ -11790,6 +11910,7 @@
     // Debug/verification only — DARK OUT PART 7: BLOOD SAMPLE (1)/(2)/(3) / ESCAPE NAVIGATOR world items.
     WORLD_ITEM_PROFILES, ITEM_FRAME_MS, spawnWorldItem, debugSpawnWorldItem,
     spawnWorldItemReward, hasAllBloodSamples,
+    bloodSampleOverlayState, BLOOD_SAMPLE_OVERLAY_MS, // debug/verification only — HOTFIX 3 SECTIONS 22-27
     // Debug/verification only — DARK OUT PART 8: MAIN / SECRET SCENARIO routing.
     storyScenarioState, enterStoryEventStage, handleStoryBossDefeatRewards,
     beginAdamStoryBossTransition, exitStoryScenarioContext,
@@ -11857,6 +11978,8 @@
     BOSS_INTRO_START_FLASH_TOTAL_MS, BOSS_INTRO_START_FLASH_ALPHA_MAX,
     BOSS_LANDING_RED_FLASH_TOTAL_MS, BOSS_LANDING_RED_FLASH_ALPHA_MAX,
     get screenShakeMag() { return screenShakeMag; },
+    get pauseZoneBottomY() { return pauseZoneBottomY; }, resize, // debug/verification only — HOTFIX 3 SECTION 4
+    get aimStickActive() { return aimStickActive; }, // debug/verification only — HOTFIX 3 SECTION 7-10
     secretFileTimerState, startSecretFileTimer, SECRET_FILE_TIMER_MS, // debug/verification only — HOTFIX 2 SECTIONS 49-54
     get screenShakeUntil() { return screenShakeUntil; },
     // Debug/verification only — unified muzzle/aim (PART 9-14).
@@ -12729,6 +12852,7 @@
       drawPlayer(now);
       if (bossVisible) drawBoss(now);
     }
+    drawBloodSampleOverlay(now); // HOTFIX 3 SECTIONS 22-27: always drawn immediately after the player, regardless of the boss painter-sort above, so it's never hidden behind either
     drawReloadingText(now); // PART7 SECTION P: drawn in this same world-translated block so it follows the player through camera scroll
 
     // PART 2: laser beams draw crossing over the player/boss layer, so the

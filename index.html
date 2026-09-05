@@ -5,16 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>DARK OUT</title>
 <meta name="description" content="DARK OUT — a dark 2D action boss-fight prototype.">
-<!-- SECTION B: OGP/Twitter card, using the attached thumbnail as-is (byte-identical copy at assets/branding/dark_out_thumbnail.jpg, never re-cropped/regenerated). -->
+<!-- SECTION B: OGP/Twitter card/icons. HOTFIX 3 SECTION 38-44: replaced with
+     the user-provided site representative image (a byte-identical copy at
+     assets/branding/dark_out_site_v2.jpg, never re-cropped/regenerated,
+     never AI-generated) — a new filename rather than overwriting
+     dark_out_thumbnail.jpg (now unused, left on disk unreferenced) so
+     GitHub Pages/mobile Safari caching can never serve the old image under
+     this URL. This image is scoped to site branding only (OGP/Twitter
+     card/favicon/apple-touch-icon) — never used as an in-game stage/menu
+     background. -->
 <meta property="og:title" content="DARK OUT">
 <meta property="og:type" content="website">
-<meta property="og:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_thumbnail.jpg">
+<meta property="og:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_site_v2.jpg">
 <meta property="og:url" content="https://andre20290810.github.io/ACTION-GAME/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="DARK OUT">
-<meta name="twitter:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_thumbnail.jpg">
-<link rel="icon" href="assets/branding/dark_out_thumbnail.jpg" type="image/jpeg">
-<link rel="apple-touch-icon" href="assets/branding/dark_out_thumbnail.jpg">
+<meta name="twitter:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_site_v2.jpg">
+<link rel="icon" href="assets/branding/dark_out_site_v2.jpg" type="image/jpeg">
+<link rel="apple-touch-icon" href="assets/branding/dark_out_site_v2.jpg">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -74,8 +82,14 @@
     <button class="main-menu-item" id="main-menu-story-btn">STORY MODE</button>
     <!-- DARK OUT PART 3: BOSS BATTLE MODE — goes straight to BOSS SELECT
          (#boss-select-overlay below), same as TRAINING MODE routes to its
-         own submenu just below this. -->
-    <button class="main-menu-item" id="main-menu-bossbattle-btn">BOSS BATTLE MODE</button>
+         own submenu just below this.
+         HOTFIX 3 SECTION 35-37: LOCKED in the UI this batch — same
+         main-menu-item-locked/locked-label markup FULL PLAY already uses
+         (main-scenario-sub-full-btn below), no new LOCK design invented.
+         The underlying startBossBattle()/enterBossBattleStage() route is
+         completely unchanged and stays directly reachable via
+         window.__game for internal/debug verification. -->
+    <button class="main-menu-item main-menu-item-locked" id="main-menu-bossbattle-btn">BOSS BATTLE MODE<span class="locked-label">LOCKED</span></button>
     <button class="main-menu-item" id="main-menu-training-btn">TRAINING MODE</button>
     <button class="main-menu-item" id="main-menu-setting-btn">SETTING</button>
   </div>
@@ -349,6 +363,12 @@
   <button id="event-movie-tap-fallback" hidden>TAP TO PLAY</button>
 </div>
 
-<script src="game.js"></script>
+<!-- HOTFIX 3: a plain unversioned src is vulnerable to mobile Safari/GitHub
+     Pages CDN caching serving a stale game.js after a real deploy — the
+     likely explanation for "already-fixed on origin but still broken on
+     the real device" reports. The query string is bumped every batch that
+     touches game.js so each deploy is a genuinely new URL, never reusing a
+     cached response. -->
+<script src="game.js?v=hotfix3"></script>
 </body>
 </html>
