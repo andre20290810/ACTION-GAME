@@ -666,6 +666,36 @@
   // see playEventMovie()'s own muted assignment below, which no longer
   // special-cases any movie key at all.
 
+  // P0 LOADING ARCHITECTURE HOTFIX: FULL PRELOAD movie readiness probes.
+  // playEventMovie() only ever assigns a movie's URL to the ONE shared
+  // eventMovieVideoEl the instant it's about to actually play (confirmed by
+  // reading that function directly) — so none of these files are fetched
+  // at all until the moment MAIN STORY/TRAINING needs them, unlike every
+  // image/audio asset above which starts fetching at script-parse time.
+  // These dedicated hidden <video preload="auto"> elements are a genuinely
+  // NEW preload trigger (never a duplicate of an existing request) so FULL
+  // PRELOAD can warm them ahead of time — muted and NEVER played (only
+  // .readyState is ever read), so no autoplay/audio policy is invoked by
+  // the probes themselves. gabriel_down is deliberately excluded: directly
+  // confirmed (grep across this whole file) that no playEventMovie(
+  // 'gabriel_down', ...) call exists anywhere — only gabriel_defeated is
+  // ever actually shown (see the GABRIEL defeat-sequence comment further
+  // down) — preloading it would only waste bandwidth on a file that can
+  // never be shown. The external ENDING ROLL (ending_darkout.MOV) is a
+  // completely separate asset/URL with its own existing Blob/buffered-
+  // polling preload system (playEndingRoll()) and is never touched here.
+  const MOVIE_PRELOAD_KEYS = ['start_display', ...Object.keys(EVENT_MOVIES).filter((k) => k !== 'gabriel_down')];
+  const moviePreloadProbes = MOVIE_PRELOAD_KEYS.map((key) => {
+    const src = SYSTEM_MOVIES[key] || EVENT_MOVIES[key];
+    const v = document.createElement('video');
+    v.preload = 'auto';
+    v.muted = true;
+    v.style.display = 'none';
+    v.src = src;
+    document.body.appendChild(v);
+    return v;
+  });
+
   // SECTION W: run-scoped "has this one-time cinematic already played this
   // attempt" flags — a small, separate object from storyScenarioState (per
   // this PART's own explicit instruction not to bloat that object further).
@@ -7814,7 +7844,13 @@
 
   function setScreen(next) {
     gameState.screen = next;
-    document.getElementById('loading-screen').hidden = next !== 'loading';
+    // P0 LOADING ARCHITECTURE HOTFIX: 'loadingChoice' (the FAST/FULL prompt)
+    // is a second overlay sharing the SAME #loading-screen container/video
+    // as 'loading' itself (never a gray/stopped frame while the choice
+    // shows) — so #loading-screen stays visible for BOTH values, and only
+    // #loading-choice-overlay's own visibility actually distinguishes them.
+    document.getElementById('loading-screen').hidden = next !== 'loading' && next !== 'loadingChoice';
+    document.getElementById('loading-choice-overlay').hidden = next !== 'loadingChoice';
     // SECTION D: OPENING and MAIN MENU share the SAME #opening-screen
     // container (and its one persistent <video>) — only which overlay
     // shows on top of it differs. The video itself is never hidden/
@@ -8070,6 +8106,22 @@
   // in a genuine worst case.
   const LOADING_MAX_WAIT_MS = 12000;
   const LOADING_FADE_OUT_MS = 250; // SECTION H-6: matches #loading-screen's own CSS transition duration
+  // P0 LOADING ARCHITECTURE HOTFIX: FULL PRELOAD's own, more generous
+  // safety ceiling — it is waiting on the ENTIRE MAIN+TRAINING asset
+  // inventory (9 movies included), not the small bootstrap set above, and
+  // the user's own explicit spec says a longer first LOADING is acceptable
+  // for FULL. Reuses playEndingRoll()'s own established 45s ceiling
+  // precedent rather than inventing an arbitrary new number — this file's
+  // one other "big asset, real network variance" wait already settled on
+  // that exact value.
+  const FULL_PRELOAD_MAX_WAIT_MS = 45000;
+  // 'full' | 'fast' | null (not yet chosen) — which preload policy this
+  // boot is running under. Read by beginScenarioOpening()/the TRAINING
+  // start handlers below to decide whether stage entry needs its own
+  // ensureFullPreloadReady() gate (FAST only — FULL already covers
+  // everything by the time TAP TO START/PLAY ever shows).
+  let startupPreloadMode = null;
+  let fullPreloadReady = false; // true once computeFullPreloadProgress() has actually reached 100% (or timed out) — checked so a later ensureFullPreloadReady() call is a no-op if FULL already finished
 
   // DARK OUT PART 11 SECTION 1/2/4: the ONE persistent background video
   // shared by the TAP-TO-START screen ('opening'), its own ATTRACT idle
@@ -8083,55 +8135,150 @@
   // once, the same instant the user actually taps to start (SECTION 4).
   const openingVideoEl = document.getElementById('opening-video');
 
-  function initLoadingSequence() {
-    setScreen('loading');
-    const loadingScreenEl = document.getElementById('loading-screen');
+  // The pre-existing minimal bootstrap set (byte-for-byte the same targets
+  // as before this batch) — just enough to render the LOADING CHOICE prompt
+  // and the MENU itself. This IS the FAST preload's own target set too —
+  // FAST intentionally asks for nothing beyond what already had to be ready
+  // to reach that prompt in the first place (spec section 23: "選択画面を
+  // 正常操作するためのassetのみ").
+  function computeMinimalProgress() {
+    const targets = [
+      spritesReady >= spritesTotal, // player AIM/FIRE sprite grid
+      dashSprites.right.complete && dashSprites.left.complete && dashSprites.up.complete && dashSprites.down.complete,
+      relaxedSprite.down.complete,
+      Object.values(walkSprites).every((set) => set.every((img) => img.complete)),
+      STAGES[0].ready, // initial stage background
+      bossSpritesReady >= Object.keys(BOSS_FRAME_FILES).length, // primary STORY-MODE-start boss art
+      cinematicPoseImg.complete && cinematicPoseBackImg.complete,
+      // HAVE_METADATA+, OR the browser has already reported a decode
+      // error for it (readyState can never advance further at that
+      // point — waiting any longer would just hang LOADING forever) —
+      // T-9: metadata/playable state counts as loaded, full download
+      // not required.
+      openingVideoEl.readyState >= 1 || !!openingVideoEl.error,
+      bgmAudio.readyState >= 1 || !!bgmAudio.error, // T-9: same rule for the gameplay BGM file
+      menuBgmAudio.readyState >= 1 || !!menuBgmAudio.error, // PART 9 SECTION E: same rule for the new MENU BGM file
+    ];
+    return { loaded: targets.filter(Boolean).length, total: targets.length };
+  }
+  // P0 LOADING ARCHITECTURE HOTFIX: FULL PRELOAD's own target set — the
+  // minimal set above PLUS every asset category MAIN SCENARIO/TRAINING
+  // normal play actually needs (real registries below, never guessed file
+  // names): GABRIEL's DARK PHASE head crops, the explosive barrel + HEAL/
+  // AMMO item photos, the ARC CLAW slash effect, DRONE's 3 body sprites,
+  // ROID1/ROID2/ADAM/ADAM SPHERE/ITEM sprites (getAllNewCharacterItemFrames()
+  // — the SAME aggregator PART 2 itself already exports for debug/
+  // verification, reused verbatim rather than re-listing 66 files by hand),
+  // every STAGE background (not just STAGES[0]), boss BGM (Outbreak 2), and
+  // the 10 MAIN-STORY-reachable movies via moviePreloadProbes above (grouped
+  // per-movie, not collapsed, so one slow file doesn't hide the other 9
+  // finishing). WHITE SHADOW/explosions are canvas-drawn only (confirmed by
+  // reading drawWhiteShadows()/spawnExplosionVisual() — no image asset
+  // exists for either), so there is genuinely nothing to preload for them.
+  function computeFullPreloadProgress() {
+    const characterFrames = getAllNewCharacterItemFrames();
+    const targets = [
+      ...(function () {
+        const minimal = computeMinimalProgress();
+        // Re-expand the minimal check into its own individual booleans
+        // rather than collapsing it into one "minimal ready" slot, so the
+        // progress fraction stays meaningfully granular throughout FULL
+        // PRELOAD (spec item 33's own "根拠のあるprogress" requirement) —
+        // cheap to recompute; every one of these is a plain property read.
+        return [
+          spritesReady >= spritesTotal,
+          dashSprites.right.complete && dashSprites.left.complete && dashSprites.up.complete && dashSprites.down.complete,
+          relaxedSprite.down.complete,
+          Object.values(walkSprites).every((set) => set.every((img) => img.complete)),
+          bossSpritesReady >= Object.keys(BOSS_FRAME_FILES).length,
+          cinematicPoseImg.complete && cinematicPoseBackImg.complete,
+          openingVideoEl.readyState >= 1 || !!openingVideoEl.error,
+          bgmAudio.readyState >= 1 || !!bgmAudio.error,
+          menuBgmAudio.readyState >= 1 || !!menuBgmAudio.error,
+        ];
+      })(),
+      STAGES.every((s) => s.ready), // ALL stage backgrounds (minimal only waited on STAGES[0])
+      bossBgmAudio.readyState >= 1 || !!bossBgmAudio.error, // Outbreak 2 — never checked before FULL PRELOAD existed
+      Object.values(darkPhaseHeadImgs).every((img) => img.complete),
+      barrelImg.complete,
+      HEAL_ITEM_IMAGES.every((img) => img.complete),
+      AMMO_ITEM_IMAGES.every((img) => img.complete),
+      arcClawImg.complete,
+      securityRobotImgs.south.complete && securityRobotImgs.west.complete && securityRobotImgs.east.complete,
+      characterFrames.every((f) => f.ready),
+      ...moviePreloadProbes.map((v) => v.readyState >= 1 || !!v.error),
+    ];
+    return { loaded: targets.filter(Boolean).length, total: targets.length };
+  }
+  // Drives one LOADING phase (either the bootstrap or FULL PRELOAD) against
+  // its own target set and its own safety ceiling, updating the (invisible,
+  // per PART 11 SECTION 1-1) progress fill identically to before this
+  // batch — factored out so both phases share one implementation rather
+  // than two near-duplicate tick() loops.
+  function runLoadingPhase(computeProgressFn, maxWaitMs, onReady) {
     const loadingBarFill = document.getElementById('loading-bar-fill');
-    const loadingStartedAt = performance.now();
-    function computeProgress() {
-      const targets = [
-        spritesReady >= spritesTotal, // player AIM/FIRE sprite grid
-        dashSprites.right.complete && dashSprites.left.complete && dashSprites.up.complete && dashSprites.down.complete,
-        relaxedSprite.down.complete,
-        Object.values(walkSprites).every((set) => set.every((img) => img.complete)),
-        STAGES[0].ready, // initial stage background
-        bossSpritesReady >= Object.keys(BOSS_FRAME_FILES).length, // primary STORY-MODE-start boss art
-        cinematicPoseImg.complete && cinematicPoseBackImg.complete,
-        // HAVE_METADATA+, OR the browser has already reported a decode
-        // error for it (readyState can never advance further at that
-        // point — waiting any longer would just hang LOADING forever) —
-        // T-9: metadata/playable state counts as loaded, full download
-        // not required.
-        // DARK OUT PART 9 SECTION D: openingVideoEl now points at
-        // start_display.mp4 — this exact readyState check already IS the
-        // "wait for start_display.mp4 to report canplay/loadeddata, never a
-        // fixed timeout" requirement (LOADING_MAX_WAIT_MS below stays a
-        // safety ceiling only, unchanged).
-        openingVideoEl.readyState >= 1 || !!openingVideoEl.error,
-        bgmAudio.readyState >= 1 || !!bgmAudio.error, // T-9: same rule for the gameplay BGM file
-        menuBgmAudio.readyState >= 1 || !!menuBgmAudio.error, // PART 9 SECTION E: same rule for the new MENU BGM file
-      ];
-      return { loaded: targets.filter(Boolean).length, total: targets.length };
-    }
+    const phaseStartedAt = performance.now();
     function tick() {
-      const { loaded, total } = computeProgress();
-      // DARK OUT PART 11 SECTION 1-1: the visual progress bar is gone
-      // (#loading-bar-track is hidden via CSS) — this still updates the
-      // (now invisible) fill width harmlessly, keeping the real internal
-      // readiness-tracking machinery completely unchanged, per spec's own
-      // "internal preload processing may remain" instruction.
+      const { loaded, total } = computeProgressFn();
       loadingBarFill.style.width = `${Math.floor((loaded / total) * 100)}%`;
-      if (loaded >= total || performance.now() - loadingStartedAt > LOADING_MAX_WAIT_MS) {
-        // SECTION H-6: fade out, THEN swap to OPENING (loading.mp4 + TAP TO
-        // START, SECTION 1-2) — never an instant cut.
-        loadingScreenEl.classList.add('loading-fade-out');
-        setTimeout(() => { setScreen('opening'); resetAttractIdleTimer(); }, LOADING_FADE_OUT_MS);
+      if (loaded >= total || performance.now() - phaseStartedAt > maxWaitMs) {
+        onReady();
         return;
       }
       setTimeout(tick, 100);
     }
     tick();
   }
+  function fadeLoadingScreenToOpening() {
+    document.getElementById('loading-screen').classList.add('loading-fade-out');
+    // SECTION H-6: fade out, THEN swap to OPENING (loading.mp4 + TAP TO
+    // START/PLAY, SECTION 1-2) — never an instant cut.
+    setTimeout(() => { setScreen('opening'); resetAttractIdleTimer(); }, LOADING_FADE_OUT_MS);
+  }
+  // STAGE-ENTRY-TIME gate for FAST mode: DEMO PLAY/TRAINING selection calls
+  // this before actually starting. FULL mode (or FAST once its own later
+  // catch-up already finished) is always already ready, so onReady() fires
+  // synchronously with zero visible LOADING — matching spec section 18/28/
+  // 44's explicit "TAP TO PLAY再要求なし, 不要な長時間LOADINGなし" requirement.
+  // Never re-shows 'loading'+choice+'opening' — only ever the plain
+  // 'loading' screen (no TAP TO START/PLAY prompt at all) while it waits.
+  function ensureFullPreloadReady(onReady) {
+    if (startupPreloadMode !== 'fast' || fullPreloadReady) { onReady(); return; }
+    const previousScreen = gameState.screen;
+    setScreen('loading');
+    runLoadingPhase(computeFullPreloadProgress, FULL_PRELOAD_MAX_WAIT_MS, () => {
+      fullPreloadReady = true;
+      setScreen(previousScreen); // restore whatever screen the player was actually on (e.g. 'mainScenarioSub') — onReady() itself decides where to go next
+      onReady();
+    });
+  }
+  function initLoadingSequence() {
+    setScreen('loading');
+    const loadingChoiceOverlayEl = document.getElementById('loading-choice-overlay');
+    runLoadingPhase(computeMinimalProgress, LOADING_MAX_WAIT_MS, () => {
+      // P0 LOADING ARCHITECTURE HOTFIX: the bootstrap set above is ready —
+      // show the FAST/FULL choice (default focus on NO/FULL, per spec
+      // section 21's "ユーザーの基本希望はFULLなのでFASTを勝手にdefaultに
+      // しない") instead of jumping straight to OPENING as before.
+      setScreen('loadingChoice');
+    });
+  }
+  document.getElementById('loading-choice-yes-btn').addEventListener('click', () => {
+    // YES -> FAST: the bootstrap set is already everything FAST needs
+    // (spec section 22/23) — proceed straight to OPENING, no extra wait.
+    startupPreloadMode = 'fast';
+    fadeLoadingScreenToOpening();
+  });
+  document.getElementById('loading-choice-no-btn').addEventListener('click', () => {
+    // NO -> FULL: run the full MAIN+TRAINING inventory now, while loading.mp4
+    // keeps playing (never a gray/stopped frame), THEN proceed to OPENING.
+    startupPreloadMode = 'full';
+    setScreen('loading');
+    runLoadingPhase(computeFullPreloadProgress, FULL_PRELOAD_MAX_WAIT_MS, () => {
+      fullPreloadReady = true;
+      fadeLoadingScreenToOpening();
+    });
+  });
 
   // ---------- SECTION H: OPENING (tap-to-start) ----------
   const openingOverlayEl = document.getElementById('opening-overlay');
@@ -8230,11 +8377,18 @@
   // one always firing first). BOSS BATTLE MODE/TRAINING never reach this
   // function.
   function beginScenarioOpening(scenario) {
-    stopMenuBgm();
-    startGameplayBgm();
-    playEventMovie('sneaking', () => {
-      startMode('boss', scenario);
-      storyCinematicState.sneakingPlayed = true;
+    // P0 LOADING ARCHITECTURE HOTFIX: under FAST mode, MAIN STORY's own
+    // asset inventory (sneaking.mp4 included) may not be ready yet — gate
+    // here with a plain LOADING (no TAP TO START/PLAY re-prompt); under
+    // FULL mode (or once FAST's own catch-up already finished once) this
+    // resolves synchronously and changes nothing about today's flow.
+    ensureFullPreloadReady(() => {
+      stopMenuBgm();
+      startGameplayBgm();
+      playEventMovie('sneaking', () => {
+        startMode('boss', scenario);
+        storyCinematicState.sneakingPlayed = true;
+      });
     });
   }
   // POST-v2.0 SECTIONS 2-5: the TOP SCENARIO SELECT's two entries no longer
@@ -8284,8 +8438,12 @@
   // DARK OUT PART 9 SECTION F: TRAINING never plays opening.mp4 — only the
   // gameplay/menu BGM handoff applies here.
   document.getElementById('main-menu-training-btn').addEventListener('click', () => setScreen('trainingSelect'));
-  document.getElementById('training-select-basic-btn').addEventListener('click', () => { startGameplayBgm(); startMode('training'); });
-  document.getElementById('training-select-security-btn').addEventListener('click', () => { startGameplayBgm(); startMode('securityTraining'); });
+  // P0 LOADING ARCHITECTURE HOTFIX: same ensureFullPreloadReady() gate as
+  // beginScenarioOpening() above — a no-op under FULL mode, a plain LOADING
+  // (never TAP TO START/PLAY again) under FAST until the full inventory
+  // (TRAINING's own ADAM SPHERE/DRONE/etc. assets included) actually lands.
+  document.getElementById('training-select-basic-btn').addEventListener('click', () => { ensureFullPreloadReady(() => { startGameplayBgm(); startMode('training'); }); });
+  document.getElementById('training-select-security-btn').addEventListener('click', () => { ensureFullPreloadReady(() => { startGameplayBgm(); startMode('securityTraining'); }); });
   document.getElementById('training-select-back-btn').addEventListener('click', () => setScreen('mainMenu'));
 
   // DARK OUT PART 3 SECTION 2/3: BOSS BATTLE MODE — pressing it goes
@@ -12114,6 +12272,11 @@
   // only ever consults this system while NOT in PAUSE (see its own
   // else-branch dispatch).
   const GAMEPAD_MENU_NAV_SCREEN_OVERLAY = {
+    // P0 LOADING ARCHITECTURE HOTFIX: the FAST/FULL preload choice — real
+    // existing .main-menu-item buttons (YES/NO), same as every other entry
+    // in this table, so it needs nothing beyond this one line to become
+    // gamepad-navigable.
+    loadingChoice: 'loading-choice-overlay',
     mainMenu: 'main-menu-overlay',
     trainingSelect: 'training-select-overlay',
     bossSelect: 'boss-select-overlay',
@@ -13686,6 +13849,15 @@
     get confirmGamepadMenuNavFocus() { return confirmGamepadMenuNavFocus; },
     get GAMEPAD_MENU_NAV_SCREEN_OVERLAY() { return GAMEPAD_MENU_NAV_SCREEN_OVERLAY; },
     get onOpeningTap() { return onOpeningTap; },
+    // P0 LOADING ARCHITECTURE HOTFIX — debug/verification only:
+    get startupPreloadMode() { return startupPreloadMode; },
+    get fullPreloadReady() { return fullPreloadReady; },
+    get computeFullPreloadProgress() { return computeFullPreloadProgress; },
+    get ensureFullPreloadReady() { return ensureFullPreloadReady; },
+    get moviePreloadProbes() { return moviePreloadProbes; },
+    get MOVIE_PRELOAD_KEYS() { return MOVIE_PRELOAD_KEYS; },
+    get FULL_PRELOAD_MAX_WAIT_MS() { return FULL_PRELOAD_MAX_WAIT_MS; },
+    get LOADING_MAX_WAIT_MS() { return LOADING_MAX_WAIT_MS; },
     flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only
     get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
     FIRE_MAG_SIZE, FIRE_COOLDOWN_MS, // debug/verification only — SECTION D
@@ -16118,7 +16290,41 @@
     // MENU/PAUSE itself is handled separately below specifically so it can
     // always toggle regardless of paused state.
     const gameplayActive = gameState.screen === 'gameplay' && !gameState.paused;
-    if (gameplayActive) {
+    // P0 LOADING ARCHITECTURE HOTFIX (root-cause fix, this batch): a MOVIE
+    // (playEventMovie()) can be showing on top of ANY screen — gameState.
+    // screen is deliberately left untouched for the whole time a movie
+    // plays (e.g. beginScenarioOpening() plays sneaking.mp4 BEFORE ever
+    // calling startMode(), so gameState.screen is still 'mainScenarioSub'
+    // throughout) — so without this check, a gamepad press during a movie
+    // fell through to whichever screen sits underneath it. That is the
+    // confirmed root cause of the reported "DEMO PLAY -> LOADING -> TAP TO
+    // PLAY -> gamepad button -> LOADING/TAP TO PLAY again" loop: iOS can
+    // reject an audible movie play() outside a real user gesture, showing
+    // event-movie-tap-fallback ("TAP TO PLAY"); a gamepad press was being
+    // read as the STILL-ACTIVE underlying screen's own generic-menu-nav
+    // "A confirm", which re-clicked the very same DEMO PLAY button
+    // (confirmGamepadMenuNavFocus() -> el.click()) and restarted
+    // beginScenarioOpening()/the movie from scratch — with a SYNTHETIC
+    // click that can never satisfy the browser's real-user-gesture
+    // requirement, so the replayed movie's own play() rejected again,
+    // showing TAP TO PLAY again, forever. Movies now take EXCLUSIVE control
+    // of gamepad input regardless of the screen underneath: while showing,
+    // ANY gamepad button's rising edge clicks the EXISTING TAP TO PLAY
+    // fallback button (the exact same retry path a touch already uses —
+    // never a gamepad-only duplicate) only if it is actually visible;
+    // otherwise (movie genuinely playing, or its own internal LOADING
+    // BRIDGE bridging a buffering stall) a gamepad press does nothing at
+    // all. The same "wait for full release" gate TAP TO START already uses
+    // applies here too, so the press that dismisses TAP TO PLAY can never
+    // also register as a fresh press on whatever comes next.
+    if (eventMovieState.active) {
+      gamepadFireHeld = false;
+      fireHeld = touchFireHeld;
+      if (gamepadInputArmed && anyButtonPressedNow && !gamepadLastAnyButtonPressed && !eventMovieTapFallbackEl.hidden) {
+        eventMovieTapFallbackEl.click();
+        gamepadInputArmed = false;
+      }
+    } else if (gameplayActive) {
       // ---- LEFT STICK -> MOVE ----
       const moveDz = radialDeadzone(gp.axes[0] || 0, gp.axes[1] || 0, GAMEPAD_MOVE_DEADZONE);
       gamepadMoveVec.x = moveDz.x; gamepadMoveVec.y = moveDz.y;

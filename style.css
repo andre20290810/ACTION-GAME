@@ -834,6 +834,37 @@ body {
   transition: width 100ms linear;
 }
 
+/* P0 LOADING ARCHITECTURE HOTFIX: the FAST/FULL preload choice — same
+   plain-text-over-video treatment as #opening-overlay (no boxed/paneled
+   menu), sat on top of the SAME still-playing #loading-video (never a
+   gray/stopped frame while this shows). */
+#loading-choice-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 0 8vw;
+  background: rgba(0, 0, 0, 0.35);
+  text-align: center;
+}
+#loading-choice-overlay[hidden] { display: none; }
+#loading-choice-text {
+  font-family: sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  line-height: 1.6;
+  color: rgba(235, 235, 238, 0.9);
+  margin-bottom: 8px;
+}
+#loading-choice-overlay .main-menu-item {
+  text-align: center;
+}
+
 #opening-screen {
   position: fixed;
   inset: 0;

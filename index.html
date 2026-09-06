@@ -42,6 +42,19 @@
   <div id="loading-bar-track">
     <div id="loading-bar-fill"></div>
   </div>
+  <!-- P0 LOADING ARCHITECTURE HOTFIX: shown once the bare-minimum bootstrap
+       (unchanged from before this batch) is ready, before either preload
+       policy actually begins — the SAME loading.mp4 keeps playing behind it
+       (never a gray/stopped frame). YES/NO reuse .main-menu-item so the
+       existing generic gamepad D-PAD/LEFT STICK navigate + A confirm engine
+       and its gamepad-focus highlight CSS both work here with zero new
+       plumbing; touch/click work exactly the same as every other
+       .main-menu-item. -->
+  <div id="loading-choice-overlay" hidden>
+    <div id="loading-choice-text">FAST LOADING IS AVAILABLE FOR SCENARIO SELECTION ONLY.</div>
+    <button class="main-menu-item" id="loading-choice-yes-btn">YES</button>
+    <button class="main-menu-item" id="loading-choice-no-btn">NO</button>
+  </div>
 </div>
 
 <!-- SECTION H/D: OPENING — a single persistent muted/loop/autoplay/
@@ -393,6 +406,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=adamsphere-flash-gameover-nav-fix1"></script>
+<script src="game.js?v=loading-architecture-p0-fastfull1"></script>
 </body>
 </html>
