@@ -11973,10 +11973,50 @@
     // SECTION G-3: hidden whenever NOT currently stunned — only ever shown
     // (bottom-most, per G-2's markup order) while player.stunned is true.
     modeRebootBtn.hidden = !player.stunned;
+    // GAMEPAD CONTROL TUNING: always reopen focused on the first item
+    // (RESUME) — see movePauseMenuFocus()/confirmPauseMenuFocus() below,
+    // driven from updateGamepadInput(). Seeding the stick-edge trackers to
+    // "already past threshold in both directions" means whatever the
+    // LEFT STICK happens to be doing at the exact moment PAUSE opens
+    // (e.g. still held from gameplay movement) can never itself count as
+    // a fresh push — the player must return to neutral and push again,
+    // so opening the menu never silently jumps the selection.
+    pauseMenuFocusIndex = 0;
+    gamepadPauseMenuStickWasUp = true;
+    gamepadPauseMenuStickWasDown = true;
+    updatePauseMenuFocusVisual();
   }
   function hideModeMenu() {
     modeMenu.classList.remove('open');
     closeSettingPanel(); // always resets back to the main PAUSE panel for next time it opens
+  }
+  // GAMEPAD CONTROL TUNING: PAUSE MENU D-PAD/LEFT STICK navigation + A
+  // confirm. Only ever considers items in the currently-visible main pause
+  // panel (never the SETTING sub-panel, which pauseMenuPanel.hidden — set
+  // by openSettingPanel()/closeSettingPanel() — already distinguishes),
+  // and only currently-visible .mode-btn items (so #mode-reboot-btn only
+  // enters the list while player.stunned, exactly matching what a player
+  // can actually see/tap).
+  function getPauseMenuItems() {
+    return Array.from(modeMenu.querySelectorAll('.mode-btn')).filter((el) => !el.hidden);
+  }
+  function updatePauseMenuFocusVisual() {
+    const items = getPauseMenuItems();
+    items.forEach((el, i) => el.classList.toggle('gamepad-focus', i === pauseMenuFocusIndex));
+  }
+  function movePauseMenuFocus(delta) {
+    const items = getPauseMenuItems();
+    if (items.length === 0) return;
+    pauseMenuFocusIndex = ((pauseMenuFocusIndex + delta) % items.length + items.length) % items.length;
+    updatePauseMenuFocusVisual();
+  }
+  // Reuses each button's own real click handler (RESUME/SETTING/RESTART/
+  // QUIT/REBOOT) via a genuine .click() — never a gamepad-only duplicate
+  // of what any of those buttons actually do.
+  function confirmPauseMenuFocus() {
+    const items = getPauseMenuItems();
+    const el = items[pauseMenuFocusIndex];
+    if (el) el.click();
   }
 
   // GAMEPAD SUPPORT: the real PAUSE mechanics, factored out so the on-screen
@@ -13472,6 +13512,13 @@
     get STANDARD_GAMEPAD_BUTTONS() { return STANDARD_GAMEPAD_BUTTONS; },
     get FALLBACK_GAMEPAD_BUTTONS() { return FALLBACK_GAMEPAD_BUTTONS; },
     get triggerDashInDirection() { return triggerDashInDirection; },
+    // GAMEPAD CONTROL TUNING — debug/verification only:
+    get pauseMenuFocusIndex() { return pauseMenuFocusIndex; },
+    get getPauseMenuItems() { return getPauseMenuItems; },
+    get movePauseMenuFocus() { return movePauseMenuFocus; },
+    get confirmPauseMenuFocus() { return confirmPauseMenuFocus; },
+    get GAMEPAD_DASH_LT_THRESHOLD() { return GAMEPAD_DASH_LT_THRESHOLD; },
+    get GAMEPAD_PAUSE_MENU_STICK_THRESHOLD() { return GAMEPAD_PAUSE_MENU_STICK_THRESHOLD; },
     get triggerPauseNow() { return triggerPauseNow; },
     get resumeFromPauseMenu() { return resumeFromPauseMenu; }, // debug/verification only
     flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only
@@ -15714,10 +15761,37 @@
   // triggerPauseNow/resumeFromPauseMenu) — update()/draw() and every boss/
   // enemy/item system remain completely unaware that a second input source
   // even exists.
-  const GAMEPAD_DEBUG = false; // production default OFF — flip true only for local diagnostic work
+  // GAMEPAD CONTROL TUNING: runtime-toggleable (?gamepadDebug=1 in the URL,
+  // or once set it persists via localStorage) so a real device can be
+  // self-diagnosed (real button index/mapping/axes/pressed state) without
+  // needing a new deploy for every check — production default stays OFF
+  // either way.
+  let GAMEPAD_DEBUG = false;
+  try {
+    if (new URLSearchParams(window.location.search).get('gamepadDebug') === '1') {
+      localStorage.setItem('gamepadDebug', '1');
+    } else if (new URLSearchParams(window.location.search).get('gamepadDebug') === '0') {
+      localStorage.removeItem('gamepadDebug');
+    }
+    GAMEPAD_DEBUG = localStorage.getItem('gamepadDebug') === '1';
+  } catch (err) { /* private-mode/localStorage-disabled: stay OFF, never crash boot over a diagnostic convenience */ }
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
   const GAMEPAD_FIRE_THRESHOLD = 0.25; // RT analog value >= this counts as FIRE held
+  // GAMEPAD CONTROL TUNING: LT is a rising-edge DIRECTIONAL DASH trigger
+  // (never a held-fire like RT) — value crossing this threshold fires
+  // exactly one DASH toward whatever direction is currently driving MOVE
+  // (LEFT STICK, else D-PAD, else touch — never a separate calculation;
+  // see the plain triggerDashInDirection(now) call with no angleOverride
+  // below, which already reads actionStickVec/keyboard and falls back to
+  // player.baseDir when neutral, exactly per spec).
+  const GAMEPAD_DASH_LT_THRESHOLD = 0.25;
+  // PAUSE MENU gamepad navigation: LEFT STICK vertical must move the
+  // highlighted item once per push, not once per frame while held —
+  // tracked as "was the stick already past this threshold last frame" and
+  // gated to only re-fire after returning to neutral (item 32's own
+  // "neutralへ戻すまで1回" option).
+  const GAMEPAD_PAUSE_MENU_STICK_THRESHOLD = 0.5;
 
   // W3C Standard Gamepad button indices (https://www.w3.org/TR/gamepad/#remapping).
   // Used whenever gamepad.mapping === 'standard', which is what iOS Safari
@@ -15725,7 +15799,7 @@
   // GameController framework recognizes) — never hardcoded as "the GameSir
   // layout" specifically, so any other standard-mapping controller works
   // identically.
-  const STANDARD_GAMEPAD_BUTTONS = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, BACK: 8, MENU: 9, L3: 10, R3: 11 };
+  const STANDARD_GAMEPAD_BUTTONS = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, BACK: 8, MENU: 9, L3: 10, R3: 11, DPAD_UP: 12, DPAD_DOWN: 13, DPAD_LEFT: 14, DPAD_RIGHT: 15 };
   // Fallback for a controller that reports mapping !== 'standard'. Real
   // per-button diagnostic data for such a controller was not available while
   // building this (this environment cannot pair a physical GameSir Nova
@@ -15744,6 +15818,10 @@
   let gamepadAimVec = null; // post-deadzone RIGHT STICK {x,y}, or null while neutral — debug/verification only
   let gamepadFireHeld = false; // RT >= GAMEPAD_FIRE_THRESHOLD
   let gamepadLastButtons = {}; // previous-frame pressed state, for rising-edge detection
+  // PAUSE MENU gamepad navigation state — see GAMEPAD_PAUSE_MENU_STICK_THRESHOLD.
+  let gamepadPauseMenuStickWasUp = false;
+  let gamepadPauseMenuStickWasDown = false;
+  let pauseMenuFocusIndex = 0;
 
   window.addEventListener('gamepadconnected', (e) => {
     if (gamepadIndex === null) gamepadIndex = e.gamepad.index;
@@ -15819,10 +15897,15 @@
     const pressedNow = {
       lb: !!(btn(idx.LB) && btn(idx.LB).pressed),
       rb: !!(btn(idx.RB) && btn(idx.RB).pressed),
+      lt: (btn(idx.LT) ? btn(idx.LT).value : 0) >= GAMEPAD_DASH_LT_THRESHOLD, // GAMEPAD CONTROL TUNING: LT is a value-threshold rising edge, per spec, not .pressed
       x: !!(btn(idx.X) && btn(idx.X).pressed),
       y: !!(btn(idx.Y) && btn(idx.Y).pressed),
       a: !!(btn(idx.A) && btn(idx.A).pressed),
       menu: !!(btn(idx.MENU) && btn(idx.MENU).pressed),
+      dpadUp: !!(btn(idx.DPAD_UP) && btn(idx.DPAD_UP).pressed),
+      dpadDown: !!(btn(idx.DPAD_DOWN) && btn(idx.DPAD_DOWN).pressed),
+      dpadLeft: !!(btn(idx.DPAD_LEFT) && btn(idx.DPAD_LEFT).pressed),
+      dpadRight: !!(btn(idx.DPAD_RIGHT) && btn(idx.DPAD_RIGHT).pressed),
     };
     const prev = gamepadLastButtons;
 
@@ -15838,13 +15921,30 @@
       // ---- LEFT STICK -> MOVE ----
       const moveDz = radialDeadzone(gp.axes[0] || 0, gp.axes[1] || 0, GAMEPAD_MOVE_DEADZONE);
       gamepadMoveVec.x = moveDz.x; gamepadMoveVec.y = moveDz.y;
+
+      // GAMEPAD CONTROL TUNING: D-PAD is a second MOVE source sharing this
+      // exact same actionStickVec pipeline — never a separate PLAYER
+      // movement implementation. Diagonals (two D-PAD directions held at
+      // once) combine and normalize, exactly like a real analog stick
+      // pushed diagonally.
+      let dpadX = 0, dpadY = 0;
+      if (pressedNow.dpadLeft) dpadX -= 1;
+      if (pressedNow.dpadRight) dpadX += 1;
+      if (pressedNow.dpadUp) dpadY -= 1;
+      if (pressedNow.dpadDown) dpadY += 1;
+      const dpadMag = Math.hypot(dpadX, dpadY);
+      if (dpadMag > 0) { dpadX /= dpadMag; dpadY /= dpadMag; }
+
+      // MOVE priority: LEFT STICK (past deadzone) > D-PAD (any direction
+      // held) > touch (already in actionStickVec) > neutral. Never added
+      // together — exactly one source drives actionStickVec each frame.
       if (moveDz.mag > 0) {
-        // GAMEPAD MOVE priority: overrides touch whenever it's actually
-        // pushed past its deadzone.
         actionStickVec.x = moveDz.x; actionStickVec.y = moveDz.y;
+      } else if (dpadMag > 0) {
+        actionStickVec.x = dpadX; actionStickVec.y = dpadY;
       } else if (actionStickTouchId === null) {
-        // Gamepad neutral AND no active touch drag -> genuinely at rest.
-        // (Gamepad neutral but a touch drag IS active -> leave
+        // Gamepad AND D-PAD both neutral, and no active touch drag ->
+        // genuinely at rest. (A touch drag IS active -> leave
         // actionStickVec exactly as the touch handler already set it —
         // never added together with the gamepad's own zero.)
         actionStickVec.x = 0; actionStickVec.y = 0;
@@ -15872,15 +15972,49 @@
       fireHeld = touchFireHeld || gamepadFireHeld;
 
       // ---- rising-edge-only buttons: exactly one activation per physical press ----
-      if (pressedNow.lb && !prev.lb) triggerDashInDirection(now, BASE_ANGLE.left); // LB -> DASH LEFT
-      if (pressedNow.rb && !prev.rb) triggerDashInDirection(now, BASE_ANGLE.right); // RB -> DASH RIGHT
+      if (pressedNow.lb && !prev.lb) triggerDashInDirection(now, BASE_ANGLE.left); // LB -> DASH LEFT (fixed direction, unchanged)
+      if (pressedNow.rb && !prev.rb) triggerDashInDirection(now, BASE_ANGLE.right); // RB -> DASH RIGHT (fixed direction, unchanged)
+      // GAMEPAD CONTROL TUNING: LT -> DIRECTIONAL DASH. No angleOverride is
+      // passed — triggerDashInDirection() already computes its own angle
+      // from the CURRENT actionStickVec (which, by this point in the
+      // frame, already reflects whichever of LEFT STICK/D-PAD/touch is
+      // actually driving movement — never a separate direction
+      // calculation) and falls back to player.baseDir (current facing)
+      // when that vector is neutral — precisely "dash toward whatever
+      // direction is currently held, or facing if none" per spec, and the
+      // exact same fallback the touch DASH button's own default press
+      // already uses.
+      if (pressedNow.lt && !prev.lt) triggerDashInDirection(now);
       if (pressedNow.x && !prev.x) flashPress(); // X -> FLASH (existing flashPress(), no gamepad-only duplicate)
       if (pressedNow.y && !prev.y) stealthPress(); // Y -> STEALTH (existing stealthPress())
       if (pressedNow.a && !prev.a) triggerManualReload(); // A -> RELOAD (existing triggerManualReload())
-      // B, D-PAD, L3/R3 are deliberately unassigned this batch — never wired to any function.
+      // B, L3/R3 are deliberately unassigned this batch — never wired to any function.
     } else {
       gamepadFireHeld = false;
       fireHeld = touchFireHeld;
+      // GAMEPAD CONTROL TUNING: PAUSE MENU navigation — D-PAD UP/DOWN
+      // (rising edge) or LEFT STICK UP/DOWN (must return to neutral before
+      // it counts again, never a per-frame repeat while held) move the
+      // gamepad-focus highlight; A confirms via a genuine .click() on the
+      // focused button. Scoped to when the actual PAUSE MENU button list
+      // is visible (never while the SETTING sub-panel is open — that has
+      // no gamepad navigation of its own this batch) so D-PAD/A never do
+      // anything unexpected on other non-gameplay screens.
+      if (gameState.screen === 'gameplay' && gameState.paused && pauseMenuPanel && !pauseMenuPanel.hidden) {
+        if (pressedNow.dpadUp && !prev.dpadUp) movePauseMenuFocus(-1);
+        if (pressedNow.dpadDown && !prev.dpadDown) movePauseMenuFocus(1);
+        const stickY = gp.axes[1] || 0;
+        const stickPastUp = stickY <= -GAMEPAD_PAUSE_MENU_STICK_THRESHOLD;
+        const stickPastDown = stickY >= GAMEPAD_PAUSE_MENU_STICK_THRESHOLD;
+        if (stickPastUp && !gamepadPauseMenuStickWasUp) movePauseMenuFocus(-1);
+        if (stickPastDown && !gamepadPauseMenuStickWasDown) movePauseMenuFocus(1);
+        gamepadPauseMenuStickWasUp = stickPastUp;
+        gamepadPauseMenuStickWasDown = stickPastDown;
+        // PAUSE中はA=CONFIRM専用 — gameplayActive===falseの間はこのelseブロック
+        // 自体しか実行されないため、上のgameplayActive分岐にあるA=RELOADは
+        // そもそも一切評価されない（意図的な相互排他、二重定義ではない）。
+        if (pressedNow.a && !prev.a) confirmPauseMenuFocus();
+      }
     }
 
     // ---- MENU/OPTIONS -> PAUSE toggle (works during pause too, so it can resume) ----

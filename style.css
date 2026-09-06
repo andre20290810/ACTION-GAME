@@ -1299,6 +1299,25 @@ body {
   color: #ffffff;
   text-shadow: 0 0 10px rgba(200, 220, 235, 0.6);
 }
+/* GAMEPAD CONTROL TUNING: the PAUSE MENU item currently focused via D-PAD/
+   LEFT STICK navigation (see movePauseMenuFocus() in game.js) — brightness
+   + a visible left-side marker + background wash, so it reads clearly
+   distinct from the plain touch/mouse :active state above regardless of
+   which .mode-btn color variant (RESTART's amber, QUIT's red) it's on. */
+.mode-btn.gamepad-focus {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+  text-shadow: 0 0 12px rgba(255, 255, 255, 0.8);
+  position: relative;
+}
+.mode-btn.gamepad-focus::before {
+  content: '▶';
+  position: absolute;
+  left: -2px;
+  top: 50%;
+  transform: translate(-100%, -50%);
+  font-size: 0.7em;
+}
 #mode-restart-btn {
   color: rgba(232, 200, 150, 0.85);
 }
