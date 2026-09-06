@@ -224,6 +224,13 @@
     { type: 'boss', boss: 'roid1' },
     { type: 'cultivationLab' },
     { type: 'boss', boss: 'gabriel', encounterIndex: 0 },
+    // HOTFIX 4.3 SECTIONS 31-35: a second WHITE-SHADOW-ONLY breather stage,
+    // this one right after GABRIEL1 — same shared plan.type==='whiteShadow'
+    // handling as every other WHITE-SHADOW-only entry (2-AREA,
+    // WHITE_SHADOW_INITIAL_COUNT>=3 in AREA1, DRONE/ROID/GABRIEL/ADAM
+    // SPHERE=0), with forceHeal:true guaranteeing the AREA2 HEAL exactly like
+    // the existing GABRIEL2->GABRIEL3 breather stage below.
+    { type: 'whiteShadow', forceHeal: true },
     { type: 'randomSlot', count: 2, noDuplicate: true },
     { type: 'boss', boss: 'gabriel', encounterIndex: 1 },
     // HOTFIX 4.1 ADDENDUM SECTIONS 13-17: the 2nd {boss:'roid1', dark:true}
@@ -777,7 +784,21 @@
     // embedded track. Every other movie (sneaking/drone_arrival/ROID+ADAM
     // arrivals/gabriel_defeated/ENDING) is completely untouched — scoped to
     // this exact key only, never a second mute-everything regression.
-    eventMovieVideoEl.muted = key === 'gabriel_arrival';
+    // HOTFIX 4.3 SECTIONS 46-50: main_escape ("脱出動画") and main_bad_ending
+    // (the ADAM SPHERE MAIN finale's own 2nd/closing movie — together the
+    // exact 2 movies MAIN's beginStoryEscapeEnding() plays back-to-back
+    // right after ADAM SPHERE's defeat, confirmed via that function/the
+    // EVENT_MOVIES registry — never guessed from name alone, per the user's
+    // own explicit "identify the real key/file first" requirement, and
+    // confirmed with the user directly) are now ALSO muted, same scoped-by-
+    // exact-key pattern as gabriel_arrival above. true_ending (SECRET's own
+    // route) and the external ENDING ROLL (ending_darkout.MOV, a completely
+    // separate playback system — see playEndingRoll()) are untouched and
+    // keep their own audio ON; whatever BGM/context is already playing
+    // underneath these two movies is likewise untouched (MOVIE muted here
+    // is not the same as pausing BGM — beginStoryEscapeEnding()'s own
+    // bgmAudio.pause() call, unrelated to this line, still decides that).
+    eventMovieVideoEl.muted = key === 'gabriel_arrival' || key === 'main_escape' || key === 'main_bad_ending';
     eventMovieVideoEl.src = src;
     eventMovieVideoEl.currentTime = 0;
     eventMovieOverlayEl.hidden = false;
@@ -1212,11 +1233,16 @@
   // in enterStoryStage() explicitly disables healItem regardless — this
   // just keeps that intent explicit here too, rather than relying on that
   // later code to silently undo a wrong true here).
+  // HOTFIX 4.3 SECTIONS 38-40: also excludes 'cultivationLab' — PROJECT ADAM
+  // SITE is a SECRET FILE/PROJECT ADAM event waypoint, never an item-supply
+  // stage, even when it happens to follow ROID1. This is now the ONLY
+  // exception besides 'adamSphere'; enterStoryStage()'s own cultivationLab
+  // branch below no longer force-places a HEAL item either.
   function isImmediatelyAfterMainBossEncounter() {
     if (storyScenarioState.scenario !== 'main') return false;
     const plan = activeStagePlanArray();
     const current = plan[currentStageIndex];
-    if (!current || current.type === 'adamSphere') return false;
+    if (!current || current.type === 'adamSphere' || current.type === 'cultivationLab') return false;
     const prev = plan[currentStageIndex - 1];
     return !!prev && prev.type === 'boss';
   }
@@ -6896,6 +6922,7 @@
     dying: false,
     deathStartedAt: 0,
     deathExplosionsSpawned: 0,
+    hitFlashStartAt: -Infinity, // HOTFIX 4.3 SECTIONS 13-17: set only inside applyDamageToAdamSphereCombat() on a genuine hp reduction — see drawAdamSphereCombat()'s use of it below
   };
   const ADAM_SPHERE_COMBAT_MAX_HP = BOSS_HP_MAX; // reuses the existing boss HP pool rather than inventing a new number — this is a FINAL-BATTLE-caliber encounter
   const ADAM_SPHERE_COMBAT_HIT_RADIUS = ADAM_SPHERE_TARGET_DIAMETER / 2; // same body-footprint convention as every other hurtbox in this file (radius = half the drawn diameter)
@@ -6955,6 +6982,7 @@
     adamSphereCombatState.dying = false;
     adamSphereCombatState.deathStartedAt = 0;
     adamSphereCombatState.deathExplosionsSpawned = 0;
+    adamSphereCombatState.hitFlashStartAt = -Infinity;
   }
   // The ONE place ADAM SPHERE's own combat HP ever decreases — called from
   // the PLAYER-bullet collision loop below, the same pattern every other
@@ -6963,6 +6991,13 @@
     const s = adamSphereCombatState;
     if (!s.active || s.dying) return;
     s.hp = Math.max(0, s.hp - amount);
+    // HOTFIX 4.3 SECTIONS 13-17: fires from this EXACT damage-application
+    // line — never a separate MISS-agnostic display timer — so the body
+    // blink drawAdamSphereCombat() shows below can only ever be a genuine
+    // "hp just went down" event. A MISS never reaches this function at all
+    // (the caller only calls it after its own hit-radius check already
+    // passed), so a MISS never blinks.
+    s.hitFlashStartAt = now;
     if (s.hp <= 0) {
       s.dying = true;
       s.deathStartedAt = now;
@@ -7051,7 +7086,27 @@
     if (!frame.ready) return;
     const scale = computeBodyVisualScale(frame, ADAM_SPHERE_TARGET_DIAMETER);
     const w = frame.nativeW * scale, h = frame.nativeH * scale;
-    ctx.drawImage(frame.img, s.x - w / 2, s.y - h / 2, w, h);
+    const dx = s.x - w / 2, dy = s.y - h / 2;
+    // HOTFIX 4.3 SECTIONS 13-17: ADAM SPHERE HIT BLINK — reuses the exact
+    // same BOSS_HIT_TINT_MS/BOSS_DAMAGE_BLINK_COUNT/BOSS_DAMAGE_BLINK_TOTAL_MS/
+    // drawBossWithHitTint() machinery GABRIEL's own damage blink already
+    // uses (ADAM SPHERE already reuses BOSS_HP_MAX for its own max HP, same
+    // "FINAL-BATTLE-caliber, reuse the boss-grade feedback" precedent), keyed
+    // off hitFlashStartAt, which applyDamageToAdamSphereCombat() sets on
+    // this EXACT same line as the real hp reduction — never a MISS-agnostic
+    // display timer, so this can only ever blink on a genuine landed hit.
+    const blinkElapsed = now - s.hitFlashStartAt;
+    if (blinkElapsed >= 0 && blinkElapsed < BOSS_DAMAGE_BLINK_TOTAL_MS) {
+      const segment = Math.floor(blinkElapsed / BOSS_HIT_TINT_MS);
+      if (segment % 2 === 0) {
+        const tWithinHalf = 1 - (blinkElapsed % BOSS_HIT_TINT_MS) / BOSS_HIT_TINT_MS;
+        drawBossWithHitTint(frame.img, dx, dy, w, h, tWithinHalf);
+      } else {
+        ctx.drawImage(frame.img, dx, dy, w, h);
+      }
+    } else {
+      ctx.drawImage(frame.img, dx, dy, w, h);
+    }
   }
 
   // ---------- ARC CLAW SLASH / CLAW STING (both share one array/shape) ----------
@@ -8080,7 +8135,23 @@
     // area2Cleared branch just below (boss.state==='dead'), and ADAM
     // SPHERE's own exit condition is its sample-submission event, handled
     // entirely separately (see the escapeReady branch above).
-    if (isStoryDroneStage()) return gameState.mode === 'boss' && !stageTransition.active;
+    if (isStoryDroneStage()) {
+      // HOTFIX 4.3 SECTIONS 41-44: PROJECT ADAM SITE (cultivationLab) is the
+      // one isStoryDroneStage() member whose whole point is a required event
+      // (SECRET FILE: PROJECT ADAM, spawnProjectAdamItem()) rather than
+      // combat — without this, the EXIT band opened the instant the stage
+      // began (same as any other DRONE/WHITE-SHADOW/MIXED stage with no
+      // kill-gate), so a player could walk straight past the item to the
+      // EXIT and skip the event entirely. Gating this one stage's EXIT on
+      // runInventory.projectAdamCollected (the same flag the pickup itself
+      // already sets) means the intended flow — enter, collect SECRET FILE,
+      // THEN the EXIT opens, THEN a deliberate walk-in triggers advance — is
+      // now the only possible path; nothing here changes currentStageIndex
+      // itself, which (per beginStageTransition()) only ever advances from
+      // the EXIT-zone contact check in update().
+      if (isCultivationLabStage() && !runInventory.projectAdamCollected) return false;
+      return gameState.mode === 'boss' && !stageTransition.active;
+    }
     return gameState.mode === 'boss' && area2Cleared && !stageTransition.active;
   }
 
@@ -8195,6 +8266,30 @@
   // (chunked/streamed responses can leave the last few bytes pending
   // indefinitely) — this is the "stability observed over time" check.
   const ENDING_ROLL_BUFFER_STABLE_MS = 600;
+  // HOTFIX 4.3 SECTIONS 1-9 (root-cause fix for real-device mid-playback
+  // stop/audio-cut reports): the OLD post-timeout fallback ("readyState>=2
+  // && bufEnd>0" — i.e. literally ANY nonzero buffer) could start playback
+  // with only a couple of seconds actually downloaded, guaranteeing a stall
+  // the moment that tiny head-start was consumed — exactly the "45秒経った
+  // からbuffer不足でも再生開始" failure mode called out explicitly. Replaced
+  // with a real minimum-runway requirement (seconds of contiguous buffer
+  // from position 0, not a percentage — meaningful regardless of the file's
+  // total length) that must be met even after the base wait; short of that,
+  // the wait EXTENDS (rather than starting unsafely) for as long as bytes
+  // are still genuinely arriving, and only gives up for real once the
+  // download has genuinely stalled (no buffered.end() growth at all) for a
+  // sustained period, or the hard ceiling below is reached.
+  const ENDING_ROLL_MIN_BUFFERED_SECONDS = 20;
+  const ENDING_ROLL_HARD_MAX_WAIT_MS = 90000;
+  const ENDING_ROLL_DOWNLOAD_STALL_MS = 8000;
+  // HOTFIX 4.3 SECTIONS 12/54: real, testable diagnostics for THIS ONE ENDING
+  // ROLL attempt — reset at the top of every playEndingRoll() call, read by
+  // the completion-report verification script (never used to change any
+  // actual playback decision, purely observational).
+  const endingRollDiagnostics = {
+    waitingCount: 0, stalledCount: 0, bufferedRangesAtStart: null,
+    bufferedEndAtStart: 0, durationAtStart: 0, readyStateAtStart: 0, networkStateAtStart: 0,
+  };
   let endingRollObjectUrl = null; // revoked in finish() below — never leaked
   function playEndingRoll(onComplete) {
     // Section 1/18: BGM must be fully silent throughout — stop+reset
@@ -8207,6 +8302,15 @@
     bgmAudio.pause(); bgmAudio.currentTime = 0;
     bossBgmAudio.pause(); bossBgmAudio.currentTime = 0;
     menuBgmAudio.pause(); menuBgmAudio.currentTime = 0;
+
+    // HOTFIX 4.3 SECTIONS 12/54: fresh diagnostics for this ONE attempt.
+    endingRollDiagnostics.waitingCount = 0;
+    endingRollDiagnostics.stalledCount = 0;
+    endingRollDiagnostics.bufferedRangesAtStart = null;
+    endingRollDiagnostics.bufferedEndAtStart = 0;
+    endingRollDiagnostics.durationAtStart = 0;
+    endingRollDiagnostics.readyStateAtStart = 0;
+    endingRollDiagnostics.networkStateAtStart = 0;
 
     eventMovieState.active = true;
     eventMovieState.key = 'endingRoll';
@@ -8259,6 +8363,9 @@
       hideEndingLoading();
       eventMovieVideoEl.onended = null;
       eventMovieVideoEl.onerror = null;
+      eventMovieVideoEl.onwaiting = null;
+      eventMovieVideoEl.onstalled = null;
+      eventMovieVideoEl.onplaying = null;
       eventMovieVideoEl.removeAttribute('src');
       eventMovieVideoEl.load();
       revokeObjectUrlIfAny();
@@ -8287,6 +8394,19 @@
     // has genuinely confirmed readiness.
     function beginConfirmedPlayback() {
       if (eventMovieState.key !== 'endingRoll') return; // superseded mid-preload
+      // HOTFIX 4.3 SECTIONS 7/54: snapshot the exact buffered/duration/
+      // readyState/networkState this attempt actually started with, for the
+      // completion report — captured once, right here, never recomputed
+      // later (so it always reflects the real state at the moment playback
+      // was judged safe to begin).
+      {
+        const buffered = eventMovieVideoEl.buffered;
+        endingRollDiagnostics.bufferedRangesAtStart = buffered ? buffered.length : 0;
+        endingRollDiagnostics.bufferedEndAtStart = (buffered && buffered.length > 0) ? buffered.end(buffered.length - 1) : 0;
+        endingRollDiagnostics.durationAtStart = eventMovieVideoEl.duration;
+        endingRollDiagnostics.readyStateAtStart = eventMovieVideoEl.readyState;
+        endingRollDiagnostics.networkStateAtStart = eventMovieVideoEl.networkState;
+      }
       hideEndingLoading();
       eventMovieVideoEl.currentTime = 0;
       eventMovieVideoEl.onended = finish;
@@ -8295,12 +8415,39 @@
         if (eventMovieState.key !== 'endingRoll') return;
         showFallback(finish);
       };
+      // HOTFIX 4.3 SECTIONS 8/12/54: waiting/stalled monitoring DURING
+      // playback — the actual root cause of "映像が途中で停止/音声が途切れる"
+      // reports was that NOTHING watched for a mid-playback rebuffer at all;
+      // the browser's own auto-pause-until-more-data-arrives behavior just
+      // read as a silently frozen frame with no feedback. This never
+      // pause()s/play()s the video itself (the existing "never touch
+      // playback state once started" contract is unchanged) — it only
+      // toggles the SAME loading.mp4 overlay the initial preload wait
+      // already uses, so a genuine network stall reads as "still loading",
+      // never as "broken", and the video's own playback naturally resumes
+      // and fires 'playing' the instant the browser has enough data again.
+      let rebufferOverlayShowing = false;
+      eventMovieVideoEl.onwaiting = () => {
+        if (eventMovieState.key !== 'endingRoll') return;
+        endingRollDiagnostics.waitingCount++;
+        if (!rebufferOverlayShowing) { rebufferOverlayShowing = true; showEndingLoading(); }
+      };
+      eventMovieVideoEl.onstalled = () => {
+        if (eventMovieState.key !== 'endingRoll') return;
+        endingRollDiagnostics.stalledCount++;
+      };
+      eventMovieVideoEl.onplaying = () => {
+        if (eventMovieState.key !== 'endingRoll') return;
+        if (rebufferOverlayShowing) { rebufferOverlayShowing = false; hideEndingLoading(); }
+      };
       // Once playback has genuinely started, this file's own contract
       // (ADDENDUM section L-Y) is "never pause()/play() again for
       // non-error reasons, never recreate the video element" — the only
       // handlers wired past this point are onended (normal completion) and
       // onerror (a genuine mid-playback failure), never a resume-after-
-      // pause watchdog of any kind.
+      // pause watchdog of any kind. waiting/stalled/playing above are pure
+      // observation + the same visual overlay swap the initial wait already
+      // does — neither one calls .play()/.pause() on eventMovieVideoEl.
       eventMovieVideoEl.play().catch(() => {
         if (eventMovieState.key !== 'endingRoll') return;
         // HOTFIX 2 SECTION 17/19: a genuinely unreachable src rejects BOTH
@@ -8330,14 +8477,20 @@
     // to ever cleanly reach the "ideal" thresholds below, even on a
     // perfectly healthy connection — a naive "hit ENDING_ROLL_LOAD_MAX_WAIT_MS
     // -> TAP TO CONTINUE" rule would then misreport a genuinely-fine
-    // download as a failure. So the timeout branch no longer treats
-    // "still not at the ideal threshold" as failure by itself: if ANY real
-    // data has already buffered (readyState>=HAVE_CURRENT_DATA and some
-    // buffered range exists) once the generous wait is exhausted, playback
-    // starts anyway — accepting a small residual stall risk instead of a
-    // guaranteed dead stop — and TAP TO CONTINUE is reserved for the true
-    // zero-progress case (a real video.error, or literally nothing buffered
-    // at all after this long).
+    // download as a failure.
+    // HOTFIX 4.3 SECTIONS 1-9 (root-cause fix): the OLD post-timeout branch
+    // accepted ANY nonzero buffer as "good enough" — for a 120MB file that
+    // could mean starting with only a couple of seconds actually
+    // downloaded, guaranteeing an almost-immediate stall (the reported
+    // "映像が途中で停止/音声が途切れる"). Now requires a real minimum runway
+    // (ENDING_ROLL_MIN_BUFFERED_SECONDS of CONTIGUOUS buffer measured from
+    // position 0 — the range that will actually be read at playback start,
+    // not just whatever the LAST buffered range happens to be, which some
+    // browsers can fill out-of-order) even after the base wait; short of
+    // that, the wait EXTENDS as long as bytes are still genuinely arriving
+    // (buffered.end() still growing), and only gives up for real — TAP TO
+    // CONTINUE — once the download has genuinely stalled (no growth at all
+    // for ENDING_ROLL_DOWNLOAD_STALL_MS) or the hard ceiling is reached.
     function preloadViaBufferedPolling() {
       eventMovieVideoEl.loop = false;
       eventMovieVideoEl.muted = false; // the video's own embedded audio may play (section 1) — no existing BGM is playing underneath it (see above)
@@ -8349,7 +8502,7 @@
 
       const startedAt = performance.now();
       let lastBufferedEnd = -1;
-      let stableSinceMs = 0;
+      let stableSinceMs = startedAt; // last time bufEnd actually grew — used both for "settled enough to start" (short threshold) AND "genuinely stalled" (long threshold) below
       function poll(nowTick) {
         if (eventMovieState.key !== 'endingRoll') return; // superseded mid-preload
         if (eventMovieVideoEl.error) { showFallback(finish); return; } // genuine load failure — never infinite-loading
@@ -8360,11 +8513,19 @@
         let bufEnd = 0;
         let coveredFrac = 0;
         if (buffered && buffered.length > 0) {
-          bufEnd = buffered.end(buffered.length - 1);
+          // HOTFIX 4.3 SECTION 7: read the range that actually STARTS at/near
+          // 0 (where playback will begin), never just buffered's LAST range
+          // — a fragmented buffer (e.g. a browser prefetching the file's own
+          // trailing moov atom ahead of the rest) must never be misread as
+          // "ready to play from the top".
+          for (let i = 0; i < buffered.length; i++) {
+            if (buffered.start(i) <= 0.5) { bufEnd = buffered.end(i); break; }
+          }
           if (isFinite(duration) && duration > 0) coveredFrac = bufEnd / duration;
           if (bufEnd > lastBufferedEnd) { lastBufferedEnd = bufEnd; stableSinceMs = nowTick; }
         }
         const stableLongEnough = (nowTick - stableSinceMs) >= ENDING_ROLL_BUFFER_STABLE_MS;
+        const downloadGenuinelyStalled = (nowTick - stableSinceMs) >= ENDING_ROLL_DOWNLOAD_STALL_MS;
         // Ideal case: comfortably buffered (90%+, never a strict 100%-or-
         // nothing requirement) and stable — start now, well ahead of the
         // timeout.
@@ -8373,18 +8534,33 @@
           return;
         }
         if (elapsed > ENDING_ROLL_LOAD_MAX_WAIT_MS) {
-          if (readyState >= 2 && bufEnd > 0) {
-            // Real progress exists, just short of the ideal bar after a
-            // generous wait — start rather than block indefinitely or
-            // scare the player with an error for a connection that IS
-            // actually working.
+          const hasMinimumRunway = readyState >= 2 && bufEnd >= ENDING_ROLL_MIN_BUFFERED_SECONDS;
+          if (hasMinimumRunway) {
+            // Short of the ideal 90% bar, but a real, meaningful amount of
+            // contiguous video is already down — safe enough to start
+            // rather than block indefinitely.
             beginConfirmedPlayback();
-          } else {
-            // Truly nothing usable loaded after this long — a genuine
-            // failure, not momentary slowness.
-            showFallback(finish);
+            return;
           }
-          return;
+          if (downloadGenuinelyStalled || elapsed > ENDING_ROLL_HARD_MAX_WAIT_MS) {
+            if (readyState >= 2 && bufEnd > 0) {
+              // Some real progress exists but never reached the minimum
+              // runway, and it has now genuinely stopped growing (or the
+              // absolute ceiling was hit) — start anyway rather than block
+              // forever; this is a deliberately weaker last resort, only
+              // reached after BOTH the base wait AND a real stall/hard
+              // ceiling, never from the base timeout alone.
+              beginConfirmedPlayback();
+            } else {
+              // Truly nothing usable loaded after this long — a genuine
+              // failure, not momentary slowness.
+              showFallback(finish);
+            }
+            return;
+          }
+          // Past the base wait, short of the minimum runway, but bytes are
+          // still genuinely arriving — keep waiting instead of gambling on
+          // an unsafe start (HOTFIX 4.3 SECTION 6's explicit requirement).
         }
         setTimeout(() => poll(performance.now()), 200);
       }
@@ -8739,26 +8915,18 @@
       // previously wired only into the separate debug-only EVENT STAGE b1
       // side-channel and never into this real STORY-run waypoint) — never a
       // substituted AMMO BOX.
+      // HOTFIX 4.3 SECTIONS 38-40 (supersedes HOTFIX 4.2 ADDENDUM 1 SECTIONS
+      // 21-24 below): PROJECT ADAM SITE is explicitly a SECRET FILE/PROJECT
+      // ADAM event waypoint, never an item-supply stage — HEAL=0 and AMMO=0
+      // here even though it directly follows ROID1. The POST-BOSS HEAL
+      // guarantee (isImmediatelyAfterMainBossEncounter()) now excludes
+      // 'cultivationLab' explicitly, and the extra forced HEAL placement
+      // this branch used to add on top of that has been removed outright —
+      // SECRET FILE: PROJECT ADAM (spawnProjectAdamItem() below) is this
+      // stage's only reward.
       healItem.active = false;
       ammoItem.active = false;
       spawnProjectAdamItem();
-      // HOTFIX 4.2 ADDENDUM 1 SECTIONS 21-24: this waypoint follows ROID1
-      // directly, so it needs its own guaranteed POST-BOSS HEAL too — but
-      // it's a genuine AREA1-only stage (isCultivationLabStage() pins
-      // player.y>=0, no AREA2 exists to place it in per the usual rule),
-      // and the line right above intentionally disables healItem here so a
-      // stray AMMO/HEAL roll never competes with the real reward, SECRET
-      // FILE: PROJECT ADAM (spawnProjectAdamItem(), anchored at
-      // PROJECT_ADAM_POS_FRAC = 50%/60%). Placed at 50%/25% instead — same
-      // X, comfortably far (35% of the room's own height) from the SECRET
-      // FILE item's own pickup radius — so the two are never confusable or
-      // simultaneously in the same glance, and picking up one never risks
-      // interacting with the other.
-      healItem.x = W * 0.5;
-      healItem.y = H * 0.25;
-      healItem.active = true;
-      healItem.frameIndex = 0;
-      healItem.frameElapsedMs = 0;
       if (!storyCinematicState.experimentLabPlayed) {
         storyCinematicState.experimentLabPlayed = true;
         playEventMovie('experiment_lab', () => {});
@@ -11743,19 +11911,45 @@
   // rank) — RESULT's own ACCURACY stat display is untouched, this function
   // simply never reads it anymore. Time/damage thresholds and the S/A/B/C/D
   // tier system are otherwise unchanged.
-  // HOTFIX 4.1 ADDENDUM SECTIONS 1-12: RANK is now judged on exactly two
+  // HOTFIX 4.1 ADDENDUM SECTIONS 1-12: RANK is judged on exactly two
   // inputs — CONTINUE count (GAME OVER->RETRY count this run) and TOTAL
   // PLAY TIME (see continueCount/storyPausedAccumMs above) — never
-  // accuracy/shotsHit/shotsFired/damage/remaining LIFE, which the old
-  // composite formula below used to read. Only S is spec'd concretely
-  // (continueCount===0 && playTimeSec<=900); every rank below S is
-  // deliberately left as a single placeholder rather than inventing new
-  // A/B/C numeric thresholds the user never specified — see the
-  // completion report for how this was handled.
-  const RESULT_RANK_S_MAX_SEC = 900; // 15:00
+  // accuracy/shotsHit/shotsFired/damage/remaining LIFE.
+  // HOTFIX 4.3 SECTIONS 22-29: a GAME CLEAR must never show RANK "-" — the
+  // old placeholder ("anything but S returns '-'") is replaced by a full
+  // S/A/B/C/D table built from these same two inputs only. Design: S stays
+  // the one concretely-spec'd tier (continueCount===0 && playTimeSec<=15:00);
+  // below that, continueCount is bucketed into 4 tiers (0/1/2/>=3) and
+  // playTimeSec into ascending bands (15:00/20:00/30:00/40:00) — each tier's
+  // own band list is a strict one-step-worse shift of the tier above it, so
+  // the table is monotonic in both directions: more CONTINUEs never raises
+  // the rank at a fixed time, and a slower CLEAR TIME never raises the rank
+  // at a fixed CONTINUE count (verified case-by-case in the HOTFIX 4.3
+  // completion report). continueCount>=3 always resolves to D regardless of
+  // time, so no input combination can ever fall through to '-'.
+  const RESULT_RANK_S_MAX_SEC = 900; // 15:00 — S also requires continueCount===0
+  const RESULT_RANK_TIME_T2_SEC = 1200; // 20:00
+  const RESULT_RANK_TIME_T3_SEC = 1800; // 30:00
+  const RESULT_RANK_TIME_T4_SEC = 2400; // 40:00
   function computeResultRank(continueCount, playTimeSec) {
-    if (continueCount === 0 && playTimeSec <= RESULT_RANK_S_MAX_SEC) return 'S';
-    return '-';
+    if (continueCount === 0) {
+      if (playTimeSec <= RESULT_RANK_S_MAX_SEC) return 'S';
+      if (playTimeSec <= RESULT_RANK_TIME_T2_SEC) return 'A';
+      if (playTimeSec <= RESULT_RANK_TIME_T3_SEC) return 'B';
+      return 'C';
+    }
+    if (continueCount === 1) {
+      if (playTimeSec <= RESULT_RANK_TIME_T2_SEC) return 'A';
+      if (playTimeSec <= RESULT_RANK_TIME_T3_SEC) return 'B';
+      if (playTimeSec <= RESULT_RANK_TIME_T4_SEC) return 'C';
+      return 'D';
+    }
+    if (continueCount === 2) {
+      if (playTimeSec <= RESULT_RANK_TIME_T3_SEC) return 'B';
+      if (playTimeSec <= RESULT_RANK_TIME_T4_SEC) return 'C';
+      return 'D';
+    }
+    return 'D'; // continueCount >= 3: always D, regardless of time — never '-'
   }
   function formatPlayTime(sec) {
     const m = Math.floor(sec / 60);
@@ -12936,6 +13130,13 @@
     SYSTEM_MOVIES, EVENT_MOVIES, storyCinematicState, eventMovieState,
     storyEndingState, beginStoryEscapeEnding, // DARK OUT PART 10 — debug/verification only
     playEndingRoll, ENDING_ROLL_VIDEO_URL, ENDING_ROLL_CORS_SAFE, // debug/verification only — HOTFIX SECTION 1/27
+    ENDING_ROLL_LOAD_MAX_WAIT_MS, ENDING_ROLL_BUFFER_STABLE_MS, ENDING_ROLL_MIN_BUFFERED_SECONDS, // HOTFIX 4.3 SECTIONS 1-9 — debug/verification only
+    ENDING_ROLL_HARD_MAX_WAIT_MS, ENDING_ROLL_DOWNLOAD_STALL_MS, endingRollDiagnostics,
+    get eventMovieVideoElReadyState() { return eventMovieVideoEl.readyState; }, // debug/verification only
+    get eventMovieVideoElCurrentTime() { return eventMovieVideoEl.currentTime; },
+    get eventMovieVideoElPaused() { return eventMovieVideoEl.paused; },
+    get eventMovieVideoElMuted() { return eventMovieVideoEl.muted; },
+    get eventMovieVideoElEnded() { return eventMovieVideoEl.ended; },
     storyRoidInterludeState, beginRoidInterlude, // DARK OUT PART 11 SECTION 8 — debug/verification only
     get attractPlaying() { return attractPlaying; }, beginAttractOpening, ATTRACT_OPENING_IDLE_MS, // DARK OUT PART 11 SECTION 2 — debug/verification only
     playEventMovie, cancelEventMovie, skipEventMovie,
@@ -13102,7 +13303,8 @@
     set continueCount(v) { continueCount = v; }, // debug/verification only
     get gameOverEnteredAt() { return gameOverEnteredAt; },
     set gameOverEnteredAt(v) { gameOverEnteredAt = v; }, // debug/verification only
-    RESULT_RANK_S_MAX_SEC, computeResultRank, formatPlayTime, enterResultScreen,
+    RESULT_RANK_S_MAX_SEC, RESULT_RANK_TIME_T2_SEC, RESULT_RANK_TIME_T3_SEC, RESULT_RANK_TIME_T4_SEC, // HOTFIX 4.3 SECTIONS 22-29 — debug/verification only
+    computeResultRank, formatPlayTime, enterResultScreen,
     // Debug/verification only — SECTION A (root-cause fix)/B (watchdog)/C
     // (STUN)/G-H-I (REBOOT)/J (ENCOUNTER 3 forced STUN)/M (GAME OVER).
     isStunLocked, recoverControlState, detectControlStateCorruption, triggerStun,
@@ -14756,18 +14958,41 @@
     // damage-immune sub-phase), blink the body itself on/off so "this is
     // when your shots actually land" is unmistakable, reusing the same
     // simple visibility-toggle style DRONE's own pre-fire blink uses (never
-    // a red/damage tint, which would misread as "just got hit").
+    // a red/damage tint, which would misread as "just got hit"). This is the
+    // ambient VULNERABILITY indicator — it cycles on its own regardless of
+    // whether a shot has actually landed yet, and stays GABRIEL-only per its
+    // own explicit scope (ADAM shares this draw function but never gets it).
     if (isGabrielDownDamageableBlinking() && Math.floor(now / DRONE_BODY_BLINK_INTERVAL_MS) % 2 === 1) {
       return; // OFF half of the blink cycle — draw nothing this frame
     }
     const flashDownCin = getCinematicImageInfo();
     if (flashDownCin.img.complete && flashDownCin.img.naturalWidth > 0) {
-      ctx.drawImage(
-        flashDownCin.img,
-        boss.x - flashDownCin.w / 2 + flashDownCin.offX,
-        boss.y - flashDownCin.h / 2 + flashDownCin.offY,
-        flashDownCin.w, flashDownCin.h
-      );
+      const dx = boss.x - flashDownCin.w / 2 + flashDownCin.offX;
+      const dy = boss.y - flashDownCin.h / 2 + flashDownCin.offY;
+      // HOTFIX 4.3 SECTIONS 18-21: a SEPARATE, genuinely hit-triggered blink
+      // — the vulnerability toggle above answers "can a shot land right
+      // now"; this answers "did a shot just land". Reuses the exact same
+      // bossDamageBlinkStartAt/BOSS_HIT_TINT_MS/BOSS_DAMAGE_BLINK_TOTAL_MS/
+      // drawBossWithHitTint() machinery every other boss draw call already
+      // uses on a real hp reduction (set in applyBodyHitToBoss() etc.) —
+      // never a second, display-only timer — so this can only ever render
+      // when the same hp-decrementing damage code that GABRIEL1/2/3 share
+      // has genuinely just run. Not scoped to boss.type==='gabriel': it's
+      // the same universal hit-tint every other boss draw path already
+      // applies unconditionally, just newly reachable here since this draw
+      // function used to skip it entirely.
+      const blinkElapsed = now - bossDamageBlinkStartAt;
+      if (blinkElapsed >= 0 && blinkElapsed < BOSS_DAMAGE_BLINK_TOTAL_MS) {
+        const segment = Math.floor(blinkElapsed / BOSS_HIT_TINT_MS);
+        if (segment % 2 === 0) {
+          const tWithinHalf = 1 - (blinkElapsed % BOSS_HIT_TINT_MS) / BOSS_HIT_TINT_MS;
+          drawBossWithHitTint(flashDownCin.img, dx, dy, flashDownCin.w, flashDownCin.h, tWithinHalf);
+        } else {
+          ctx.drawImage(flashDownCin.img, dx, dy, flashDownCin.w, flashDownCin.h);
+        }
+      } else {
+        ctx.drawImage(flashDownCin.img, dx, dy, flashDownCin.w, flashDownCin.h);
+      }
     }
   }
 
