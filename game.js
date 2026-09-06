@@ -2254,7 +2254,16 @@
   }
 
   // ---------- DASH (4 directions, button-triggered, re-triggerable) ----------
-  const DASH_DURATION_MS = 800;
+  // GAMEPAD CONTROL TUNING ADDENDUM: 800 -> 400ms, per explicit spec — the
+  // single shared constant every DASH trigger (touch button, LB/RB fixed
+  // dashes, Y directional dash) already reads, so this one change applies
+  // uniformly everywhere with no per-input-source branching. Everything
+  // else about DASH (invincibility — isPlayerInvulnerable() just returns
+  // player.dashing, which this same duration already governs —
+  // movement/travel curve, input buffer, no-cooldown-after-end,
+  // re-triggerability) is completely untouched; only how long it lasts
+  // changed.
+  const DASH_DURATION_MS = 400;
   const DASH_DISTANCE_FRAC = 0.20; // 20% of screen width — within the 15-25% target
   const RELAXED_IDLE_DELAY_MS = 400;
 
@@ -13517,7 +13526,8 @@
     get getPauseMenuItems() { return getPauseMenuItems; },
     get movePauseMenuFocus() { return movePauseMenuFocus; },
     get confirmPauseMenuFocus() { return confirmPauseMenuFocus; },
-    get GAMEPAD_DASH_LT_THRESHOLD() { return GAMEPAD_DASH_LT_THRESHOLD; },
+    get GAMEPAD_FLASH_LT_THRESHOLD() { return GAMEPAD_FLASH_LT_THRESHOLD; },
+    get DASH_DURATION_MS() { return DASH_DURATION_MS; }, // debug/verification only
     get GAMEPAD_PAUSE_MENU_STICK_THRESHOLD() { return GAMEPAD_PAUSE_MENU_STICK_THRESHOLD; },
     get triggerPauseNow() { return triggerPauseNow; },
     get resumeFromPauseMenu() { return resumeFromPauseMenu; }, // debug/verification only
@@ -15778,14 +15788,20 @@
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
   const GAMEPAD_FIRE_THRESHOLD = 0.25; // RT analog value >= this counts as FIRE held
-  // GAMEPAD CONTROL TUNING: LT is a rising-edge DIRECTIONAL DASH trigger
-  // (never a held-fire like RT) — value crossing this threshold fires
-  // exactly one DASH toward whatever direction is currently driving MOVE
-  // (LEFT STICK, else D-PAD, else touch — never a separate calculation;
-  // see the plain triggerDashInDirection(now) call with no angleOverride
-  // below, which already reads actionStickVec/keyboard and falls back to
-  // player.baseDir when neutral, exactly per spec).
-  const GAMEPAD_DASH_LT_THRESHOLD = 0.25;
+  // GAMEPAD CONTROL TUNING ADDENDUM: LT is now a rising-edge FLASH trigger
+  // (never a held-fire like RT) — value crossing this threshold fires the
+  // existing flashPress() exactly once; releasing back below threshold and
+  // pressing again is required for the next FLASH, same "rising edge only"
+  // contract as every other discrete gamepad button here.
+  const GAMEPAD_FLASH_LT_THRESHOLD = 0.25;
+  // GAMEPAD CONTROL TUNING ADDENDUM: Y is now the rising-edge DIRECTIONAL
+  // DASH trigger (this inherits the exact behavior originally built for
+  // LT in the prior batch — LT is FLASH now, per the addendum's explicit
+  // reassignment). Fires exactly one DASH toward whatever direction is
+  // currently driving MOVE (LEFT STICK, else D-PAD, else touch — never a
+  // separate calculation; see the plain triggerDashInDirection(now) call
+  // with no angleOverride below, which already reads actionStickVec and
+  // falls back to player.baseDir when neutral, exactly per spec).
   // PAUSE MENU gamepad navigation: LEFT STICK vertical must move the
   // highlighted item once per push, not once per frame while held —
   // tracked as "was the stick already past this threshold last frame" and
@@ -15897,7 +15913,7 @@
     const pressedNow = {
       lb: !!(btn(idx.LB) && btn(idx.LB).pressed),
       rb: !!(btn(idx.RB) && btn(idx.RB).pressed),
-      lt: (btn(idx.LT) ? btn(idx.LT).value : 0) >= GAMEPAD_DASH_LT_THRESHOLD, // GAMEPAD CONTROL TUNING: LT is a value-threshold rising edge, per spec, not .pressed
+      lt: (btn(idx.LT) ? btn(idx.LT).value : 0) >= GAMEPAD_FLASH_LT_THRESHOLD, // GAMEPAD CONTROL TUNING ADDENDUM: LT is a value-threshold rising edge (FLASH), per spec, not .pressed
       x: !!(btn(idx.X) && btn(idx.X).pressed),
       y: !!(btn(idx.Y) && btn(idx.Y).pressed),
       a: !!(btn(idx.A) && btn(idx.A).pressed),
@@ -15974,21 +15990,27 @@
       // ---- rising-edge-only buttons: exactly one activation per physical press ----
       if (pressedNow.lb && !prev.lb) triggerDashInDirection(now, BASE_ANGLE.left); // LB -> DASH LEFT (fixed direction, unchanged)
       if (pressedNow.rb && !prev.rb) triggerDashInDirection(now, BASE_ANGLE.right); // RB -> DASH RIGHT (fixed direction, unchanged)
-      // GAMEPAD CONTROL TUNING: LT -> DIRECTIONAL DASH. No angleOverride is
-      // passed — triggerDashInDirection() already computes its own angle
-      // from the CURRENT actionStickVec (which, by this point in the
-      // frame, already reflects whichever of LEFT STICK/D-PAD/touch is
-      // actually driving movement — never a separate direction
-      // calculation) and falls back to player.baseDir (current facing)
-      // when that vector is neutral — precisely "dash toward whatever
-      // direction is currently held, or facing if none" per spec, and the
-      // exact same fallback the touch DASH button's own default press
-      // already uses.
-      if (pressedNow.lt && !prev.lt) triggerDashInDirection(now);
-      if (pressedNow.x && !prev.x) flashPress(); // X -> FLASH (existing flashPress(), no gamepad-only duplicate)
-      if (pressedNow.y && !prev.y) stealthPress(); // Y -> STEALTH (existing stealthPress())
+      // GAMEPAD CONTROL TUNING ADDENDUM: Y -> DIRECTIONAL DASH (moved off
+      // LT, which is FLASH now — see below). No angleOverride is passed —
+      // triggerDashInDirection() already computes its own angle from the
+      // CURRENT actionStickVec (which, by this point in the frame, already
+      // reflects whichever of LEFT STICK/D-PAD/touch is actually driving
+      // movement — never a separate direction calculation) and falls back
+      // to player.baseDir (current facing) when that vector is neutral —
+      // precisely "dash toward whatever direction is currently held, or
+      // facing if none" per spec, and the exact same fallback the touch
+      // DASH button's own default press already uses.
+      if (pressedNow.y && !prev.y) triggerDashInDirection(now);
+      // GAMEPAD CONTROL TUNING ADDENDUM: LT -> FLASH (moved off X, which is
+      // now fully unassigned). Calls the existing flashPress() — no
+      // gamepad-only duplicate of FLASH's real logic.
+      if (pressedNow.lt && !prev.lt) flashPress();
       if (pressedNow.a && !prev.a) triggerManualReload(); // A -> RELOAD (existing triggerManualReload())
-      // B, L3/R3 are deliberately unassigned this batch — never wired to any function.
+      // GAMEPAD CONTROL TUNING ADDENDUM: X's old FLASH assignment and Y's
+      // old STEALTH assignment are both explicitly removed — X is fully
+      // unassigned (never wired to any function), and STEALTH is no longer
+      // reachable from the gamepad at all this batch (its own touch button
+      // is completely untouched). B, L3/R3 remain unassigned as before.
     } else {
       gamepadFireHeld = false;
       fireHeld = touchFireHeld;
