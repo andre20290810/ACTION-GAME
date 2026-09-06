@@ -2151,6 +2151,11 @@
     // HOTFIX SECTION 22: real solid-body physics — applies on top of (never
     // instead of) every clamp above, for every boss type (22-5).
     clampPlayerAwayFromBoss();
+    // HOTFIX 4.3 ADDENDUM 2 SECTIONS 37-43: same solid-body treatment for
+    // DRONE — called right alongside clampPlayerAwayFromBoss() above (same
+    // per-frame timing, after updateDash()'s own movement), so DASH's
+    // damage-invincibility never doubles as physical passthrough.
+    clampPlayerAwayFromDrones();
     // HOTFIX SECTION 7: ADAM SPHERE is a strictly single-AREA context, same
     // requirement as ROID above — AREA2 must never be enterable at all.
     // ADAM SPHERE is its own STORY_STAGE_PLAN entry (plan.type==='adamSphere',
@@ -2521,6 +2526,45 @@
     m.drawW = m.nativeW * m.scale;
     m.drawH = m.nativeH * m.scale;
   });
+  // HOTFIX 4.3 ADDENDUM 2 SECTIONS 37-43: DRONE solid-body collision — the
+  // PLAYER used to pass straight through a DRONE's body on contact. Mirrors
+  // clampPlayerAwayFromBoss()'s exact same "push the PLAYER back to the
+  // boundary circle" technique (SECTION 22 above), reusing PLAYER_BODY_
+  // RADIUS verbatim (never a second, larger invisible hitbox) and deriving
+  // the DRONE's own radius from SECURITY_ROBOT_DRAW_D — the same diameter
+  // constant its own sprite is actually drawn at — rather than inventing a
+  // new, possibly-mismatched size (SECTION 39's own explicit "見た目に合わ
+  // せたcollision" requirement).
+  const DRONE_SOLID_RADIUS = SECURITY_ROBOT_DRAW_D / 2;
+  const DRONE_SOLID_MIN_DIST = PLAYER_BODY_RADIUS + DRONE_SOLID_RADIUS + 6; // same +6 margin convention as BOSS_SOLID_MIN_DIST
+  // No physical presence while dead (E-4 elsewhere: a dead DRONE does
+  // nothing at all) or still mid-drop-in (falling DRONEs have no AI yet
+  // either, same convention updateSecurityRobots() itself already uses).
+  function droneHasNoPhysicalPresence(robot) {
+    return robot.hp <= 0 || robot.dropState === 'dropping';
+  }
+  // Called every frame from clampPlayerToScreen(), right alongside
+  // clampPlayerAwayFromBoss() — after DASH's own movement (updateDash()) has
+  // already been applied, so DASH's damage-invincibility is never conflated
+  // with physical passthrough (SECTION 41: 無敵 ≠ 物体透過). Resolves against
+  // EVERY currently-solid DRONE in one pass (never just the nearest one),
+  // and never moves the DRONE itself — a DRONE's own scripted patrol sweep
+  // is left completely alone; only the PLAYER is ever displaced, exactly
+  // like the existing BOSS solid-body convention, which also never budges
+  // the boss on this specific contact path.
+  function clampPlayerAwayFromDrones() {
+    for (const robot of securityRobots) {
+      if (droneHasNoPhysicalPresence(robot)) continue;
+      let dx = player.x - robot.x, dy = player.y - robot.y;
+      let dist = Math.hypot(dx, dy);
+      if (dist < DRONE_SOLID_MIN_DIST) {
+        if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+        const scale = DRONE_SOLID_MIN_DIST / dist;
+        player.x = robot.x + dx * scale;
+        player.y = robot.y + dy * scale;
+      }
+    }
+  }
 
   // ==========================================================================
   // DARK OUT PART 2: CHARACTER / ITEM sprite registries + visual metadata.
@@ -4996,7 +5040,13 @@
     securityRobots.length = 0;
     whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
     securityAttackSlotsInUse = 0;
-    spawnRoidEscortBatch();
+    // HOTFIX 4.3 ADDENDUM 2 SECTIONS 50-56: ROID1's own escort DRONEs are
+    // removed entirely — no initial spawn, and (see maintainRoidEscortDrones()
+    // below) no 75/50/25% HP-threshold respawn either. Scoped to type==='roid1'
+    // only, inside this ONE shared spawn function every ROID1 context (MAIN
+    // STORY, TRAINING Stage5, BOSS BATTLE debug) already funnels through —
+    // ROID2's own escort spec is completely untouched.
+    if (type !== 'roid1') spawnRoidEscortBatch();
   }
 
   // HOTFIX SECTION 9: the ONE place ROID_ESCORT_COUNT fresh escort DRONEs
@@ -5030,6 +5080,11 @@
   // Never respawns once the boss itself is dead/dying.
   function maintainRoidEscortDrones(now) {
     if (boss.state === 'dead' || boss.state === 'roidDying') return;
+    // HOTFIX 4.3 ADDENDUM 2 SECTIONS 50-56: ROID1 never gets a threshold
+    // respawn batch either (see spawnRoidBoss()'s matching initial-spawn
+    // gate above) — DRONE stays at 0 for ROID1 from spawn through defeat.
+    // ROID2 is completely untouched.
+    if (boss.type === 'roid1') return;
     const hpFrac = boss.hp / ROID_MAX_HP;
     const thresholds = [
       { key: 't75', frac: 0.75 },
@@ -5121,6 +5176,21 @@
   // target-unknown resumes) and only ping-pongs through the full frame set
   // while it's unknown (SECTION C-1). FIRE's own animation is unchanged —
   // still gated to the 'firing' state only.
+  // HOTFIX 4.3 ADDENDUM 2 SECTIONS 44-49 (root-cause fix): the ATTACK sprite
+  // (profile.sprites.fire) used to only ever show while boss.state==='firing'
+  // — the plain BURST attack's own state. SNIPER (ROID1) and MISSILE (ROID2)
+  // are just as real an "actively attacking" state (each fires its own real
+  // bullet — see fireRoidSniperBullet()/the missile launch below) but were
+  // never included, so ROID1's whole SNIPER sequence (and ROID2's MISSILE)
+  // rendered the SEARCH/idle sprite throughout — confirmed the actual root
+  // cause of "ATTACK画像へ切り替わっていない" via inspection, not a guess.
+  // burstTelegraph (the pre-burst preparation beat) deliberately keeps its
+  // own existing whole-body flash-pulse telegraph instead — that's already
+  // a clear "attack incoming" signal in its own right, so this stays scoped
+  // to the states where a real shot is actually firing.
+  function isRoidActivelyFiring() {
+    return boss.state === 'firing' || boss.state === 'sniper' || boss.state === 'missile';
+  }
   function updateRoidAnimation(dt) {
     const profile = roidState.profile;
     if (!profile) return;
@@ -5137,7 +5207,7 @@
         roidState.searchDir = step.dir;
       }
     }
-    if (boss.state === 'firing') {
+    if (isRoidActivelyFiring()) {
       roidState.fireFrameElapsedMs += dt * 1000;
       if (roidState.fireFrameElapsedMs >= ROID_FIRE_FRAME_MS) {
         roidState.fireFrameElapsedMs = 0;
@@ -5511,7 +5581,7 @@
   function drawRoidBossInner(now) {
     const profile = roidState.profile;
     if (!profile) return;
-    const firing = boss.state === 'firing';
+    const firing = isRoidActivelyFiring();
     const frame = firing ? profile.sprites.fire[roidState.fireFrame] : profile.sprites.search[roidState.searchFrame];
     if (!frame || !frame.ready || !frame.img || !frame.img.complete || frame.img.naturalWidth <= 0) return;
     const scale = computeBodyVisualScale(frame, ROID_BODY_TARGET_HEIGHT);
@@ -6928,6 +6998,13 @@
   const ADAM_SPHERE_COMBAT_HIT_RADIUS = ADAM_SPHERE_TARGET_DIAMETER / 2; // same body-footprint convention as every other hurtbox in this file (radius = half the drawn diameter)
   const ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS = 1800; // HOTFIX 4.2 ADDENDUM SECTIONS 60-61: unchanged value — now used as the post-2-shot COOLDOWN before the next lock-on begins, never touched by the lock-on-speed change
   const ADAM_SPHERE_COMBAT_ATTACK_VISUAL_MS = 400; // how long the forced south-facing attack frame holds before the rotation loop resumes
+  // HOTFIX 4.3 ADDENDUM 2 SECTIONS 18-21: ATTACK FLASH lead time — how long
+  // before SHOT 1 actually fires the body starts glowing. Short on purpose
+  // (spec: "光った直後に攻撃が来る", never a long glow-then-wait) — well
+  // under ADAM_SPHERE_LOCK_ON_MS in every real configuration, so it always
+  // fits entirely inside the tail of the existing 'locking' phase without
+  // needing to touch that phase's own duration.
+  const ADAM_SPHERE_ATTACK_FLASH_MS = 220;
   // HOTFIX 4.2 ADDENDUM 1 SECTIONS 12-16: the short, visibly-readable gap
   // between ADAM SPHERE's own SHOT 1 and SHOT 2 within one attack cycle — a
   // genuinely new ADAM-SPHERE-only concept (DRONE's own STORY sniper only
@@ -7055,6 +7132,16 @@
       const angle = Math.atan2(player.y - s.y, player.x - s.x);
       enemyBullets.push({ x: s.x, y: s.y, vx: Math.cos(angle) * BULLET_SPEED, vy: Math.sin(angle) * BULLET_SPEED, born: now });
     }
+    // HOTFIX 4.3 ADDENDUM 2 SECTIONS 18-21: ATTACK FLASH — a pre-attack
+    // telegraph, completely separate from the HIT BLINK above (that one
+    // fires on hitFlashStartAt, a genuine hp REDUCTION; this one is derived
+    // purely from the real lock-on/fire timer, never a hit). Deliberately
+    // NOT a new independent field/timer: isAdamSphereAttackFlashing() below
+    // derives "flashing right now" directly from attackPhase/lockOnStartedAt
+    // — the exact same state that decides when fireOneShot() actually fires
+    // SHOT 1 — so the flash can never drift out of sync with the real
+    // attack. Only during 'locking' (never before SHOT 2), ending exactly
+    // when SHOT 1 fires (spec: "発光終了 → ほぼ直後SHOT1").
     if (s.attackPhase === 'locking') {
       if (now - s.lockOnStartedAt >= ADAM_SPHERE_LOCK_ON_MS) {
         fireOneShot(); // SHOT 1
@@ -7073,6 +7160,21 @@
         s.lockOnStartedAt = now;
       }
     }
+  }
+  // HOTFIX 4.3 ADDENDUM 2 SECTIONS 18-21: derives "should the body be
+  // glowing right now" from the exact same attackPhase/lockOnStartedAt
+  // state updateAdamSphereCombat() uses to decide when SHOT 1 actually
+  // fires — never a separate parallel timer, so the flash can never drift
+  // out of sync with the real attack (same principle as
+  // isGabrielDownDamageableBlinking() elsewhere in this file). Only true
+  // during the final ADAM_SPHERE_ATTACK_FLASH_MS of the 'locking' phase —
+  // never during 'interShot'/'cooldown', so SHOT 2 gets no flash of its own.
+  function isAdamSphereAttackFlashing(now) {
+    const s = adamSphereCombatState;
+    if (!s.active || s.dying || s.attackPhase !== 'locking') return false;
+    const fireAt = s.lockOnStartedAt + ADAM_SPHERE_LOCK_ON_MS;
+    const remaining = fireAt - now;
+    return remaining >= 0 && remaining <= ADAM_SPHERE_ATTACK_FLASH_MS;
   }
   function drawAdamSphereCombat(now) {
     const s = adamSphereCombatState;
@@ -7095,6 +7197,13 @@
     // off hitFlashStartAt, which applyDamageToAdamSphereCombat() sets on
     // this EXACT same line as the real hp reduction — never a MISS-agnostic
     // display timer, so this can only ever blink on a genuine landed hit.
+    // HOTFIX 4.3 ADDENDUM 2 SECTIONS 18-21: ATTACK FLASH — a plain WHITE
+    // brightness boost (ctx.filter, same save/restore-scoped technique the
+    // BARREL COVER dim uses, just brightening instead of dimming), visually
+    // unmistakable from the HIT BLINK's RED tint below so the two can never
+    // be confused for one another even if they happened to overlap.
+    const flashing = isAdamSphereAttackFlashing(now);
+    if (flashing) { ctx.save(); ctx.filter = 'brightness(220%)'; }
     const blinkElapsed = now - s.hitFlashStartAt;
     if (blinkElapsed >= 0 && blinkElapsed < BOSS_DAMAGE_BLINK_TOTAL_MS) {
       const segment = Math.floor(blinkElapsed / BOSS_HIT_TINT_MS);
@@ -7107,6 +7216,7 @@
     } else {
       ctx.drawImage(frame.img, dx, dy, w, h);
     }
+    if (flashing) { ctx.restore(); }
   }
 
   // ---------- ARC CLAW SLASH / CLAW STING (both share one array/shape) ----------
@@ -8236,11 +8346,14 @@
   // ADDENDUM) guards against a mobile browser/CDN edge serving back a stale
   // cached copy of the OLD video from the exact same URL.
   const ENDING_ROLL_VIDEO_URL = 'https://pub-c78c0b31663b4a5692c914b87616b615.r2.dev/ending_darkout.MOV?v=hotfix4-ending2';
-  // Only flip this once the configured CDN is CONFIRMED to send the right
-  // CORS headers (Access-Control-Allow-Origin) — crossOrigin set against a
-  // non-CORS-safe host silently blocks playback in some browsers entirely,
-  // which is worse than just leaving it unset (section 1's own "only if the
-  // CDN is CORS-safe" qualifier).
+  // HOTFIX 4.3 ADDENDUM 2 SECTIONS 24-28: superseded — this used to be a
+  // hand-set assumption flag gating whether the fetch->Blob path was even
+  // attempted. Per this addendum's own explicit "CORSを推測してはいけない、
+  // 実ブラウザでfetchが成功するか確認" requirement, playEndingRoll() below
+  // now ALWAYS attempts a real fetch() first and only falls back to direct-
+  // URL streaming on a genuine failure — there is no more hardcoded
+  // assumption to flip. Kept as a debug/verification constant (always
+  // false) purely so anything still reading it externally doesn't break.
   const ENDING_ROLL_CORS_SAFE = false;
   // Reuses the SAME shared <video>/overlay element every other SYSTEM/EVENT
   // movie already uses (never a second, separate movie engine — section 1's
@@ -8259,36 +8372,41 @@
   // slow") and falling back to TAP TO CONTINUE. Generous on purpose — this
   // is a large video and a slow/throttled connection must still be given a
   // real chance to finish buffering rather than bailing early.
-  const ENDING_ROLL_LOAD_MAX_WAIT_MS = 45000;
-  // Once buffered.end() stops growing for this long while already covering
-  // most of the duration, treat it as "stable enough to start" rather than
-  // waiting for a literal 100% download that may never quite finish
-  // (chunked/streamed responses can leave the last few bytes pending
-  // indefinitely) — this is the "stability observed over time" check.
-  const ENDING_ROLL_BUFFER_STABLE_MS = 600;
-  // HOTFIX 4.3 SECTIONS 1-9 (root-cause fix for real-device mid-playback
-  // stop/audio-cut reports): the OLD post-timeout fallback ("readyState>=2
-  // && bufEnd>0" — i.e. literally ANY nonzero buffer) could start playback
-  // with only a couple of seconds actually downloaded, guaranteeing a stall
-  // the moment that tiny head-start was consumed — exactly the "45秒経った
-  // からbuffer不足でも再生開始" failure mode called out explicitly. Replaced
-  // with a real minimum-runway requirement (seconds of contiguous buffer
-  // from position 0, not a percentage — meaningful regardless of the file's
-  // total length) that must be met even after the base wait; short of that,
-  // the wait EXTENDS (rather than starting unsafely) for as long as bytes
-  // are still genuinely arriving, and only gives up for real once the
-  // download has genuinely stalled (no buffered.end() growth at all) for a
-  // sustained period, or the hard ceiling below is reached.
-  const ENDING_ROLL_MIN_BUFFERED_SECONDS = 20;
-  const ENDING_ROLL_HARD_MAX_WAIT_MS = 90000;
-  const ENDING_ROLL_DOWNLOAD_STALL_MS = 8000;
-  // HOTFIX 4.3 SECTIONS 12/54: real, testable diagnostics for THIS ONE ENDING
-  // ROLL attempt — reset at the top of every playEndingRoll() call, read by
-  // the completion-report verification script (never used to change any
-  // actual playback decision, purely observational).
+  // HOTFIX 4.3 ADDENDUM 2 SECTIONS 23-29 (supersedes HOTFIX 4.3's own
+  // partial-buffer design above): the explicit new requirement is "全部
+  // ロードしてから再生" — ending_darkout.MOV must be FULLY downloaded before
+  // playback ever starts, never a 90%-buffered/45-second-timeout compromise
+  // (both of those were real root causes of mid-playback stop/audio-cut
+  // reports). Two paths now exist:
+  //   1. fetch() the whole file -> Blob -> object URL (preferred — once the
+  //      fetch() promise itself resolves, 100% of the bytes are already in
+  //      memory, so there is no "mostly there" state to gate on at all).
+  //   2. Direct-URL <video> streaming, used only if fetch() genuinely fails
+  //      (network error or a real CORS rejection — playEndingRoll() always
+  //      attempts the real fetch first, per this addendum's own "never
+  //      assume CORS" requirement) — here playback is gated on
+  //      buffered.end() reaching ENDING_ROLL_FULL_COVERAGE_FRAC of the real
+  //      duration (effectively 100%, with a hair of float-precision slack),
+  //      never a partial percentage.
+  // ENDING_ROLL_STREAM_HARD_MAX_WAIT_MS is a pure last-resort escape hatch
+  // (a genuinely dead download must not hang the LOADING screen forever) —
+  // reaching it is itself reported as a real failure, never treated as
+  // "close enough, start anyway".
+  const ENDING_ROLL_FULL_COVERAGE_FRAC = 0.999;
+  const ENDING_ROLL_DOWNLOAD_STALL_MS = 15000; // no buffered.end() growth at all for this long = the stream download has genuinely died
+  const ENDING_ROLL_STREAM_HARD_MAX_WAIT_MS = 180000;
+  // HOTFIX 4.3 SECTIONS 12/54 (extended by ADDENDUM 2 SECTIONS 18-22): real,
+  // testable diagnostics for THIS ONE ENDING ROLL attempt — reset at the top
+  // of every playEndingRoll() call, read by the completion-report
+  // verification script (never used to change any actual playback
+  // decision, purely observational). `method` and `corsFetch*` record which
+  // path was actually used and the REAL fetch() outcome, so the completion
+  // report never has to guess or assume.
   const endingRollDiagnostics = {
-    waitingCount: 0, stalledCount: 0, bufferedRangesAtStart: null,
+    waitingCount: 0, stalledCount: 0, loadingShownDuringPlaybackCount: 0, bufferedRangesAtStart: null,
     bufferedEndAtStart: 0, durationAtStart: 0, readyStateAtStart: 0, networkStateAtStart: 0,
+    method: null, // 'blob' | 'stream' | null (not yet resolved)
+    corsFetchAttempted: false, corsFetchSucceeded: null, corsFetchStatus: null, corsFetchError: null,
   };
   let endingRollObjectUrl = null; // revoked in finish() below — never leaked
   function playEndingRoll(onComplete) {
@@ -8306,11 +8424,17 @@
     // HOTFIX 4.3 SECTIONS 12/54: fresh diagnostics for this ONE attempt.
     endingRollDiagnostics.waitingCount = 0;
     endingRollDiagnostics.stalledCount = 0;
+    endingRollDiagnostics.loadingShownDuringPlaybackCount = 0;
     endingRollDiagnostics.bufferedRangesAtStart = null;
     endingRollDiagnostics.bufferedEndAtStart = 0;
     endingRollDiagnostics.durationAtStart = 0;
     endingRollDiagnostics.readyStateAtStart = 0;
     endingRollDiagnostics.networkStateAtStart = 0;
+    endingRollDiagnostics.method = null;
+    endingRollDiagnostics.corsFetchAttempted = false;
+    endingRollDiagnostics.corsFetchSucceeded = null;
+    endingRollDiagnostics.corsFetchStatus = null;
+    endingRollDiagnostics.corsFetchError = null;
 
     eventMovieState.active = true;
     eventMovieState.key = 'endingRoll';
@@ -8430,7 +8554,7 @@
       eventMovieVideoEl.onwaiting = () => {
         if (eventMovieState.key !== 'endingRoll') return;
         endingRollDiagnostics.waitingCount++;
-        if (!rebufferOverlayShowing) { rebufferOverlayShowing = true; showEndingLoading(); }
+        if (!rebufferOverlayShowing) { rebufferOverlayShowing = true; showEndingLoading(); endingRollDiagnostics.loadingShownDuringPlaybackCount++; }
       };
       eventMovieVideoEl.onstalled = () => {
         if (eventMovieState.key !== 'endingRoll') return;
@@ -8462,36 +8586,19 @@
       });
     }
 
-    // FALLBACK STRATEGY (also the only strategy whenever ENDING_ROLL_CORS_
-    // SAFE is false, i.e. the configured CDN's CORS headers are not yet
-    // confirmed — see that const's own comment): set the direct R2 URL as
-    // .src with preload='auto' and poll actual buffered readiness rather
-    // than trusting a single loadedmetadata/canplaythrough event alone
-    // (iOS Safari's canplaythrough is not fully reliable per the ADDENDUM's
-    // own explicit instruction) — combines readyState>=HAVE_FUTURE_DATA,
-    // buffered.length>0, and buffered.end() reaching MOST of duration, held
-    // stable for ENDING_ROLL_BUFFER_STABLE_MS before considering it safe to
-    // start.
-    // HOTFIX 4.1 SECTION 39/10-36: iOS Safari's own readyState/buffered
-    // reporting for a large progressively-downloaded file is not guaranteed
-    // to ever cleanly reach the "ideal" thresholds below, even on a
-    // perfectly healthy connection — a naive "hit ENDING_ROLL_LOAD_MAX_WAIT_MS
-    // -> TAP TO CONTINUE" rule would then misreport a genuinely-fine
-    // download as a failure.
-    // HOTFIX 4.3 SECTIONS 1-9 (root-cause fix): the OLD post-timeout branch
-    // accepted ANY nonzero buffer as "good enough" — for a 120MB file that
-    // could mean starting with only a couple of seconds actually
-    // downloaded, guaranteeing an almost-immediate stall (the reported
-    // "映像が途中で停止/音声が途切れる"). Now requires a real minimum runway
-    // (ENDING_ROLL_MIN_BUFFERED_SECONDS of CONTIGUOUS buffer measured from
-    // position 0 — the range that will actually be read at playback start,
-    // not just whatever the LAST buffered range happens to be, which some
-    // browsers can fill out-of-order) even after the base wait; short of
-    // that, the wait EXTENDS as long as bytes are still genuinely arriving
-    // (buffered.end() still growing), and only gives up for real — TAP TO
-    // CONTINUE — once the download has genuinely stalled (no growth at all
-    // for ENDING_ROLL_DOWNLOAD_STALL_MS) or the hard ceiling is reached.
+    // FALLBACK STRATEGY — used only if the real fetch() below genuinely
+    // fails (network error or an actual CORS rejection). HOTFIX 4.3
+    // ADDENDUM 2 SECTIONS 23-29: this must ALSO wait for the FULL file, not
+    // a 90%-buffered compromise — "全部ロードしてから再生", no exceptions.
+    // Polls buffered.end() (the range starting at/near 0 — where playback
+    // begins — never just whatever the LAST buffered range happens to be,
+    // since some browsers fill ranges out of order) until it reaches
+    // ENDING_ROLL_FULL_COVERAGE_FRAC of the real duration. A genuinely dead
+    // download (no growth at all for ENDING_ROLL_DOWNLOAD_STALL_MS) or the
+    // absolute ENDING_ROLL_STREAM_HARD_MAX_WAIT_MS ceiling triggers TAP TO
+    // CONTINUE — a real, reported failure, never a silent "close enough".
     function preloadViaBufferedPolling() {
+      endingRollDiagnostics.method = 'stream';
       eventMovieVideoEl.loop = false;
       eventMovieVideoEl.muted = false; // the video's own embedded audio may play (section 1) — no existing BGM is playing underneath it (see above)
       eventMovieVideoEl.playsInline = true;
@@ -8502,7 +8609,7 @@
 
       const startedAt = performance.now();
       let lastBufferedEnd = -1;
-      let stableSinceMs = startedAt; // last time bufEnd actually grew — used both for "settled enough to start" (short threshold) AND "genuinely stalled" (long threshold) below
+      let stableSinceMs = startedAt; // last time bufEnd actually grew — used only to detect a genuinely dead download below
       function poll(nowTick) {
         if (eventMovieState.key !== 'endingRoll') return; // superseded mid-preload
         if (eventMovieVideoEl.error) { showFallback(finish); return; } // genuine load failure — never infinite-loading
@@ -8513,90 +8620,83 @@
         let bufEnd = 0;
         let coveredFrac = 0;
         if (buffered && buffered.length > 0) {
-          // HOTFIX 4.3 SECTION 7: read the range that actually STARTS at/near
-          // 0 (where playback will begin), never just buffered's LAST range
-          // — a fragmented buffer (e.g. a browser prefetching the file's own
-          // trailing moov atom ahead of the rest) must never be misread as
-          // "ready to play from the top".
           for (let i = 0; i < buffered.length; i++) {
             if (buffered.start(i) <= 0.5) { bufEnd = buffered.end(i); break; }
           }
           if (isFinite(duration) && duration > 0) coveredFrac = bufEnd / duration;
           if (bufEnd > lastBufferedEnd) { lastBufferedEnd = bufEnd; stableSinceMs = nowTick; }
         }
-        const stableLongEnough = (nowTick - stableSinceMs) >= ENDING_ROLL_BUFFER_STABLE_MS;
         const downloadGenuinelyStalled = (nowTick - stableSinceMs) >= ENDING_ROLL_DOWNLOAD_STALL_MS;
-        // Ideal case: comfortably buffered (90%+, never a strict 100%-or-
-        // nothing requirement) and stable — start now, well ahead of the
-        // timeout.
-        if (readyState >= 3 && coveredFrac >= 0.90 && stableLongEnough) {
+        // The ONLY success condition now: the file is (effectively) FULLY
+        // downloaded — never a percentage compromise, never a timeout-based
+        // "good enough".
+        if (readyState >= 3 && coveredFrac >= ENDING_ROLL_FULL_COVERAGE_FRAC) {
           beginConfirmedPlayback();
           return;
         }
-        if (elapsed > ENDING_ROLL_LOAD_MAX_WAIT_MS) {
-          const hasMinimumRunway = readyState >= 2 && bufEnd >= ENDING_ROLL_MIN_BUFFERED_SECONDS;
-          if (hasMinimumRunway) {
-            // Short of the ideal 90% bar, but a real, meaningful amount of
-            // contiguous video is already down — safe enough to start
-            // rather than block indefinitely.
-            beginConfirmedPlayback();
-            return;
-          }
-          if (downloadGenuinelyStalled || elapsed > ENDING_ROLL_HARD_MAX_WAIT_MS) {
-            if (readyState >= 2 && bufEnd > 0) {
-              // Some real progress exists but never reached the minimum
-              // runway, and it has now genuinely stopped growing (or the
-              // absolute ceiling was hit) — start anyway rather than block
-              // forever; this is a deliberately weaker last resort, only
-              // reached after BOTH the base wait AND a real stall/hard
-              // ceiling, never from the base timeout alone.
-              beginConfirmedPlayback();
-            } else {
-              // Truly nothing usable loaded after this long — a genuine
-              // failure, not momentary slowness.
-              showFallback(finish);
-            }
-            return;
-          }
-          // Past the base wait, short of the minimum runway, but bytes are
-          // still genuinely arriving — keep waiting instead of gambling on
-          // an unsafe start (HOTFIX 4.3 SECTION 6's explicit requirement).
+        if (downloadGenuinelyStalled || elapsed > ENDING_ROLL_STREAM_HARD_MAX_WAIT_MS) {
+          // A real failure — the download never reached full coverage and
+          // has either genuinely stopped growing or exhausted the hard
+          // ceiling. Never starts playback in this branch (that would be
+          // exactly the "fake full, start anyway" this addendum forbids).
+          showFallback(finish);
+          return;
         }
         setTimeout(() => poll(performance.now()), 200);
       }
       poll(performance.now());
     }
 
-    // FIRST CHOICE (only attempted once the configured CDN's CORS headers
-    // are actually confirmed — ENDING_ROLL_CORS_SAFE, see its own comment):
-    // fetch() the full video, convert to a Blob, and play from a local
-    // blob: URL — this eliminates any further network stalls entirely once
-    // the fetch itself completes, since playback then reads purely from
-    // memory. Falls back to buffered-polling on ANY fetch/blob error
-    // (network failure, non-CORS-safe response, etc.) rather than ever
-    // leaving the LOADING screen stuck.
-    if (ENDING_ROLL_CORS_SAFE) {
-      fetch(ENDING_ROLL_VIDEO_URL, { mode: 'cors' })
-        .then((resp) => { if (!resp.ok) throw new Error('ending roll fetch: bad status ' + resp.status); return resp.blob(); })
-        .then((blob) => {
-          if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
-          revokeObjectUrlIfAny(); // defensive — never double-download/leak if this somehow re-entered
-          endingRollObjectUrl = URL.createObjectURL(blob);
-          eventMovieVideoEl.loop = false;
-          eventMovieVideoEl.muted = false;
-          eventMovieVideoEl.playsInline = true;
-          eventMovieVideoEl.removeAttribute('crossorigin'); // a blob: URL is always same-origin — crossOrigin has no meaning here
-          eventMovieVideoEl.preload = 'auto';
-          eventMovieVideoEl.src = endingRollObjectUrl;
-          beginConfirmedPlayback();
-        })
-        .catch(() => {
-          if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
-          preloadViaBufferedPolling();
-        });
-    } else {
-      preloadViaBufferedPolling();
-    }
+    // HOTFIX 4.3 ADDENDUM 2 SECTIONS 27-28: ALWAYS attempt the real fetch()
+    // first — never gated behind a hand-set "is this CDN CORS-safe"
+    // assumption (that flag is exactly what section 28 forbids: "CORSを
+    // 推測してはいけない"). Recorded in endingRollDiagnostics.corsFetch* so
+    // the completion report states the REAL measured outcome rather than a
+    // guess. On success, the ENTIRE file is already in memory as a Blob by
+    // the time .then() runs — no further buffered-range gating is needed at
+    // all, playback can start immediately. On any failure (network error or
+    // a genuine CORS rejection — indistinguishable from JS, both surface as
+    // a rejected promise), falls back to preloadViaBufferedPolling() above,
+    // which now also enforces full download before playing.
+    endingRollDiagnostics.corsFetchAttempted = true;
+    fetch(ENDING_ROLL_VIDEO_URL, { mode: 'cors' })
+      .then((resp) => {
+        endingRollDiagnostics.corsFetchStatus = resp.status;
+        if (!resp.ok) throw new Error('ending roll fetch: bad status ' + resp.status);
+        return resp.blob();
+      })
+      .then((blob) => {
+        if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
+        endingRollDiagnostics.corsFetchSucceeded = true;
+        endingRollDiagnostics.method = 'blob';
+        revokeObjectUrlIfAny(); // defensive — never double-download/leak if this somehow re-entered
+        endingRollObjectUrl = URL.createObjectURL(blob);
+        eventMovieVideoEl.loop = false;
+        eventMovieVideoEl.muted = false;
+        eventMovieVideoEl.playsInline = true;
+        eventMovieVideoEl.removeAttribute('crossorigin'); // a blob: URL is always same-origin — crossOrigin has no meaning here
+        eventMovieVideoEl.preload = 'auto';
+        eventMovieVideoEl.src = endingRollObjectUrl;
+        eventMovieVideoEl.load();
+        // A blob: URL is backed entirely by in-memory data already, so the
+        // browser can reach HAVE_ENOUGH_DATA essentially immediately —
+        // still wait for a real readyState signal (never assume) via
+        // loadeddata, with a short defensive poll fallback in case that
+        // event is missed.
+        const tryBegin = () => {
+          if (eventMovieState.key !== 'endingRoll') return;
+          if (eventMovieVideoEl.readyState >= 3) { beginConfirmedPlayback(); return; }
+          setTimeout(tryBegin, 50);
+        };
+        eventMovieVideoEl.onloadeddata = () => { eventMovieVideoEl.onloadeddata = null; tryBegin(); };
+        tryBegin();
+      })
+      .catch((err) => {
+        endingRollDiagnostics.corsFetchSucceeded = false;
+        endingRollDiagnostics.corsFetchError = String(err && err.message || err);
+        if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
+        preloadViaBufferedPolling();
+      });
   }
 
   // Reached ONLY from the EXIT-reach branch in update(), and only when
@@ -10546,11 +10646,24 @@
 
   function updateSecurityRobots(dt, now) {
     if (!isSecurityDroneSystemActive()) return;
-    // POST-v1.0 SECTION 6: SECURITY TRAINING keeps its own established
-    // shadow-detection/laser-telegraph DRONE entirely unchanged; every other
-    // context (STORY drone-type stages, ROID escorts) uses the new LEFT/
-    // RIGHT SNIPER AI below instead.
-    const legacyTrainingAI = gameState.mode === 'securityTraining';
+    // HOTFIX 4.3 ADDENDUM 2 SECTIONS 33-36: SECURITY TRAINING's own old
+    // shadow-detection/laser-telegraph DRONE AI (POST-v1.0 SECTION 6) is
+    // retired — real-device feedback confirmed TRAINING's DRONEs were still
+    // visibly running this older attack pipeline while every other context
+    // (STORY drone-type stages, ROID escorts) had long since moved to the
+    // modern per-DRONE sniper AI below. Never a second, TRAINING-only
+    // attack implementation to keep in sync going forward: `legacyTrainingAI`
+    // is now unconditionally false, so EVERY securityRobots population
+    // (TRAINING included) shares this exact same lock-on/telegraph/blink/
+    // marker/fire/cooldown state machine. This is safe because
+    // buildSecurityDrone() (the one constructor every context already uses,
+    // TRAINING included) has always initialized the modern AI's own fields
+    // (snipeCycleStartedAt/snipeFired/attackPhaseOffsetMs/hasAttackedOnce/
+    // flashLostUntil/hitFlashStartAt) on every robot regardless of mode —
+    // TRAINING simply never read them until now. The old branch below is
+    // kept, still reachable in principle, but this flag being permanently
+    // false means it no longer runs for any real gameplay context.
+    const legacyTrainingAI = false;
     for (const robot of securityRobots) {
       if (robot.hp <= 0) continue; // SECTION E-4: a dead DRONE does nothing at all — no movement, scan, detection, telegraph, or laser
       // PART7 SECTION H: while a wave-2 DRONE is still falling, none of its
@@ -10879,10 +10992,13 @@
   // POST-v1.0 SECTION 6-3/6-4: the new DRONE sniper's own lock-point
   // warning marker — red, blinking faster as the 2s cycle runs out, solid
   // yellow for the final DRONE_SNIPER_YELLOW_MS (the shot fires the instant
-  // it turns yellow). STORY/ROID-escort context only; a no-op in SECURITY
-  // TRAINING (which never advances snipeCycleStartedAt at all).
+  // it turns yellow). HOTFIX 4.3 ADDENDUM 2 SECTIONS 33-36: no longer
+  // SECURITY TRAINING-exempt — now that legacyTrainingAI is permanently
+  // false, TRAINING's own DRONEs advance snipeCycleStartedAt exactly like
+  // every other context, so this marker must draw for them too (leaving the
+  // old exemption in would have silently hidden the modern AI's own "+"
+  // marker for TRAINING even after unifying the attack logic itself).
   function drawDroneSniperWarning(robot, now) {
-    if (gameState.mode === 'securityTraining') return;
     if (robot.hp <= 0 || robot.dropState === 'dropping') return;
     if (robot.snipeCycleStartedAt === -Infinity) return;
     const cycleElapsed = now - robot.snipeCycleStartedAt;
@@ -11915,41 +12031,23 @@
   // inputs — CONTINUE count (GAME OVER->RETRY count this run) and TOTAL
   // PLAY TIME (see continueCount/storyPausedAccumMs above) — never
   // accuracy/shotsHit/shotsFired/damage/remaining LIFE.
-  // HOTFIX 4.3 SECTIONS 22-29: a GAME CLEAR must never show RANK "-" — the
-  // old placeholder ("anything but S returns '-'") is replaced by a full
-  // S/A/B/C/D table built from these same two inputs only. Design: S stays
-  // the one concretely-spec'd tier (continueCount===0 && playTimeSec<=15:00);
-  // below that, continueCount is bucketed into 4 tiers (0/1/2/>=3) and
-  // playTimeSec into ascending bands (15:00/20:00/30:00/40:00) — each tier's
-  // own band list is a strict one-step-worse shift of the tier above it, so
-  // the table is monotonic in both directions: more CONTINUEs never raises
-  // the rank at a fixed time, and a slower CLEAR TIME never raises the rank
-  // at a fixed CONTINUE count (verified case-by-case in the HOTFIX 4.3
-  // completion report). continueCount>=3 always resolves to D regardless of
-  // time, so no input combination can ever fall through to '-'.
+  // HOTFIX 4.3 ADDENDUM 2 SECTIONS 4-10: the FINAL, user-specified S/A/B/C/D
+  // table (supersedes HOTFIX 4.3's own self-designed thresholds above) —
+  // still exactly two inputs (CONTINUE count, TOTAL PLAY TIME), checked in
+  // this exact top-to-bottom priority order, first match wins. C's own
+  // upper bound is a strict "<" (30:00 itself is NOT C — falls through to
+  // D), every other bound is "<=". No branch can ever fall through without
+  // returning a letter, so '-' can never occur.
   const RESULT_RANK_S_MAX_SEC = 900; // 15:00 — S also requires continueCount===0
-  const RESULT_RANK_TIME_T2_SEC = 1200; // 20:00
-  const RESULT_RANK_TIME_T3_SEC = 1800; // 30:00
-  const RESULT_RANK_TIME_T4_SEC = 2400; // 40:00
+  const RESULT_RANK_A_MAX_SEC = 1020; // 17:00 — A also requires continueCount<=1
+  const RESULT_RANK_B_MAX_SEC = 1200; // 20:00 — B also requires continueCount<=3
+  const RESULT_RANK_C_MAX_SEC = 1800; // 30:00 (exclusive) — C also requires continueCount<=5
   function computeResultRank(continueCount, playTimeSec) {
-    if (continueCount === 0) {
-      if (playTimeSec <= RESULT_RANK_S_MAX_SEC) return 'S';
-      if (playTimeSec <= RESULT_RANK_TIME_T2_SEC) return 'A';
-      if (playTimeSec <= RESULT_RANK_TIME_T3_SEC) return 'B';
-      return 'C';
-    }
-    if (continueCount === 1) {
-      if (playTimeSec <= RESULT_RANK_TIME_T2_SEC) return 'A';
-      if (playTimeSec <= RESULT_RANK_TIME_T3_SEC) return 'B';
-      if (playTimeSec <= RESULT_RANK_TIME_T4_SEC) return 'C';
-      return 'D';
-    }
-    if (continueCount === 2) {
-      if (playTimeSec <= RESULT_RANK_TIME_T3_SEC) return 'B';
-      if (playTimeSec <= RESULT_RANK_TIME_T4_SEC) return 'C';
-      return 'D';
-    }
-    return 'D'; // continueCount >= 3: always D, regardless of time — never '-'
+    if (continueCount === 0 && playTimeSec <= RESULT_RANK_S_MAX_SEC) return 'S';
+    if (continueCount <= 1 && playTimeSec <= RESULT_RANK_A_MAX_SEC) return 'A';
+    if (continueCount <= 3 && playTimeSec <= RESULT_RANK_B_MAX_SEC) return 'B';
+    if (continueCount <= 5 && playTimeSec < RESULT_RANK_C_MAX_SEC) return 'C';
+    return 'D';
   }
   function formatPlayTime(sec) {
     const m = Math.floor(sec / 60);
@@ -11957,13 +12055,16 @@
     return `${m}:${String(s).padStart(2, '0')}`;
   }
   function enterResultScreen() {
+    // HOTFIX 4.3 ADDENDUM 2 SECTIONS 1-3: ACCURACY/DAMAGE TAKEN are no
+    // longer part of the RESULT display at all (their DOM rows are gone —
+    // see index.html) — shotsHit/shotsFired/totalDamageTaken themselves
+    // are still tracked elsewhere in the file for whatever else may read
+    // them, this screen just no longer surfaces them, same as
+    // computeResultRank() itself already never reads them.
     const playTimeSec = Math.max(0, (performance.now() - storyStartTime) - storyPausedAccumMs) / 1000; // PAUSE/GAME OVER/ENDING ROLL preload time all excluded via storyPausedAccumMs
-    const accuracyFrac = shotsFired > 0 ? shotsHit / shotsFired : 0; // display-only — never fed into computeResultRank()
-    const rank = computeResultRank(continueCount, playTimeSec); // HOTFIX 4.1 ADDENDUM: CONTINUE count + PLAY TIME only, accuracy/damage excluded
+    const rank = computeResultRank(continueCount, playTimeSec); // CONTINUE count + PLAY TIME only, accuracy/damage excluded
     document.getElementById('result-play-time').textContent = formatPlayTime(playTimeSec);
     document.getElementById('result-continue').textContent = continueCount;
-    document.getElementById('result-accuracy').textContent = `${Math.round(accuracyFrac * 100)}%`;
-    document.getElementById('result-damage-taken').textContent = Math.round(totalDamageTaken);
     document.getElementById('result-rank').textContent = rank;
     setScreen('result');
   }
@@ -12066,18 +12167,28 @@
   // ---------- ACTION STICK (movement + base facing) ----------
   const actionStickZone = document.getElementById('action-stick-zone');
   const actionStickKnob = document.getElementById('action-stick-knob');
-  let actionStickTouchId = null;
+  let actionStickTouchId = null; // now holds a Pointer Events pointerId, not a Touch identifier — name kept because detectControlStateCorruption()/etc. elsewhere key off it purely as "is a real drag owning this stick" (see HOTFIX 4.3 ADDENDUM 3 below)
   let actionStickVec = { x: 0, y: 0 }; // normalized -1..1
+  // HOTFIX 4.3 ADDENDUM 3: the stick's own circle rect is captured ONCE
+  // when the drag begins and held fixed for the rest of that gesture,
+  // never recomputed mid-drag — this is what the old per-touchmove
+  // getBoundingClientRect() call got wrong: on real iPhone Safari, a
+  // mid-gesture URL-bar show/hide (itself triggered by the page being
+  // allowed to pan at all, now fixed separately) shifts the live rect,
+  // which corrupted the stick's dx/dy math and read as "the stick cuts
+  // out"/"the screen shifts while dragging".
+  let actionStickRect = null;
 
   function actionStickReset() {
     actionStickTouchId = null;
+    actionStickRect = null;
     actionStickVec.x = 0;
     actionStickVec.y = 0;
     actionStickKnob.style.transform = 'translate(0px, 0px)';
   }
 
   function handleActionStickMove(clientX, clientY) {
-    const rect = actionStickZone.getBoundingClientRect();
+    const rect = actionStickRect || actionStickZone.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
     const dx = clientX - cx;
@@ -12097,32 +12208,41 @@
   // entirely — DASH is triggered exclusively by the dedicated DASH button
   // now (see dashButtonPress() below). Ordinary MOVE STICK input can never
   // accidentally trigger a DASH anymore.
-  actionStickZone.addEventListener('touchstart', (e) => {
+  //
+  // HOTFIX 4.3 ADDENDUM 3: converted from raw touchstart/touchmove/touchend
+  // to unified Pointer Events. Touch's own implicit per-target capture
+  // already kept touchmove/touchend routed correctly to this element even
+  // once a finger drifted outside the visible circle, but real iOS Safari
+  // has known inconsistencies re-evaluating an ancestor's touch-action as
+  // a finger moves across element boundaries mid-gesture, which could
+  // silently hand a drifting drag back to the browser's own gesture
+  // recognizer. setPointerCapture() below is immune to that: once
+  // captured, every subsequent pointer event for this pointerId is
+  // delivered to this element regardless of where the pointer physically
+  // is, with no re-hit-testing involved. Also covers mouse for PC testing
+  // (pointerdown/move/up fire for mouse too), so the previous touch-only
+  // implementation needs no separate mouse listener here.
+  actionStickZone.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     if (actionStickTouchId !== null) return;
-    const t = e.changedTouches[0];
-    actionStickTouchId = t.identifier;
-    handleActionStickMove(t.clientX, t.clientY);
+    actionStickTouchId = e.pointerId;
+    actionStickRect = actionStickZone.getBoundingClientRect();
+    try { actionStickZone.setPointerCapture(e.pointerId); } catch (err) { /* defensive: capture is a robustness enhancement, never allowed to block the drag itself from registering */ }
+    handleActionStickMove(e.clientX, e.clientY);
   }, { passive: false });
 
-  actionStickZone.addEventListener('touchmove', (e) => {
+  actionStickZone.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== actionStickTouchId) return;
     e.preventDefault();
-    for (const t of e.changedTouches) {
-      if (t.identifier === actionStickTouchId) {
-        handleActionStickMove(t.clientX, t.clientY);
-      }
-    }
+    handleActionStickMove(e.clientX, e.clientY);
   }, { passive: false });
 
   function actionStickTouchEnd(e) {
-    for (const t of e.changedTouches) {
-      if (t.identifier === actionStickTouchId) {
-        actionStickReset();
-      }
-    }
+    if (e.pointerId !== actionStickTouchId) return;
+    actionStickReset();
   }
-  actionStickZone.addEventListener('touchend', actionStickTouchEnd, { passive: false });
-  actionStickZone.addEventListener('touchcancel', actionStickTouchEnd, { passive: false });
+  actionStickZone.addEventListener('pointerup', actionStickTouchEnd, { passive: false });
+  actionStickZone.addEventListener('pointercancel', actionStickTouchEnd, { passive: false });
 
   // ---------- AIM STICK (aim angle only, does not move the character) ----------
   const aimStickZone = document.getElementById('aim-stick-zone');
@@ -12139,9 +12259,10 @@
   }
   updateAimSectorOverlay(); // initial paint
 
-  let aimStickTouchId = null;
-  let aimStickMouseDown = false;
+  let aimStickTouchId = null; // holds a Pointer Events pointerId now (see the pointerdown/move/up block below) — never a Touch identifier or a real mouse flag anymore
+  let aimStickMouseDown = false; // ADDENDUM 3: dead field, always false now that mouse input flows through the same pointerId path as touch — kept only because detectControlStateCorruption() still reads it (see its own comment) and removing it would need to touch that unrelated invariant check too
   let aimStickActive = false; // whether to draw the dotted prediction line
+  let aimStickRect = null; // ADDENDUM 3: the stick's circle rect, captured once at pointerdown and held fixed for the whole gesture — see actionStickRect's own comment for why
   const AIM_DEADZONE_PX = 3; // reduced from 6 — just enough to ignore a resting thumb's tremor
 
   // Double-tap the AIM STICK's CENTER -> snap to the nearest valid AUTO AIM
@@ -12221,6 +12342,7 @@
   function aimStickReset() {
     aimStickTouchId = null;
     aimStickMouseDown = false;
+    aimStickRect = null;
     if (performance.now() < aimDoubleTapLockUntil) {
       // A double-tap snap is still locked in — keep the reticle/aim line
       // showing the snapped angle instead of zeroing it on release.
@@ -12247,7 +12369,7 @@
     // deliberate AIM-during-intro exception, per this batch's explicit
     // instruction.
     if (isBossIntroLocked() || player.stunned) return;
-    const rect = aimStickZone.getBoundingClientRect();
+    const rect = aimStickRect || aimStickZone.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
     const dx = clientX - cx;
@@ -12276,54 +12398,45 @@
     aimStickKnob.style.transform = `translate(${nx * maxR * 0.7}px, ${ny * maxR * 0.7}px)`;
   }
 
-  aimStickZone.addEventListener('touchstart', (e) => {
+  // HOTFIX 4.3 ADDENDUM 3: converted from separate touchstart/touchmove/
+  // touchend/touchcancel PLUS a wholly separate mousedown/mousemove/mouseup
+  // implementation, to one unified Pointer Events path — pointerdown/move/
+  // up/cancel fire for touch, mouse, and pen alike, so the old PC-testing
+  // mouse listeners below are gone entirely (no more double-implementation
+  // to keep in sync). setPointerCapture() (see actionStickZone's own block
+  // above for the full root-cause reasoning) guarantees this stick keeps
+  // receiving move/up events for its own pointerId even once a finger
+  // drifts outside the visible circle, immune to iOS Safari's touch-action
+  // re-hit-testing quirk. aimStickTouchId now holds a pointerId (kept as a
+  // Touch-Id-shaped variable name only because detectControlStateCorruption()
+  // and getFinalAimAngle()-adjacent code elsewhere already key off it as
+  // "is a real drag owning this stick, y/n" — the concrete origin,
+  // touch/mouse/pen, was never semantically relevant there).
+  aimStickZone.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     if (aimStickTouchId !== null) return;
     if (isBossIntroLocked() || player.stunned) return; // SECTION H/C: AIM STICK fully inert pre-battle/during intro, and during STUN
-    const t = e.changedTouches[0];
-    aimStickTouchId = t.identifier;
+    aimStickTouchId = e.pointerId;
+    aimStickRect = aimStickZone.getBoundingClientRect();
+    try { aimStickZone.setPointerCapture(e.pointerId); } catch (err) { /* defensive: capture is a robustness enhancement, never allowed to block the drag itself from registering */ }
     aimStickActive = true;
-    const rect = aimStickZone.getBoundingClientRect();
-    const distFromCenter = Math.hypot(t.clientX - (rect.left + rect.width / 2), t.clientY - (rect.top + rect.height / 2));
+    const distFromCenter = Math.hypot(e.clientX - (aimStickRect.left + aimStickRect.width / 2), e.clientY - (aimStickRect.top + aimStickRect.height / 2));
     if (tryAimDoubleTap(performance.now(), distFromCenter)) return; // snap already applied
-    handleAimStickMove(t.clientX, t.clientY);
+    handleAimStickMove(e.clientX, e.clientY);
   }, { passive: false });
 
-  aimStickZone.addEventListener('touchmove', (e) => {
+  aimStickZone.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== aimStickTouchId) return;
     e.preventDefault();
-    for (const t of e.changedTouches) {
-      if (t.identifier === aimStickTouchId) {
-        handleAimStickMove(t.clientX, t.clientY);
-      }
-    }
+    handleAimStickMove(e.clientX, e.clientY);
   }, { passive: false });
 
   function aimStickTouchEnd(e) {
-    for (const t of e.changedTouches) {
-      if (t.identifier === aimStickTouchId) {
-        aimStickReset();
-      }
-    }
+    if (e.pointerId !== aimStickTouchId) return;
+    aimStickReset();
   }
-  aimStickZone.addEventListener('touchend', aimStickTouchEnd, { passive: false });
-  aimStickZone.addEventListener('touchcancel', aimStickTouchEnd, { passive: false });
-
-  // Mouse equivalent for desktop/PC testing (drag within the same zone).
-  aimStickZone.addEventListener('mousedown', (e) => {
-    if (isBossIntroLocked() || player.stunned) return; // SECTION H/C: AIM STICK fully inert pre-battle/during intro, and during STUN
-    aimStickMouseDown = true;
-    aimStickActive = true;
-    const rect = aimStickZone.getBoundingClientRect();
-    const distFromCenter = Math.hypot(e.clientX - (rect.left + rect.width / 2), e.clientY - (rect.top + rect.height / 2));
-    if (tryAimDoubleTap(performance.now(), distFromCenter)) return;
-    handleAimStickMove(e.clientX, e.clientY);
-  });
-  window.addEventListener('mousemove', (e) => {
-    if (aimStickMouseDown) handleAimStickMove(e.clientX, e.clientY);
-  });
-  window.addEventListener('mouseup', () => {
-    if (aimStickMouseDown) aimStickReset();
-  });
+  aimStickZone.addEventListener('pointerup', aimStickTouchEnd, { passive: false });
+  aimStickZone.addEventListener('pointercancel', aimStickTouchEnd, { passive: false });
 
   // ---------- Keyboard (PC test) ----------
   const keys = { up: false, down: false, left: false, right: false, fire: false };
@@ -13124,14 +13237,15 @@
     bossBgmAudio, startBossBgm, endBossBgmToNormalStage, endBossBgmSilently, // debug/verification only — BOSS BGM ADDENDUM (Outbreak 2)
     get musicContext() { return musicContext; }, setMusicContext, syncMusicContext, // debug/verification only — HOTFIX 2 SECTION 2
     PLAYER_BODY_RADIUS, BOSS_SOLID_RADIUS, BOSS_SOLID_MIN_DIST, clampPlayerAwayFromBoss, clampBossAwayFromPlayer, // debug/verification only — HOTFIX SECTION 22
+    DRONE_SOLID_RADIUS, DRONE_SOLID_MIN_DIST, clampPlayerAwayFromDrones, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 37-43 — debug/verification only
     beginScenarioOpening, // debug/verification only — HOTFIX SECTION 12-2: FULL PLAY's UI entry is LOCKED, but its underlying 'secret' scenario route must stay directly launchable for internal verification
     // Debug/verification only — DARK OUT PART 9: CINEMATIC INTEGRATION.
     menuBgmAudio, startMenuBgmOnce, startGameplayBgm, stopMenuBgm,
     SYSTEM_MOVIES, EVENT_MOVIES, storyCinematicState, eventMovieState,
     storyEndingState, beginStoryEscapeEnding, // DARK OUT PART 10 — debug/verification only
     playEndingRoll, ENDING_ROLL_VIDEO_URL, ENDING_ROLL_CORS_SAFE, // debug/verification only — HOTFIX SECTION 1/27
-    ENDING_ROLL_LOAD_MAX_WAIT_MS, ENDING_ROLL_BUFFER_STABLE_MS, ENDING_ROLL_MIN_BUFFERED_SECONDS, // HOTFIX 4.3 SECTIONS 1-9 — debug/verification only
-    ENDING_ROLL_HARD_MAX_WAIT_MS, ENDING_ROLL_DOWNLOAD_STALL_MS, endingRollDiagnostics,
+    ENDING_ROLL_FULL_COVERAGE_FRAC, ENDING_ROLL_DOWNLOAD_STALL_MS, ENDING_ROLL_STREAM_HARD_MAX_WAIT_MS, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 23-29 — debug/verification only
+    endingRollDiagnostics,
     get eventMovieVideoElReadyState() { return eventMovieVideoEl.readyState; }, // debug/verification only
     get eventMovieVideoElCurrentTime() { return eventMovieVideoEl.currentTime; },
     get eventMovieVideoElPaused() { return eventMovieVideoEl.paused; },
@@ -13161,8 +13275,8 @@
     get bossBattleDefeatRemainingMs() { return bossBattleDefeatRemainingMs; }, // debug/verification only — DARK OUT PART 3
     getGabrielCombatEncounterIndex, GABRIEL_ENCOUNTER_3_INDEX, // debug/verification only — DARK OUT PART 3.5
     // Debug/verification only — DARK OUT PART 4: ROID1/ROID2 shared BOSS AI.
-    spawnRoidBoss, updateRoidBoss, drawRoidBoss, applyBodyHitToRoidBoss,
-    roidState, enemyBullets, updateEnemyBullets, fireRoidBullet, fireDroneSniperShot,
+    spawnRoidBoss, updateRoidBoss, drawRoidBoss, applyBodyHitToRoidBoss, maintainRoidEscortDrones, ROID_ESCORT_COUNT, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 50-56 — debug/verification only
+    roidState, enemyBullets, updateEnemyBullets, fireRoidBullet, fireDroneSniperShot, isRoidActivelyFiring, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 44-49 — debug/verification only
     ROID_BOSS_PROFILES, ROID_MAX_HP, ROID_BULLET_DAMAGE, ROID_HURT_RADIUS,
     ROID_BURST_SHOT_COUNT, ROID_BURST_SHOT_INTERVAL_MS, ROID_BURST_COOLDOWN_MS,
     ROID_SEARCH_FRAME_MS, ROID_FIRE_FRAME_MS,
@@ -13209,6 +13323,9 @@
     get autoAimLockedPoint() { return autoAimLockedPoint; },
     get aimStickActive() { return aimStickActive; },
     set aimStickActive(v) { aimStickActive = v; }, // debug/verification only
+    get actionStickVec() { return actionStickVec; }, // debug/verification only — ADDENDUM 3 touch/joystick tests
+    get actionStickTouchId() { return actionStickTouchId; }, // debug/verification only
+    get aimStickTouchId() { return aimStickTouchId; }, // debug/verification only
     flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only
     get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
     FIRE_MAG_SIZE, FIRE_COOLDOWN_MS, // debug/verification only — SECTION D
@@ -13303,7 +13420,7 @@
     set continueCount(v) { continueCount = v; }, // debug/verification only
     get gameOverEnteredAt() { return gameOverEnteredAt; },
     set gameOverEnteredAt(v) { gameOverEnteredAt = v; }, // debug/verification only
-    RESULT_RANK_S_MAX_SEC, RESULT_RANK_TIME_T2_SEC, RESULT_RANK_TIME_T3_SEC, RESULT_RANK_TIME_T4_SEC, // HOTFIX 4.3 SECTIONS 22-29 — debug/verification only
+    RESULT_RANK_S_MAX_SEC, RESULT_RANK_A_MAX_SEC, RESULT_RANK_B_MAX_SEC, RESULT_RANK_C_MAX_SEC, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 4-10 — debug/verification only
     computeResultRank, formatPlayTime, enterResultScreen,
     // Debug/verification only — SECTION A (root-cause fix)/B (watchdog)/C
     // (STUN)/G-H-I (REBOOT)/J (ENCOUNTER 3 forced STUN)/M (GAME OVER).
@@ -13368,6 +13485,7 @@
     isStoryDroneStage, isFinalStoryStage, isSecurityDroneSystemActive, isCultivationLabStage, // HOTFIX 4 SECTIONS 18-21 — debug/verification only
     isMainAdamSphereStage, ADAM_SPHERE_MAIN_DEATH_MS, bossFrameName, // HOTFIX 4 SECTIONS 22-32/ADDENDUM F-K — debug/verification only
     adamSphereCombatState, spawnAdamSphereCombat, applyDamageToAdamSphereCombat, updateAdamSphereCombat, drawAdamSphereCombat, ADAM_SPHERE_COMBAT_HIT_RADIUS, ADAM_SPHERE_SOUTH_FRAME_INDEX, // HOTFIX 4.1 — debug/verification only
+    isAdamSphereAttackFlashing, ADAM_SPHERE_ATTACK_FLASH_MS, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 18-21 — debug/verification only
     ADAM_SPHERE_COMBAT_MAX_HP, drawBossLifeHud, // HOTFIX 4.2 ADDENDUM 1 — debug/verification only
     ADAM_SPHERE_SHOT_INTERVAL_MS, ADAM_SPHERE_LOCK_ON_MS, ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS, DRONE_SNIPER_FIRE_AT_MS, // HOTFIX 4.2 ADDENDUM 1/2 — debug/verification only
     enterStoryStage, pickFreshStoryDroneBackground,

@@ -175,8 +175,12 @@
          now, alongside PLAY TIME, one of the two inputs RANK is actually
          computed from — see computeResultRank() in game.js. -->
     <div class="result-stat"><span class="result-stat-label">CONTINUE</span><span id="result-continue" class="result-stat-value"></span></div>
-    <div class="result-stat"><span class="result-stat-label">ACCURACY</span><span id="result-accuracy" class="result-stat-value"></span></div>
-    <div class="result-stat"><span class="result-stat-label">DAMAGE TAKEN</span><span id="result-damage-taken" class="result-stat-value"></span></div>
+    <!-- HOTFIX 4.3 ADDENDUM 2 SECTIONS 1-3: ACCURACY and DAMAGE TAKEN rows
+         removed from RESULT display per spec — RANK never used them anyway
+         (see computeResultRank() in game.js), and the underlying
+         shotsHit/shotsFired/totalDamageTaken measurements themselves are
+         untouched (still tracked for any other internal use), only these
+         two display rows are gone. -->
     <div class="result-stat"><span class="result-stat-label">RANK</span><span id="result-rank" class="result-stat-value"></span></div>
     <div id="result-thanks">THANK YOU FOR PLAYING!!</div>
     <button class="mode-btn" id="result-back-btn">BACK TO TOP MENU</button>

@@ -7,27 +7,37 @@
   -webkit-user-select: none;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
 }
 
-/* Page can scroll vertically (PART 3) when PLAY AREA + CONTROL AREA don't
-   both fit the viewport height — only individual control widgets below
-   opt back into touch-action:none to stop a drag on THEM from also
-   panning the page. overscroll-behavior stops the iOS rubber-band bounce
-   without blocking real scrolling. */
+/* HOTFIX 4.3 ADDENDUM 3: the page must NEVER scroll/pan/rubber-band during
+   gameplay on real iPhone Safari — the previous PART 3 design (below) let
+   html/body pan vertically as a fallback for a too-short viewport, but on
+   a real device that same allowance is what let a MOVE/AIM stick drag
+   bleed into an actual page scroll (Safari toggling its URL bar mid-drag,
+   which then shifts every getBoundingClientRect() the stick math reads —
+   this is the root cause of the reported "whole screen shifts"/"stick
+   cuts out" bugs, not a joystick sensitivity issue). html/body are now
+   pinned to the exact viewport rectangle (position:fixed; inset:0) with
+   all panning/overscroll/rubber-band disabled outright; PLAY AREA's own
+   min-height floor (220px) plus CONTROL AREA's modest fixed height keep
+   both comfortably within any real iPhone's viewport, so there is nothing
+   left that legitimately needs page-level scroll to reach. */
 html, body {
   margin: 0;
   padding: 0;
   width: 100%;
   background: #0a0b0c;
-  touch-action: pan-y;
-  overscroll-behavior-y: contain;
+  touch-action: none;
+  overscroll-behavior: none;
+  overflow: hidden;
 }
 
 body {
+  position: fixed;
+  inset: 0;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  min-height: 100dvh;
 }
 
 /* ---------- PLAY AREA ----------
@@ -118,10 +128,7 @@ body {
    distinct (own background + top border) so it reads as "this is the
    control panel" without being flashy (PART 13). Never receives any game
    drawing — it has no canvas, no game.js draw() call ever touches it
-   (PART 14). touch-action:pan-y on the row itself lets a drag on the
-   gaps BETWEEN controls scroll the page like anywhere else; every
-   individual stick/button zone below overrides back to touch-action:none
-   so operating a control never also pans the page (PART 15).
+   (PART 14).
    PART 11-16 (this batch): the RANGE gauge is gone; the row is now a
    2-row COLUMN — a slim SECONDARY row (STEALTH/FLASH, right-aligned) sits
    above the main PRIMARY row (MOVE / AIM / SHOT+DASH, evenly spread) — so
@@ -138,15 +145,14 @@ body {
   background: #0c0d0f;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   padding: 10px max(14px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
-  /* SECTION L: was pan-y — still lets a drag on the gaps between controls
-     scroll the page like before, but "manipulation" additionally tells the
-     browser this whole region's gestures are handled (pan + pinch, no
-     double-tap-to-zoom), which is what actually stops a fast double-tap
-     anywhere in CONTROL AREA (including the gaps, not just the individual
-     stick/button zones below, which were already touch-action:none) from
-     triggering Safari's page zoom. Page scroll outside CONTROL AREA is
-     untouched (html/body's own pan-y is unrelated to this element). */
-  touch-action: manipulation;
+  /* HOTFIX 4.3 ADDENDUM 3: was "manipulation" (itself previously "pan-y"),
+     both of which deliberately let a drag on the gaps BETWEEN controls
+     pan/scroll the page — exactly the behavior that must never happen
+     during gameplay now that html/body are fully scroll-locked above.
+     "none" still suppresses double-tap-to-zoom (any touch-action value
+     other than "auto"/"manipulation" already disables double-tap zoom on
+     its element), so that regression protection from SECTION L survives. */
+  touch-action: none;
 }
 
 /* Secondary row: STEALTH/FLASH only, pinned to the right edge — the
@@ -1036,8 +1042,9 @@ body {
   margin: 14px 0 10px;
 }
 /* PART 9 SECTION A-1: BACK TO TOP MENU (<button>) and ARTIST PAGE (<a>) sit
-   on the same #result-panel flex column as the PLAY TIME/ACCURACY/DAMAGE
-   TAKEN/RANK rows above, but .mode-btn's own shared padding (6px 10px) and
+   on the same #result-panel flex column as the PLAY TIME/CONTINUE/RANK rows
+   above (ACCURACY/DAMAGE TAKEN removed — HOTFIX 4.3 ADDENDUM 2 SECTIONS
+   1-3), but .mode-btn's own shared padding (6px 10px) and
    each element's own UA-default text alignment left them starting at
    different X positions instead of lining up with those labels' own flush-
    left edge. Scoped to just these two IDs (never touching global .mode-btn,
@@ -1053,6 +1060,35 @@ body {
   padding-left: 0;
   padding-right: 0;
   margin-left: 0;
+}
+/* HOTFIX 4.3 ADDENDUM 2 SECTIONS 14-17: ARTIST PAGE's own text (never a
+   background box) cycles through the rainbow — a moving gradient clipped to
+   the glyphs themselves via background-clip:text, animated by shifting the
+   gradient's background-position rather than swapping discrete colors, so
+   it reads as continuous hue motion rather than a color-swap flicker. The
+   iOS Safari trio (background-clip/-webkit-background-clip/
+   -webkit-text-fill-color:transparent) is required for this to render on
+   iPhone at all — without -webkit-text-fill-color:transparent, Safari
+   paints the fallback `color` over the clipped gradient and the effect
+   never appears. `color` itself stays set as that same fallback for any
+   browser without gradient-text support, and pointer/tap behavior is
+   completely untouched (this is styling only — the element is still the
+   same <a>). */
+#result-artist-btn {
+  background-image: linear-gradient(
+    90deg,
+    #ff3b30, #ff9500, #ffcc00, #34c759, #00c7be, #007aff, #af52de, #ff2d92, #ff3b30
+  );
+  background-size: 400% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: #ffffff; /* fallback for browsers without gradient-text support */
+  animation: result-artist-rainbow 6s linear infinite;
+}
+@keyframes result-artist-rainbow {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 400% 50%; }
 }
 /* SECTION M: GAME OVER — a real DOM screen (never a canvas overlay on the
    frozen frame, unlike GAME CLEAR), entered the instant PLAYER LIFE hits 0
