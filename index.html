@@ -27,61 +27,53 @@
 </head>
 <body>
 
-<!-- SECTION G: full-blackout LOADING screen — shown first, on top of
-     everything, until every asset genuine-load-tracked in game.js
-     (initLoadingSequence()) is confirmed drawable/playable. Never a fake
-     time-based bar: the percentage text is driven from a real loaded/total
-     asset count. -->
+<!-- P0 GAME COMPLETION HOTFIX (STARTUP PRELOAD UI REBUILD): full-blackout
+     LOADING screen — shown first, on top of everything, until every asset
+     genuine-load-tracked in game.js (computeStartupRequiredProgress()) is
+     confirmed drawable/playable, THEN hosts TAP TO START on the exact same
+     black background — no video is ever visible on this screen (the old
+     always-playing loading.mp4 background + the FULL/FAST YES/NO choice
+     prompt are both retired outright; the user is never asked to choose).
+     Never a fake time-based bar: the percentage text is driven from a real
+     loaded/total required-asset count, and 100% is only ever reported once
+     that count is genuinely met — see runStartupLoadingPhase() in game.js. -->
 <div id="loading-screen">
-  <!-- PART 9 SECTION D: boot-time loading footage — muted/loop/autoplay
-       background only, shown the instant the page boots, before any real
-       asset-readiness is known. Swapped for start_display.mp4 (see
-       #opening-video below) the moment that video reports itself
-       playable — never a fixed timeout. -->
-  <video id="loading-video" src="assets/video/system/loading.mp4" muted loop autoplay playsinline webkit-playsinline="true"></video>
-  <div id="loading-bar-track">
-    <div id="loading-bar-fill"></div>
+  <div id="loading-progress-overlay">
+    <div id="loading-percent-text">0%</div>
+    <div id="loading-bar-track">
+      <div id="loading-bar-fill"></div>
+    </div>
+    <!-- Shown only on a genuine load/playback failure (network error, a
+         video that can never reach real readiness, the hard wait ceiling
+         exhausted) — never a silent fake-100%, never an infinite
+         unresponsive hang. RETRY re-runs the whole required-asset pass. -->
+    <div id="loading-error-text" hidden></div>
+    <button class="main-menu-item" id="loading-retry-btn" hidden>RETRY</button>
   </div>
-  <!-- P0 LOADING ARCHITECTURE HOTFIX: shown once the bare-minimum bootstrap
-       (unchanged from before this batch) is ready, before either preload
-       policy actually begins — the SAME loading.mp4 keeps playing behind it
-       (never a gray/stopped frame). YES/NO reuse .main-menu-item so the
-       existing generic gamepad D-PAD/LEFT STICK navigate + A confirm engine
-       and its gamepad-focus highlight CSS both work here with zero new
-       plumbing; touch/click work exactly the same as every other
-       .main-menu-item. -->
-  <div id="loading-choice-overlay" hidden>
-    <div id="loading-choice-text">FAST LOADING IS AVAILABLE FOR SCENARIO SELECTION ONLY.</div>
-    <button class="main-menu-item" id="loading-choice-yes-btn">YES</button>
-    <button class="main-menu-item" id="loading-choice-no-btn">NO</button>
-  </div>
-</div>
-
-<!-- SECTION H/D: OPENING — a single persistent muted/loop/autoplay/
-     playsinline video, sized via object-fit only, whose .src is swapped by
-     game.js at exactly two moments: DARK OUT PART 11 SECTION 1/2/4 —
-     defaults to loading.mp4 (paired with TAP TO START, #opening-overlay
-     below), swaps to opening.mp4 for the idle ATTRACT loop, swaps to
-     start_display.mp4 the instant the user actually taps to start (see
-     onOpeningTap() in game.js) and stays there behind the MAIN MENU/
-     SCENARIO SELECT/BOSS SELECT/TRAINING SELECT overlay that replaces
-     #opening-overlay after that tap — see #main-menu-overlay below — never
-     a second video element. -->
-<div id="opening-screen" hidden>
-  <!-- PART 11 SECTION 1: default src is loading.mp4 now (was start_
-       display.mp4) — TAP TO START must pair with the NOW LOADING footage,
-       never the MENU's own start_display.mp4 (real-device feedback: the
-       two were overlapping/hard to read). start_display.mp4 has "DARK
-       OUT" burned into its own footage throughout, so #opening-title below
-       stays hidden via CSS rather than duplicating the title as separate
-       overlay text — loading.mp4/opening.mp4 have no such burned-in title,
-       so this screen simply shows no separate title text either, per
-       spec's own silence on adding one here. -->
-  <video id="opening-video" src="assets/video/system/loading.mp4" muted loop autoplay playsinline webkit-playsinline="true"></video>
-  <div id="opening-overlay">
+  <!-- Moved here (was #opening-screen's own #opening-overlay) — TAP TO
+       START now appears on this SAME black #loading-screen once the
+       required-asset progress above reaches 100%, never on a screen with a
+       background video playing behind it. Physical-button/touch detection
+       and the release-gate are unchanged (see onOpeningTap()/the gamepad
+       TAP-TO-START branch in game.js) — only the visual host changed. -->
+  <div id="opening-overlay" hidden>
     <div id="opening-title">DARK OUT</div>
     <div id="opening-tap-prompt">TAP TO START</div>
   </div>
+</div>
+
+<!-- SECTION H/D: MAIN MENU and every submenu below it share a single
+     persistent muted/loop/autoplay/playsinline video, sized via object-fit
+     only, whose .src is swapped by game.js: DARK OUT PART 11 SECTION 4 —
+     onOpeningTap() sets it to start_display.mp4 the instant the user
+     actually taps TAP TO START (now hosted on #loading-screen, see above)
+     and it stays there behind the MAIN MENU/SCENARIO SELECT/BOSS SELECT/
+     TRAINING SELECT overlays — never a second video element. This screen
+     itself (and its video) stays hidden until MAIN MENU is actually
+     reached — never shown during LOADING or TAP TO START, per the P0
+     GAME COMPLETION HOTFIX's own "no background video visible yet" rule. -->
+<div id="opening-screen" hidden>
+  <video id="opening-video" src="assets/video/system/loading.mp4" muted loop autoplay playsinline webkit-playsinline="true"></video>
   <!-- SECTION D: deliberately NOT a boxed/paneled menu — plain vertical
        text directly over the video, so the OPENING footage stays the
        visual focus. STORY MODE/TRAINING MODE route through the SAME
@@ -391,8 +383,9 @@
   <video id="event-movie-video" playsinline webkit-playsinline="true" preload="auto"></video>
   <!-- HOTFIX 4 ADDENDUM SECTIONS L-Y: ENDING ROLL's own robust-preload
        LOADING screen — reuses the SAME loading.mp4 footage every other
-       LOADING context in this app already uses (boot #loading-video,
-       menu/tap-to-start #opening-video), never a new asset. Sits in the
+       LOADING context in this app already uses (the startup #opening-video
+       readiness probe, this app's own boot LOADING background), never a
+       new asset. Sits in the
        SAME overlay/z-index as #event-movie-video (just the sibling shown
        instead, while ending_darkout.MOV preloads hidden in the other
        element) so it can never show a black/frozen frame during the wait. -->
@@ -406,6 +399,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=p0-gameflow-combat-hotfix1"></script>
+<script src="game.js?v=p0-game-completion-hotfix1"></script>
 </body>
 </html>

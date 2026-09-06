@@ -336,7 +336,28 @@
     { type: 'drone', count: 3 },                                // S2
     { type: 'mixed', droneCount: 5, whiteShadowCount: 1 },       // S3
     { type: 'boss', boss: 'roid1' },
-    { type: 'cultivationLab' },
+    // P0 GAME COMPLETION HOTFIX (this batch): the {type:'cultivationLab'}
+    // waypoint that used to sit here (identical to MAIN's own entry at the
+    // same position) is deliberately REMOVED for SECRET only. Root-caused via
+    // exhaustive trace: SECRET already visits the PROJECT ADAM SITE narrative
+    // beat much earlier (HOTFIX SECTION 11's enterStoryEventStage('b1'),
+    // fired the instant STAGE 1 clears, well before ROID1), which sets
+    // runInventory.projectAdamCollected=true and consumes the pickup for the
+    // whole run. Reaching THIS second cultivationLab entry afterward found
+    // spawnProjectAdamItem() silently no-oping (spawnWorldItem()'s own
+    // already-collected dedupe guard) while worldScrollUnlocked()'s
+    // !runInventory.projectAdamCollected gate was already satisfied — so the
+    // EXIT was reported open the instant the stage was entered, with no item
+    // to collect and (since worldExtraAbove=0 here) only a couple of steps to
+    // the EXIT band. That read on real hardware as "the lab flashes for a
+    // moment then instantly auto-advances with no player action" — a genuine
+    // state-leak between two features sharing one flag, not a timer/spawn
+    // bug. SECRET's PROJECT ADAM SITE moment is already fully told via the
+    // early b1 event; this stray duplicate waypoint is simply removed so
+    // ROID1 leads directly into GABRIEL1 for SECRET, exactly as every other
+    // non-cultivationLab seam in this same plan already does. MAIN_TEMPLATE_
+    // PLAN's own cultivationLab entry (MAIN never fires the early b1 event)
+    // is untouched and keeps its full existing gate+pickup behavior.
     { type: 'boss', boss: 'gabriel', encounterIndex: 0 },
     { type: 'randomSlot', count: 1 },
     { type: 'boss', boss: 'gabriel', encounterIndex: 1 },
@@ -1389,6 +1410,19 @@
     const plan = activeStagePlanArray()[currentStageIndex];
     return !!plan && plan.type === 'cultivationLab';
   }
+  // P0 GAME COMPLETION HOTFIX: true whenever the PROJECT ADAM SITE
+  // background (event_b1_project_adam / b1.jpg) is the one actually on
+  // screen right now — covers BOTH ways it can be reached: the debug/
+  // SECRET-only early 'b1' EVENT STAGE side-channel (eventStageState) and
+  // the real STORY-run cultivationLab waypoint (storyScenarioState.
+  // stageOverrideId, set by enterStoryStage()'s own cultivationLab branch)
+  // — mirrors currentStage()'s own exact two lookup branches so this can
+  // never disagree with what background is actually drawn.
+  function isProjectAdamSiteStage() {
+    if (eventStageState.active) return eventStageState.stageId === 'event_b1_project_adam';
+    if (gameState.mode === 'boss') return storyScenarioState.stageOverrideId === 'event_b1_project_adam';
+    return false;
+  }
   // HOTFIX 4 SECTIONS 22-32/ADDENDUM F-K: true only while the MAIN SCENARIO's
   // own new post-GABRIEL3 ADAM SPHERE STAGE (real ADAM combat, on the new
   // C-10 background) is the active stage — checked via stageOverrideId
@@ -2379,6 +2413,11 @@
     // per-frame timing, after updateDash()'s own movement), so DASH's
     // damage-invincibility never doubles as physical passthrough.
     clampPlayerAwayFromDrones();
+    // P0 GAME COMPLETION HOTFIX: PROJECT ADAM SITE's central cultivation
+    // tank — same per-frame timing/order as the BOSS/DRONE solid-body
+    // clamps just above (after DASH's own movement, before the final
+    // lastValidX/Y snapshot below).
+    clampPlayerAwayFromProjectAdamTank();
     // HOTFIX SECTION 7: ADAM SPHERE is a strictly single-AREA context, same
     // requirement as ROID above — AREA2 must never be enterable at all.
     // ADAM SPHERE is its own STORY_STAGE_PLAN entry (plan.type==='adamSphere',
@@ -2799,6 +2838,88 @@
     }
   }
 
+  // P0 GAME COMPLETION HOTFIX: PROJECT ADAM SITE's own central cultivation
+  // tank/vat — a solid obstacle using the tank's actual FLOOR-CONTACT
+  // footprint, never a crude full-image bounding rectangle (which would
+  // also block the image's transparent/upper portions — the tall glowing
+  // tube reaching up toward the ceiling is never actually at floor level).
+  // Measured directly from event_b1_project_adam's own pixels (b1.jpg,
+  // 1008x1792): the tank's own base/pedestal — the part a top-down player
+  // sprite would genuinely collide with — sits centered horizontally
+  // (matching PROJECT_ADAM_POS_FRAC's own x=0.5) and just north of the
+  // SECRET FILE pickup spot (PROJECT_ADAM_POS_FRAC.y=0.60, itself already
+  // placed "just south of its base/control panel" per that constant's own
+  // comment), never overlapping the pickup point itself so the existing
+  // "pick up in front of the monitor" interaction stays fully reachable.
+  // y=0.50 (not the visually-wider full ring at ~0.535-0.54) and a tighter
+  // radius_frac=0.06 (the pedestal/control-panel core, not the full ring's
+  // outer width) are deliberately conservative: measured directly from the
+  // image, the base's own vertical center sits close to the SECRET FILE
+  // pickup spot (PROJECT_ADAM_POS_FRAC.y=0.60) already, and this collision
+  // must never make that existing pickup point unreachable (verified below
+  // by Playwright — distance(tank, pickup) must exceed minDist with real
+  // margin at this game's own portrait aspect ratios).
+  const PROJECT_ADAM_TANK_POS_FRAC = { x: 0.5, y: 0.50 };
+  const PROJECT_ADAM_TANK_RADIUS_FRAC = 0.06; // half the pedestal/control-panel core's own visible width in the source image
+  function projectAdamTankWorldPos() {
+    return { x: W * PROJECT_ADAM_TANK_POS_FRAC.x, y: H * PROJECT_ADAM_TANK_POS_FRAC.y };
+  }
+  function projectAdamTankSolidMinDist() {
+    return PLAYER_BODY_RADIUS + W * PROJECT_ADAM_TANK_RADIUS_FRAC;
+  }
+  // Called every frame from clampPlayerToScreen() alongside clampPlayerAway
+  // FromDrones() (same "after DASH's own movement" timing), gated to the
+  // PROJECT ADAM SITE stage only (isProjectAdamSiteStage()) so this can
+  // never affect any other background that happens to reuse the same
+  // event_b1_project_adam id's own coordinate space. Two parts: (1) a
+  // swept-segment check (same primitive AREA-boundary walls already use
+  // via segmentCrossesAreaWall()'s own lastValidX/Y convention) so a single
+  // fast DASH frame can never tunnel clean through the tank in one step;
+  // (2) the standard resting-position circle push-back every other solid
+  // body (BOSS/DRONE) already uses. Blocks all 4 directions identically —
+  // a circle has no "side", so MOVE from north/south/east/west and DASH
+  // through any of them all resolve through this same clamp.
+  function clampPlayerAwayFromProjectAdamTank() {
+    if (!isProjectAdamSiteStage()) return;
+    const tank = projectAdamTankWorldPos();
+    const minDist = projectAdamTankSolidMinDist();
+    // Only meaningful when the player actually moved this frame (segLenSq
+    // > 0) — if lastValid and current are the same point, there is no path
+    // to sweep, and falling into "revert to lastValid" here would just
+    // re-embed the player in place instead of falling through to the
+    // ordinary resting push-back below (which is the branch that actually
+    // resolves an already-overlapping position, e.g. right after a resize
+    // moved the tank's own fraction-based world position under a
+    // stationary player).
+    if (player.lastValidX !== undefined && player.lastValidY !== undefined &&
+        (player.lastValidX !== player.x || player.lastValidY !== player.y)) {
+      // Closest approach of the travelled segment to the tank center — if
+      // it ever comes within minDist, the whole path is rejected (revert to
+      // the last confirmed-safe spot) rather than just clamping the
+      // endpoint, which is what let a fast single-frame DASH cut a corner
+      // straight through a solid circle elsewhere in this file too.
+      const sx = player.lastValidX, sy = player.lastValidY, ex = player.x, ey = player.y;
+      const segDx = ex - sx, segDy = ey - sy;
+      const segLenSq = segDx * segDx + segDy * segDy;
+      const t = Math.max(0, Math.min(1, ((tank.x - sx) * segDx + (tank.y - sy) * segDy) / segLenSq));
+      const closestX = sx + t * segDx;
+      const closestY = sy + t * segDy;
+      if (Math.hypot(closestX - tank.x, closestY - tank.y) < minDist) {
+        player.x = sx;
+        player.y = sy;
+        return; // reverted outright — no further push-back needed this frame
+      }
+    }
+    let dx = player.x - tank.x, dy = player.y - tank.y;
+    let dist = Math.hypot(dx, dy);
+    if (dist < minDist) {
+      if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+      const scale = minDist / dist;
+      player.x = tank.x + dx * scale;
+      player.y = tank.y + dy * scale;
+    }
+  }
+
   // ==========================================================================
   // DARK OUT PART 2: CHARACTER / ITEM sprite registries + visual metadata.
   // ==========================================================================
@@ -3095,6 +3216,15 @@
   // state), so a legitimate cover-broken exit (LOS restored) still cancels
   // it and returns straight to normal attack AI exactly as before.
   const ROID1_BARREL_SWEEP_TRIGGER_MS = 5000; // spec's own literal 5.0s continuous-cover threshold
+  // P0 GAME COMPLETION HOTFIX (this batch): ROID1 5-HIT BARREL PURGE COUNTER
+  // — a SEPARATE trigger from the EAST->WEST cover-sweep above, coexisting
+  // unchanged. Landing this many consecutive genuine (invincibility/wall/
+  // miss-excluded — see applyBodyHitToRoidBoss()) hits on ROID1 fires a
+  // RANDOM-order missile purge of every alive barrel, so hiding in a BARREL
+  // can never make ROID1 permanently unable to retaliate. "Random, never
+  // EAST->WEST" is the spec's own explicit requirement to keep the two
+  // mechanics visually/functionally distinct.
+  const ROID1_BARREL_PURGE_HIT_THRESHOLD = 5;
   // Reuses ROID2_MISSILE_STAGGER_MS/_WARNING_MS/_BLAST_RADIUS/_DAMAGE
   // verbatim for the sweep's own per-barrel cadence/warning/blast/damage —
   // the exact "reuse an existing ROID missile/area-attack cadence constant"
@@ -5090,6 +5220,16 @@
     barrelHidden: false,
     searchStartedAt: null,
     barrelSweep: null,
+    // P0 GAME COMPLETION HOTFIX: ROID1 5-HIT BARREL PURGE COUNTER state —
+    // see ROID1_BARREL_PURGE_HIT_THRESHOLD's own comment. consecutivePlayerHits
+    // counts genuine hits since the last purge/fresh-spawn (reset ONLY when
+    // consumed by beginRoidBarrelPurge() or on a fresh spawnRoidBoss() —
+    // never on a timeout or a missed shot, so hiding in a BARREL and landing
+    // 5 shots always reliably reaches the counter); barrelPurge mirrors
+    // barrelSweep's own {targets,index,nextFireAt,warnings} shape exactly,
+    // but with a randomized (Fisher-Yates) target order instead of sorted.
+    consecutivePlayerHits: 0,
+    barrelPurge: null,
   };
   // DARK OUT PART 4: ROID's own enemy-fire projectiles — a separate, minimal
   // array from the player's own `bullets` (never mixed with it, so the
@@ -5318,6 +5458,8 @@
     roidState.barrelHidden = false; // COMBAT & UI HOTFIX: never carried over from a previous ROID fight/RETRY
     roidState.searchStartedAt = null;
     roidState.barrelSweep = null;
+    roidState.consecutivePlayerHits = 0; // P0 GAME COMPLETION HOTFIX: never carried over from a previous ROID fight/RETRY
+    roidState.barrelPurge = null;
     enemyBullets.length = 0;
     // Same fixed reference pose spawnBoss() places the player into, minus
     // the INTRO-only lockout fields (ROID has no cinematic to lock the
@@ -5810,6 +5952,64 @@
     }
   }
 
+  // P0 GAME COMPLETION HOTFIX (this batch): ROID1 5-HIT BARREL PURGE
+  // COUNTER — cloned from beginRoidBarrelSweep()/updateRoidBarrelSweep()
+  // above, with two deliberate differences: (1) event-triggered (5th
+  // consecutive valid hit) rather than time-triggered, using its own
+  // 'barrelPurge' state/sub-state so it can never be confused with the
+  // EXISTING EAST->WEST 5s cover-sweep (both mechanics coexist unchanged);
+  // (2) target order is genuinely RANDOM (Fisher-Yates), never sorted, per
+  // spec's explicit instruction to keep the two visually/functionally
+  // distinct. Snapshots EVERY alive barrel's position ONCE, right here at
+  // trigger time, never re-tracking the player afterward.
+  function beginRoidBarrelPurge(now) {
+    boss.state = 'barrelPurge';
+    const targets = barrels.filter((b) => b.alive).map((b) => ({ x: b.x, y: b.y }));
+    for (let i = targets.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = targets[i]; targets[i] = targets[j]; targets[j] = tmp;
+    }
+    roidState.barrelPurge = { targets, index: 0, nextFireAt: now, warnings: [] };
+    roidState.consecutivePlayerHits = 0; // consumed by actually firing the purge
+    // Spec item 6: the PURGE takes priority over the pending 5s SEARCH SWEEP
+    // timer — cancel/reset it so the two mechanics never fire back-to-back
+    // off the same streak.
+    roidState.searchStartedAt = null;
+  }
+  // Staggered random-order missile purge — same cadence/impact/damage reuse
+  // as updateRoidBarrelSweep() above (ROID2_MISSILE_STAGGER_MS/WARNING_MS/
+  // BLAST_RADIUS/DAMAGE, spawnExplosionVisual/applyDamageToPlayerLife/
+  // tryExplodeBarrelAtPoint) — no new visual/damage code, per spec.
+  function updateRoidBarrelPurge(now) {
+    const s = roidState.barrelPurge;
+    if (!s) { boss.state = 'search'; boss.stateEnteredAt = now; return; }
+    if (s.index < s.targets.length && now >= s.nextFireAt) {
+      const t = s.targets[s.index];
+      s.warnings.push({ x: t.x, y: t.y, warnStartedAt: now, impacted: false });
+      s.index++;
+      s.nextFireAt = now + ROID2_MISSILE_STAGGER_MS;
+    }
+    for (const w of s.warnings) {
+      if (w.impacted) continue;
+      if (now - w.warnStartedAt >= ROID2_MISSILE_WARNING_MS) {
+        w.impacted = true;
+        spawnExplosionVisual(w.x, w.y, now);
+        if (Math.hypot(player.x - w.x, player.y - w.y) <= ROID2_MISSILE_BLAST_RADIUS) {
+          applyDamageToPlayerLife(now, ROID2_MISSILE_DAMAGE);
+        }
+        tryExplodeBarrelAtPoint(w.x, w.y, now);
+      }
+    }
+    // All barrels launched and every warning resolved -> re-acquire the
+    // player and return to normal combat (SNIPER/MISSILE/RAPID FIRE),
+    // exactly like the cover-sweep's own completion above.
+    if (s.index >= s.targets.length && s.warnings.every((w) => w.impacted)) {
+      roidState.barrelPurge = null;
+      boss.state = 'search';
+      boss.stateEnteredAt = now;
+    }
+  }
+
   function updateRoidBoss(dt, now) {
     if (boss.state === 'roidDying') { updateRoidDeath(now); return; }
     updateRoidTargetTracking(now);
@@ -5820,6 +6020,7 @@
     if (boss.state === 'sniper') { updateRoidSniper(now); return; }
     if (boss.state === 'missile') { updateRoidMissile(now); return; }
     if (boss.state === 'barrelSweep') { updateRoidBarrelSweep(now); return; }
+    if (boss.state === 'barrelPurge') { updateRoidBarrelPurge(now); return; }
     const stealthed = !roidState.targetKnown;
     if (boss.state === 'search') {
       // COMBAT & UI HOTFIX: ROID1 BARREL SEARCH MISSILE SWEEP timer — tracks
@@ -5952,6 +6153,27 @@
     if (boss.type !== 'roid1' && isRoidCombatStartGraceActive(now)) return;
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
     bossDamageBlinkStartAt = now; // reuses the existing generic (boss-agnostic) hit-flash timestamp/compositing helper
+    // P0 GAME COMPLETION HOTFIX (this batch): ROID1 5-HIT BARREL PURGE
+    // COUNTER — this exact line only runs on a confirmed, genuine hit (every
+    // miss/wall-block/invincibility-window guard above has already returned
+    // early), making it the one unambiguous place to count "valid hits" per
+    // spec. Reset condition (deliberately minimal, mirroring GABRIEL's own
+    // weakPointConsecutiveHits/consecutiveGuardedShots convention of
+    // resetting ONLY on a specific, deliberate state event — never on a
+    // timeout or a missed shot): consumed the instant the purge itself
+    // fires, or on a fresh spawnRoidBoss() — nothing else may silently
+    // prevent the counter from being reliably reached, which is the spec's
+    // own top-priority requirement ("BARRELに隠れて5発撃ち込んだだけで確実に
+    // COUNTERへ到達できること"). Gated to roid1 only — ROID2 keeps its
+    // existing, unmodified attack set. Checked before the death branch below
+    // so a killing 5th blow ends the fight cleanly instead of also starting
+    // a purge on a boss that's already dying.
+    if (boss.type === 'roid1' && boss.hp > 0) {
+      roidState.consecutivePlayerHits++;
+      if (roidState.consecutivePlayerHits >= ROID1_BARREL_PURGE_HIT_THRESHOLD && boss.state !== 'roidDying' && boss.state !== 'dead') {
+        beginRoidBarrelPurge(now);
+      }
+    }
     if (boss.hp <= 0) {
       // POST-v1.0 SECTION 14: a real death sequence now, never an instant
       // vanish — see beginRoidDeath()/updateRoidDeath().
@@ -6114,6 +6336,23 @@
     // constants even), one ring per barrel target already launched.
     if (boss.state === 'barrelSweep' && roidState.barrelSweep) {
       for (const w of roidState.barrelSweep.warnings) {
+        if (w.impacted) continue;
+        const t = Math.min(1, (now - w.warnStartedAt) / ROID2_MISSILE_WARNING_MS);
+        ctx.save();
+        ctx.globalAlpha = 0.25 + 0.45 * t;
+        ctx.strokeStyle = '#ff3020';
+        ctx.lineWidth = 2 + 2 * t;
+        ctx.beginPath();
+        ctx.arc(w.x, w.y, ROID2_MISSILE_BLAST_RADIUS * (0.4 + 0.6 * t), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    // P0 GAME COMPLETION HOTFIX: ROID1 5-HIT BARREL PURGE COUNTER warning
+    // circles — identical visual shape/technique to the cover-sweep's own
+    // above (same constants), one ring per barrel target already launched.
+    if (boss.state === 'barrelPurge' && roidState.barrelPurge) {
+      for (const w of roidState.barrelPurge.warnings) {
         if (w.impacted) continue;
         const t = Math.min(1, (now - w.warnStartedAt) / ROID2_MISSILE_WARNING_MS);
         ctx.save();
@@ -8190,17 +8429,20 @@
 
   function setScreen(next) {
     gameState.screen = next;
-    // P0 LOADING ARCHITECTURE HOTFIX: 'loadingChoice' (the FAST/FULL prompt)
-    // is a second overlay sharing the SAME #loading-screen container/video
-    // as 'loading' itself (never a gray/stopped frame while the choice
-    // shows) — so #loading-screen stays visible for BOTH values, and only
-    // #loading-choice-overlay's own visibility actually distinguishes them.
-    document.getElementById('loading-screen').hidden = next !== 'loading' && next !== 'loadingChoice';
-    document.getElementById('loading-choice-overlay').hidden = next !== 'loadingChoice';
-    // SECTION D: OPENING and MAIN MENU share the SAME #opening-screen
-    // container (and its one persistent <video>) — only which overlay
-    // shows on top of it differs. The video itself is never hidden/
-    // recreated by this toggle.
+    // P0 GAME COMPLETION HOTFIX (STARTUP PRELOAD UI REBUILD): 'loading'
+    // (real %+bar) and 'opening' (TAP TO START) are now two overlays
+    // sharing the SAME plain-black #loading-screen container — no video is
+    // ever hosted on it, and no FULL/FAST choice overlay exists any more —
+    // so #loading-screen stays visible for BOTH values, and only which
+    // inner overlay is shown actually distinguishes them.
+    document.getElementById('loading-screen').hidden = next !== 'loading' && next !== 'opening';
+    document.getElementById('loading-progress-overlay').hidden = next !== 'loading';
+    document.getElementById('opening-overlay').hidden = next !== 'opening';
+    // SECTION D: MAIN MENU and every submenu below it share the SAME
+    // #opening-screen container (and its one persistent <video>) — this
+    // container stays hidden throughout 'loading'/'opening' (P0 GAME
+    // COMPLETION HOTFIX: no background video visible until MAIN MENU is
+    // actually reached) and only becomes visible starting at 'mainMenu'.
     // PART 2 SECTION A: the TRAINING submenu (BASIC/SECURITY TRAINING) reuses
     // this exact same persistent-video #opening-screen container/pattern —
     // just one more overlay toggled by this same helper, no new screen host.
@@ -8212,9 +8454,8 @@
     // POST-v2.0 SECTIONS 3-5: two new sub-menu overlays (mainScenarioSub/
     // secretScenarioSub) join this same persistent-video overlay pattern —
     // no new screen host.
-    const showOpeningContainer = next === 'opening' || next === 'mainMenu' || next === 'trainingSelect' || next === 'bossSelect' || next === 'scenarioSelect' || next === 'mainScenarioSub' || next === 'secretScenarioSub';
+    const showOpeningContainer = next === 'mainMenu' || next === 'trainingSelect' || next === 'bossSelect' || next === 'scenarioSelect' || next === 'mainScenarioSub' || next === 'secretScenarioSub';
     document.getElementById('opening-screen').hidden = !showOpeningContainer;
-    document.getElementById('opening-overlay').hidden = next !== 'opening';
     document.getElementById('main-menu-overlay').hidden = next !== 'mainMenu';
     document.getElementById('training-select-overlay').hidden = next !== 'trainingSelect';
     document.getElementById('boss-select-overlay').hidden = next !== 'bossSelect';
@@ -8488,195 +8729,207 @@
   }
 
   // ---------- SECTION G: LOADING screen ----------
-  // Genuine asset-driven progress — every target below reflects real
-  // load/readiness state already tracked elsewhere in this file (spritesReady/
-  // spritesTotal, bossSpritesReady/BOSS_FRAME_FILES, STAGES[i].ready, plus
-  // polling .complete on the handful of images that don't have their own
-  // ready-counter) or the browser's own readyState for the OPENING video/
-  // BGM audio — polled on an interval rather than time-based, and never
-  // reports 100% until every one of them is actually true.
-  // Safety ceiling only — real completion is still what normally ends
-  // LOADING (see tick() below). Guards against an indefinite hang if a
-  // single asset's readiness event never fires for reasons outside this
-  // code's control (e.g. a flaky connection, or a browser/OS media-codec
-  // gap on the device itself) — never a substitute for genuine progress
-  // tracking, which is why it's set generously high and only ever matters
-  // in a genuine worst case.
-  const LOADING_MAX_WAIT_MS = 12000;
+  // P0 GAME COMPLETION HOTFIX (STARTUP PRELOAD UI REBUILD): the old FULL/
+  // FAST YES/NO choice is removed outright — the user is never asked to
+  // choose. There is now exactly ONE preload pass, covering the full MAIN+
+  // TRAINING asset inventory (this used to be the "FULL"/NO-choice path
+  // only; every run now gets it unconditionally), shown as a real numeric
+  // %+bar on a plain black screen (no background video at all — see
+  // computeStartupRequiredProgress() below), followed by TAP TO START on
+  // that SAME black screen once (and only once) the real readiness
+  // condition is met. Genuine asset-driven progress throughout — every
+  // target below reflects real load/readiness state already tracked
+  // elsewhere in this file (spritesReady/spritesTotal, bossSpritesReady/
+  // BOSS_FRAME_FILES, STAGES[i].ready, etc.) or the browser's own
+  // readyState for videos/audio — polled on an interval, never time-based,
+  // and 100% is reported ONLY once every single target is genuinely true.
   const LOADING_FADE_OUT_MS = 250; // SECTION H-6: matches #loading-screen's own CSS transition duration
-  // P0 LOADING ARCHITECTURE HOTFIX: FULL PRELOAD's own, more generous
-  // safety ceiling — it is waiting on the ENTIRE MAIN+TRAINING asset
-  // inventory (9 movies included), not the small bootstrap set above, and
-  // the user's own explicit spec says a longer first LOADING is acceptable
-  // for FULL. Reuses playEndingRoll()'s own established 45s ceiling
-  // precedent rather than inventing an arbitrary new number — this file's
-  // one other "big asset, real network variance" wait already settled on
-  // that exact value.
-  const FULL_PRELOAD_MAX_WAIT_MS = 45000;
-  // 'full' | 'fast' | null (not yet chosen) — which preload policy this
-  // boot is running under. Read by beginScenarioOpening()/the TRAINING
-  // start handlers below to decide whether stage entry needs its own
-  // ensureFullPreloadReady() gate (FAST only — FULL already covers
-  // everything by the time TAP TO START/PLAY ever shows).
-  let startupPreloadMode = null;
-  let fullPreloadReady = false; // true once computeFullPreloadProgress() has actually reached 100% (or timed out) — checked so a later ensureFullPreloadReady() call is a no-op if FULL already finished
+  // A genuine hard ceiling (kept at the same value the old FULL PRELOAD
+  // path used) — but UNLIKE that old path, exceeding it is now a real,
+  // reported FAILURE (LOADING ERROR + RETRY), never a silent "proceed as if
+  // ready" fake-100%. This is a deliberate behavior change from the
+  // previous runLoadingPhase() helper, which treated its own ceiling as a
+  // green light — that directly conflicted with this batch's own explicit
+  // "アセット読み込み失敗を静かに100%にしてはならない" requirement.
+  const STARTUP_LOAD_HARD_CEILING_MS = 45000;
+  let fullPreloadReady = false; // true once computeStartupRequiredProgress() has actually reached 100% for real — read by ensureFullPreloadReady() below
 
   // DARK OUT PART 11 SECTION 1/2/4: the ONE persistent background video
-  // shared by the TAP-TO-START screen ('opening'), its own ATTRACT idle
-  // loop (opening.mp4), and MAIN MENU/SCENARIO SELECT/BOSS SELECT/TRAINING
-  // SELECT ('mainMenu'/etc, start_display.mp4) — hoisted to this outer
-  // scope (was previously a local inside initLoadingSequence()) since
+  // shared by MAIN MENU/SCENARIO SELECT/BOSS SELECT/TRAINING SELECT
+  // ('mainMenu'/etc, start_display.mp4) — hoisted to this outer scope since
   // onOpeningTap()/beginAttractOpening()/endAttractOpening() below all need
-  // to read/swap its .src. index.html's own default src is now loading.mp4
-  // (SECTION 1: TAP TO START must pair with loading.mp4, never start_
-  // display.mp4) — onOpeningTap() swaps it to start_display.mp4 exactly
-  // once, the same instant the user actually taps to start (SECTION 4).
+  // to read/swap its .src. index.html's own default src is loading.mp4,
+  // used purely as this file's own readiness PROBE for that video (see
+  // computeStartupRequiredProgress() below) — #opening-screen (which hosts
+  // this element) stays hidden throughout LOADING and TAP TO START (see
+  // setScreen()), so nothing is ever actually visible on it until MAIN
+  // MENU. onOpeningTap() swaps it to start_display.mp4 exactly once, the
+  // same instant the user actually taps to start (SECTION 4).
   const openingVideoEl = document.getElementById('opening-video');
 
-  // The pre-existing minimal bootstrap set (byte-for-byte the same targets
-  // as before this batch) — just enough to render the LOADING CHOICE prompt
-  // and the MENU itself. This IS the FAST preload's own target set too —
-  // FAST intentionally asks for nothing beyond what already had to be ready
-  // to reach that prompt in the first place (spec section 23: "選択画面を
-  // 正常操作するためのassetのみ").
-  function computeMinimalProgress() {
-    const targets = [
-      spritesReady >= spritesTotal, // player AIM/FIRE sprite grid
-      dashSprites.right.complete && dashSprites.left.complete && dashSprites.up.complete && dashSprites.down.complete,
-      relaxedSprite.down.complete,
-      Object.values(walkSprites).every((set) => set.every((img) => img.complete)),
-      STAGES[0].ready, // initial stage background
-      bossSpritesReady >= Object.keys(BOSS_FRAME_FILES).length, // primary STORY-MODE-start boss art
-      cinematicPoseImg.complete && cinematicPoseBackImg.complete,
-      // HAVE_METADATA+, OR the browser has already reported a decode
-      // error for it (readyState can never advance further at that
-      // point — waiting any longer would just hang LOADING forever) —
-      // T-9: metadata/playable state counts as loaded, full download
-      // not required.
-      openingVideoEl.readyState >= 1 || !!openingVideoEl.error,
-      bgmAudio.readyState >= 1 || !!bgmAudio.error, // T-9: same rule for the gameplay BGM file
-      menuBgmAudio.readyState >= 1 || !!menuBgmAudio.error, // PART 9 SECTION E: same rule for the new MENU BGM file
-    ];
-    return { loaded: targets.filter(Boolean).length, total: targets.length };
+  // P0 GAME COMPLETION HOTFIX: named lookups into moviePreloadProbes for
+  // the 2 of the 3 explicitly-required videos that live in that array
+  // already (start_display, sneaking — "MAIN SCENARIO OPENING" per spec
+  // item 2-b) — reused rather than duplicated into a second probe element,
+  // which would otherwise double-fetch the same URL. The 3rd required video
+  // (the LOADING background footage itself) has no separate probe at all:
+  // openingVideoEl's own default src IS loading.mp4, so its readyState is
+  // reused directly below instead of creating a redundant 4th element.
+  const startupRequiredStartDisplayProbe = moviePreloadProbes[MOVIE_PRELOAD_KEYS.indexOf('start_display')];
+  const startupRequiredSneakingProbe = moviePreloadProbes[MOVIE_PRELOAD_KEYS.indexOf('sneaking')];
+  // "Genuinely playback-ready" per spec item 2-b: readyState >= HAVE_CURRENT_DATA
+  // (2), never the old HAVE_METADATA (1) threshold that used to be treated
+  // as "done" everywhere in this file — a real decode error also counts
+  // (readyState can never advance further at that point; waiting any
+  // longer would just hang forever).
+  function isVideoGenuinelyPlaybackReady(v) {
+    return v.readyState >= 2 || !!v.error;
   }
-  // P0 LOADING ARCHITECTURE HOTFIX: FULL PRELOAD's own target set — the
-  // minimal set above PLUS every asset category MAIN SCENARIO/TRAINING
-  // normal play actually needs (real registries below, never guessed file
-  // names): GABRIEL's DARK PHASE head crops, the explosive barrel + HEAL/
-  // AMMO item photos, the ARC CLAW slash effect, DRONE's 3 body sprites,
-  // ROID1/ROID2/ADAM/ADAM SPHERE/ITEM sprites (getAllNewCharacterItemFrames()
-  // — the SAME aggregator PART 2 itself already exports for debug/
-  // verification, reused verbatim rather than re-listing 66 files by hand),
-  // every STAGE background (not just STAGES[0]), boss BGM (Outbreak 2), and
-  // the 10 MAIN-STORY-reachable movies via moviePreloadProbes above (grouped
-  // per-movie, not collapsed, so one slow file doesn't hide the other 9
-  // finishing). WHITE SHADOW/explosions are canvas-drawn only (confirmed by
-  // reading drawWhiteShadows()/spawnExplosionVisual() — no image asset
+  // The ONE required-asset set for the whole STARTUP pass — named entries
+  // (not a flat boolean array) so a genuine failure can report WHICH
+  // specific asset never became ready, per spec item 2-d's "失敗した
+  // アセットを記録" requirement (see runStartupLoadingPhase()'s error state
+  // below). Covers every asset category MAIN SCENARIO/TRAINING normal play
+  // actually needs (real registries below, never guessed file names):
+  // player sprite grids, GABRIEL's DARK PHASE head crops, the explosive
+  // barrel + HEAL/AMMO item photos, the ARC CLAW slash effect, DRONE's 3
+  // body sprites, ROID1/ROID2/ADAM/ADAM SPHERE/ITEM sprites
+  // (getAllNewCharacterItemFrames() — the SAME aggregator PART 2 itself
+  // already exports for debug/verification), every STAGE background, both
+  // BGM tracks, and the 9 MAIN-STORY-reachable movies via moviePreloadProbes
+  // (grouped per-movie, not collapsed, so one slow file doesn't hide the
+  // others finishing) — with the 3 spec-named videos held to the stricter
+  // isVideoGenuinelyPlaybackReady() gate above, every other movie kept at
+  // the existing readyState>=1 threshold (spec only names these 3
+  // explicitly). WHITE SHADOW/explosions are canvas-drawn only (confirmed
+  // by reading drawWhiteShadows()/spawnExplosionVisual() — no image asset
   // exists for either), so there is genuinely nothing to preload for them.
-  function computeFullPreloadProgress() {
+  function getStartupRequiredAssetTargets() {
     const characterFrames = getAllNewCharacterItemFrames();
-    const targets = [
-      ...(function () {
-        const minimal = computeMinimalProgress();
-        // Re-expand the minimal check into its own individual booleans
-        // rather than collapsing it into one "minimal ready" slot, so the
-        // progress fraction stays meaningfully granular throughout FULL
-        // PRELOAD (spec item 33's own "根拠のあるprogress" requirement) —
-        // cheap to recompute; every one of these is a plain property read.
-        return [
-          spritesReady >= spritesTotal,
-          dashSprites.right.complete && dashSprites.left.complete && dashSprites.up.complete && dashSprites.down.complete,
-          relaxedSprite.down.complete,
-          Object.values(walkSprites).every((set) => set.every((img) => img.complete)),
-          bossSpritesReady >= Object.keys(BOSS_FRAME_FILES).length,
-          cinematicPoseImg.complete && cinematicPoseBackImg.complete,
-          openingVideoEl.readyState >= 1 || !!openingVideoEl.error,
-          bgmAudio.readyState >= 1 || !!bgmAudio.error,
-          menuBgmAudio.readyState >= 1 || !!menuBgmAudio.error,
-        ];
-      })(),
-      STAGES.every((s) => s.ready), // ALL stage backgrounds (minimal only waited on STAGES[0])
-      bossBgmAudio.readyState >= 1 || !!bossBgmAudio.error, // Outbreak 2 — never checked before FULL PRELOAD existed
-      Object.values(darkPhaseHeadImgs).every((img) => img.complete),
-      barrelImg.complete,
-      HEAL_ITEM_IMAGES.every((img) => img.complete),
-      AMMO_ITEM_IMAGES.every((img) => img.complete),
-      arcClawImg.complete,
-      securityRobotImgs.south.complete && securityRobotImgs.west.complete && securityRobotImgs.east.complete,
-      characterFrames.every((f) => f.ready),
-      ...moviePreloadProbes.map((v) => v.readyState >= 1 || !!v.error),
+    return [
+      { name: 'player sprite grid', ready: () => spritesReady >= spritesTotal },
+      { name: 'dash sprites', ready: () => dashSprites.right.complete && dashSprites.left.complete && dashSprites.up.complete && dashSprites.down.complete },
+      { name: 'relaxed sprite', ready: () => relaxedSprite.down.complete },
+      { name: 'walk sprites', ready: () => Object.values(walkSprites).every((set) => set.every((img) => img.complete)) },
+      { name: 'boss sprites', ready: () => bossSpritesReady >= Object.keys(BOSS_FRAME_FILES).length },
+      { name: 'cinematic pose images', ready: () => cinematicPoseImg.complete && cinematicPoseBackImg.complete },
+      { name: 'LOADING background video', ready: () => isVideoGenuinelyPlaybackReady(openingVideoEl) },
+      { name: 'gameplay BGM', ready: () => bgmAudio.readyState >= 1 || !!bgmAudio.error },
+      { name: 'menu BGM', ready: () => menuBgmAudio.readyState >= 1 || !!menuBgmAudio.error },
+      { name: 'stage backgrounds', ready: () => STAGES.every((s) => s.ready) },
+      { name: 'boss BGM (Outbreak 2)', ready: () => bossBgmAudio.readyState >= 1 || !!bossBgmAudio.error },
+      { name: 'GABRIEL dark-phase head crops', ready: () => Object.values(darkPhaseHeadImgs).every((img) => img.complete) },
+      { name: 'barrel image', ready: () => barrelImg.complete },
+      { name: 'HEAL item images', ready: () => HEAL_ITEM_IMAGES.every((img) => img.complete) },
+      { name: 'AMMO item images', ready: () => AMMO_ITEM_IMAGES.every((img) => img.complete) },
+      { name: 'ARC CLAW image', ready: () => arcClawImg.complete },
+      { name: 'security robot images', ready: () => securityRobotImgs.south.complete && securityRobotImgs.west.complete && securityRobotImgs.east.complete },
+      { name: 'character/item frames', ready: () => characterFrames.every((f) => f.ready) },
+      { name: 'START DISPLAY video', ready: () => isVideoGenuinelyPlaybackReady(startupRequiredStartDisplayProbe) },
+      { name: 'MAIN SCENARIO OPENING video (sneaking)', ready: () => isVideoGenuinelyPlaybackReady(startupRequiredSneakingProbe) },
+      ...moviePreloadProbes
+        .filter((v) => v !== startupRequiredStartDisplayProbe && v !== startupRequiredSneakingProbe)
+        .map((v) => ({ name: 'movie: ' + v.src.split('/').pop(), ready: () => v.readyState >= 1 || !!v.error })),
     ];
-    return { loaded: targets.filter(Boolean).length, total: targets.length };
   }
-  // Drives one LOADING phase (either the bootstrap or FULL PRELOAD) against
-  // its own target set and its own safety ceiling, updating the (invisible,
-  // per PART 11 SECTION 1-1) progress fill identically to before this
-  // batch — factored out so both phases share one implementation rather
-  // than two near-duplicate tick() loops.
-  function runLoadingPhase(computeProgressFn, maxWaitMs, onReady) {
-    const loadingBarFill = document.getElementById('loading-bar-fill');
-    const phaseStartedAt = performance.now();
+  function computeStartupRequiredProgress() {
+    const targets = getStartupRequiredAssetTargets();
+    const readyFlags = targets.map((t) => t.ready());
+    return {
+      loaded: readyFlags.filter(Boolean).length,
+      total: targets.length,
+      pendingNames: targets.filter((t, i) => !readyFlags[i]).map((t) => t.name),
+    };
+  }
+  const loadingPercentTextEl = document.getElementById('loading-percent-text');
+  const loadingBarFillEl = document.getElementById('loading-bar-fill');
+  const loadingErrorTextEl = document.getElementById('loading-error-text');
+  const loadingRetryBtnEl = document.getElementById('loading-retry-btn');
+  function showLoadingErrorState(pendingNames) {
+    // P0 GAME COMPLETION HOTFIX spec item 2-d: a genuine failure gets a
+    // clear, visible error + RETRY state — never a silent fake-100%, never
+    // an infinite unresponsive hang. Lists exactly which required asset(s)
+    // never became ready, per the "失敗したアセットを記録" requirement.
+    loadingErrorTextEl.textContent = 'LOADING FAILED — ' + pendingNames.join(', ');
+    loadingErrorTextEl.hidden = false;
+    loadingRetryBtnEl.hidden = false;
+  }
+  function hideLoadingErrorState() {
+    loadingErrorTextEl.hidden = true;
+    loadingErrorTextEl.textContent = '';
+    loadingRetryBtnEl.hidden = true;
+  }
+  // The ONE STARTUP loading pass — real required-asset progress only, never
+  // a fake time-based increment (spec item 2-a). Runs on 'loading' (black
+  // screen, %+bar visible); the instant every target is genuinely ready,
+  // hands off to 'opening' (SAME black #loading-screen, now showing TAP TO
+  // START — see setScreen()) exactly once. Exceeding the hard ceiling shows
+  // a real error+RETRY state instead of ever proceeding.
+  function runStartupLoadingPhase() {
+    hideLoadingErrorState();
+    const startedAt = performance.now();
     function tick() {
-      const { loaded, total } = computeProgressFn();
-      loadingBarFill.style.width = `${Math.floor((loaded / total) * 100)}%`;
-      if (loaded >= total || performance.now() - phaseStartedAt > maxWaitMs) {
-        onReady();
+      const { loaded, total, pendingNames } = computeStartupRequiredProgress();
+      const pct = total > 0 ? Math.floor((loaded / total) * 100) : 100;
+      loadingPercentTextEl.textContent = pct + '%';
+      loadingBarFillEl.style.width = pct + '%';
+      if (loaded >= total) {
+        fullPreloadReady = true;
+        setScreen('opening'); // TAP TO START, same black screen — never a separate video-backed screen
+        return;
+      }
+      if (performance.now() - startedAt > STARTUP_LOAD_HARD_CEILING_MS) {
+        showLoadingErrorState(pendingNames); // genuine failure — never a silent fake-100%, never an infinite hang
         return;
       }
       setTimeout(tick, 100);
     }
     tick();
   }
-  function fadeLoadingScreenToOpening() {
-    document.getElementById('loading-screen').classList.add('loading-fade-out');
-    // SECTION H-6: fade out, THEN swap to OPENING (loading.mp4 + TAP TO
-    // START/PLAY, SECTION 1-2) — never an instant cut.
-    setTimeout(() => { setScreen('opening'); resetAttractIdleTimer(); }, LOADING_FADE_OUT_MS);
-  }
-  // STAGE-ENTRY-TIME gate for FAST mode: DEMO PLAY/TRAINING selection calls
-  // this before actually starting. FULL mode (or FAST once its own later
-  // catch-up already finished) is always already ready, so onReady() fires
-  // synchronously with zero visible LOADING — matching spec section 18/28/
-  // 44's explicit "TAP TO PLAY再要求なし, 不要な長時間LOADINGなし" requirement.
-  // Never re-shows 'loading'+choice+'opening' — only ever the plain
-  // 'loading' screen (no TAP TO START/PLAY prompt at all) while it waits.
-  function ensureFullPreloadReady(onReady) {
-    if (startupPreloadMode !== 'fast' || fullPreloadReady) { onReady(); return; }
-    const previousScreen = gameState.screen;
-    setScreen('loading');
-    runLoadingPhase(computeFullPreloadProgress, FULL_PRELOAD_MAX_WAIT_MS, () => {
-      fullPreloadReady = true;
-      setScreen(previousScreen); // restore whatever screen the player was actually on (e.g. 'mainScenarioSub') — onReady() itself decides where to go next
-      onReady();
-    });
-  }
   function initLoadingSequence() {
     setScreen('loading');
-    const loadingChoiceOverlayEl = document.getElementById('loading-choice-overlay');
-    runLoadingPhase(computeMinimalProgress, LOADING_MAX_WAIT_MS, () => {
-      // P0 LOADING ARCHITECTURE HOTFIX: the bootstrap set above is ready —
-      // show the FAST/FULL choice (default focus on NO/FULL, per spec
-      // section 21's "ユーザーの基本希望はFULLなのでFASTを勝手にdefaultに
-      // しない") instead of jumping straight to OPENING as before.
-      setScreen('loadingChoice');
-    });
+    runStartupLoadingPhase();
   }
-  document.getElementById('loading-choice-yes-btn').addEventListener('click', () => {
-    // YES -> FAST: the bootstrap set is already everything FAST needs
-    // (spec section 22/23) — proceed straight to OPENING, no extra wait.
-    startupPreloadMode = 'fast';
-    fadeLoadingScreenToOpening();
+  loadingRetryBtnEl.addEventListener('click', () => {
+    // RETRY re-runs the whole required-asset pass from scratch — any
+    // partially-fetched resource resumes from the browser's own HTTP
+    // cache/range-request behavior, no special-case code needed here.
+    runStartupLoadingPhase();
   });
-  document.getElementById('loading-choice-no-btn').addEventListener('click', () => {
-    // NO -> FULL: run the full MAIN+TRAINING inventory now, while loading.mp4
-    // keeps playing (never a gray/stopped frame), THEN proceed to OPENING.
-    startupPreloadMode = 'full';
+  // STAGE-ENTRY-TIME gate: DEMO PLAY/TRAINING selection calls this before
+  // actually starting. Since the single STARTUP pass above now always
+  // covers the full MAIN+TRAINING inventory before TAP TO START can ever
+  // appear, fullPreloadReady is already true by the time MAIN MENU (and
+  // everything reachable from it) exists — so this is now always a
+  // synchronous no-op. Kept as a named call (rather than inlined at every
+  // call site) so those call sites never had to change, and as a defensive
+  // fallback (never hangs) in the never-actually-reached case it somehow
+  // is not yet ready.
+  function ensureFullPreloadReady(onReady) {
+    if (fullPreloadReady) { onReady(); return; }
+    const previousScreen = gameState.screen;
     setScreen('loading');
-    runLoadingPhase(computeFullPreloadProgress, FULL_PRELOAD_MAX_WAIT_MS, () => {
-      fullPreloadReady = true;
-      fadeLoadingScreenToOpening();
-    });
-  });
+    hideLoadingErrorState();
+    const startedAt = performance.now();
+    function tick() {
+      const { loaded, total, pendingNames } = computeStartupRequiredProgress();
+      const pct = total > 0 ? Math.floor((loaded / total) * 100) : 100;
+      loadingPercentTextEl.textContent = pct + '%';
+      loadingBarFillEl.style.width = pct + '%';
+      if (loaded >= total) {
+        fullPreloadReady = true;
+        setScreen(previousScreen);
+        onReady();
+        return;
+      }
+      if (performance.now() - startedAt > STARTUP_LOAD_HARD_CEILING_MS) {
+        showLoadingErrorState(pendingNames);
+        return;
+      }
+      setTimeout(tick, 100);
+    }
+    tick();
+  }
 
   // ---------- SECTION H: OPENING (tap-to-start) ----------
   const openingOverlayEl = document.getElementById('opening-overlay');
@@ -9141,20 +9394,39 @@
     eventMovieState.onComplete = onComplete || null;
     eventMovieState.resumeBgm = false; // 27-2: a load failure must never auto-resume any BGM — finish()/skipEventMovie() both read this
 
-    // P0 GAME FLOW & COMBAT HOTFIX (root-cause fix, this batch): this used
-    // to show a "TAP TO CONTINUE" via the shared event-movie-tap-fallback
-    // element — now forbidden outright, unconditionally, everywhere outside
-    // STARTUP (spec's own explicit "一切表示しない"). unlockEventMovieElementForIOS()
-    // (see its own comment near eventMovieVideoEl's declaration) already
-    // makes the genuine-autoplay-block case below essentially unreachable;
-    // giveUpAndFinish() is what every OTHER call site here already needed —
-    // a real content failure (missing URL/decode error/download stall) has
-    // nothing a user tap would fix anyway, so this just proceeds straight
-    // to `finish()` (skips the ending video, never freezes progression),
-    // same as this file's own long-standing "never hard-freeze" policy.
-    function giveUpAndFinish() {
-      hideEndingLoading();
-      finish();
+    // P0 GAME COMPLETION & COMBAT HOTFIX (root-cause fix, this batch): this
+    // used to be giveUpAndFinish() — on ANY genuine content failure (missing
+    // URL/decode error/download stall/hard-ceiling), it called finish(),
+    // which unconditionally calls onComplete() exactly as if the video had
+    // actually played. For the MAIN ADAM SPHERE defeat path, that
+    // onComplete is enterResultScreen() (see beginStoryEscapeEnding()) — so
+    // a real-world load failure (R2 fetch/CORS/network issue on real
+    // hardware) was silently and invisibly routing straight to RESULT,
+    // reported as "ending_darkout.MOVが再生されずRESULTへ進んだ". This was a
+    // genuine regression introduced by the immediately-preceding batch's own
+    // TAP TO PLAY removal, which correctly retired the VISIBLE "TAP TO
+    // CONTINUE" fallback UI but wrongly replaced it with "proceed as if it
+    // had succeeded" instead of "keep trying, never call onComplete on
+    // failure". Spec's own explicit, unconditional requirement this batch:
+    // "ending_darkout.MOVをskipしてRESULTへ進むfallback" is forbidden outright
+    // — there is no longer ANY tap-based UI to fall back to (Part B retires
+    // that entirely), so the only remaining option that satisfies both "no
+    // TAP TO PLAY" and "never skip to RESULT" is an AUTOMATIC retry: keep
+    // the existing LOADING bridge visible, wait, then re-run the entire
+    // fetch/buffered-poll attempt from scratch. finish() is now reached ONLY
+    // from a genuine 'ended' event (real completed playback) — every one of
+    // this function's own failure branches below calls this instead.
+    const ENDING_ROLL_RETRY_DELAY_MS = 5000;
+    let endingRollRetryCount = 0;
+    function retryEndingRollLoad(reason) {
+      if (eventMovieState.key !== 'endingRoll') return; // superseded by a cancel/skip — never resurrect a stale retry
+      endingRollRetryCount++;
+      console.warn('[ENDING ROLL] genuine failure (' + reason + '), retry #' + endingRollRetryCount + ' in ' + ENDING_ROLL_RETRY_DELAY_MS + 'ms — never falling back to RESULT.');
+      showEndingLoading(); // keep/re-show the existing loading.mp4 bridge — never a blank/frozen frame while retrying
+      setTimeout(() => {
+        if (eventMovieState.key !== 'endingRoll') return;
+        startEndingRollFetch();
+      }, ENDING_ROLL_RETRY_DELAY_MS);
     }
     let endingLoadingStartedAt = 0; // HOTFIX 4.1 ADDENDUM: this wait must not count toward PLAY TIME, same exclusion mechanism as PAUSE/GAME OVER
     function showEndingLoading() {
@@ -9201,19 +9473,9 @@
       if (onComplete) onComplete();
     }
 
-    if (!ENDING_ROLL_VIDEO_URL) {
-      // No URL configured yet — never attempt a network load at all, go
-      // straight to the fallback so the run can still reach RESULT.
-      eventMovieOverlayEl.hidden = false;
-      eventMovieVideoEl.removeAttribute('src');
-      giveUpAndFinish();
-      return;
-    }
-
     eventMovieTapFallbackEl.hidden = true;
     eventMovieTapFallbackEl.onclick = null;
     eventMovieOverlayEl.hidden = false;
-    showEndingLoading();
 
     // Once the src (blob: or the direct R2 URL) is confirmed safely
     // playable, this actually starts playback — never called speculatively
@@ -9238,9 +9500,10 @@
       eventMovieVideoEl.currentTime = 0;
       eventMovieVideoEl.onended = finish;
       eventMovieVideoEl.onerror = () => {
-        // 27-1: a genuine network/load failure — never hard-freeze.
+        // 27-1: a genuine network/load failure mid-playback — retry the
+        // whole load from scratch rather than ever proceeding to RESULT.
         if (eventMovieState.key !== 'endingRoll') return;
-        giveUpAndFinish();
+        retryEndingRollLoad('mid-playback error');
       };
       // HOTFIX 4.3 SECTIONS 8/12/54: waiting/stalled monitoring DURING
       // playback — the actual root cause of "映像が途中で停止/音声が途切れる"
@@ -9287,7 +9550,7 @@
           // firing order; only a true (now essentially unreachable, thanks
           // to unlockEventMovieElementForIOS()) autoplay-block gets the
           // silent retry below — never a user-facing TAP TO PLAY/CONTINUE.
-          if (eventMovieVideoEl.error) { giveUpAndFinish(); return; }
+          if (eventMovieVideoEl.error) { retryEndingRollLoad('play() rejected with a MediaError'); return; }
           console.warn('[ENDING ROLL] play() rejected (attempt ' + endingPlayRetryAttempt + '):', err && err.name, err && err.message);
           if (endingPlayRetryAttempt < ENDING_PLAY_RETRY_DELAYS_MS.length) {
             const delay = ENDING_PLAY_RETRY_DELAYS_MS[endingPlayRetryAttempt];
@@ -9295,7 +9558,7 @@
             setTimeout(() => { if (eventMovieState.key === 'endingRoll') attemptEndingPlay(); }, delay);
             return;
           }
-          giveUpAndFinish();
+          retryEndingRollLoad('play() rejected after all short retries');
         });
       }
       attemptEndingPlay();
@@ -9327,7 +9590,7 @@
       let stableSinceMs = startedAt; // last time bufEnd actually grew — used only to detect a genuinely dead download below
       function poll(nowTick) {
         if (eventMovieState.key !== 'endingRoll') return; // superseded mid-preload
-        if (eventMovieVideoEl.error) { giveUpAndFinish(); return; } // genuine load failure — never infinite-loading
+        if (eventMovieVideoEl.error) { retryEndingRollLoad('stream load error'); return; } // genuine load failure — retry, never proceed to RESULT
         const elapsed = nowTick - startedAt;
         const readyState = eventMovieVideoEl.readyState;
         const buffered = eventMovieVideoEl.buffered;
@@ -9353,8 +9616,9 @@
           // A real failure — the download never reached full coverage and
           // has either genuinely stopped growing or exhausted the hard
           // ceiling. Never starts playback in this branch (that would be
-          // exactly the "fake full, start anyway" this addendum forbids).
-          giveUpAndFinish();
+          // exactly the "fake full, start anyway" this addendum forbids) —
+          // retry the whole load from scratch instead of ever proceeding to RESULT.
+          retryEndingRollLoad('download stalled or exceeded hard ceiling');
           return;
         }
         setTimeout(() => poll(performance.now()), 200);
@@ -9373,45 +9637,52 @@
     // a genuine CORS rejection — indistinguishable from JS, both surface as
     // a rejected promise), falls back to preloadViaBufferedPolling() above,
     // which now also enforces full download before playing.
-    endingRollDiagnostics.corsFetchAttempted = true;
-    fetch(ENDING_ROLL_VIDEO_URL, { mode: 'cors' })
-      .then((resp) => {
-        endingRollDiagnostics.corsFetchStatus = resp.status;
-        if (!resp.ok) throw new Error('ending roll fetch: bad status ' + resp.status);
-        return resp.blob();
-      })
-      .then((blob) => {
-        if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
-        endingRollDiagnostics.corsFetchSucceeded = true;
-        endingRollDiagnostics.method = 'blob';
-        revokeObjectUrlIfAny(); // defensive — never double-download/leak if this somehow re-entered
-        endingRollObjectUrl = URL.createObjectURL(blob);
-        eventMovieVideoEl.loop = false;
-        eventMovieVideoEl.muted = false;
-        eventMovieVideoEl.playsInline = true;
-        eventMovieVideoEl.removeAttribute('crossorigin'); // a blob: URL is always same-origin — crossOrigin has no meaning here
-        eventMovieVideoEl.preload = 'auto';
-        eventMovieVideoEl.src = endingRollObjectUrl;
-        eventMovieVideoEl.load();
-        // A blob: URL is backed entirely by in-memory data already, so the
-        // browser can reach HAVE_ENOUGH_DATA essentially immediately —
-        // still wait for a real readyState signal (never assume) via
-        // loadeddata, with a short defensive poll fallback in case that
-        // event is missed.
-        const tryBegin = () => {
-          if (eventMovieState.key !== 'endingRoll') return;
-          if (eventMovieVideoEl.readyState >= 3) { beginConfirmedPlayback(); return; }
-          setTimeout(tryBegin, 50);
-        };
-        eventMovieVideoEl.onloadeddata = () => { eventMovieVideoEl.onloadeddata = null; tryBegin(); };
-        tryBegin();
-      })
-      .catch((err) => {
-        endingRollDiagnostics.corsFetchSucceeded = false;
-        endingRollDiagnostics.corsFetchError = String(err && err.message || err);
-        if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
-        preloadViaBufferedPolling();
-      });
+    //
+    // Wrapped in a named function (P0 GAME COMPLETION HOTFIX, this batch) so
+    // retryEndingRollLoad() above can re-run this whole pipeline from
+    // scratch on a genuine failure, exactly like the initial attempt below.
+    function startEndingRollFetch() {
+      endingRollDiagnostics.corsFetchAttempted = true;
+      fetch(ENDING_ROLL_VIDEO_URL, { mode: 'cors' })
+        .then((resp) => {
+          endingRollDiagnostics.corsFetchStatus = resp.status;
+          if (!resp.ok) throw new Error('ending roll fetch: bad status ' + resp.status);
+          return resp.blob();
+        })
+        .then((blob) => {
+          if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
+          endingRollDiagnostics.corsFetchSucceeded = true;
+          endingRollDiagnostics.method = 'blob';
+          revokeObjectUrlIfAny(); // defensive — never double-download/leak if this somehow re-entered
+          endingRollObjectUrl = URL.createObjectURL(blob);
+          eventMovieVideoEl.loop = false;
+          eventMovieVideoEl.muted = false;
+          eventMovieVideoEl.playsInline = true;
+          eventMovieVideoEl.removeAttribute('crossorigin'); // a blob: URL is always same-origin — crossOrigin has no meaning here
+          eventMovieVideoEl.preload = 'auto';
+          eventMovieVideoEl.src = endingRollObjectUrl;
+          eventMovieVideoEl.load();
+          // A blob: URL is backed entirely by in-memory data already, so the
+          // browser can reach HAVE_ENOUGH_DATA essentially immediately —
+          // still wait for a real readyState signal (never assume) via
+          // loadeddata, with a short defensive poll fallback in case that
+          // event is missed.
+          const tryBegin = () => {
+            if (eventMovieState.key !== 'endingRoll') return;
+            if (eventMovieVideoEl.readyState >= 3) { beginConfirmedPlayback(); return; }
+            setTimeout(tryBegin, 50);
+          };
+          eventMovieVideoEl.onloadeddata = () => { eventMovieVideoEl.onloadeddata = null; tryBegin(); };
+          tryBegin();
+        })
+        .catch((err) => {
+          endingRollDiagnostics.corsFetchSucceeded = false;
+          endingRollDiagnostics.corsFetchError = String(err && err.message || err);
+          if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
+          preloadViaBufferedPolling();
+        });
+    }
+    startEndingRollFetch();
   }
 
   // Reached ONLY from the EXIT-reach branch in update(), and only when
@@ -12725,11 +12996,13 @@
   // only ever consults this system while NOT in PAUSE (see its own
   // else-branch dispatch).
   const GAMEPAD_MENU_NAV_SCREEN_OVERLAY = {
-    // P0 LOADING ARCHITECTURE HOTFIX: the FAST/FULL preload choice — real
-    // existing .main-menu-item buttons (YES/NO), same as every other entry
-    // in this table, so it needs nothing beyond this one line to become
-    // gamepad-navigable.
-    loadingChoice: 'loading-choice-overlay',
+    // P0 GAME COMPLETION HOTFIX: the LOADING screen's own RETRY button
+    // (#loading-retry-btn, a real .main-menu-item, only ever visible on a
+    // genuine load failure) becomes gamepad-navigable via this same generic
+    // engine with nothing beyond this one table entry — empty/no-op while
+    // RETRY stays hidden during normal progress, same convention as every
+    // locked/hidden button elsewhere in this table.
+    loading: 'loading-progress-overlay',
     mainMenu: 'main-menu-overlay',
     trainingSelect: 'training-select-overlay',
     bossSelect: 'boss-select-overlay',
@@ -12743,6 +13016,18 @@
     // via the exact same engine — no separate GAME-OVER-only gamepad
     // polling loop, per spec.
     gameover: 'game-over-screen',
+    // P0 GAME COMPLETION HOTFIX: RESULT (BACK TO TOP MENU / ARTIST PAGE,
+    // real existing .mode-btn elements in #result-screen — already matched
+    // by getGamepadMenuNavItems()'s own selector, which has included
+    // .mode-btn since GAME OVER was wired in) was simply never registered
+    // into this table at all — root cause of "RESULT screen has no gamepad
+    // navigation" confirmed by inspection: every other piece (D-PAD/LEFT
+    // STICK move, A-confirm rising edge, the release gate via the shared
+    // prev/pressedNow snapshot that already spans every screen transition,
+    // and the auto-reset-focus-to-index-0 on container change) is fully
+    // generic and needs zero RESULT-specific code — this one entry is the
+    // whole fix.
+    result: 'result-screen',
   };
   let gamepadMenuNavFocusIndex = 0;
   let gamepadMenuNavStickWasUp = false;
@@ -14204,6 +14489,7 @@
     get musicContext() { return musicContext; }, setMusicContext, syncMusicContext, // debug/verification only — HOTFIX 2 SECTION 2
     PLAYER_BODY_RADIUS, BOSS_SOLID_RADIUS, BOSS_SOLID_MIN_DIST, clampPlayerAwayFromBoss, clampBossAwayFromPlayer, // debug/verification only — HOTFIX SECTION 22
     DRONE_SOLID_RADIUS, DRONE_SOLID_MIN_DIST, clampPlayerAwayFromDrones, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 37-43 — debug/verification only
+    isProjectAdamSiteStage, projectAdamTankWorldPos, projectAdamTankSolidMinDist, clampPlayerAwayFromProjectAdamTank, PROJECT_ADAM_TANK_POS_FRAC, // P0 GAME COMPLETION HOTFIX — debug/verification only
     beginScenarioOpening, // debug/verification only — HOTFIX SECTION 12-2: FULL PLAY's UI entry is LOCKED, but its underlying 'secret' scenario route must stay directly launchable for internal verification
     // Debug/verification only — DARK OUT PART 9: CINEMATIC INTEGRATION.
     menuBgmAudio, startMenuBgmOnce, startGameplayBgm, stopMenuBgm,
@@ -14331,15 +14617,14 @@
     get confirmGamepadMenuNavFocus() { return confirmGamepadMenuNavFocus; },
     get GAMEPAD_MENU_NAV_SCREEN_OVERLAY() { return GAMEPAD_MENU_NAV_SCREEN_OVERLAY; },
     get onOpeningTap() { return onOpeningTap; },
-    // P0 LOADING ARCHITECTURE HOTFIX — debug/verification only:
-    get startupPreloadMode() { return startupPreloadMode; },
+    // P0 GAME COMPLETION HOTFIX (STARTUP PRELOAD UI REBUILD) — debug/verification only:
     get fullPreloadReady() { return fullPreloadReady; },
-    get computeFullPreloadProgress() { return computeFullPreloadProgress; },
+    get computeStartupRequiredProgress() { return computeStartupRequiredProgress; },
     get ensureFullPreloadReady() { return ensureFullPreloadReady; },
     get moviePreloadProbes() { return moviePreloadProbes; },
     get MOVIE_PRELOAD_KEYS() { return MOVIE_PRELOAD_KEYS; },
-    get FULL_PRELOAD_MAX_WAIT_MS() { return FULL_PRELOAD_MAX_WAIT_MS; },
-    get LOADING_MAX_WAIT_MS() { return LOADING_MAX_WAIT_MS; },
+    get STARTUP_LOAD_HARD_CEILING_MS() { return STARTUP_LOAD_HARD_CEILING_MS; },
+    runStartupLoadingPhase, showLoadingErrorState, hideLoadingErrorState, // debug/verification only
     flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only
     get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
     FIRE_MAG_SIZE, FIRE_COOLDOWN_MS, // debug/verification only — SECTION D
