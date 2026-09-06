@@ -375,7 +375,7 @@
        SAME overlay/z-index as #event-movie-video (just the sibling shown
        instead, while ending_darkout.MOV preloads hidden in the other
        element) so it can never show a black/frozen frame during the wait. -->
-  <video id="ending-loading-video" src="assets/video/system/loading.mp4" muted loop playsinline webkit-playsinline="true" hidden></video>
+  <video id="ending-loading-video" src="assets/video/system/loading.mp4" preload="auto" muted loop playsinline webkit-playsinline="true" hidden></video>
   <button id="event-movie-tap-fallback" hidden>TAP TO PLAY</button>
 </div>
 

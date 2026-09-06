@@ -235,6 +235,18 @@
     // STAGE 5's own DRONE+ROID1 (enterSecurityTrainingStage()) and the
     // internal BOSS BATTLE debug ROID1 target are both untouched — this
     // array is MAIN-scenario-only.
+    // HOTFIX 4.2 SECTIONS 29-36: a dedicated WHITE-SHADOW-ONLY breather stage
+    // inserted between GABRIEL2 and GABRIEL3(final) — reuses the exact same
+    // {type:'whiteShadow'} handling every other WHITE-SHADOW-only stage
+    // already uses (2-AREA, WHITE_SHADOW_INITIAL_COUNT=3 in AREA1, no
+    // DRONE/ROID/GABRIEL/ADAM SPHERE, no kill-requirement progression rule —
+    // all inherited for free from the shared plan.type==='whiteShadow'
+    // branch in enterStoryStage()), with forceHeal:true as the ONE addition:
+    // see its own guard right after spawnStageClearReward() there, which
+    // guarantees a HEAL (never AMMO) at AREA2's center for this specific
+    // entry only — every other 'whiteShadow' entry (M1 above, SECRET's own
+    // S1) keeps the existing damage-taken-based HEAL/AMMO roll untouched.
+    { type: 'whiteShadow', forceHeal: true },
     { type: 'boss', boss: 'gabriel', encounterIndex: 2, final: true },
     { type: 'adamSphere' },
   ];
@@ -694,6 +706,16 @@
   const eventMovieVideoEl = document.getElementById('event-movie-video');
   const eventMovieTapFallbackEl = document.getElementById('event-movie-tap-fallback');
   const endingLoadingVideoEl = document.getElementById('ending-loading-video'); // HOTFIX 4 ADDENDUM SECTIONS L-Y
+  // HOTFIX 4.2 ADDENDUM SECTIONS 13-16: preload this the instant the script
+  // runs, at the very top of the game's own init — never wait for the first
+  // real LOADING usage (ENDING ROLL or any ordinary MOVIE's own preload
+  // gate below) to be what first asks the browser to fetch it. index.html's
+  // own preload="auto" is the primary hint; this explicit .load() is a
+  // belt-and-suspenders kick for browsers that still default conservatively.
+  // Its src/loop/muted are never touched anywhere else in this file once
+  // set here — cancelEventMovie() only ever pauses+hides it, so it stays
+  // fully re-playable from scratch for the rest of the session.
+  endingLoadingVideoEl.load();
   // HOTFIX SECTION 14-2: fires ~4x/sec for as long as ANY movie is actually
   // playing (including the whole length of sneaking.mp4, not just at its
   // end) — registered once here rather than per-playEventMovie() call so it
@@ -790,7 +812,61 @@
       eventMovieTapFallbackEl.hidden = true;
       attemptPlay();
     };
-    attemptPlay();
+    // HOTFIX 4.2 ADDENDUM SECTIONS 9-16 (root-cause fix, this turn): calling
+    // attemptPlay() unconditionally the instant `.src` is set — with no
+    // check that the browser has actually buffered enough of THIS movie yet
+    // — is what produced the reported "BGM momentarily cuts out at MOVIE
+    // start": a play() call on a barely-loaded video forces the browser's
+    // media pipeline into an immediate stall/rebuffer, and on real devices
+    // that transient stall is audible as a brief interruption in whatever
+    // else is playing concurrently (bgmAudio), even though bgmAudio itself
+    // is never paused/reset anywhere in this function (confirmed above —
+    // musicContext is untouched here). Fixed with the same "LOADING bridges
+    // an insufficiently-buffered movie" strategy ENDING ROLL already uses
+    // (see playEndingRoll()'s own preloadViaBufferedPolling()), scaled down
+    // for these small local same-origin assets: current BGM is NEVER paused
+    // for this bridge (unlike ENDING ROLL's own silence), and the grace
+    // window before LOADING even shows is short, so an already-cached movie
+    // (the common case — every one of these plays at least once per run)
+    // starts exactly as instantly as before.
+    const EVENT_MOVIE_READY_GRACE_MS = 200;
+    const EVENT_MOVIE_LOAD_MAX_WAIT_MS = 8000; // local assets — never worth ENDING ROLL's own 45s ceiling
+    const pollStartedAt = performance.now();
+    let loadingBridgeShown = false;
+    function showLoadingBridge() {
+      loadingBridgeShown = true;
+      eventMovieVideoEl.hidden = true;
+      endingLoadingVideoEl.hidden = false;
+      endingLoadingVideoEl.currentTime = 0;
+      endingLoadingVideoEl.play().catch(() => {});
+    }
+    function hideLoadingBridgeIfShown() {
+      if (!loadingBridgeShown) return;
+      loadingBridgeShown = false;
+      endingLoadingVideoEl.hidden = true;
+      endingLoadingVideoEl.pause();
+      eventMovieVideoEl.hidden = false;
+    }
+    function pollReady() {
+      if (eventMovieState.token !== token) return; // superseded by a cancel/newer play — never resurrect a stale poll
+      if (eventMovieVideoEl.readyState >= 3 || eventMovieVideoEl.error) {
+        hideLoadingBridgeIfShown();
+        attemptPlay();
+        return;
+      }
+      if (!loadingBridgeShown && performance.now() - pollStartedAt >= EVENT_MOVIE_READY_GRACE_MS) {
+        showLoadingBridge();
+      }
+      if (performance.now() - pollStartedAt >= EVENT_MOVIE_LOAD_MAX_WAIT_MS) {
+        // Never hang forever on a genuinely stuck load — start anyway
+        // (matches ENDING ROLL's own graceful-degradation timeout branch).
+        hideLoadingBridgeIfShown();
+        attemptPlay();
+        return;
+      }
+      setTimeout(pollReady, 50);
+    }
+    pollReady();
   }
 
   // SECTION V: full teardown for RETRY/QUIT — invalidates the current token
@@ -1060,6 +1136,11 @@
   // the floor's own bounds aren't measured yet, matching
   // clampPlayerToScreen()'s identical guard.
   function segmentCrossesAreaWall(x1, y1, x2, y2) {
+    // HOTFIX 4.2 SECTIONS 23-28: GABRIEL fights have no AREA1/AREA2 wall at
+    // all (see clampPlayerToScreen()'s matching exemption) — AUTO AIM/SHOT/
+    // CLAW must agree with that, never block a shot or CLAW across the
+    // boundary that MOVE itself is free to cross.
+    if (boss.spawned && boss.type === 'gabriel') return false;
     const floor = getFloorXRangeWorld();
     if (!floor) return false;
     if (y1 === y2) return false; // a horizontal segment can only ever run exactly along a boundary, never cross one
@@ -1915,7 +1996,24 @@
   // small post-clear EXIT-hunting bonus space beyond AREA 2 stays gated on
   // worldScrollUnlocked() (area2Cleared), unchanged from before.
   function clampPlayerToScreen() {
-    const halfW = (SPRITE_DRAW_H * spriteAspect) / 2;
+    // HOTFIX 4.2 ADDENDUM SECTIONS 1-8 (root-cause fix, this turn): this used
+    // to be the FULL sprite canvas's own half-width ((SPRITE_DRAW_H*
+    // spriteAspect)/2 ≈ 65.5px) — the entire transparent-padded bounding box
+    // every walk/weapon-swing animation frame is drawn within, not the
+    // character's actual visible body. Using that as the left/right wall-
+    // clamp margin kept the player roughly 65px away from any real wall/
+    // screen edge even though the visible body only needs PLAYER_HIT_RADIUS
+    // (22px, the SAME real-body radius every other contact check in this
+    // file already treats as "the player") — exactly the reported "見えな
+    // い壁" (an invisible wall unnaturally far from the actual edge/BARREL).
+    // Shrinking this ONE margin to PLAYER_HIT_RADIUS lets the player walk
+    // right up against a real wall/screen edge (never THROUGH it — this is
+    // still a real clamp, just a correctly-sized one) without reopening the
+    // earlier wall-exit fix (unchanged: still a hard Math.max/min clamp,
+    // never removed) and without affecting GABRIEL stages (which skip this
+    // whole floor-based door check entirely regardless — see isGabrielFight
+    // below). Vertical (halfH) is untouched — this addendum is X-axis only.
+    const halfW = PLAYER_HIT_RADIUS;
     const halfH = SPRITE_DRAW_H / 2;
     let topY = -H + halfH; // AREA 1 + AREA 2's own full band, open from the start
     // PART 4 SECTION K/L: TRAINING's own bonus EXIT space must be reachable
@@ -1950,7 +2048,24 @@
     // (getAreaBoundaryYs() — SECTION B: AREA1<->AREA2 at 0, AREA2<->the
     // bonus EXIT band at -H; there is no third tracked Area), and applies
     // identically in every mode (SECTION 24).
-    const floor = getFloorXRangeWorld();
+    // HOTFIX 4.2 SECTIONS 23-28 (root-cause fix, this turn): the previous
+    // fix (task #293) only ever removed the SEPARATE ROID-blockade-style
+    // wall this file used to have specifically for GABRIEL/ADAM — it never
+    // touched THIS general [WALL][DOOR][WALL] AREA-boundary check itself,
+    // which (per its own "applies identically in every mode" comment above)
+    // still ran for every boss type including GABRIEL, gated only on how
+    // wide c3.jpg's own floorLeftFrac/floorRightFrac (0.08/0.92) happen to
+    // measure — real-device testing kept finding a still-blocked patch near
+    // the AREA1 exit regardless. Per this turn's explicit spec, GABRIEL is
+    // not a stage with a wall between AREA1/AREA2 AT ALL — so this whole
+    // door-collision check is skipped outright for a live GABRIEL fight,
+    // rather than re-tuning yet another margin number. MOVE/AUTO AIM/SHOT/
+    // CLAW's own shared segmentCrossesAreaWall() gets the identical
+    // exemption just below, so aiming/firing across the boundary agrees
+    // with movement (never a mismatch between where you can walk and where
+    // you can shoot).
+    const isGabrielFight = boss.spawned && boss.type === 'gabriel';
+    const floor = isGabrielFight ? null : getFloorXRangeWorld();
     if (floor) {
       const doorLeft = floor.left + halfW, doorRight = floor.right - halfW;
       for (const boundaryY of getAreaBoundaryYs()) {
@@ -2336,6 +2451,13 @@
   // applied identically to all 3 directions below (D-1) — the raw source
   // images themselves are never touched (D-2).
   const SECURITY_ROBOT_DRAW_D = DARKPHASE_HEAD_DISPLAY_H * DARK_PHASE_MASK_SCALE_BOOST * SECURITY_ROBOT_DRAW_SCALE;
+  // HOTFIX 4.2 SECTIONS 18-21: the TRUE no-visual-overlap distance between
+  // two DRONEs' centers — used only by pickSecurityDroneSpot()'s emergency
+  // grid fallback (a tight-but-non-overlapping row/grid is an explicitly
+  // acceptable fallback outcome), never by the normal random-sampling path
+  // above, which keeps using the larger, purely aesthetic
+  // SECURITY_ROBOT_MIN_SPACING when there's room for it.
+  const SECURITY_ROBOT_GRID_MIN_SPACING = SECURITY_ROBOT_DRAW_D * 1.1;
   // Per-direction source metrics measured directly from the 3 attached
   // images (native pixel size + the fraction of the image's own opaque
   // pixel bounding box that is horizontally centered / vertically at the
@@ -2671,6 +2793,27 @@
   // progress rather than a fixed cadence.
   const DRONE_SNIPER_BLINK_START_MS = 300;
   const DRONE_SNIPER_BLINK_END_MS = 80;
+  // The single source of truth for "how far into its own cycle does this
+  // DRONE actually fire" — reused by both the fire trigger below AND the
+  // new pre-fire body-blink window (HOTFIX 4.2 ADDENDUM SECTIONS 26-35),
+  // so the two can never drift out of sync with each other.
+  const DRONE_SNIPER_FIRE_AT_MS = (DRONE_SNIPER_CYCLE_MS - DRONE_SNIPER_YELLOW_MS) + DRONE_SNIPER_FIRE_DELAY_AFTER_YELLOW_MS;
+  // HOTFIX 4.2 ADDENDUM SECTIONS 26-35: a genuine 1-second visible blink on
+  // the DRONE's OWN BODY sprite immediately before it fires — a state fully
+  // separate from hitFlashStartAt (existing damage-blink), never "looks like
+  // it got hit". Ends exactly at DRONE_SNIPER_FIRE_AT_MS (so firing can
+  // never happen with less than a full second of blink already shown —
+  // trivially guaranteed by construction, not a separately-checked timer).
+  const DRONE_BODY_BLINK_MS = 1000;
+  const DRONE_BODY_BLINK_INTERVAL_MS = 150; // visible on/off toggle rate while blinking
+  // HOTFIX 4.2 ADDENDUM SECTIONS 31-34: each DRONE's fixed cycle length
+  // otherwise never changes relative phase, so a batch spawned in the same
+  // frame (the common case) would all acquire their first lock — and every
+  // cycle after — in perfect lockstep, firing simultaneously forever. A
+  // one-time random delay before EACH robot's very first lock acquisition
+  // (never reapplied on subsequent cycles) desyncs the batch permanently
+  // without touching cycle length/damage/cadence for any single DRONE.
+  const DRONE_ATTACK_PHASE_OFFSET_MAX_MS = 1500;
 
   // POST-v1.0 SECTION 4/5: WHITE SHADOW — an independent stage hazard, no
   // longer DRONE's own detection shadow. Does MISSILE AREA ATTACK (same
@@ -4046,9 +4189,24 @@
         // own foot-contact world point (getPlayerFootWorldPosition(), the
         // same point drawPlayer() itself anchors the sprite's feet to) with
         // only a small foot-sized tolerance, never the full body radius.
+        // HOTFIX 4.2 SECTIONS 13-17 (root-cause fix, this turn): this still
+        // measured that foot point against a plain CIRCLE of radius
+        // WHITE_SHADOW_CONTACT_RADIUS (== WHITE_SHADOW_RADIUS_X, the
+        // ellipse's WIDEST axis) in every direction — but the shadow itself
+        // is drawn as a flat ellipse (RADIUS_Y is under half of RADIUS_X).
+        // That circular check made the vertical trigger zone more than
+        // double the visible ellipse's actual height, so the foot could
+        // fire the MISSILE volley while still well above/below the visible
+        // shadow — exactly the reported "踏んでいないのに発動する" bug.
+        // Fixed by reusing isPlayerInSecurityShadow()'s own ellipse-
+        // normalized formula (both radii, not just X) instead of a circle.
         const foot = getPlayerFootWorldPosition();
-        const contactDist = Math.hypot(foot.x - shadow.x, foot.y - shadow.y);
-        if (!stealthed && now >= m.cooldownUntil && contactDist <= WHITE_SHADOW_CONTACT_RADIUS + SECURITY_FOOT_DETECT_RADIUS) {
+        const wsRx = WHITE_SHADOW_RADIUS_X + SECURITY_FOOT_DETECT_RADIUS;
+        const wsRy = WHITE_SHADOW_RADIUS_Y + SECURITY_FOOT_DETECT_RADIUS;
+        const wsNx = (foot.x - shadow.x) / wsRx;
+        const wsNy = (foot.y - shadow.y) / wsRy;
+        const footInShadowEllipse = (wsNx * wsNx + wsNy * wsNy) <= 1;
+        if (!stealthed && now >= m.cooldownUntil && footInShadowEllipse) {
           m.active = true;
           m.index = 0;
           m.nextLaunchAt = now;
@@ -5243,8 +5401,15 @@
   // the instant either mode ends (boss.state leaves 'sniper'/'missile').
   function applyBodyHitToRoidBoss(now) {
     if (boss.state === 'sniper' || boss.state === 'missile' || boss.state === 'roidDying' || boss.state === 'dead') return;
-    // HOTFIX 2 SECTION 32-33: fully invincible for the opening grace window.
-    if (isRoidCombatStartGraceActive(now)) return;
+    // HOTFIX 4.2 SECTIONS 10-12: ROID1's own opening-grace INVINCIBILITY is
+    // removed — player fire damages ROID1 from the very first frame it
+    // spawns. The grace window ITSELF (ROID_COMBAT_START_GRACE_MS) is a
+    // separate "don't begin SNIPER/MISSILE/BURST yet" attack-start delay —
+    // explicitly NOT deleted here, still gates updateRoidBoss()'s 'search'
+    // branch and escort DRONE lock-acquisition exactly as before. ROID2's
+    // own opening-grace invincibility is unchanged (HOTFIX 2 SECTIONS 32-33)
+    // — this user request was ROID1-specific only.
+    if (boss.type !== 'roid1' && isRoidCombatStartGraceActive(now)) return;
     boss.hp = Math.max(0, boss.hp - BULLET_DAMAGE);
     bossDamageBlinkStartAt = now; // reuses the existing generic (boss-agnostic) hit-flash timestamp/compositing helper
     if (boss.hp <= 0) {
@@ -5470,6 +5635,15 @@
     // enterStoryStage()), so it keeps the exact same wait-for-INTRO
     // behavior as ENCOUNTER 1/2 below, unchanged.
     if (isStoryDroneStage()) return false;
+    // HOTFIX 4.2 SECTION 1-2 (critical fix): the MAIN ADAM SPHERE FINAL STAGE
+    // never spawns the humanoid `boss` object at all (adamSphereCombatState
+    // is its own separate combat state — see HOTFIX 4.1) — so `!boss.spawned`
+    // below was permanently true for this entire stage, with no INTRO
+    // cinematic ever able to clear it. That silently locked MOVE/AIM/FIRE/
+    // DASH/RELOAD for the whole stage, making the MAIN route unclearable.
+    // Same fix shape as isStoryDroneStage() just above: an explicit early
+    // exemption for the one STAGE type this lock was never meant to apply to.
+    if (isMainAdamSphereStage()) return false;
     return !boss.spawned || boss.state === 'intro';
   }
 
@@ -8403,6 +8577,15 @@
     barrelRestockRemainingMs = 0;
     spawnStageClearReward(); // POST-v1.0 SECTION 38: HEAL BOX (damage taken>0) or AMMO BOX (no damage) — see its own comment
     damageTakenThisStage = 0; // SECTION 38: reset the instant the NEW stage's own reward has already been decided above
+    // HOTFIX 4.2 SECTIONS 29-36: the new GABRIEL2->GABRIEL3 WHITE-SHADOW-ONLY
+    // breather stage always gets a HEAL (never AMMO) regardless of whether
+    // damage happened to be taken on the previous stage — overrides
+    // spawnStageClearReward()'s own damage-based roll for this ONE plan
+    // entry only (plan.forceHeal), never the other whiteShadow entries.
+    if (plan.forceHeal) {
+      ammoItem.active = false;
+      spawnHealItem();
+    }
     if (plan.type === 'whiteShadow' || plan.type === 'drone' || plan.type === 'mixed') {
       // SECTION F-6/F-8/X-1/POST-v1.0 SECTION 4-24: no GABRIEL/ROID, no BOSS
       // INTRO, zero barrels — DRONE/WHITE SHADOW counts come straight from
@@ -9146,7 +9329,7 @@
   // depletion death already uses (triggerGameOver() — no new movie/screen).
   const SECRET_FILE_SHAKE_MAG = 10; // moderate — noticeably less than BOSS_INTRO_SHAKE_MAG(16)'s dramatic landing, HUD stays legible throughout
   const SECRET_FILE_SHAKE_MS = 1800; // within spec's own "1.5-2s" band
-  const SECRET_FILE_TIMER_MS = 5 * 60 * 1000;
+  const SECRET_FILE_TIMER_MS = 7 * 60 * 1000; // HOTFIX 4.2 SECTION 7-9: extended from 5:00 to 7:00; RETRY/PAUSE/GAME OVER persistence semantics unchanged
   const secretFileTimerState = { active: false, remainingMs: 0 };
   function startSecretFileTimer(now) {
     secretFileTimerState.active = true;
@@ -9480,16 +9663,59 @@
     // — so the fallback can no longer produce an exact duplicate at all
     // for any realistic count, only cycling (still never duplicating within
     // one batch) if some future caller ever requested 10+.
+    // HOTFIX 4.2 SECTIONS 18-21 (root-cause fix, this turn): the fixed 3x3
+    // grid above always divided the FULL available range into 3 equal
+    // steps regardless of how narrow that range actually was — on a narrow
+    // floor (or a FINAL-STAGE call with avoidPoints eating into the usable
+    // band), 3 columns/rows could land well under the drone's own drawn
+    // diameter apart, so fallback-placed DRONEs could still visually/
+    // hitbox-overlap — exactly the reported "重なって配置される" bug. Fixed
+    // by sizing the grid to the largest column/row count (capped at 3) that
+    // still keeps every cell at least SECURITY_ROBOT_GRID_MIN_SPACING apart
+    // on that axis, degrading to fewer columns/rows (never below 1) on a
+    // genuinely too-narrow floor instead of blindly assuming 3 always fits.
+    // Deliberately uses the drone's own true no-overlap distance here, not
+    // the larger "nice and spread out" SECURITY_ROBOT_MIN_SPACING the normal
+    // random-sampling path above still uses when there's room for it — a
+    // section 22 spec explicitly allows a tight, non-overlapping row/grid
+    // as a valid fallback outcome, so this only needs to guarantee no
+    // overlap, not preserve the same generous spacing sampling prefers.
+    const rangeW = range.hi - range.lo;
+    const rangeH = usableBottom - usableTop;
     const GRID = 3;
-    const n = existingRobots.length;
-    const col = n % GRID;
-    const row = Math.floor(n / GRID) % GRID;
-    const xFrac = GRID > 1 ? col / (GRID - 1) : 0.5;
-    const yFrac = GRID > 1 ? row / (GRID - 1) : 0.5;
-    return {
-      x: range.lo + xFrac * (range.hi - range.lo),
-      y: usableTop + yFrac * (usableBottom - usableTop),
-    };
+    const cols = Math.max(1, Math.min(GRID, Math.floor(rangeW / SECURITY_ROBOT_GRID_MIN_SPACING) + 1));
+    const rows = Math.max(1, Math.min(GRID, Math.floor(rangeH / SECURITY_ROBOT_GRID_MIN_SPACING) + 1));
+    // HOTFIX 4.2 SECTIONS 18-21 (root-cause fix, part 2): indexing the grid
+    // purely by `existingRobots.length` (as before) picks a cell spaced from
+    // its OTHER GRID CELLS, but never checks it against where robots placed
+    // by the random-sampling attempts above actually landed — a robot that
+    // succeeded on attempt 1-40 can sit anywhere in the range, including
+    // right on top of whichever grid cell index N was about to claim. Real
+    // testing on the narrowest measured background (cargo_lift_e12_a) at the
+    // max real DRONE count (7) reproduced actual overlaps this way in
+    // roughly half of trials. Fixed by treating the grid as a CANDIDATE set
+    // and greedily picking whichever candidate is currently farthest from
+    // every already-placed robot (both random-sampled and previous-fallback
+    // ones alike) — never blind index math again.
+    const candidates = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const xFrac = cols > 1 ? c / (cols - 1) : 0.5;
+        const yFrac = rows > 1 ? r / (rows - 1) : 0.5;
+        candidates.push({ x: range.lo + xFrac * rangeW, y: usableTop + yFrac * rangeH });
+      }
+    }
+    if (existingRobots.length === 0) return candidates[0];
+    let best = candidates[0], bestMinDist = -Infinity;
+    for (const cand of candidates) {
+      let minDist = Infinity;
+      for (const r of existingRobots) {
+        const d = Math.hypot(cand.x - r.patrolCenterX, cand.y - r.y);
+        if (d < minDist) minDist = d;
+      }
+      if (minDist > bestMinDist) { bestMinDist = minDist; best = cand; }
+    }
+    return best;
   }
 
   const SECURITY_SCAN_AXES = ['horizontal', 'vertical'];
@@ -9600,6 +9826,16 @@
       // (buildSecurityDrone() itself has no access to game-time).
       snipeCycleStartedAt: -Infinity,
       snipeFired: false,
+      // HOTFIX 4.2 ADDENDUM SECTIONS 31-34: a one-time random delay before
+      // this robot's very first lock acquisition only (see hasAttackedOnce
+      // above) — desyncs a batch of DRONEs spawned in the same frame so
+      // they never fire in lockstep, without touching any single DRONE's
+      // own cycle length/damage/cadence once it starts. attackPhaseOffsetDeadline
+      // is computed lazily on first use (buildSecurityDrone() has no access
+      // to game-time `now`, same reason snipeCycleStartedAt starts at -Infinity).
+      attackPhaseOffsetMs: Math.random() * DRONE_ATTACK_PHASE_OFFSET_MAX_MS,
+      attackPhaseOffsetDeadline: -1,
+      hasAttackedOnce: false,
       // HOTFIX SECTION 3: per-robot FLASH blind window — same duration/role
       // as roidState.flashLostUntil (see flashPress()'s !boss.spawned
       // branch), independent per-DRONE so a stage with several DRONEs
@@ -10106,11 +10342,21 @@
         // non-escort DRONEs (normal DRONE stages have no such grace concept).
         const escortGraceBlocked = robot.isRoidEscort && isRoidCombatStartGraceActive(now);
         if (robot.snipeCycleStartedAt === -Infinity) {
+          // HOTFIX 4.2 ADDENDUM SECTIONS 31-34: only the very first-ever lock
+          // this robot ever acquires waits out its own random phase offset —
+          // a STEALTH/FLASH-cancelled cycle re-arriving here later (already
+          // hasAttackedOnce=true) re-locks immediately as before, so an
+          // established firing rhythm is never re-delayed mid-fight.
+          if (!robot.hasAttackedOnce) {
+            if (robot.attackPhaseOffsetDeadline < 0) robot.attackPhaseOffsetDeadline = now + robot.attackPhaseOffsetMs;
+            if (now < robot.attackPhaseOffsetDeadline) continue;
+          }
           if (!escortGraceBlocked && !droneTargetLost && !isPlayerBarrelShadowHiddenFrom(robot)) {
             robot.snipeCycleStartedAt = now;
             robot.lockedTargetX = player.x;
             robot.lockedTargetY = player.y;
             robot.snipeFired = false;
+            robot.hasAttackedOnce = true;
           }
           continue;
         }
@@ -10123,7 +10369,7 @@
         // after the marker turns yellow (see drawDroneSniperWarning(), which
         // still turns yellow at CYCLE_MS - YELLOW_MS, unchanged), never the
         // instant it turns yellow.
-        if (!robot.snipeFired && cycleElapsed >= DRONE_SNIPER_CYCLE_MS - DRONE_SNIPER_YELLOW_MS + DRONE_SNIPER_FIRE_DELAY_AFTER_YELLOW_MS) {
+        if (!robot.snipeFired && cycleElapsed >= DRONE_SNIPER_FIRE_AT_MS) {
           fireDroneSniperShot(robot, now);
           robot.snipeFired = true;
         }
@@ -10247,6 +10493,18 @@
     ctx.restore();
   }
 
+  // HOTFIX 4.2 ADDENDUM SECTIONS 26-30: is this DRONE within its own final
+  // DRONE_BODY_BLINK_MS (1s) before firing right now — STORY/ROID-escort
+  // SNIPER cycle only (the same context drawDroneSniperWarning()'s marker
+  // already reads), a no-op once it has actually fired this cycle. Kept as
+  // its own small predicate so drawSecurityRobot() reads the same way
+  // regardless of which blink (this one or the separate damage-blink) is
+  // active.
+  function isDroneBodyPreFireBlinking(robot, now) {
+    if (robot.snipeCycleStartedAt === -Infinity || robot.snipeFired) return false;
+    const msUntilFire = DRONE_SNIPER_FIRE_AT_MS - (now - robot.snipeCycleStartedAt);
+    return msUntilFire > 0 && msUntilFire <= DRONE_BODY_BLINK_MS;
+  }
   function drawSecurityRobot(robot, now) {
     if (robot.hp <= 0) return; // E-4/E-5: dead DRONEs stop drawing entirely — the death explosion (spawnExplosionVisual()) takes over instead, so there is no blink-vs-death competition
     const img = securityRobotImgs[robot.dir];
@@ -10286,6 +10544,13 @@
       } else {
         ctx.drawImage(img, dx, dy, m.drawW, m.drawH);
       }
+    } else if (isDroneBodyPreFireBlinking(robot, now) && Math.floor(now / DRONE_BODY_BLINK_INTERVAL_MS) % 2 === 1) {
+      // HOTFIX 4.2 ADDENDUM SECTIONS 26-30: the pre-fire body blink itself —
+      // a plain visibility on/off toggle (never a red/damage tint, kept
+      // fully separate from hitFlashStartAt above so it can never read as
+      // "got hit") for the OFF half of each interval; the ON half just
+      // falls through to the normal drawImage() below, same as any other
+      // frame.
     } else {
       ctx.drawImage(img, dx, dy, m.drawW, m.drawH);
     }
@@ -12520,7 +12785,7 @@
     getGabrielCombatEncounterIndex, GABRIEL_ENCOUNTER_3_INDEX, // debug/verification only — DARK OUT PART 3.5
     // Debug/verification only — DARK OUT PART 4: ROID1/ROID2 shared BOSS AI.
     spawnRoidBoss, updateRoidBoss, drawRoidBoss, applyBodyHitToRoidBoss,
-    roidState, enemyBullets, updateEnemyBullets, fireRoidBullet,
+    roidState, enemyBullets, updateEnemyBullets, fireRoidBullet, fireDroneSniperShot,
     ROID_BOSS_PROFILES, ROID_MAX_HP, ROID_BULLET_DAMAGE, ROID_HURT_RADIUS,
     ROID_BURST_SHOT_COUNT, ROID_BURST_SHOT_INTERVAL_MS, ROID_BURST_COOLDOWN_MS,
     ROID_SEARCH_FRAME_MS, ROID_FIRE_FRAME_MS,
@@ -12678,7 +12943,10 @@
     fireSecurityLaser, resolveSecurityLaserHit, updateSecurityRobots, distanceToSegment,
     // POST-v1.0 SECTION 4/5/6 — debug/verification only.
     whiteShadows, spawnWhiteShadow, getNearestWhiteShadow, isWhiteShadowHidden,
+    WHITE_SHADOW_RADIUS_X, WHITE_SHADOW_RADIUS_Y, // debug/verification only
     DRONE_SNIPER_CYCLE_MS, DRONE_SNIPER_YELLOW_MS, WHITE_SHADOW_FLASH_HIDE_MS,
+    DRONE_SNIPER_FIRE_AT_MS, DRONE_BODY_BLINK_MS, DRONE_BODY_BLINK_INTERVAL_MS, // HOTFIX 4.2 ADDENDUM SECTIONS 26-35 — debug/verification only
+    DRONE_ATTACK_PHASE_OFFSET_MAX_MS, isDroneBodyPreFireBlinking,
     ROID_DEATH_MS, isSecurityDroneSystemActive,
     applyDamageToSecurityDrone, spawnExplosionVisual,
     get securityAttackSlotsInUse() { return securityAttackSlotsInUse; },
@@ -12693,6 +12961,7 @@
     SECURITY_LASER_COOLDOWN_MIN_MS, SECURITY_LASER_COOLDOWN_MAX_MS,
     SECURITY_MAX_SIMULTANEOUS_ATTACKS, SECURITY_SHADOW_RADIUS_X, SECURITY_SHADOW_RADIUS_Y,
     SECURITY_ROBOT_DRAW_D, SECURITY_ROBOT_METRICS, SECURITY_ROBOT_MIN_SPACING, DRONE_PLACEMENT_BODY_MARGIN, // debug/verification only — HOTFIX 2 SECTION 39-41
+    SECURITY_ROBOT_GRID_MIN_SPACING, // debug/verification only — HOTFIX 4.2 SECTIONS 18-21
     SECURITY_PATROL_RANGE_MIN, SECURITY_PATROL_RANGE_MAX, SECURITY_PATROL_SPEED_MIN, SECURITY_PATROL_SPEED_MAX,
     SECURITY_SCAN_RANGE_MIN, SECURITY_SCAN_RANGE_MAX, SECURITY_SCAN_SPEED_MIN, SECURITY_SCAN_SPEED_MAX,
     SECURITY_DRONE_HP, SECURITY_DRONE_HIT_RADIUS, SECURITY_DRONE_DEATH_MS,
@@ -12745,6 +13014,8 @@
     FIRE_COOLDOWN_MS, triggerManualReload,
     // Debug/verification only — PART7: healing item system.
     healItem, spawnHealItem, getHealItemSpawnPos, HEAL_ITEM_HEAL_FRAC, HEAL_ITEM_IMAGES, HEAL_ITEM_HIT_RADIUS,
+    get damageTakenThisStage() { return damageTakenThisStage; },
+    set damageTakenThisStage(v) { damageTakenThisStage = v; }, // debug/verification only
     HEAL_ITEM_FRAME1_SCALE, healPickupTexts, HEAL_PICKUP_TEXT_MS, spawnHealPickupText,
     // Debug/verification only — POST-v1.0 SECTIONS 38-43: AMMO BOX + HEAL BOX rework.
     ammoItem, spawnAmmoItem, spawnStageClearReward, applyAmmoBoxPickup, applyHealBoxPickup,
@@ -12755,6 +13026,7 @@
     get baseRunMaxLife() { return baseRunMaxLife; },
     set baseRunMaxLife(v) { baseRunMaxLife = v; },
     get playerMaxLife() { return playerMaxLife; }, // HOTFIX 4.1 SECTIONS 19-24 — debug/verification only
+    PLAYER_HIT_RADIUS, // HOTFIX 4.2 ADDENDUM SECTIONS 1-8 — debug/verification only
     get healBoxPickupCount() { return healBoxPickupCount; },
     set healBoxPickupCount(v) { healBoxPickupCount = v; },
     // Debug/verification only — PART8: separate manual/auto reload durations,
@@ -13464,7 +13736,6 @@
     // from resetModeState() when gameState.mode === 'securityTraining'), so
     // this is a safe no-op in every other mode (SECTION S).
     for (const robot of securityRobots) drawSecurityShadow(robot);
-    for (const robot of securityRobots) drawDroneSniperWarning(robot, now);
     drawWhiteShadows(now);
     for (const robot of securityRobots) drawSecurityRobot(robot, now); // PART 4 SECTION E: now() drives the per-robot hit-flash blink timing
 
@@ -13519,6 +13790,18 @@
     // the camera-translate restore() below), same origin/endpoint the
     // damage hitbox already used at fire-time.
     for (const robot of securityRobots) drawSecurityLaserBeam(robot);
+    // HOTFIX 4.2 ADDENDUM SECTIONS 22-25 (root-cause fix, this turn): the "+"
+    // lock-on marker used to draw WAY back with the ground-layer objects
+    // (before securityRobots/whiteShadows were even drawn, let alone the
+    // player) — so it was reliably hidden UNDER the player sprite whenever
+    // the marker's own target point (the player's position at telegraph
+    // time) overlapped where the player is now standing, making "which spot
+    // is about to get shot" unreadable exactly when it matters most. Moved
+    // here, same "draws crossing over the player/boss layer" spot the laser
+    // beam above already uses, so it's always visible on top. Each call
+    // reads that ONE robot's own lockedTargetX/Y — independent per DRONE by
+    // construction, never a shared/global marker.
+    for (const robot of securityRobots) drawDroneSniperWarning(robot, now);
 
     // PART 1: the aim line/reticle draw last among game-world content —
     // strictly above the background, barrels, bullets, claw projectiles,
