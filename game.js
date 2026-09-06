@@ -13,7 +13,44 @@
   // however tall the control panel happens to be at any breakpoint.
   const playArea = document.getElementById('play-area');
 
+  // P0 LANDSCAPE HOTFIX (root cause): W/H are NOT a render/canvas size —
+  // they are the game's fixed LOGICAL WORLD scale. Virtually every
+  // gameplay system in this file (clampPlayerToScreen's own x/y bounds,
+  // AREA1/AREA2's own vertical bands "[0,H]"/"[-H,0]", spawn positions,
+  // camera, EXIT geometry) is defined directly in terms of W and H, on the
+  // assumption — true for the entire life of this project until LANDSCAPE
+  // MODE existed — that W/H are a stable reference frame for the whole
+  // session (the device orientation never changed mid-play). Once
+  // landscape became playable, resize() started reassigning W/H to
+  // whatever #play-area's CURRENT rect happens to be, which is a
+  // completely different size/aspect in landscape — so the exact same
+  // "AREA2 is one H above AREA1" / "clamp x to 0..W" formulas silently
+  // recomputed to different absolute pixel bounds and forcibly relocated
+  // already-placed entities (confirmed on real iPhone: PLAYER and ROID1
+  // both jumping toward the world origin/edge after rotating) and could
+  // shift EXIT/AREA-boundary checks enough to fire a stage advance the
+  // player never actually walked into.
+  // Fix: W/H are now captured ONCE, on the very first resize() call ever
+  // (always in portrait, since that's how the page boots), and NEVER
+  // reassigned again for the rest of the session — see
+  // logicalWorldSizeLocked in resize() below. Every one of those existing
+  // gameplay formulas keeps working completely unmodified. The actual
+  // on-screen render rect can still be any shape (portrait OR landscape):
+  // renderScale/renderOffsetX/renderOffsetY (also set in resize()) map
+  // this fixed logical W×H world onto whatever #play-area's current rect
+  // is, aspect-fit and centered — the visible field letterboxes rather
+  // than stretching/cropping, and rather than the world itself resizing.
   let W = 0, H = 0;
+  let logicalWorldSizeLocked = false;
+  let renderScale = 1, renderOffsetX = 0, renderOffsetY = 0;
+  // Converts a real, current-viewport pixel Y (e.g. from a live
+  // getBoundingClientRect() measurement, relative to #play-area's own top)
+  // into the fixed logical-world Y that must be handed to a ctx drawing
+  // call so it lands at that same real screen position after resize()'s
+  // own ctx.setTransform (scale+offset) is applied. Needed anywhere a raw
+  // DOM measurement (not already a world coordinate) feeds into canvas
+  // drawing — see the TIME LIMIT HUD anchor below pauseZoneBottomY.
+  function screenYToLogicalY(screenY) { return (screenY - renderOffsetY) / renderScale; }
   // Extra walkable WORLD space that opens up above the original screen once
   // a boss is fully defeated (PART 21-29) — see the "Stage world / camera"
   // section below. Declared here (not there) so the very first resize()
@@ -69,13 +106,32 @@
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const rect = playArea.getBoundingClientRect();
-    W = rect.width;
-    H = rect.height;
-    canvas.width = Math.round(W * dpr);
-    canvas.height = Math.round(H * dpr);
-    canvas.style.width = W + 'px';
-    canvas.style.height = H + 'px';
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // P0 LANDSCAPE HOTFIX: W/H are captured ONCE (the first time resize()
+    // ever runs — always in portrait, at page load) and never reassigned
+    // again. See the long comment on their declaration above for why: the
+    // rest of this file treats them as the game's fixed logical world
+    // scale, not a live render size.
+    if (!logicalWorldSizeLocked) {
+      W = rect.width;
+      H = rect.height;
+      logicalWorldSizeLocked = true;
+    }
+    // Aspect-fit the fixed logical W×H world into whatever #play-area's
+    // CURRENT rect actually is (portrait OR landscape) — centered,
+    // letterboxed on whichever axis doesn't match, never stretched or
+    // cropped. This is what lets the canvas's underlying buffer/CSS size
+    // track the real, current layout (so LANDSCAPE's differently-shaped
+    // CENTER FIELD still gets a correctly sized/positioned canvas) while
+    // every ctx drawing call elsewhere in this file keeps working in the
+    // exact same logical coordinates it always has.
+    renderScale = Math.min(rect.width / W, rect.height / H);
+    renderOffsetX = (rect.width - W * renderScale) / 2;
+    renderOffsetY = (rect.height - H * renderScale) / 2;
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    ctx.setTransform(dpr * renderScale, 0, 0, dpr * renderScale, dpr * renderOffsetX, dpr * renderOffsetY);
     const pauseZoneEl = document.getElementById('pause-zone');
     if (pauseZoneEl) {
       pauseZoneBottomY = pauseZoneEl.getBoundingClientRect().bottom - rect.top;
@@ -9759,7 +9815,14 @@
     // rather than a fixed H-fraction that had no idea where PAUSE actually
     // sits on a given device (the real cause of the reported overlap on
     // devices with a tall safe-area-inset-top).
-    const x = W / 2, y = pauseZoneBottomY + 20;
+    // P0 LANDSCAPE HOTFIX: pauseZoneBottomY is a REAL, current-viewport
+    // pixel measurement (from a live getBoundingClientRect()), not a
+    // logical-world coordinate — since resize() now applies its own
+    // scale+offset ctx transform (see renderScale/renderOffsetY), a raw
+    // real-pixel value must be converted back to logical space here or
+    // this text would land at the wrong height the instant the render
+    // scale is anything other than 1 (i.e. in landscape).
+    const x = W / 2, y = screenYToLogicalY(pauseZoneBottomY + 20);
     // Black outline behind the yellow fill (spec's own "optional black
     // outline") so it reads clearly over any background/lighting.
     ctx.lineWidth = 3;
@@ -13590,6 +13653,11 @@
     getFloorXRangeWorld, getStageDrawMetrics, AREA_BOUNDARY_DOOR_BAND, getAreaBoundaryYs,
     getDronePlacementRangeX, clampPlayerToScreen,
     get W() { return W; }, get H() { return H; },
+    // P0 LANDSCAPE HOTFIX — debug/verification only:
+    get logicalWorldSizeLocked() { return logicalWorldSizeLocked; },
+    get renderScale() { return renderScale; },
+    get renderOffsetX() { return renderOffsetX; },
+    get renderOffsetY() { return renderOffsetY; },
     get spriteAspect() { return spriteAspect; }, SPRITE_DRAW_H,
     // Debug/verification only — PART7: RELOAD system.
     get FIRE_MAG_SIZE() { return FIRE_MAG_SIZE; },
