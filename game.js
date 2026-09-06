@@ -832,6 +832,66 @@
   // covers every movie uniformly with no extra wiring per call site.
   eventMovieVideoEl.addEventListener('timeupdate', bgmTimeupdateWatchdog);
 
+  // P0 GAME FLOW & COMBAT HOTFIX (root-cause fix, this batch): TAP TO PLAY
+  // (event-movie-tap-fallback) was reappearing mid-STORY, not just at
+  // STARTUP — root-caused to iOS Safari's autoplay policy being re-
+  // litigated independently on EVERY playEventMovie() call. Every mid-story
+  // movie is unmuted (embedded audio matrix) and its own .play() call
+  // always happens asynchronously through pollReady()'s setTimeout chain
+  // (needed for the buffering bridge) — by the time .play() actually runs,
+  // the synchronous "real user gesture" window WebKit requires for audible
+  // autoplay has already closed, even for a movie whose chain started
+  // inside a real click. There was no durable "the user already granted
+  // playback" state anywhere in the file — each movie's play() promise
+  // independently succeeds or rejects from scratch.
+  // FIX: WebKit's own actual rule is per-HTMLMediaElement, not per-gesture
+  // or per-page — once a SPECIFIC <video>/<audio> element has been started
+  // via .play() synchronously inside a real user gesture at least once, that
+  // SAME element may be played programmatically (no further gesture) for
+  // the rest of the page's life, even after its src is swapped and reloaded
+  // (this is the standard "prime the shared media element" technique used
+  // by production HTML5 video players/games). eventMovieVideoEl is exactly
+  // that — ONE persistent DOM element reused for every EVENT/SYSTEM movie
+  // AND the ENDING ROLL (never recreated — see playEventMovie()/
+  // playEndingRoll(), both only ever call .src=/.load() on this same
+  // element) — so unlocking it ONCE, synchronously inside the very first
+  // real gesture of the whole session (onOpeningTap(), the existing TAP TO
+  // START handler), makes every LATER programmatic play() on it succeed
+  // without ever needing another gesture. Muted during the prime itself so
+  // nothing is audible, and fully torn back down to empty immediately after
+  // (no visible frame, no held network connection) — a genuine, if brief,
+  // real movie source is used (never src="") since some WebKit versions
+  // only grant the unlock for a source that actually attempted to load.
+  let eventMovieElementUnlocked = false;
+  function unlockEventMovieElementForIOS() {
+    if (eventMovieElementUnlocked) return; // only ever needs to happen once per page life
+    eventMovieElementUnlocked = true;
+    try {
+      const primeSrc = EVENT_MOVIES.sneaking; // any always-registered, already-preloaded movie works — this one is simply the first ever played
+      eventMovieVideoEl.muted = true;
+      eventMovieVideoEl.src = primeSrc;
+      const p = eventMovieVideoEl.play();
+      if (p && typeof p.then === 'function') {
+        p.then(() => {
+          eventMovieVideoEl.pause();
+          eventMovieVideoEl.currentTime = 0;
+          eventMovieVideoEl.removeAttribute('src');
+          eventMovieVideoEl.load();
+        }).catch(() => {
+          // Even a rejected promise here still counts, on WebKit, as a
+          // play() attempt made synchronously within the gesture — the
+          // unlock is about the CALL happening in-gesture, not about the
+          // prime clip actually audibly playing. Tear the src back down
+          // regardless so nothing lingers loaded.
+          eventMovieVideoEl.removeAttribute('src');
+          eventMovieVideoEl.load();
+        });
+      }
+    } catch (e) {
+      // Never let a priming failure block TAP TO START itself.
+    }
+  }
+
   // SECTION G/H/I/J: plays either a SYSTEM or an EVENT movie key through the
   // one shared overlay/video element. `onComplete` fires exactly once, after
   // the movie genuinely finishes (natural 'ended') — never on a cancelled/
@@ -923,19 +983,38 @@
     }
     eventMovieVideoEl.onended = () => { if (eventMovieState.token === token) finish(); };
 
+    // P0 GAME FLOW & COMBAT HOTFIX (root-cause fix, this batch): TAP TO
+    // PLAY is now STARTUP-ONLY, full stop — unlockEventMovieElementForIOS()
+    // (called once, synchronously, inside the very first real gesture of
+    // the session) is the actual root-cause fix and should make virtually
+    // every one of these play() calls succeed with zero rejection from here
+    // on. This retry-then-silently-proceed logic is only the safety net for
+    // a genuinely unusual failure (a real decode/network error, or an
+    // unexpected WebKit variant) — it must NEVER show event-movie-tap-
+    // fallback as a user-facing "TAP TO PLAY" again (spec's own explicit,
+    // unconditional "STARTUP以外ではTAP TO PLAYを一切表示しないこと"), and it
+    // must never leave STORY progression stuck waiting on a tap that will
+    // never come. A short retry (readiness/transient issues are the most
+    // likely real residual cause) followed by an unconditional finish() —
+    // skipping this ONE movie's own visuals/embedded audio rather than
+    // freezing progression — is the "B. gameplay progressionを止めない
+    // fallback" the spec itself calls for.
+    const EVENT_MOVIE_PLAY_RETRY_DELAYS_MS = [200, 600, 1500];
+    let playRetryAttempt = 0;
     function attemptPlay() {
-      eventMovieVideoEl.play().catch(() => {
+      eventMovieVideoEl.play().catch((err) => {
         if (eventMovieState.token !== token) return; // superseded before the rejected promise even resolved
-        // SECTION J: iOS (and other browsers) can reject an audible play()
-        // outside a direct user gesture — show a simple, non-permanent
-        // retry control rather than silently skipping the movie.
-        eventMovieTapFallbackEl.hidden = false;
+        console.warn('[EVENT MOVIE] play() rejected for key=' + key + ' (attempt ' + playRetryAttempt + '):', err && err.name, err && err.message);
+        if (playRetryAttempt < EVENT_MOVIE_PLAY_RETRY_DELAYS_MS.length) {
+          const delay = EVENT_MOVIE_PLAY_RETRY_DELAYS_MS[playRetryAttempt];
+          playRetryAttempt++;
+          setTimeout(() => { if (eventMovieState.token === token) attemptPlay(); }, delay);
+          return;
+        }
+        console.warn('[EVENT MOVIE] play() failed after all retries for key=' + key + ' — skipping this movie to keep STORY progression moving, never showing TAP TO PLAY outside STARTUP.');
+        finish();
       });
     }
-    eventMovieTapFallbackEl.onclick = () => {
-      eventMovieTapFallbackEl.hidden = true;
-      attemptPlay();
-    };
     // HOTFIX 4.2 ADDENDUM SECTIONS 9-16 (root-cause fix, this turn): calling
     // attemptPlay() unconditionally the instant `.src` is set — with no
     // check that the browser has actually buffered enough of THIS movie yet
@@ -1945,6 +2024,7 @@
     x: 0,
     y: 0,
     lastValidY: 0, // PART2-turn SECTION A: last Y clampPlayerToScreen() itself resolved to — the AREA-boundary wall check's "were we already inside the door band" reference, reset alongside x/y on every stage/mode reset
+    lastValidX: 0, // P0 GAME FLOW & COMBAT HOTFIX: paired with lastValidY — the last position confirmed NOT to have tunneled through an AREA-boundary wall, used by clampPlayerToScreen()'s own swept-segment safety net (see its comment) to catch a single frame's movement (typically a DASH, especially in a wide LANDSCAPE-locked W) leaping clean over the ±AREA_BOUNDARY_DOOR_BAND band the door-band check alone can miss
 
     speed: 240 * 0.80, // px/sec — PART 28: 80% of the previous 240 (DASH speed/distance untouched)
     baseDir: 'down',   // discrete sprite bucket — driven by AIM STICK while it's engaged, by MOVE STICK otherwise (see update())
@@ -2059,6 +2139,7 @@
     player.x = W * 0.50;
     player.y = areaTopY(1) + H * 0.80; // mode start / a fresh STAGE transition both always begin in AREA 1
     player.lastValidY = player.y; // PART2-turn SECTION A: always well outside any boundary band at spawn
+    player.lastValidX = player.x;
     player.baseDir = 'up'; // P-2: facing north, same as STORY's BOSS battle pose
     player.aimOffsetRaw = BASE_ANGLE.up;
     player.aimOffset = BASE_ANGLE.up;
@@ -2215,6 +2296,32 @@
     const isGabrielFight = boss.spawned && boss.type === 'gabriel';
     const floor = isGabrielFight ? null : getFloorXRangeWorld();
     if (floor) {
+      // P0 GAME FLOW & COMBAT HOTFIX (root-cause fix, this batch): the
+      // door-band check just below only ever looks at THIS frame's already-
+      // moved player.y — a single frame's movement whose start and end
+      // points are BOTH outside the ±AREA_BOUNDARY_DOOR_BAND band (one on
+      // each side) skips it entirely via the `continue` below without ever
+      // being caught, tunneling straight through the wall. Real-device
+      // TRAINING reports confirmed this ("Area1出口付近の壁を通り抜けられる")
+      // — DASH's own eased travel curve front-loads most of its distance
+      // into the first few frames (see dashTravelProgress()), and in a
+      // LANDSCAPE-locked wide W (DASH_DISTANCE_FRAC*W can then exceed the
+      // band's own fixed 160px total width) a single frame's dash delta can
+      // exceed the whole band. This is an orientation/speed-independent
+      // safety net using the SAME segmentCrossesAreaWall() primitive
+      // already trusted for bullets/AUTO AIM/CLAW — checking the actual
+      // travelled PATH (lastValidX/Y -> current x/y) rather than just the
+      // resting point — so it catches a leap of any size/framerate/W,
+      // never just tuning the band width wider (which would still have the
+      // same class of bug at some larger jump distance). Reverts outright
+      // to the last confirmed-safe position, exactly like the existing
+      // "wasOutsideBand" revert branch below already does for a normal-
+      // speed crossing — never a partial/approximate stop.
+      if (player.lastValidX !== undefined && player.lastValidY !== undefined &&
+          segmentCrossesAreaWall(player.lastValidX, player.lastValidY, player.x, player.y)) {
+        player.x = player.lastValidX;
+        player.y = player.lastValidY;
+      }
       const doorLeft = floor.left + halfW, doorRight = floor.right - halfW;
       for (const boundaryY of getAreaBoundaryYs()) {
         if (Math.abs(player.y - boundaryY) > AREA_BOUNDARY_DOOR_BAND) continue;
@@ -2247,7 +2354,20 @@
     // 5s multi-explosion defeat sequence begins (adamSphereCombatState.dying)
     // — not only once it fully finishes, since it is already non-attacking/
     // being-destroyed from that point on.
-    if (isMainAdamSphereStage() && adamSphereCombatState.active && !adamSphereCombatState.dying) {
+    // P0 GAME FLOW & COMBAT HOTFIX (root-cause fix, this batch): widened
+    // from isMainAdamSphereStage()-only to any active ADAM SPHERE
+    // (adamSphereCombatState.active alone) — TRAINING Stage4's own ADAM
+    // SPHERE shares this exact same state object (see
+    // enterSecurityTrainingStage()'s stage===3 branch) but had no blockade
+    // at all, so the PLAYER could freely walk into AREA2 while it kept
+    // firing (fireOneShot() aims straight at player.x/y with no wall check
+    // of its own) — a genuine cross-AREA LOCK-ON/SHOT bug. Reusing this
+    // SAME movement-side blockade (rather than bolting a separate wall
+    // check onto fireOneShot()) keeps TRAINING Stage4 consistent with the
+    // exact single-AREA design already established and tested for MAIN's
+    // own ADAM SPHERE — the condition that made cross-AREA firing possible
+    // simply can no longer occur, in either mode.
+    if (adamSphereCombatState.active && !adamSphereCombatState.dying) {
       const adamSphereBlockadeY = adamSphereCombatState.y + ADAM_SPHERE_COMBAT_HIT_RADIUS;
       if (player.y < adamSphereBlockadeY) player.y = adamSphereBlockadeY;
     }
@@ -2281,6 +2401,7 @@
     // phantom AREA2 either, regardless of how far the player walks north.
     if (isCultivationLabStage() && player.y < 0) player.y = 0;
     player.lastValidY = player.y;
+    player.lastValidX = player.x;
   }
 
   // ---------- DASH (4 directions, button-triggered, re-triggerable) ----------
@@ -5296,7 +5417,19 @@
     // suppresses both facing-zone tracking and SNIPER/MISSILE/BURST
     // acquisition exactly the way STEALTH already does for ROID.
     const barrelHidden = isPlayerBarrelShadowHiddenFrom(boss);
-    const known = !stealthed && !flashLost && !barrelHidden;
+    // P0 GAME FLOW & COMBAT HOTFIX: ROID1/ROID2's own Area-boundary wall
+    // LOS gate — this function previously had ZERO Area-crossing awareness,
+    // relying entirely on the separate full-corridor blockade
+    // (clampPlayerToScreen()'s own ROID1/ROID2 branch) to keep the PLAYER
+    // physically unable to ever reach the other AREA in the first place.
+    // That blockade is a movement-only guarantee; this is the matching
+    // LOS-side guarantee, using the exact same shared segmentCrossesAreaWall()
+    // primitive PLAYER SHOT/AUTO AIM/enemy bullets already trust, so ROID's
+    // own SNIPER lock/MISSILE target/RAPID FIRE can never acquire a PLAYER
+    // sitting across a wall segment even if some future change (or a
+    // TRAINING stage with a wall but no ROID blockade) ever let that happen.
+    const wallBlocked = segmentCrossesAreaWall(boss.x, boss.y, player.x, player.y);
+    const known = !stealthed && !flashLost && !barrelHidden && !wallBlocked;
     const wasKnown = roidState.targetKnown;
     roidState.targetKnown = known;
     // COMBAT & UI HOTFIX: mirrored onto roidState so updateRoidBoss()'s
@@ -5722,14 +5855,37 @@
       // whatever had already silently accumulated during the grace period).
       const searchTimerStart = Math.max(boss.stateEnteredAt, roidState.combatStartAt + ROID_COMBAT_START_GRACE_MS);
       if (!stealthed && now - searchTimerStart >= ROID_SEARCH_MIN_MS) {
-        // POST-v1.0 SECTIONS 8/11: SNIPER (ROID1) / MISSILE (ROID2) is now
-        // the PRIMARY attack — only every ROID_BURST_AFTER_SPECIALS-th cycle
-        // does a (telegraphed) BURST instead, giving a SPECIAL,SPECIAL,
-        // SPECIAL,BURST rotation (was BURST,BURST,BURST,SPECIAL pre-v1.0).
+        // POST-v1.0 SECTIONS 8/11: SNIPER/MISSILE is now the PRIMARY attack
+        // — only every ROID_BURST_AFTER_SPECIALS-th cycle does a
+        // (telegraphed) BURST instead, giving a SPECIAL,SPECIAL,SPECIAL,
+        // BURST rotation (was BURST,BURST,BURST,SPECIAL pre-v1.0).
+        // P0 GAME FLOW & COMBAT HOTFIX (root-cause fix, this batch):
+        // ROID1 previously used ONLY SNIPER for every single one of its
+        // "SPECIAL" slots — beginRoidMissile()/updateRoidMissile() are
+        // fully generic (spawn at the live player position, use the shared
+        // ROID2_MISSILE_* constants, already invincibility-gated by
+        // applyBodyHitToRoidBoss()'s boss.state==='missile' check — nothing
+        // in either function is actually ROID2-specific), they were simply
+        // never reached for boss.type==='roid1'. Real-device feedback
+        // ("SNIPER/MISSILE/BURSTのはずが、ほとんど攻撃してこない") traced to
+        // this missing variety, not a broken timer — restoring MISSILE as a
+        // genuine ROID1 attack candidate (alternating with SNIPER across
+        // the SPECIAL slots via the existing specialsCompleted counter,
+        // never a new parallel timer) also roughly halves the average
+        // SPECIAL-slot duration (MISSILE's own full cycle is ~1.8s vs
+        // SNIPER's ~4.2s for 4 shots), directly shortening real elapsed
+        // time between attacks — never by shortening SEARCH/lock timers
+        // themselves, which stay exactly as tuned. ROID2's own SPECIAL
+        // slots (always MISSILE) and RAPID FIRE/BURST (the shared 'firing'
+        // state machine, fully untouched by this change) are unaffected.
         if (roidState.specialsCompleted >= ROID_BURST_AFTER_SPECIALS) {
           beginRoidBurstTelegraph(now);
         } else if (boss.type === 'roid1') {
-          beginRoidSniper(now);
+          if (roidState.specialsCompleted % 2 === 0) {
+            beginRoidSniper(now);
+          } else {
+            beginRoidMissile(now);
+          }
         } else {
           beginRoidMissile(now);
         }
@@ -5806,9 +5962,25 @@
   function updateEnemyBullets(dt, now) {
     for (let i = enemyBullets.length - 1; i >= 0; i--) {
       const b = enemyBullets[i];
+      const prevBx = b.x, prevBy = b.y;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
       if (b.x < -20 || b.x > W + 20 || b.y < cameraY - 20 || b.y > cameraY + H + 20) {
+        enemyBullets.splice(i, 1);
+        continue;
+      }
+      // P0 GAME FLOW & COMBAT HOTFIX (root-cause fix, this batch): this
+      // single array carries EVERY enemy gunfire shot (DRONE sniper, ROID1/
+      // ROID2 burst+sniper — see the comment on the barrel-explosion check
+      // just below), but unlike the PLAYER's own bullet loop (which already
+      // calls segmentCrossesAreaWall() on its own travelled segment every
+      // frame) this one had no AREA-boundary wall check at all — an enemy
+      // shot fired from one AREA could freely travel across the wall and
+      // still hit a PLAYER standing in the other AREA. Reuses the exact
+      // same shared primitive PLAYER SHOT/AUTO AIM/CLAW already trust, so
+      // "what a wall blocks" can never disagree between PLAYER and ENEMY
+      // fire — the wall's real door opening is still fully passable.
+      if (segmentCrossesAreaWall(prevBx, prevBy, b.x, b.y)) {
         enemyBullets.splice(i, 1);
         continue;
       }
@@ -8188,6 +8360,58 @@
   menuBgmAudio.addEventListener('pause', handleUnexpectedBgmPause);
   bgmAudio.addEventListener('pause', handleUnexpectedBgmPause);
   bossBgmAudio.addEventListener('pause', handleUnexpectedBgmPause);
+  // P0 ADDENDUM (root-cause fix, this batch): ROID1 ARRIVAL BGM CONTINUITY —
+  // the reported "Outbreak2は静か" was root-caused to the EXACT SAME WebKit
+  // per-HTMLMediaElement gesture-unlock rule as Part A's own TAP TO PLAY fix
+  // (see unlockEventMovieElementForIOS()'s own comment), applied here to
+  // bgmAudio/bossBgmAudio instead of eventMovieVideoEl. menuBgmAudio gets a
+  // REAL play() call inside the genuine STARTUP gesture (startMenuBgmOnce(),
+  // called from onOpeningTap()) and is naturally unlocked as a side effect
+  // of actually being used — but bgmAudio/bossBgmAudio's OWN very first
+  // .play() ever, for a run whose first boss encounter is reached by simply
+  // WALKING INTO AN EXIT mid-STORY (never a fresh BOSS SELECT click), fires
+  // from startBossBgm()/startGameplayBgm() at that stage-transition moment —
+  // not a real user gesture at all. WebKit's autoplay policy is PER
+  // ELEMENT, never per-page/per-any-gesture-ever, so menuBgmAudio's own
+  // real gesture-linked play does NOT unlock the two SEPARATE Audio()
+  // instances bgmAudio/bossBgmAudio — each needs its OWN synchronous play()
+  // inside a real gesture at least once. startBossBgm()'s existing
+  // `.play().catch(() => {})` silently swallows that very first rejection
+  // and never itself retries; the existing self-heal watchdog
+  // (handleUnexpectedBgmPause/bgmTimeupdateWatchdog->syncMusicContext(),
+  // both already correctly wired — confirmed by direct code inspection,
+  // NOT the actual gap) only reacts to the audio element's own 'pause'
+  // EVENT, which never fires for a play() that was rejected outright (the
+  // element was never playing in the first place, so there is no playing
+  // -> paused transition to observe) — so a first-ever non-gesture
+  // startBossBgm() call could leave Outbreak2 silently never-started for
+  // the WHOLE encounter, with no existing recovery path able to catch it.
+  // Fix: prime BOTH remaining BGM elements (silently, at volume 0, torn
+  // back down immediately after) inside the SAME real STARTUP gesture
+  // unlockEventMovieElementForIOS() already uses — after this, every LATER
+  // programmatic startBossBgm()/startGameplayBgm() call succeeds regardless
+  // of whether it happens inside a real gesture or a stage-transition.
+  let backgroundBgmUnlocked = false;
+  function unlockBackgroundBgmForIOS() {
+    if (backgroundBgmUnlocked) return;
+    backgroundBgmUnlocked = true;
+    for (const audioEl of [bgmAudio, bossBgmAudio]) {
+      try {
+        const restoreVolume = audioEl.volume;
+        audioEl.volume = 0;
+        const p = audioEl.play();
+        const teardown = () => {
+          audioEl.pause();
+          audioEl.currentTime = 0;
+          audioEl.volume = restoreVolume;
+        };
+        if (p && typeof p.then === 'function') p.then(teardown).catch(teardown);
+        else teardown();
+      } catch (e) {
+        // Never let a priming failure block TAP TO START itself.
+      }
+    }
+  }
   function startBossBgm() {
     musicContext = 'boss'; // HOTFIX 2 SECTION 5: boss BGM only — menu/normal both stopped below/by this context
     stopMenuBgm();
@@ -8507,6 +8731,15 @@
     // now starts the MENU-only Outbreak0 track (startBgmOnce()/bgmAudio are
     // gameplay-only from this PART on, started later by startGameplayBgm()).
     startMenuBgmOnce();
+    // P0 GAME FLOW & COMBAT HOTFIX: this exact tap is ALSO the one and only
+    // real user gesture eventMovieVideoEl (every mid-story EVENT/SYSTEM
+    // movie + the ENDING ROLL) ever needs for the rest of the session — see
+    // unlockEventMovieElementForIOS()'s own comment.
+    unlockEventMovieElementForIOS();
+    // P0 ADDENDUM: same reasoning, for bgmAudio/bossBgmAudio — see
+    // unlockBackgroundBgmForIOS()'s own comment (the actual root cause of
+    // the reported ROID1 arrival BGM silence).
+    unlockBackgroundBgmForIOS();
     // SECTION 4: swap the shared video over to start_display.mp4 for MAIN
     // MENU/SELECT — this is the ONE place that ever happens, exactly at the
     // moment the user actually starts.
@@ -8908,17 +9141,20 @@
     eventMovieState.onComplete = onComplete || null;
     eventMovieState.resumeBgm = false; // 27-2: a load failure must never auto-resume any BGM — finish()/skipEventMovie() both read this
 
-    function showFallback(onTap) {
-      // 27-1: small, unobtrusive "TAP TO CONTINUE" — reuses the existing
-      // shared tap-fallback element (same one playEventMovie() itself uses
-      // for an autoplay-blocked retry), just wired to a different action.
+    // P0 GAME FLOW & COMBAT HOTFIX (root-cause fix, this batch): this used
+    // to show a "TAP TO CONTINUE" via the shared event-movie-tap-fallback
+    // element — now forbidden outright, unconditionally, everywhere outside
+    // STARTUP (spec's own explicit "一切表示しない"). unlockEventMovieElementForIOS()
+    // (see its own comment near eventMovieVideoEl's declaration) already
+    // makes the genuine-autoplay-block case below essentially unreachable;
+    // giveUpAndFinish() is what every OTHER call site here already needed —
+    // a real content failure (missing URL/decode error/download stall) has
+    // nothing a user tap would fix anyway, so this just proceeds straight
+    // to `finish()` (skips the ending video, never freezes progression),
+    // same as this file's own long-standing "never hard-freeze" policy.
+    function giveUpAndFinish() {
       hideEndingLoading();
-      eventMovieTapFallbackEl.hidden = false;
-      eventMovieTapFallbackEl.onclick = () => {
-        eventMovieTapFallbackEl.hidden = true;
-        eventMovieTapFallbackEl.onclick = null;
-        onTap();
-      };
+      finish();
     }
     let endingLoadingStartedAt = 0; // HOTFIX 4.1 ADDENDUM: this wait must not count toward PLAY TIME, same exclusion mechanism as PAUSE/GAME OVER
     function showEndingLoading() {
@@ -8970,7 +9206,7 @@
       // straight to the fallback so the run can still reach RESULT.
       eventMovieOverlayEl.hidden = false;
       eventMovieVideoEl.removeAttribute('src');
-      showFallback(finish);
+      giveUpAndFinish();
       return;
     }
 
@@ -9004,7 +9240,7 @@
       eventMovieVideoEl.onerror = () => {
         // 27-1: a genuine network/load failure — never hard-freeze.
         if (eventMovieState.key !== 'endingRoll') return;
-        showFallback(finish);
+        giveUpAndFinish();
       };
       // HOTFIX 4.3 SECTIONS 8/12/54: waiting/stalled monitoring DURING
       // playback — the actual root cause of "映像が途中で停止/音声が途切れる"
@@ -9039,18 +9275,30 @@
       // pause watchdog of any kind. waiting/stalled/playing above are pure
       // observation + the same visual overlay swap the initial wait already
       // does — neither one calls .play()/.pause() on eventMovieVideoEl.
-      eventMovieVideoEl.play().catch(() => {
-        if (eventMovieState.key !== 'endingRoll') return;
-        // HOTFIX 2 SECTION 17/19: a genuinely unreachable src rejects BOTH
-        // this play() promise AND fires its own 'error' event — checking
-        // for an already-present MediaError means a genuine load failure
-        // always wins and wires straight to finish(), regardless of firing
-        // order; only a TRUE autoplay-block gets the retry-first behavior.
-        if (eventMovieVideoEl.error) { showFallback(finish); return; }
-        showFallback(() => {
-          eventMovieVideoEl.play().catch(() => showFallback(finish));
+      let endingPlayRetryAttempt = 0;
+      const ENDING_PLAY_RETRY_DELAYS_MS = [200, 600, 1500];
+      function attemptEndingPlay() {
+        eventMovieVideoEl.play().catch((err) => {
+          if (eventMovieState.key !== 'endingRoll') return;
+          // HOTFIX 2 SECTION 17/19: a genuinely unreachable src rejects BOTH
+          // this play() promise AND fires its own 'error' event — checking
+          // for an already-present MediaError means a genuine load failure
+          // always wins and skips straight to finish(), regardless of
+          // firing order; only a true (now essentially unreachable, thanks
+          // to unlockEventMovieElementForIOS()) autoplay-block gets the
+          // silent retry below — never a user-facing TAP TO PLAY/CONTINUE.
+          if (eventMovieVideoEl.error) { giveUpAndFinish(); return; }
+          console.warn('[ENDING ROLL] play() rejected (attempt ' + endingPlayRetryAttempt + '):', err && err.name, err && err.message);
+          if (endingPlayRetryAttempt < ENDING_PLAY_RETRY_DELAYS_MS.length) {
+            const delay = ENDING_PLAY_RETRY_DELAYS_MS[endingPlayRetryAttempt];
+            endingPlayRetryAttempt++;
+            setTimeout(() => { if (eventMovieState.key === 'endingRoll') attemptEndingPlay(); }, delay);
+            return;
+          }
+          giveUpAndFinish();
         });
-      });
+      }
+      attemptEndingPlay();
     }
 
     // FALLBACK STRATEGY — used only if the real fetch() below genuinely
@@ -9079,7 +9327,7 @@
       let stableSinceMs = startedAt; // last time bufEnd actually grew — used only to detect a genuinely dead download below
       function poll(nowTick) {
         if (eventMovieState.key !== 'endingRoll') return; // superseded mid-preload
-        if (eventMovieVideoEl.error) { showFallback(finish); return; } // genuine load failure — never infinite-loading
+        if (eventMovieVideoEl.error) { giveUpAndFinish(); return; } // genuine load failure — never infinite-loading
         const elapsed = nowTick - startedAt;
         const readyState = eventMovieVideoEl.readyState;
         const buffered = eventMovieVideoEl.buffered;
@@ -9106,7 +9354,7 @@
           // has either genuinely stopped growing or exhausted the hard
           // ceiling. Never starts playback in this branch (that would be
           // exactly the "fake full, start anyway" this addendum forbids).
-          showFallback(finish);
+          giveUpAndFinish();
           return;
         }
         setTimeout(() => poll(performance.now()), 200);
@@ -9277,14 +9525,28 @@
       spawnBarrels(BARREL_COUNT);
       spawnAdamSphereCombat(W / 2, areaTopY(currentArea) + H * 0.4, now);
     } else {
-      // STAGE 5: DRONE + ROID1 — spawnRoidBoss() already spawns
-      // ROID_ESCORT_COUNT FAST DRONE escorts alongside ROID1 (see
-      // spawnRoidEscortBatch()), which alone satisfies "DRONE + ROID1
-      // simultaneous" with zero extra spawn code. ROID1 keeps its existing
+      // STAGE 5: DRONE + ROID1 — ROID1 keeps its existing
       // ROID_COMBAT_START_GRACE_MS opening grace unchanged — roidState.
       // combatStartAt/isRoidCombatStartGraceActive() are entirely mode-
       // agnostic, so it applies here exactly as it does in STORY/BOSS BATTLE.
-      spawnBarrels(0);
+      // (ROID1's own escort DRONEs were removed entirely in a later batch —
+      // see spawnRoidBoss()'s own type!=='roid1' gate on spawnRoidEscortBatch()
+      // — "DRONE" in this stage's own name now refers only to the plain
+      // TRAINING population above, unrelated to ROID1 itself.)
+      // P0 GAME FLOW & COMBAT HOTFIX (root-cause fix, this batch): this was
+      // BARREL_COUNT=0 since TRAINING's original 5-stage rebuild — predating
+      // every later HOTFIX SECTION 8 batch that gave MAIN's own ROID1/ROID2
+      // encounters BARREL_COUNT (5) barrels (confirmed via git history: MAIN's
+      // ROID1 spawn sites — enterStoryStage()'s plan.boss==='roid1' branch,
+      // beginRoidInterlude(), enterBossBattleStage() — ALL already spawn 5
+      // barrels correctly; TRAINING Stage5 was simply never updated to match
+      // when that work landed). Without any barrels here, TRAINING could
+      // never let a player practice the BARREL SEARCH MISSILE SWEEP mechanic
+      // at all — restoring BARREL_COUNT here makes TRAINING Stage5 a genuine,
+      // representative rehearsal of the real MAIN ROID1 fight. TRAINING
+      // Stage4's own ADAM SPHERE + BARREL×5 and MAIN FINAL's own ADAM SPHERE
+      // + BARREL=0 rules are a completely separate boss/stage and untouched.
+      spawnBarrels(BARREL_COUNT);
       spawnRoidBoss('roid1', false);
     }
   }
@@ -11210,8 +11472,18 @@
         // A DRONE crossing back INTO the player's Area (or the player
         // walking into ITS Area) simply re-satisfies this check next tick,
         // so normal in-Area combat is completely unaffected.
-        const droneArea = robot.y < 0 ? 2 : 1;
-        const droneWrongArea = droneArea !== currentArea;
+        // P0 GAME FLOW & COMBAT HOTFIX (root-cause fix, this batch): replaced
+        // the old coarse "which side of Y=0 is the DRONE on" Area-ID compare
+        // with the real shared wall-segment check — the old version blocked
+        // a DRONE and PLAYER that were actually aligned through the genuine
+        // door opening just as hard as one truly separated by solid wall
+        // (spec's own explicit "単純にarea IDだけで遮断しない" requirement),
+        // and conversely never blocked a same-Area-ID DRONE/PLAYER pair that
+        // could still somehow be sitting on opposite sides of a wall corner.
+        // segmentCrossesAreaWall() is the exact same primitive PLAYER SHOT/
+        // AUTO AIM/enemy bullets/ROID targeting all already trust, so every
+        // one of them agrees on "what a wall blocks" everywhere in the file.
+        const droneWrongArea = segmentCrossesAreaWall(robot.x, robot.y, player.x, player.y);
         // HOTFIX 4.2 ADDENDUM 2 SECTIONS 41-51: folding isDroneBarrelLosBlocked()
         // into this exact SAME droneTargetLost flag (rather than a parallel,
         // separate mechanism) means this specific DRONE gets the exact
