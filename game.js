@@ -2810,6 +2810,21 @@
   // governs normal combat at all.
   const ROID_SEARCH_FRAME_MS = 280;
   const ROID_FIRE_FRAME_MS = 110; // ping-pong FIRE frame hold — first-pass, tunable
+  // GAMEPAD/ROID1 FIRE-SPRITE SYNC BATCH: how long the ATTACK sprite stays
+  // shown after a real shot is actually fired (see roidState.lastShotFiredAt,
+  // set inside fireRoidBullet()/fireRoidSniperBullet() at their own
+  // enemyBullets.push() lines — the real "a bullet now exists" instant).
+  // Reuses ROID_FIRE_FRAME_MS (the existing per-frame FIRE ping-pong hold)
+  // times 4 (both ROID1_SPRITES.fire and ROID2_SPRITES.fire are exactly 4
+  // frames) as its own duration, rather than inventing a new number — one
+  // full forward pass through the muzzle-flash frame set. This is shorter
+  // than SNIPER's own ROID1_SNIPER_INTERSHOT_MS gap between shots (so the
+  // ATTACK pose correctly turns off between SNIPER shots, never lingering
+  // into the next lock-on/aim beat) and shorter than a single BURST shot's
+  // own interval multiplied out, but long enough that consecutive BURST
+  // shots keep re-arming this window and the pose reads as continuous
+  // through a whole rapid-fire burst, exactly as intended.
+  const ROID_ATTACK_POSE_HOLD_MS = ROID_FIRE_FRAME_MS * 4;
   const ROID_BURST_SHOT_COUNT = 5;
   const ROID_BURST_SHOT_INTERVAL_MS = 300;
   const ROID_BURST_COOLDOWN_MS = 3000;
@@ -4843,6 +4858,11 @@
     profile: null, // one of ROID_BOSS_PROFILES' own entries — set by spawnRoidBoss()
     searchFrame: 0, searchDir: 1, searchFrameElapsedMs: 0, // ping-pong index/direction/timer over profile.sprites.search
     fireFrame: 0, fireDir: 1, fireFrameElapsedMs: 0, // ping-pong index/direction/timer over profile.sprites.fire
+    // GAMEPAD/ROID1 FIRE-SPRITE SYNC BATCH: the instant (performance.now()
+    // timestamp) the LAST real bullet was actually created — set exactly
+    // inside fireRoidBullet()/fireRoidSniperBullet(), never by boss.state.
+    // isRoidActivelyFiring() below keys the ATTACK sprite off this alone.
+    lastShotFiredAt: -Infinity,
     burstShotsFired: 0,
     nextShotAt: 0,
     cooldownUntil: 0,
@@ -5091,6 +5111,7 @@
     roidState.profile = profile;
     roidState.searchFrame = 0; roidState.searchDir = 1; roidState.searchFrameElapsedMs = 0;
     roidState.fireFrame = 0; roidState.fireDir = 1; roidState.fireFrameElapsedMs = 0;
+    roidState.lastShotFiredAt = -Infinity; // GAMEPAD/ROID1 FIRE-SPRITE SYNC BATCH: never carry a stale timestamp into the next fight
     roidState.burstShotsFired = 0;
     roidState.nextShotAt = 0;
     roidState.cooldownUntil = 0;
@@ -5258,22 +5279,30 @@
   // target-unknown resumes) and only ping-pongs through the full frame set
   // while it's unknown (SECTION C-1). FIRE's own animation is unchanged —
   // still gated to the 'firing' state only.
-  // HOTFIX 4.3 ADDENDUM 2 SECTIONS 44-49 (root-cause fix): the ATTACK sprite
-  // (profile.sprites.fire) used to only ever show while boss.state==='firing'
-  // — the plain BURST attack's own state. SNIPER (ROID1) and MISSILE (ROID2)
-  // are just as real an "actively attacking" state (each fires its own real
-  // bullet — see fireRoidSniperBullet()/the missile launch below) but were
-  // never included, so ROID1's whole SNIPER sequence (and ROID2's MISSILE)
-  // rendered the SEARCH/idle sprite throughout — confirmed the actual root
-  // cause of "ATTACK画像へ切り替わっていない" via inspection, not a guess.
-  // burstTelegraph (the pre-burst preparation beat) deliberately keeps its
-  // own existing whole-body flash-pulse telegraph instead — that's already
-  // a clear "attack incoming" signal in its own right, so this stays scoped
-  // to the states where a real shot is actually firing.
-  function isRoidActivelyFiring() {
-    return boss.state === 'firing' || boss.state === 'sniper' || boss.state === 'missile';
+  // GAMEPAD/ROID1 FIRE-SPRITE SYNC BATCH (root-cause fix, this batch):
+  // previously gated on boss.state MEMBERSHIP ('firing'/'sniper'/'missile'
+  // as a whole continuous span) — which switched to the ATTACK sprite the
+  // INSTANT boss.state became 'sniper' (beginRoidSniper()), a full
+  // ROID1_SNIPER_LOCK_MS (780ms) BEFORE that shot's real bullet exists, and
+  // kept showing ATTACK straight through the ROID1_SNIPER_INTERSHOT_MS gap
+  // after it fired too — i.e. "attack stateだから画像を表示". Rebuilt to key
+  // OFF THE ACTUAL PROJECTILE-CREATION EVENT instead: fireRoidBullet()/
+  // fireRoidSniperBullet() stamp roidState.lastShotFiredAt = now at their
+  // own enemyBullets.push() line (the one real "a bullet now exists"
+  // moment, source of truth for both the bullet's own trajectory and this
+  // sprite state), and this predicate is simply "was that within the last
+  // ROID_ATTACK_POSE_HOLD_MS". Applies identically to a lone SNIPER shot
+  // and to every shot of a BURST — each shot independently re-arms this
+  // same window, so a burst's ATTACK pose reads as continuous while a lone
+  // SNIPER shot's own pose correctly clears well before the next lock-on
+  // begins. boss.state is never consulted here any more.
+  // burstTelegraph (the pre-burst preparation beat, no shot fired yet) is
+  // correctly excluded by this alone — it already has its own separate
+  // whole-body flash-pulse telegraph as its "attack incoming" signal.
+  function isRoidActivelyFiring(now) {
+    return (now - roidState.lastShotFiredAt) < ROID_ATTACK_POSE_HOLD_MS;
   }
-  function updateRoidAnimation(dt) {
+  function updateRoidAnimation(dt, now) {
     const profile = roidState.profile;
     if (!profile) return;
     if (roidState.targetKnown) {
@@ -5289,7 +5318,7 @@
         roidState.searchDir = step.dir;
       }
     }
-    if (isRoidActivelyFiring()) {
+    if (isRoidActivelyFiring(now)) {
       roidState.fireFrameElapsedMs += dt * 1000;
       if (roidState.fireFrameElapsedMs >= ROID_FIRE_FRAME_MS) {
         roidState.fireFrameElapsedMs = 0;
@@ -5324,6 +5353,10 @@
       vx: Math.cos(angle) * BULLET_SPEED * speedMult, vy: Math.sin(angle) * BULLET_SPEED * speedMult,
       born: now,
     });
+    // GAMEPAD/ROID1 FIRE-SPRITE SYNC BATCH: this is the real "a bullet now
+    // exists" instant — the ATTACK sprite (isRoidActivelyFiring()) keys off
+    // this timestamp alone, never off boss.state membership.
+    roidState.lastShotFiredAt = now;
   }
 
   // DARK OUT PART 10 SECTION E: ROID1's own SNIPER MODE — fires
@@ -5360,6 +5393,10 @@
       vy: Math.sin(angle) * BULLET_SPEED * ROID1_SNIPER_BULLET_SPEED_MULT,
       born: now,
     });
+    // GAMEPAD/ROID1 FIRE-SPRITE SYNC BATCH: same source-of-truth timestamp
+    // as fireRoidBullet() above — set exactly here, at the real shot, never
+    // at beginRoidSniper()'s much-earlier state-entry point.
+    roidState.lastShotFiredAt = now;
   }
   function updateRoidSniper(now) {
     const s = roidState.sniper;
@@ -5516,7 +5553,7 @@
     updateRoidTargetTracking(now);
     maintainRoidEscortDrones(now);
     updateRoidCoverCounter(now); // HOTFIX 2 SECTION 34-35: independent of boss.state, so it resolves even while SNIPER/BURST/etc. runs
-    updateRoidAnimation(dt);
+    updateRoidAnimation(dt, now);
     if (boss.state === 'burstTelegraph') { updateRoidBurstTelegraph(now); return; }
     if (boss.state === 'sniper') { updateRoidSniper(now); return; }
     if (boss.state === 'missile') { updateRoidMissile(now); return; }
@@ -5663,7 +5700,7 @@
   function drawRoidBossInner(now) {
     const profile = roidState.profile;
     if (!profile) return;
-    const firing = isRoidActivelyFiring();
+    const firing = isRoidActivelyFiring(now);
     const frame = firing ? profile.sprites.fire[roidState.fireFrame] : profile.sprites.search[roidState.searchFrame];
     if (!frame || !frame.ready || !frame.img || !frame.img.complete || frame.img.naturalWidth <= 0) return;
     const scale = computeBodyVisualScale(frame, ROID_BODY_TARGET_HEIGHT);
@@ -11864,6 +11901,7 @@
     roidState.burstShotsFired = 0;
     roidState.nextShotAt = 0;
     roidState.cooldownUntil = 0;
+    roidState.lastShotFiredAt = -Infinity; // GAMEPAD/ROID1 FIRE-SPRITE SYNC BATCH: never carry a stale timestamp into the next fight
     enemyBullets.length = 0;
     bullets.length = 0;
     arcClawSlashes.length = 0;
@@ -12025,6 +12063,71 @@
   function confirmPauseMenuFocus() {
     const items = getPauseMenuItems();
     const el = items[pauseMenuFocusIndex];
+    if (el) el.click();
+  }
+
+  // GAMEPAD FINAL REMAP + FULL MENU NAVIGATION: generalizes the exact same
+  // D-PAD/LEFT STICK-navigate + A-confirm design PAUSE MENU already uses
+  // above (getPauseMenuItems()/movePauseMenuFocus()/confirmPauseMenuFocus()
+  // — left completely untouched, so PAUSE MENU's own already-tested
+  // behavior can never regress) to every OTHER menu screen: START MENU,
+  // its STORY MODE/TRAINING MODE/SCENARIO submenus, and the SETTING panel
+  // (reachable from either START MENU or PAUSE — see openSettingPanel()).
+  // A fully separate state block from PAUSE's own; only one container is
+  // ever visible at a time so there's no real conflict, and updateGamepadInput()
+  // only ever consults this system while NOT in PAUSE (see its own
+  // else-branch dispatch).
+  const GAMEPAD_MENU_NAV_SCREEN_OVERLAY = {
+    mainMenu: 'main-menu-overlay',
+    trainingSelect: 'training-select-overlay',
+    bossSelect: 'boss-select-overlay',
+    scenarioSelect: 'scenario-select-overlay',
+    mainScenarioSub: 'main-scenario-sub-overlay',
+    secretScenarioSub: 'secret-scenario-sub-overlay',
+  };
+  let gamepadMenuNavFocusIndex = 0;
+  let gamepadMenuNavStickWasUp = false;
+  let gamepadMenuNavStickWasDown = false;
+  let gamepadMenuNavLastContainer = null; // detects a screen/panel change so focus resets + stick trackers reseed automatically, without patching every individual screen-transition call site
+  // SETTING panel checked FIRST — it can overlay either mainMenu (opened
+  // from START MENU) or PAUSE (opened from the PAUSE MENU button), and in
+  // both cases its own DOM (#setting-panel) is what's actually visible.
+  function getGamepadMenuNavContainer() {
+    if (settingPanel && !settingPanel.hidden) return settingPanel;
+    const overlayId = GAMEPAD_MENU_NAV_SCREEN_OVERLAY[gameState.screen];
+    if (!overlayId) return null;
+    const el = document.getElementById(overlayId);
+    return (el && !el.hidden) ? el : null;
+  }
+  // .main-menu-item-locked (BOSS BATTLE MODE / FULL PLAY / SECRET SCENARIO
+  // while locked) and .life-option-btn-locked (LIFE INFINITY, also carries
+  // the native `disabled` attribute) are both explicitly skipped — the
+  // highlight/A-confirm can never land on an item the player can't
+  // actually select, matching what they can see/tap by hand.
+  function getGamepadMenuNavItems() {
+    const container = getGamepadMenuNavContainer();
+    if (!container) return [];
+    return Array.from(container.querySelectorAll('.main-menu-item, .mode-btn, .life-option-btn'))
+      .filter((el) => !el.hidden && !el.disabled && !el.classList.contains('main-menu-item-locked') && !el.classList.contains('life-option-btn-locked'));
+  }
+  function updateGamepadMenuNavFocusVisual() {
+    const items = getGamepadMenuNavItems();
+    items.forEach((el, i) => el.classList.toggle('gamepad-focus', i === gamepadMenuNavFocusIndex));
+  }
+  function moveGamepadMenuNavFocus(delta) {
+    const items = getGamepadMenuNavItems();
+    if (items.length === 0) return;
+    gamepadMenuNavFocusIndex = ((gamepadMenuNavFocusIndex + delta) % items.length + items.length) % items.length;
+    updateGamepadMenuNavFocusVisual();
+  }
+  // Reuses each button's own real click handler (STORY MODE/TRAINING MODE/
+  // SETTING/DEMO PLAY/BACK/life-option/etc.) via a genuine .click() — never
+  // a gamepad-only duplicate of what any of those buttons actually do, and
+  // touch/mouse operation of every one of these screens is completely
+  // untouched.
+  function confirmGamepadMenuNavFocus() {
+    const items = getGamepadMenuNavItems();
+    const el = items[gamepadMenuNavFocusIndex];
     if (el) el.click();
   }
 
@@ -13454,7 +13557,7 @@
     roidState, enemyBullets, updateEnemyBullets, fireRoidBullet, fireDroneSniperShot, isRoidActivelyFiring, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 44-49 — debug/verification only
     ROID_BOSS_PROFILES, ROID_MAX_HP, ROID_BULLET_DAMAGE, ROID_HURT_RADIUS,
     ROID_BURST_SHOT_COUNT, ROID_BURST_SHOT_INTERVAL_MS, ROID_BURST_COOLDOWN_MS,
-    ROID_SEARCH_FRAME_MS, ROID_FIRE_FRAME_MS,
+    ROID_SEARCH_FRAME_MS, ROID_FIRE_FRAME_MS, ROID_ATTACK_POSE_HOLD_MS, // GAMEPAD/ROID1 FIRE-SPRITE SYNC BATCH — debug/verification only
     ROID_COMBAT_START_GRACE_MS, isRoidCombatStartGraceActive, // debug/verification only — HOTFIX 2 SECTION 32-33
     // Debug/verification only — DARK OUT PART 5: ADAM/GABRIEL shared combat.
     isRoidBossType, isGabrielFamilyBossType,
@@ -13531,6 +13634,15 @@
     get GAMEPAD_PAUSE_MENU_STICK_THRESHOLD() { return GAMEPAD_PAUSE_MENU_STICK_THRESHOLD; },
     get triggerPauseNow() { return triggerPauseNow; },
     get resumeFromPauseMenu() { return resumeFromPauseMenu; }, // debug/verification only
+    // GAMEPAD FINAL REMAP + FULL MENU NAVIGATION + TAP TO START — debug/verification only:
+    get gamepadInputArmed() { return gamepadInputArmed; },
+    get gamepadMenuNavFocusIndex() { return gamepadMenuNavFocusIndex; },
+    get getGamepadMenuNavContainer() { return getGamepadMenuNavContainer; },
+    get getGamepadMenuNavItems() { return getGamepadMenuNavItems; },
+    get moveGamepadMenuNavFocus() { return moveGamepadMenuNavFocus; },
+    get confirmGamepadMenuNavFocus() { return confirmGamepadMenuNavFocus; },
+    get GAMEPAD_MENU_NAV_SCREEN_OVERLAY() { return GAMEPAD_MENU_NAV_SCREEN_OVERLAY; },
+    get onOpeningTap() { return onOpeningTap; },
     flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only
     get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
     FIRE_MAG_SIZE, FIRE_COOLDOWN_MS, // debug/verification only — SECTION D
@@ -15834,6 +15946,23 @@
   let gamepadAimVec = null; // post-deadzone RIGHT STICK {x,y}, or null while neutral — debug/verification only
   let gamepadFireHeld = false; // RT >= GAMEPAD_FIRE_THRESHOLD
   let gamepadLastButtons = {}; // previous-frame pressed state, for rising-edge detection
+  // TAP TO START GAMEPAD SUPPORT: ANY gamepad button (not just A — see
+  // anyButtonPressedNow below) transitioning not-pressed -> pressed while
+  // the 'opening' screen shows triggers the exact same onOpeningTap() flow
+  // a real tap already does. gamepadLastAnyButtonPressed is a SEPARATE
+  // previous-frame tracker from gamepadLastButtons (which only tracks the
+  // small named subset of buttons this game actually assigns) so BACK/L3/
+  // R3/any other numbered button still counts. gamepadInputArmed is the
+  // stronger "wait for full release" gate the spec explicitly calls for:
+  // TAP TO START disarms it the instant it fires, and NOTHING re-arms it
+  // until every gamepad button reports not-pressed — this is what stops
+  // the SAME physical press that just opened MAIN MENU from also being
+  // read as that screen's own D-PAD-nav/A-confirm rising edge on the very
+  // same frame (gameState.screen already changed synchronously inside
+  // onOpeningTap(), so without this gate the generic menu-nav code below
+  // would see the new screen and the same still-true pressedNow value).
+  let gamepadInputArmed = true;
+  let gamepadLastAnyButtonPressed = false;
   // PAUSE MENU gamepad navigation state — see GAMEPAD_PAUSE_MENU_STICK_THRESHOLD.
   let gamepadPauseMenuStickWasUp = false;
   let gamepadPauseMenuStickWasDown = false;
@@ -15904,6 +16033,8 @@
       if (actionStickTouchId === null) { actionStickVec.x = 0; actionStickVec.y = 0; }
       if (aimStickTouchId === null && now >= aimDoubleTapLockUntil) aimStickActive = false;
       gamepadLastButtons = {};
+      gamepadLastAnyButtonPressed = false; // TAP TO START GAMEPAD SUPPORT: no pad connected, so nothing is "pressed"
+      gamepadInputArmed = true; // never leave a disconnected pad stuck disarmed
       updateGamepadDebugOverlay(null);
       return;
     }
@@ -15913,16 +16044,27 @@
     const pressedNow = {
       lb: !!(btn(idx.LB) && btn(idx.LB).pressed),
       rb: !!(btn(idx.RB) && btn(idx.RB).pressed),
-      lt: (btn(idx.LT) ? btn(idx.LT).value : 0) >= GAMEPAD_FLASH_LT_THRESHOLD, // GAMEPAD CONTROL TUNING ADDENDUM: LT is a value-threshold rising edge (FLASH), per spec, not .pressed
+      lt: (btn(idx.LT) ? btn(idx.LT).value : 0) >= GAMEPAD_FLASH_LT_THRESHOLD, // value-threshold rising edge (FLASH), per spec, not .pressed
       x: !!(btn(idx.X) && btn(idx.X).pressed),
       y: !!(btn(idx.Y) && btn(idx.Y).pressed),
       a: !!(btn(idx.A) && btn(idx.A).pressed),
+      b: !!(btn(idx.B) && btn(idx.B).pressed),
       menu: !!(btn(idx.MENU) && btn(idx.MENU).pressed),
       dpadUp: !!(btn(idx.DPAD_UP) && btn(idx.DPAD_UP).pressed),
       dpadDown: !!(btn(idx.DPAD_DOWN) && btn(idx.DPAD_DOWN).pressed),
       dpadLeft: !!(btn(idx.DPAD_LEFT) && btn(idx.DPAD_LEFT).pressed),
       dpadRight: !!(btn(idx.DPAD_RIGHT) && btn(idx.DPAD_RIGHT).pressed),
     };
+    // GAMEPAD FINAL REMAP: any button transitioning not-pressed -> pressed
+    // counts as a generic "any button" press, used by the TAP TO START
+    // screen below — L3/R3 stick-clicks and BACK are included per the
+    // explicit "if L3/R3 report as buttons, pressing counts too" spec note
+    // (AXIS movement alone, e.g. a stick pushed without clicking it, never
+    // counts — only gp.buttons entries do).
+    const anyButtonPressedNow = gp.buttons.some((b) => b && b.pressed);
+    // TAP TO START GAMEPAD SUPPORT: the "wait for full release" gate —
+    // re-arms the instant every gamepad button is up again, never before.
+    if (!gamepadInputArmed && !anyButtonPressedNow) gamepadInputArmed = true;
     const prev = gamepadLastButtons;
 
     // GAMEPLAY-affecting reads (MOVE/AIM/FIRE/DASH/FLASH/STEALTH/RELOAD)
@@ -15988,41 +16130,54 @@
       fireHeld = touchFireHeld || gamepadFireHeld;
 
       // ---- rising-edge-only buttons: exactly one activation per physical press ----
-      if (pressedNow.lb && !prev.lb) triggerDashInDirection(now, BASE_ANGLE.left); // LB -> DASH LEFT (fixed direction, unchanged)
-      if (pressedNow.rb && !prev.rb) triggerDashInDirection(now, BASE_ANGLE.right); // RB -> DASH RIGHT (fixed direction, unchanged)
-      // GAMEPAD CONTROL TUNING ADDENDUM: Y -> DIRECTIONAL DASH (moved off
-      // LT, which is FLASH now — see below). No angleOverride is passed —
-      // triggerDashInDirection() already computes its own angle from the
-      // CURRENT actionStickVec (which, by this point in the frame, already
-      // reflects whichever of LEFT STICK/D-PAD/touch is actually driving
-      // movement — never a separate direction calculation) and falls back
-      // to player.baseDir (current facing) when that vector is neutral —
-      // precisely "dash toward whatever direction is currently held, or
-      // facing if none" per spec, and the exact same fallback the touch
-      // DASH button's own default press already uses.
-      if (pressedNow.y && !prev.y) triggerDashInDirection(now);
-      // GAMEPAD CONTROL TUNING ADDENDUM: LT -> FLASH (moved off X, which is
-      // now fully unassigned). Calls the existing flashPress() — no
-      // gamepad-only duplicate of FLASH's real logic.
-      if (pressedNow.lt && !prev.lt) flashPress();
-      if (pressedNow.a && !prev.a) triggerManualReload(); // A -> RELOAD (existing triggerManualReload())
-      // GAMEPAD CONTROL TUNING ADDENDUM: X's old FLASH assignment and Y's
-      // old STEALTH assignment are both explicitly removed — X is fully
-      // unassigned (never wired to any function), and STEALTH is no longer
-      // reachable from the gamepad at all this batch (its own touch button
-      // is completely untouched). B, L3/R3 remain unassigned as before.
+      // GAMEPAD FINAL REMAP (this batch's spec supersedes the prior
+      // addendum's A=RELOAD/X=FLASH/Y=directional-DASH/LT=directional-DASH
+      // wherever they conflict): LB/RB keep their fixed LEFT/RIGHT DASH;
+      // A/B become fixed SOUTH/NORTH DASH (BASE_ANGLE.down/up) — always
+      // that literal world direction regardless of current facing or MOVE
+      // input, exactly like LB/RB's own fixed-direction design, giving a
+      // full 4-direction DASH set (B=north, A=south, LB=west, RB=east) with
+      // no diagonals. LT is FLASH (value-threshold rising edge, unchanged
+      // from the prior addendum). X is RELOAD. Y is STEALTH. All five are
+      // plain rising-edge calls into the exact same real functions the
+      // touch buttons already use — no gamepad-only duplicate logic.
+      if (pressedNow.lb && !prev.lb) triggerDashInDirection(now, BASE_ANGLE.left); // LB -> DASH WEST/LEFT (fixed direction, unchanged)
+      if (pressedNow.rb && !prev.rb) triggerDashInDirection(now, BASE_ANGLE.right); // RB -> DASH EAST/RIGHT (fixed direction, unchanged)
+      if (pressedNow.a && !prev.a) triggerDashInDirection(now, BASE_ANGLE.down); // A -> DASH SOUTH (fixed direction, never facing/MOVE-dependent)
+      if (pressedNow.b && !prev.b) triggerDashInDirection(now, BASE_ANGLE.up); // B -> DASH NORTH (fixed direction, never facing/MOVE-dependent)
+      if (pressedNow.lt && !prev.lt) flashPress(); // LT -> FLASH (existing flashPress(), no gamepad-only duplicate)
+      if (pressedNow.x && !prev.x) triggerManualReload(); // X -> RELOAD (existing triggerManualReload())
+      if (pressedNow.y && !prev.y) stealthPress(); // Y -> STEALTH (existing stealthPress())
+      // L3/R3 remain unassigned as before.
     } else {
       gamepadFireHeld = false;
       fireHeld = touchFireHeld;
+      // TAP TO START GAMEPAD SUPPORT: checked FIRST, before anything else
+      // in this whole non-gameplayActive branch. If it fires this frame,
+      // `tapToStartFiredThisFrame` skips the rest of this branch entirely
+      // (PAUSE nav / generic menu nav below) for THIS SAME frame — the
+      // "wait for full release" gate (gamepadInputArmed, disarmed the
+      // instant this fires) then blocks it on every subsequent frame too,
+      // until every button is released, so the exact physical press that
+      // opened MAIN MENU can never also register as that screen's own
+      // D-PAD-nav/A-confirm rising edge.
+      let tapToStartFiredThisFrame = false;
+      if (gameState.screen === 'opening' && gamepadInputArmed && anyButtonPressedNow && !gamepadLastAnyButtonPressed) {
+        onOpeningTap({ preventDefault() {} });
+        gamepadInputArmed = false;
+        tapToStartFiredThisFrame = true;
+      }
       // GAMEPAD CONTROL TUNING: PAUSE MENU navigation — D-PAD UP/DOWN
       // (rising edge) or LEFT STICK UP/DOWN (must return to neutral before
       // it counts again, never a per-frame repeat while held) move the
       // gamepad-focus highlight; A confirms via a genuine .click() on the
       // focused button. Scoped to when the actual PAUSE MENU button list
-      // is visible (never while the SETTING sub-panel is open — that has
-      // no gamepad navigation of its own this batch) so D-PAD/A never do
-      // anything unexpected on other non-gameplay screens.
-      if (gameState.screen === 'gameplay' && gameState.paused && pauseMenuPanel && !pauseMenuPanel.hidden) {
+      // is visible (never while the SETTING sub-panel is open, which has
+      // its own generic-menu-nav handling below instead) so D-PAD/A never
+      // do anything unexpected on other non-gameplay screens.
+      if (tapToStartFiredThisFrame) {
+        // Nothing else this frame — see the comment above.
+      } else if (gameState.screen === 'gameplay' && gameState.paused && pauseMenuPanel && !pauseMenuPanel.hidden) {
         if (pressedNow.dpadUp && !prev.dpadUp) movePauseMenuFocus(-1);
         if (pressedNow.dpadDown && !prev.dpadDown) movePauseMenuFocus(1);
         const stickY = gp.axes[1] || 0;
@@ -16033,9 +16188,44 @@
         gamepadPauseMenuStickWasUp = stickPastUp;
         gamepadPauseMenuStickWasDown = stickPastDown;
         // PAUSE中はA=CONFIRM専用 — gameplayActive===falseの間はこのelseブロック
-        // 自体しか実行されないため、上のgameplayActive分岐にあるA=RELOADは
+        // 自体しか実行されないため、上のgameplayActive分岐にあるA=SOUTH DASHは
         // そもそも一切評価されない（意図的な相互排他、二重定義ではない）。
         if (pressedNow.a && !prev.a) confirmPauseMenuFocus();
+      } else {
+        // FULL MENU NAVIGATION: every other menu screen (START MENU/STORY
+        // MODE/TRAINING MODE/SCENARIO submenus) plus the SETTING panel
+        // (reachable from either START MENU or PAUSE) — see
+        // getGamepadMenuNavContainer()/getGamepadMenuNavItems() above.
+        // gamepadMenuNavLastContainer detects a screen/panel change so
+        // focus resets to index 0 and the stick trackers reseed to "already
+        // past threshold" automatically, exactly like showModeMenu() already
+        // does by hand for PAUSE — this is that same idea generalized to
+        // every screen at once, with no per-screen call-site to maintain.
+        const navContainer = getGamepadMenuNavContainer();
+        if (navContainer !== gamepadMenuNavLastContainer) {
+          gamepadMenuNavFocusIndex = 0;
+          gamepadMenuNavStickWasUp = true;
+          gamepadMenuNavStickWasDown = true;
+          gamepadMenuNavLastContainer = navContainer;
+          if (navContainer) updateGamepadMenuNavFocusVisual();
+        }
+        if (navContainer) {
+          if (pressedNow.dpadUp && !prev.dpadUp) moveGamepadMenuNavFocus(-1);
+          if (pressedNow.dpadDown && !prev.dpadDown) moveGamepadMenuNavFocus(1);
+          const stickY = gp.axes[1] || 0;
+          const stickPastUp = stickY <= -GAMEPAD_PAUSE_MENU_STICK_THRESHOLD;
+          const stickPastDown = stickY >= GAMEPAD_PAUSE_MENU_STICK_THRESHOLD;
+          if (stickPastUp && !gamepadMenuNavStickWasUp) moveGamepadMenuNavFocus(-1);
+          if (stickPastDown && !gamepadMenuNavStickWasDown) moveGamepadMenuNavFocus(1);
+          gamepadMenuNavStickWasUp = stickPastUp;
+          gamepadMenuNavStickWasDown = stickPastDown;
+          // MENU中はGAMEPLAY actionを発動しない — A is CONFIRM-only here
+          // (gameplayActive is false for the whole of this else-branch, so
+          // the gameplayActive branch's own A=SOUTH DASH is never evaluated
+          // this frame regardless; context-sensitive by construction, not a
+          // special case).
+          if (pressedNow.a && !prev.a) confirmGamepadMenuNavFocus();
+        }
       }
     }
 
@@ -16045,6 +16235,7 @@
     }
 
     gamepadLastButtons = pressedNow;
+    gamepadLastAnyButtonPressed = anyButtonPressedNow;
     updateGamepadDebugOverlay(gp);
   }
 

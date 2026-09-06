@@ -1318,6 +1318,28 @@ body {
   transform: translate(-100%, -50%);
   font-size: 0.7em;
 }
+/* GAMEPAD FINAL REMAP + FULL MENU NAVIGATION: the exact same highlight
+   language as .mode-btn.gamepad-focus above (PAUSE MENU), extended to the
+   generic menu-nav system's own item classes — START MENU/STORY MODE/
+   TRAINING MODE/SCENARIO submenus (.main-menu-item) and SETTING's LIFE
+   options (.life-option-btn). Never applied to a locked item — the
+   generic nav system's own item list already excludes
+   .main-menu-item-locked/.life-option-btn-locked from ever receiving it. */
+.main-menu-item.gamepad-focus,
+.life-option-btn.gamepad-focus {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+  text-shadow: 0 0 12px rgba(255, 255, 255, 0.8);
+  position: relative;
+}
+.main-menu-item.gamepad-focus::before {
+  content: '▶';
+  position: absolute;
+  left: -2px;
+  top: 50%;
+  transform: translate(-100%, -50%);
+  font-size: 0.7em;
+}
 #mode-restart-btn {
   color: rgba(232, 200, 150, 0.85);
 }
