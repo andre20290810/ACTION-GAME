@@ -1201,6 +1201,25 @@
     const plan = activeStagePlanArray()[currentStageIndex];
     return !!plan && plan.type === 'boss' && plan.final === true;
   }
+  // HOTFIX 4.2 ADDENDUM 1 SECTIONS 21-24: is the STAGE about to be entered
+  // the one immediately following a boss encounter in MAIN's own resolved
+  // plan (ROID1/GABRIEL1/GABRIEL2/GABRIEL3 alike) — used to force a
+  // guaranteed HEAL there instead of leaving it to spawnStageClearReward()'s
+  // own damage-based roll. MAIN-scenario-only per this addendum's own
+  // scope (never SECRET). Deliberately excludes the 'adamSphere' entry
+  // itself — GABRIEL3(final)'s own next stage is the true FINAL BATTLE,
+  // which intentionally has no mid-fight HEAL pickup at all (its own branch
+  // in enterStoryStage() explicitly disables healItem regardless — this
+  // just keeps that intent explicit here too, rather than relying on that
+  // later code to silently undo a wrong true here).
+  function isImmediatelyAfterMainBossEncounter() {
+    if (storyScenarioState.scenario !== 'main') return false;
+    const plan = activeStagePlanArray();
+    const current = plan[currentStageIndex];
+    if (!current || current.type === 'adamSphere') return false;
+    const prev = plan[currentStageIndex - 1];
+    return !!prev && prev.type === 'boss';
+  }
   // Gates every DRONE update/draw/FIRE-hit system: SECURITY TRAINING always,
   // plus any STORY STAGE that has DRONEs present at all (every DRONE-type
   // STAGE, and the FINAL STAGE alongside GABRIEL).
@@ -6864,7 +6883,15 @@
     hp: 0,
     frameIndex: 0,
     frameTimer: 0,
-    nextAttackAt: 0,
+    // HOTFIX 4.2 ADDENDUM 1/2 SECTIONS 12-16/68-73: replaces the old single
+    // `nextAttackAt` timer with an explicit phase machine so the cycle can
+    // hold a genuine LOCK-ON phase before firing, then fire TWICE with a
+    // visible gap, then cooldown — see updateAdamSphereCombat() below.
+    // 'locking' -> 'interShot' -> 'cooldown' -> 'locking' -> ...
+    attackPhase: 'locking',
+    lockOnStartedAt: 0,
+    interShotUntil: 0,
+    cooldownUntil: 0,
     attackVisualUntil: 0, // while now < this, drawAdamSphereCombat() forces the south-facing frame regardless of rotation phase
     dying: false,
     deathStartedAt: 0,
@@ -6872,8 +6899,25 @@
   };
   const ADAM_SPHERE_COMBAT_MAX_HP = BOSS_HP_MAX; // reuses the existing boss HP pool rather than inventing a new number — this is a FINAL-BATTLE-caliber encounter
   const ADAM_SPHERE_COMBAT_HIT_RADIUS = ADAM_SPHERE_TARGET_DIAMETER / 2; // same body-footprint convention as every other hurtbox in this file (radius = half the drawn diameter)
-  const ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS = 1800; // lock-on-and-fire cadence
+  const ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS = 1800; // HOTFIX 4.2 ADDENDUM SECTIONS 60-61: unchanged value — now used as the post-2-shot COOLDOWN before the next lock-on begins, never touched by the lock-on-speed change
   const ADAM_SPHERE_COMBAT_ATTACK_VISUAL_MS = 400; // how long the forced south-facing attack frame holds before the rotation loop resumes
+  // HOTFIX 4.2 ADDENDUM 1 SECTIONS 12-16: the short, visibly-readable gap
+  // between ADAM SPHERE's own SHOT 1 and SHOT 2 within one attack cycle — a
+  // genuinely new ADAM-SPHERE-only concept (DRONE's own STORY sniper only
+  // ever fires once per cycle, so there is no existing DRONE value to
+  // derive this from) — never touched by the lock-on-speed change either.
+  const ADAM_SPHERE_SHOT_INTERVAL_MS = 300;
+  // HOTFIX 4.2 ADDENDUM 2 SECTIONS 68-73 (root-cause-derived, not invented):
+  // DRONE_SNIPER_FIRE_AT_MS (declared above, SECTION 26-35) is the ONE real
+  // existing value that actually controls "how long from acquiring the
+  // PLAYER until a DRONE's own STORY sniper cycle fires its shot" — the
+  // marker itself locks the INSTANT acquisition happens (no separate
+  // "acquiring" sub-phase exists in that system), so this fire-delay is the
+  // closest real analog to "DRONE's lock-on duration" this file has. ADAM
+  // SPHERE gets an explicit, genuinely-new LOCK-ON phase (it never had one
+  // before this batch) sized to exactly half of that measured value —
+  // DRONE's own timing itself is completely untouched by this constant.
+  const ADAM_SPHERE_LOCK_ON_MS = DRONE_SNIPER_FIRE_AT_MS * 0.5;
   // SECTIONS 6/8/46: adam_sphere_01.png is the ONE frame among the existing
   // 4-frame rotation loop whose glowing sensor faces the viewer/PLAYER
   // straight-on (frames 2-4 show it rotated to the side/hidden — confirmed
@@ -6903,7 +6947,10 @@
     adamSphereCombatState.hp = ADAM_SPHERE_COMBAT_MAX_HP;
     adamSphereCombatState.frameIndex = 0;
     adamSphereCombatState.frameTimer = 0;
-    adamSphereCombatState.nextAttackAt = now + ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS;
+    adamSphereCombatState.attackPhase = 'locking';
+    adamSphereCombatState.lockOnStartedAt = now;
+    adamSphereCombatState.interShotUntil = 0;
+    adamSphereCombatState.cooldownUntil = 0;
     adamSphereCombatState.attackVisualUntil = 0;
     adamSphereCombatState.dying = false;
     adamSphereCombatState.deathStartedAt = 0;
@@ -6956,16 +7003,40 @@
       s.frameTimer -= ADAM_SPHERE_FRAME_MS;
       s.frameIndex = (s.frameIndex + 1) % ADAM_SPHERE_SPRITES.length;
     }
-    // Lock-on + attack: aims fresh at the PLAYER's live position every shot
-    // (a real lock-on, never a stale/telegraphed point) and fires through
-    // the SAME enemyBullets pipeline DRONE/ROID gunfire already uses — same
-    // bullet visual (drawBullet()), same PLAYER-hit damage, same existing
-    // enemy-projectile-vs-barrel explosion wiring, no new projectile type.
-    if (now >= s.nextAttackAt) {
-      s.nextAttackAt = now + ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS;
+    // HOTFIX 4.2 ADDENDUM 1/2 SECTIONS 12-16/68-73: LOCK-ON -> SHOT 1 ->
+    // short visible interval -> SHOT 2 -> cooldown -> next LOCK-ON. Each
+    // shot aims fresh at the PLAYER's live position at ITS OWN fire moment
+    // (never a stale/telegraphed point, never homing — this is identical in
+    // spirit to fireDroneSniperShot()'s own per-shot re-aim, just called
+    // twice per cycle here) and fires through the SAME enemyBullets
+    // pipeline DRONE/ROID gunfire already uses — same bullet visual
+    // (drawBullet()), same PLAYER-hit damage, same existing enemy-
+    // projectile-vs-barrel explosion wiring, no new projectile type. Target
+    // is always the PLAYER — this function has never read barrels as a
+    // candidate target (HOTFIX 4.2 ADDENDUM 1 SECTION 10-11 confirmed this
+    // by inspection, no change needed there).
+    function fireOneShot() {
       s.attackVisualUntil = now + ADAM_SPHERE_COMBAT_ATTACK_VISUAL_MS;
       const angle = Math.atan2(player.y - s.y, player.x - s.x);
       enemyBullets.push({ x: s.x, y: s.y, vx: Math.cos(angle) * BULLET_SPEED, vy: Math.sin(angle) * BULLET_SPEED, born: now });
+    }
+    if (s.attackPhase === 'locking') {
+      if (now - s.lockOnStartedAt >= ADAM_SPHERE_LOCK_ON_MS) {
+        fireOneShot(); // SHOT 1
+        s.attackPhase = 'interShot';
+        s.interShotUntil = now + ADAM_SPHERE_SHOT_INTERVAL_MS;
+      }
+    } else if (s.attackPhase === 'interShot') {
+      if (now >= s.interShotUntil) {
+        fireOneShot(); // SHOT 2
+        s.attackPhase = 'cooldown';
+        s.cooldownUntil = now + ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS;
+      }
+    } else if (s.attackPhase === 'cooldown') {
+      if (now >= s.cooldownUntil) {
+        s.attackPhase = 'locking';
+        s.lockOnStartedAt = now;
+      }
     }
   }
   function drawAdamSphereCombat(now) {
@@ -8582,7 +8653,14 @@
     // damage happened to be taken on the previous stage — overrides
     // spawnStageClearReward()'s own damage-based roll for this ONE plan
     // entry only (plan.forceHeal), never the other whiteShadow entries.
-    if (plan.forceHeal) {
+    // HOTFIX 4.2 ADDENDUM 1 SECTIONS 21-24: any stage right after a MAIN
+    // boss encounter (ROID1/GABRIEL1/GABRIEL2/GABRIEL3) also gets a
+    // guaranteed HEAL this same way — generalizes the single explicit
+    // plan.forceHeal flag (still kept, on the GABRIEL2->WHITE SHADOW ONLY
+    // entry) to the random-resolved stages a boss can also be followed by
+    // (e.g. GABRIEL1's own randomSlot pick), which have no fixed plan
+    // object of their own to flag ahead of time.
+    if (plan.forceHeal || isImmediatelyAfterMainBossEncounter()) {
       ammoItem.active = false;
       spawnHealItem();
     }
@@ -8664,6 +8742,23 @@
       healItem.active = false;
       ammoItem.active = false;
       spawnProjectAdamItem();
+      // HOTFIX 4.2 ADDENDUM 1 SECTIONS 21-24: this waypoint follows ROID1
+      // directly, so it needs its own guaranteed POST-BOSS HEAL too — but
+      // it's a genuine AREA1-only stage (isCultivationLabStage() pins
+      // player.y>=0, no AREA2 exists to place it in per the usual rule),
+      // and the line right above intentionally disables healItem here so a
+      // stray AMMO/HEAL roll never competes with the real reward, SECRET
+      // FILE: PROJECT ADAM (spawnProjectAdamItem(), anchored at
+      // PROJECT_ADAM_POS_FRAC = 50%/60%). Placed at 50%/25% instead — same
+      // X, comfortably far (35% of the room's own height) from the SECRET
+      // FILE item's own pickup radius — so the two are never confusable or
+      // simultaneously in the same glance, and picking up one never risks
+      // interacting with the other.
+      healItem.x = W * 0.5;
+      healItem.y = H * 0.25;
+      healItem.active = true;
+      healItem.frameIndex = 0;
+      healItem.frameElapsedMs = 0;
       if (!storyCinematicState.experimentLabPlayed) {
         storyCinematicState.experimentLabPlayed = true;
         playEventMovie('experiment_lab', () => {});
@@ -8711,7 +8806,19 @@
         ammoItem.active = false;
         worldItems.length = 0;
         storyScenarioState.stageOverrideId = 'boss_c10_adam_sphere_main';
-        spawnBarrels(BARREL_COUNT);
+        // HOTFIX 4.2 ADDENDUM 2 SECTIONS 63-67 (also the real root cause of
+        // the "PLAYER射撃がADAM SPHEREに一切当たらない" bug): this stage's own
+        // BARRELs sat directly in the only walkable firing lane (the player
+        // is pinned south of the sphere by the north-block clamp), so most
+        // real-device shots were being consumed by a BARREL's own hitbox
+        // check (which runs earlier in the same per-bullet `consumed` chain)
+        // before ever reaching ADAM SPHERE's own hit-radius check further
+        // down — the collision code itself was already correct (confirmed
+        // by firing with a clear lane). Zero BARRELs here removes that
+        // obstruction entirely. TRAINING STAGE 4's own ADAM SPHERE + BARREL×5
+        // (enterSecurityTrainingStage()) is explicitly UNCHANGED — this is
+        // MAIN-FINAL-stage-only.
+        spawnBarrels(0);
         spawnAdamSphereCombat(W / 2, areaTopY(currentArea) + H * 0.4, now);
       } else {
         boss.spawned = false;
@@ -9329,7 +9436,7 @@
   // depletion death already uses (triggerGameOver() — no new movie/screen).
   const SECRET_FILE_SHAKE_MAG = 10; // moderate — noticeably less than BOSS_INTRO_SHAKE_MAG(16)'s dramatic landing, HUD stays legible throughout
   const SECRET_FILE_SHAKE_MS = 1800; // within spec's own "1.5-2s" band
-  const SECRET_FILE_TIMER_MS = 7 * 60 * 1000; // HOTFIX 4.2 SECTION 7-9: extended from 5:00 to 7:00; RETRY/PAUSE/GAME OVER persistence semantics unchanged
+  const SECRET_FILE_TIMER_MS = 10 * 60 * 1000; // HOTFIX 4.2 ADDENDUM 1 SECTIONS 17-20: extended again, 7:00 -> 10:00 (HOTFIX 4.2's own 5:00->7:00 change history preserved above); RETRY/PAUSE/GAME OVER persistence semantics unchanged; RESULT's own S-rank 15:00 threshold is a completely separate system, not touched
   const secretFileTimerState = { active: false, remainingMs: 0 };
   function startSecretFileTimer(now) {
     secretFileTimerState.active = true;
@@ -10306,18 +10413,33 @@
         // SECTION 6-2/6-3/6-4: the 2s lock cycle — lock the player's CURRENT
         // position at cycle start, fire once in the final YELLOW_MS window,
         // then immediately begin the next cycle with a fresh lock.
-        // POST-v2.0 SECTION 24/25: barrel-shadow cover blocks every NEW lock
-        // here (both the very first one and each cycle's own re-lock) —
-        // never the "fire" step below, which only ever reuses a lock already
-        // acquired before cover applied (spec: in-flight attacks are never
-        // retroactively cancelled). While blocked, snipeCycleStartedAt stays
-        // -Infinity so drawDroneSniperWarning() (which already early-returns
-        // on that) correctly shows no marker either.
-        // HOTFIX SECTION 3: STEALTH/successful FLASH — unlike barrel cover
-        // above — DOES interrupt a lock already in progress, cancelling the
-        // not-yet-fired warning/shot outright (never just blocking the NEXT
-        // lock). Already-fired shots are untouched (enemyBullets is a
-        // separate array, never cleared here).
+        // POST-v2.0 SECTION 24/25 (superseded by HOTFIX 4.2 ADDENDUM 2
+        // SECTIONS 41-51 below): barrel-shadow cover used to block every DRONE
+        // north of the player via the coarse isPlayerBarrelShadowHiddenFrom()
+        // check (any barrel covering the player, regardless of whether it
+        // actually sat between THIS drone and the player). It has been
+        // replaced here by isDroneBarrelLosBlocked() (folded into
+        // droneTargetLost just above) — the precise, PER-DRONE geometric
+        // check requiring an actual barrel on this specific drone's own
+        // sightline. A drone off to the side with no barrel between it and
+        // the player now keeps normal targeting even while a different,
+        // more directly-north drone is genuinely blocked by that same
+        // barrel. isPlayerBarrelShadowHiddenFrom() itself is untouched and
+        // still used as-is by the boss's own separate barrel-cover checks
+        // elsewhere in this file.
+        // Both the very first lock and each cycle's own re-lock are blocked
+        // by barrelLosBlocked; the "fire" step below never re-checks it
+        // (spec: in-flight attacks are never retroactively cancelled by a
+        // barrel that only started blocking after the shot was already
+        // committed). While blocked, snipeCycleStartedAt stays -Infinity so
+        // drawDroneSniperWarning() (which already early-returns on that)
+        // correctly shows no marker either.
+        // HOTFIX SECTION 3 / ADDENDUM 2 SECTIONS 41-51: STEALTH, successful
+        // FLASH, and now barrel-LOS-blocked all DO interrupt a lock already
+        // in progress via the same droneTargetLost path, cancelling the
+        // not-yet-fired warning/shot/1s pre-fire blink outright (never just
+        // blocking the NEXT lock). Already-fired shots are untouched
+        // (enemyBullets is a separate array, never cleared here).
         // HOTFIX 2 SECTIONS 57-64 (critical): a DRONE whose own fixed row
         // (robot.y — never changes area, see PART8's own "a DRONE's row
         // never changes area" comment elsewhere in this file) sits in the
@@ -10335,7 +10457,21 @@
         // so normal in-Area combat is completely unaffected.
         const droneArea = robot.y < 0 ? 2 : 1;
         const droneWrongArea = droneArea !== currentArea;
-        const droneTargetLost = droneWrongArea || (now < player.stealthUntil) || (now < robot.flashLostUntil);
+        // HOTFIX 4.2 ADDENDUM 2 SECTIONS 41-51: folding isDroneBarrelLosBlocked()
+        // into this exact SAME droneTargetLost flag (rather than a parallel,
+        // separate mechanism) means this specific DRONE gets the exact
+        // behavior already established for STEALTH/FLASH/wrong-area above —
+        // new lock forbidden (the two "!droneTargetLost" acquisition guards
+        // below/further down), AND an already-locked-but-not-yet-fired cycle
+        // is cancelled outright (the "droneTargetLost && !robot.snipeFired"
+        // branch below), which in turn automatically removes the "+" marker
+        // (drawDroneSniperWarning() early-returns once snipeCycleStartedAt
+        // resets to -Infinity) and cancels the 1s pre-fire body blink
+        // (isDroneBodyPreFireBlinking() checks the same field). A shot
+        // already fired this cycle (enemyBullets) is untouched — this flag
+        // is never consulted by anything downstream of firing.
+        const barrelLosBlocked = isDroneBarrelLosBlocked(robot);
+        const droneTargetLost = droneWrongArea || (now < player.stealthUntil) || (now < robot.flashLostUntil) || barrelLosBlocked;
         // HOTFIX 2 SECTION 32-33: ROID's own opening grace window also
         // blocks its escort DRONEs from acquiring any NEW lock/warning/
         // attack (patrol movement above is untouched) — never applies to
@@ -10351,7 +10487,7 @@
             if (robot.attackPhaseOffsetDeadline < 0) robot.attackPhaseOffsetDeadline = now + robot.attackPhaseOffsetMs;
             if (now < robot.attackPhaseOffsetDeadline) continue;
           }
-          if (!escortGraceBlocked && !droneTargetLost && !isPlayerBarrelShadowHiddenFrom(robot)) {
+          if (!escortGraceBlocked && !droneTargetLost) {
             robot.snipeCycleStartedAt = now;
             robot.lockedTargetX = player.x;
             robot.lockedTargetY = player.y;
@@ -10374,7 +10510,7 @@
           robot.snipeFired = true;
         }
         if (cycleElapsed >= DRONE_SNIPER_CYCLE_MS) {
-          if (!escortGraceBlocked && !droneTargetLost && !isPlayerBarrelShadowHiddenFrom(robot)) {
+          if (!escortGraceBlocked && !droneTargetLost) {
             // HOTFIX SECTION 3: always the player's CURRENT live position —
             // never a stale one held over from before STEALTH/FLASH engaged.
             robot.snipeCycleStartedAt = now;
@@ -10679,6 +10815,36 @@
   function isPlayerBarrelShadowHiddenFrom(enemy) {
     if (enemy.y > player.y) return false;
     return isPlayerUnderBarrelShadowCover();
+  }
+  // HOTFIX 4.2 ADDENDUM 2 SECTIONS 41-51: a strictly MORE PRECISE, per-DRONE
+  // line-of-sight check than isPlayerBarrelShadowHiddenFrom() above. That
+  // function only asks "is this enemy north of the player AND is the player
+  // under ANY barrel's cover at all" — it never checks whether a barrel is
+  // actually positioned between THIS specific enemy and the player, so a
+  // barrel off to one side (not actually blocking that enemy's view) would
+  // still count. This one additionally requires that some ALIVE barrel
+  // geometrically sits on the drone->player sightline — reusing
+  // distanceToSegment(), the exact same point-to-segment primitive
+  // fireDroneSniperShot()'s own bullet-vs-barrel hit check (SECTION 9581)
+  // already uses — AND that the player is within THAT SAME barrel's own
+  // south shadow ellipse (barrelShadowEllipse(), unchanged). So a DRONE
+  // positioned to the side with no barrel actually between it and the
+  // player keeps normal targeting even while a completely different barrel
+  // is hiding the player from some OTHER (more directly north) drone.
+  // Purely a per-call query — never mutates robot/barrel state.
+  const BARREL_LOS_BLOCK_RADIUS = BARREL_DRAW_H * 0.5; // derived from the barrel's own existing draw-size constant, not an invented new number — approximates the drawn drum's visual half-width
+  function isDroneBarrelLosBlocked(robot) {
+    if (robot.y > player.y) return false; // same "north of player" convention as isPlayerBarrelShadowHiddenFrom()
+    for (const b of barrels) {
+      if (!b.alive) continue;
+      const s = barrelShadowEllipse(b);
+      const ex = (player.x - s.cx) / s.rx, ey = (player.y - s.cy) / s.ry;
+      if (ex * ex + ey * ey > 1) continue; // player not covered by THIS particular barrel
+      if (distanceToSegment(b.x, b.y, robot.x, robot.y, player.x, player.y) <= BARREL_LOS_BLOCK_RADIUS) {
+        return true; // this exact barrel both covers the player AND sits on this drone's sightline
+      }
+    }
+    return false;
   }
 
   function drawBarrel(b) {
@@ -12230,7 +12396,15 @@
     // no such distance check for darkphase). That mismatch — red aim, silent
     // no-op press — was the reported bug; every other state keeps the
     // original "too close" rejection unchanged.
-    const skipsDistanceGate = boss.state === 'straightclaw' || boss.state === 'darkphase';
+    // HOTFIX 4.2 ADDENDUM 1 SECTIONS 26-29: GABRIEL specifically may FLASH
+    // at any distance, in any state — added as its own OR term alongside
+    // the existing straightclaw/darkphase exemptions (never replacing
+    // them), so ADAM (which shares this same state machine) keeps its
+    // current straightclaw/darkphase-only exemption exactly as before, and
+    // ROID1/ROID2 (a completely different state machine, never reaching
+    // this boss.spawned branch's distance gate in a way this touches) are
+    // untouched. Scoped to this one explicit user request only.
+    const skipsDistanceGate = boss.type === 'gabriel' || boss.state === 'straightclaw' || boss.state === 'darkphase';
     if (!skipsDistanceGate) {
       const dist = Math.hypot(boss.x - player.x, boss.y - player.y);
       if (dist < FLASH_MIN_DISTANCE) {
@@ -12747,8 +12921,10 @@
     applyBodyHitToBoss, applyWeakPointHitToBoss, applyExplosionDamageToBoss, bossEnterState,
     getWeakPointScreenPos, arcClawSlashes, spawnArcClawSlash,
     gameState, barrels, explosions, bullets, spawnBarrels, startMode, explodeBarrel, // debug/verification only — SECTION F
+    BARREL_COUNT, get barrelTargetCount() { return barrelTargetCount; }, // debug/verification only
     tryExplodeBarrelAtPoint, tryExplodeBarrelsAlongSegment, updateRoidMissile, beginRoidMissile, updateRoidCoverCounter, // HOTFIX 4 SECTIONS 13-17 — debug/verification only
-    isPlayerBarrelShadowHiddenFrom, isPlayerUnderBarrelShadowCover, // POST-v2.0 SECTION 24 — debug/verification only
+    isPlayerBarrelShadowHiddenFrom, isPlayerUnderBarrelShadowCover, barrelShadowEllipse, // POST-v2.0 SECTION 24 — debug/verification only
+    isDroneBarrelLosBlocked, BARREL_LOS_BLOCK_RADIUS, // HOTFIX 4.2 ADDENDUM 2 SECTIONS 41-51 — debug/verification only
     // Debug/verification only — SECTION G/H/I/J/T (LOADING/OPENING/MAIN MENU/BGM).
     setScreen, bgmAudio, startBgmOnce, BGM_VOLUME, returnToTopMenu, // returnToTopMenu debug/verification only — PART 3 SECTION D
     bossBgmAudio, startBossBgm, endBossBgmToNormalStage, endBossBgmSilently, // debug/verification only — BOSS BGM ADDENDUM (Outbreak 2)
@@ -12832,7 +13008,7 @@
     get autoAimLockedPoint() { return autoAimLockedPoint; },
     get aimStickActive() { return aimStickActive; },
     set aimStickActive(v) { aimStickActive = v; }, // debug/verification only
-    flashPress, startBossFlashDown, // debug/verification only
+    flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only
     get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
     FIRE_MAG_SIZE, FIRE_COOLDOWN_MS, // debug/verification only — SECTION D
     set flashCooldownRemainingMs(v) { flashCooldownRemainingMs = v; }, // debug/verification only
@@ -12990,6 +13166,8 @@
     isStoryDroneStage, isFinalStoryStage, isSecurityDroneSystemActive, isCultivationLabStage, // HOTFIX 4 SECTIONS 18-21 — debug/verification only
     isMainAdamSphereStage, ADAM_SPHERE_MAIN_DEATH_MS, bossFrameName, // HOTFIX 4 SECTIONS 22-32/ADDENDUM F-K — debug/verification only
     adamSphereCombatState, spawnAdamSphereCombat, applyDamageToAdamSphereCombat, updateAdamSphereCombat, drawAdamSphereCombat, ADAM_SPHERE_COMBAT_HIT_RADIUS, ADAM_SPHERE_SOUTH_FRAME_INDEX, // HOTFIX 4.1 — debug/verification only
+    ADAM_SPHERE_COMBAT_MAX_HP, drawBossLifeHud, // HOTFIX 4.2 ADDENDUM 1 — debug/verification only
+    ADAM_SPHERE_SHOT_INTERVAL_MS, ADAM_SPHERE_LOCK_ON_MS, ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS, DRONE_SNIPER_FIRE_AT_MS, // HOTFIX 4.2 ADDENDUM 1/2 — debug/verification only
     enterStoryStage, pickFreshStoryDroneBackground,
     // Debug/verification only — this turn: input-lock root-cause fix
     // (SECTION A), all-DRONE-kill EXIT gating (SECTION E), RETRY (SECTION J).
@@ -14125,6 +14303,19 @@
         hitBlinkPulseOn = (elapsedIntoBlink % PLAYER_HIT_BLINK_CYCLE_MS) < PLAYER_HIT_BLINK_CYCLE_MS / 2;
       }
       const stealthStrength = getStealthEffectStrength(now);
+      // HOTFIX 4.2 ADDENDUM 1 SECTIONS 36-40: reuses isPlayerUnderBarrelShadowCover()
+      // verbatim — the SAME boolean every AI target-acquisition site already
+      // calls (via isPlayerBarrelShadowHiddenFrom()) — as the one and only
+      // source of truth for this dim, per the spec's own "50%暗い=BARREL
+      // COVER ACTIVE" equivalence; never a separate visual-only rectangle
+      // check. Wrapped in its own save/restore (section 39) so ctx.filter
+      // can never leak into anything drawn after this function returns.
+      // Scoped to ONLY the player's own drawImage() calls below — the
+      // background/barrels/DRONEs/markers/HUD are all drawn by other
+      // functions, entirely outside this save/restore scope, so they are
+      // structurally impossible to affect from here.
+      const inBarrelCover = isPlayerUnderBarrelShadowCover();
+      if (inBarrelCover) { ctx.save(); ctx.filter = 'brightness(50%)'; }
       if (stealthStrength > 0 && !hitBlinkPulseOn) {
         drawPlayerStealthed(img, dx, dy, drawW, drawH, stealthStrength, now);
       } else if (playerHitBlinkRemainingMs > 0 && !hitBlinkPulseOn) {
@@ -14138,6 +14329,7 @@
       } else {
         ctx.drawImage(img, dx, dy, drawW, drawH);
       }
+      if (inBarrelCover) { ctx.restore(); }
     } else {
       // fallback placeholder while sprites load
       ctx.fillStyle = '#888';
@@ -14547,7 +14739,27 @@
   // FLASH DOWN: hold on the direction-based DOWN pose for the whole
   // FLASH_DOWN_MS window — same image/anchor rule as drawBossThreshold(),
   // no impact-flash ring (that belongs to the milestone reaction only).
+  // HOTFIX 4.2 ADDENDUM 1 SECTIONS 30-35 (source of truth for the blink):
+  // reads the EXACT same real damage-gating GABRIEL's own bullet-vs-boss
+  // collision check already uses (isBossDamageImmune(), plus the same
+  // boss.state==='flashdown' this whole draw function is already scoped
+  // to) — never a separate display-only timer. Scoped to
+  // boss.type==='gabriel' only: ADAM shares this exact draw function for
+  // its own FLASH DOWN, and must never blink (this addendum is GABRIEL-
+  // only, per its own explicit scope).
+  function isGabrielDownDamageableBlinking() {
+    return boss.type === 'gabriel' && boss.state === 'flashdown' && !isBossDamageImmune();
+  }
   function drawBossFlashDown(now) {
+    // HOTFIX 4.2 ADDENDUM 1 SECTIONS 30-35: while damageable (see above,
+    // true for GABRIEL's entire FLASH DOWN duration — flashdown carries no
+    // damage-immune sub-phase), blink the body itself on/off so "this is
+    // when your shots actually land" is unmistakable, reusing the same
+    // simple visibility-toggle style DRONE's own pre-fire blink uses (never
+    // a red/damage tint, which would misread as "just got hit").
+    if (isGabrielDownDamageableBlinking() && Math.floor(now / DRONE_BODY_BLINK_INTERVAL_MS) % 2 === 1) {
+      return; // OFF half of the blink cycle — draw nothing this frame
+    }
     const flashDownCin = getCinematicImageInfo();
     if (flashDownCin.img.complete && flashDownCin.img.naturalWidth > 0) {
       ctx.drawImage(
@@ -14904,18 +15116,31 @@
   // numeric HP value — HP/damage/kill logic stays fully internal, only the
   // gauge width communicates it.
   function drawBossLifeHud(now) {
-    if (!boss.spawned) return;
+    // HOTFIX 4.2 ADDENDUM 1 SECTIONS 6-9 (root-cause fix, this turn): this
+    // whole HUD was gated purely on `boss.spawned` — but ADAM SPHERE combat
+    // (adamSphereCombatState) is deliberately its OWN state object, never
+    // the humanoid `boss` (see HOTFIX 4.1's own "never re-confuse ADAM
+    // SPHERE with the humanoid ADAM" requirement), so `boss.spawned` stays
+    // false for the entire MAIN FINAL fight and this function returned
+    // immediately every frame — no gauge ever drew. Fixed by branching to
+    // the SAME bar draw code below with adamSphereCombatState's own
+    // hp/max/label instead of inventing a second gauge design.
+    const usingAdamSphere = !boss.spawned && adamSphereCombatState.active && !adamSphereCombatState.dying;
+    if (!boss.spawned && !usingAdamSphere) return;
     const labelY = Math.max(10, H * 0.03) + 4;
     const gaugeY = labelY + 12;
     const x = W - HUD_MARGIN_X - HUD_BAR_W;
+    const name = usingAdamSphere ? 'ADAM SPHERE' : boss.name;
+    const hp = usingAdamSphere ? adamSphereCombatState.hp : boss.hp;
+    const maxHp = usingAdamSphere ? ADAM_SPHERE_COMBAT_MAX_HP : BOSS_HP_MAX;
     ctx.save();
     ctx.textAlign = 'right';
     ctx.font = 'bold 11px sans-serif';
     ctx.fillStyle = 'rgba(255,140,140,0.85)';
-    ctx.fillText(boss.name, W - HUD_MARGIN_X, labelY + 8);
+    ctx.fillText(name, W - HUD_MARGIN_X, labelY + 8);
     ctx.fillStyle = 'rgba(255,255,255,0.15)';
     ctx.fillRect(x, gaugeY, HUD_BAR_W, HUD_BAR_H);
-    const frac = Math.max(0, Math.min(1, boss.hp / BOSS_HP_MAX));
+    const frac = Math.max(0, Math.min(1, hp / maxHp));
     ctx.fillStyle = 'rgba(225,70,70,0.9)';
     ctx.fillRect(x, gaugeY, HUD_BAR_W * frac, HUD_BAR_H);
     ctx.strokeStyle = 'rgba(255,255,255,0.3)';
@@ -14928,8 +15153,10 @@
     // disappears the instant that stops being true (C-4, checked fresh every
     // frame here). Gauge size/position/HP-fill logic above is untouched;
     // only this text's own color/weight changed this turn (black/bold ->
-    // thin/white) per this turn's explicit spec.
-    if (isBossDamageImmune()) {
+    // thin/white) per this turn's explicit spec. ADAM SPHERE has no
+    // isBossDamageImmune()-style invincibility state, so this stays
+    // scoped to the humanoid `boss` branch only.
+    if (!usingAdamSphere && isBossDamageImmune()) {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.font = `${HUD_BAR_H}px sans-serif`;
