@@ -351,13 +351,17 @@
   </div>
 </div>
 
-<!-- SECTION N: landscape stages aren't ready yet — this pure-CSS overlay
-     (see style.css's own (orientation: landscape) media query) blocks play
-     until the device is portrait again; game.js's render loop freezes in
-     sync via the same media feature. -->
-<div id="landscape-block-overlay">
-  <div id="landscape-block-message">縦画面でプレイしてください</div>
-</div>
+<!-- NEXT IMPLEMENTATION (LANDSCAPE MODE): the old SECTION N landscape-block
+     overlay ("縦画面でプレイしてください") is retired — landscape is now a fully
+     playable orientation (see style.css's LEFT PANEL/CENTER FIELD/RIGHT
+     PANEL layout under @media (orientation: landscape), and game.js's
+     loop(), which no longer freezes update()/draw() by orientation). -->
+
+<!-- GAMEPAD_DEBUG overlay: only ever populated (and only visible in the
+     sense of having content) while game.js's GAMEPAD_DEBUG === true —
+     production default is empty text. pointer-events:none so it can never
+     steal MOVE/AIM/button input regardless of state. -->
+<div id="gamepad-debug-overlay"></div>
 
 <!-- PART 9 SECTION G: shared EVENT MOVIE PLAYER — one DOM overlay reused
      by every SYSTEM/EVENT movie (opening/sneaking/drone_arrival/

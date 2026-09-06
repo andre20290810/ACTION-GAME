@@ -91,7 +91,24 @@
     worldExtraAbove = 0;
   }
   window.addEventListener('resize', resize);
-  window.addEventListener('orientationchange', () => setTimeout(resize, 100));
+  // NEXT IMPLEMENTATION (LANDSCAPE MODE): a physical device rotation does
+  // NOT lift whatever finger is currently touching the screen — the touch
+  // identifier survives the rotation, but the MOVE/AIM stick's cached rect
+  // (captured once at pointerdown, per HOTFIX 4.3 ADDENDUM 3) instantly
+  // goes stale the moment the CSS layout swaps between the portrait and
+  // landscape control layouts. Rather than let a drag continue computing
+  // dx/dy against a now-wrong rect (a stuck/incorrect stick, not a stuck
+  // pointer, but just as bad a symptom), both sticks are force-reset to
+  // neutral on every orientationchange — safe because actionStickReset()/
+  // aimStickReset() are the exact same real reset path releaseAllHeldInputs()
+  // already uses elsewhere, never a parallel implementation. This never
+  // touches PLAYER/BOSS/TIME LIMIT/CONTINUE/stage/AREA/enemy state — those
+  // live entirely outside the input layer.
+  window.addEventListener('orientationchange', () => {
+    actionStickReset();
+    aimStickReset();
+    setTimeout(resize, 100);
+  });
   resize();
 
   // ---------- Stage background(s) ----------
@@ -11899,12 +11916,18 @@
     closeSettingPanel(); // always resets back to the main PAUSE panel for next time it opens
   }
 
-  function pausePress(e) {
-    e.preventDefault();
+  // GAMEPAD SUPPORT: the real PAUSE mechanics, factored out so the on-screen
+  // PAUSE button and the GameSir MENU/OPTIONS rising edge trigger the exact
+  // same path.
+  function triggerPauseNow() {
     gameState.paused = true;
     pauseStartedAt = performance.now(); // SECTION Q-1: PLAY TIME excludes real time spent paused
     releaseAllHeldInputs();
     showModeMenu();
+  }
+  function pausePress(e) {
+    e.preventDefault();
+    triggerPauseNow();
   }
   const pauseZone = document.getElementById('pause-zone');
   pauseZone.addEventListener('touchstart', pausePress, { passive: false });
@@ -11916,17 +11939,18 @@
   // ever fire during genuine active gameplay (A-2): screen!=='gameplay'
   // already rules out LOADING/OPENING/MAIN MENU/SETTING/GAME OVER/RESULT
   // (each is its own distinct gameState.screen value); gameState.paused
-  // rules out double-triggering while already paused; isLandscapeBlocked()
-  // and gameClearRemainingMs>0 are checked explicitly since BOTH keep
-  // gameState.screen === 'gameplay' (landscape-block freezes update()/
-  // draw() via loop()'s own guard without changing screen; GAME CLEAR is a
-  // canvas overlay drawn while screen is still 'gameplay', only becoming
-  // 'result' once its own timer finishes — see triggerGameClear()).
+  // rules out double-triggering while already paused; gameClearRemainingMs>0
+  // is checked explicitly since GAME CLEAR is a canvas overlay drawn while
+  // screen is still 'gameplay', only becoming 'result' once its own timer
+  // finishes (see triggerGameClear()). NEXT IMPLEMENTATION (LANDSCAPE MODE):
+  // the old isLandscapeBlocked() check here is removed — landscape is now
+  // genuine active gameplay too, so backgrounding the app/tab while playing
+  // in landscape must auto-PAUSE exactly like portrait, not be silently
+  // skipped.
   function autoPauseOnInterruption() {
     releaseAllHeldInputs(); // existing stuck-input safety net (PART 3) — always runs regardless of screen
     if (gameState.screen !== 'gameplay') return;
     if (gameState.paused) return;
-    if (isLandscapeBlocked()) return;
     if (gameClearRemainingMs > 0) return;
     gameState.paused = true;
     pauseStartedAt = performance.now(); // SECTION Q-1, same as pausePress()
@@ -11953,12 +11977,15 @@
   // beginning (b1 for SECRET, STORY STAGE 1 for MAIN), rather than losing
   // the scenario tag the way a bare startMode(gameState.mode) call would.
   document.getElementById('mode-restart-btn').addEventListener('click', () => startMode(gameState.mode, storyScenarioState.scenario));
-  document.getElementById('mode-resume-btn').addEventListener('click', () => {
+  // GAMEPAD SUPPORT: named (not an inline arrow) so the GameSir MENU/OPTIONS
+  // rising edge can call the exact same resume path while already paused.
+  function resumeFromPauseMenu() {
     gameState.paused = false;
     storyPausedAccumMs += performance.now() - pauseStartedAt; // SECTION Q-1
     lastPlayerInputAt = performance.now(); // SECTION B/L: fresh grace period — real wall-clock time spent paused must never count toward the watchdog's idle timer
     hideModeMenu();
-  });
+  }
+  document.getElementById('mode-resume-btn').addEventListener('click', resumeFromPauseMenu);
   // SECTION T: QUIT ends the current STORY/TRAINING session and returns to
   // MAIN MENU — no page reload (BGM keeps playing uninterrupted, per T-1).
   // T-2: nothing needs to be explicitly wiped here — update()/draw() both
@@ -12474,7 +12501,17 @@
   // ---------- Fire button ----------
   const fireZone = document.getElementById('fire-zone');
   const fireButton = document.getElementById('fire-button');
+  // GAMEPAD SUPPORT: fireHeld is the single merged value everything else in
+  // the file already reads (update()'s isFiringHeld check, DASH's
+  // firingNow guard, etc.) — it must keep meaning "touch OR gamepad is
+  // firing right now" without either source stomping the other. touchFireHeld
+  // is what fireStart()/fireEnd() below actually own; gamepadFireHeld
+  // (declared with the rest of the gamepad state further down) is the
+  // RT-trigger's own reading. Each gamepad poll recomputes
+  // fireHeld = touchFireHeld || gamepadFireHeld, so touch-only play (no
+  // gamepad ever connected) is exactly the pre-existing behavior.
   let fireHeld = false;
+  let touchFireHeld = false;
 
   // SECTION D: 30-shot magazine HUD — cooldown ring only now (ammo count
   // moved to drawAmmoHud() under the LIFE gauge, POST-v1.0 SECTION 35) —
@@ -12538,12 +12575,14 @@
 
   function fireStart(e) {
     e.preventDefault();
-    fireHeld = true;
+    touchFireHeld = true;
+    fireHeld = true; // immediate effect even before the next gamepad-poll frame recomputes the merge
     fireButton.classList.add('active');
   }
   function fireEnd(e) {
     if (e) e.preventDefault();
-    fireHeld = false;
+    touchFireHeld = false;
+    fireHeld = gamepadFireHeld; // GAMEPAD SUPPORT: don't cut off a genuinely-held RT trigger just because the touch button was released
     fireButton.classList.remove('active');
   }
   // Listeners on the zone (full touch hit area), not the smaller visual
@@ -12590,22 +12629,46 @@
   const DASH_RETRIGGER_INTERVAL_MS = 200;
   let lastDashTriggerAt = -Infinity;
 
-  function dashButtonPress(e) {
-    e.preventDefault();
+  // GAMEPAD SUPPORT: the actual DASH mechanics (guards + retrigger interval
+  // + tryStartDash) factored out so the on-screen DASH button and the
+  // GameSir LB/RB rising edges drive the exact same real trigger path —
+  // never two parallel DASH implementations. angleOverride is optional:
+  // omitted, this reproduces the touch button's own "dash toward current
+  // MOVE STICK/keyboard vector, else current facing" behavior; LB/RB pass
+  // a fixed BASE_ANGLE.left/right instead, per their own explicit spec
+  // (a real, deliberate behavioral difference from the touch button — not
+  // something to unify away). Never touches dashButton's own CSS 'active'
+  // class — that is purely the on-screen button's visual feedback for a
+  // physical touch/mouse press and has no meaning for a gamepad trigger;
+  // leaving a gamepad dash flip it would strand that class stuck 'active'
+  // forever (gamepad never fires the button's own touchend/mouseup to
+  // clear it).
+  function triggerDashInDirection(now, angleOverride) {
     if (isBossIntroLocked() || player.stunned) return; // PART 8 / SECTION C
-    lastPlayerInputAt = performance.now(); // SECTION B: DASH counts as combat input for the watchdog
-    dashButton.classList.add('active');
-    const now = performance.now();
+    lastPlayerInputAt = now; // SECTION B: DASH counts as combat input for the watchdog
     const knockbackLockedNow = now < player.knockbackUntil;
     const firingNow = !knockbackLockedNow && (fireHeld || keys.fire);
     if (firingNow) return; // PART 21
     if (now - lastDashTriggerAt < DASH_RETRIGGER_INTERVAL_MS) return; // PART 19/20
     lastDashTriggerAt = now;
-    const kb = getKeyboardVec();
-    const vx = actionStickVec.x + kb.x, vy = actionStickVec.y + kb.y;
-    const mag = Math.hypot(vx, vy);
-    const angle = (mag > ACTION_STICK_DEADZONE) ? Math.atan2(vy, vx) : BASE_ANGLE[player.baseDir];
+    let angle = angleOverride;
+    if (angle === undefined || angle === null) {
+      const kb = getKeyboardVec();
+      const vx = actionStickVec.x + kb.x, vy = actionStickVec.y + kb.y;
+      const mag = Math.hypot(vx, vy);
+      angle = (mag > ACTION_STICK_DEADZONE) ? Math.atan2(vy, vx) : BASE_ANGLE[player.baseDir];
+    }
     tryStartDash(now, angle);
+  }
+  function dashButtonPress(e) {
+    e.preventDefault();
+    // Preserves the exact pre-refactor visual: the button never shows
+    // 'active' at all during the intro-lock/STUN windows where a press is
+    // rejected outright (matches the original early-return-before-classList
+    // ordering) — everything else about accept/reject now lives solely in
+    // triggerDashInDirection().
+    if (!isBossIntroLocked() && !player.stunned) dashButton.classList.add('active');
+    triggerDashInDirection(performance.now());
   }
   function dashButtonRelease(e) {
     if (e) e.preventDefault();
@@ -13326,6 +13389,28 @@
     get actionStickVec() { return actionStickVec; }, // debug/verification only — ADDENDUM 3 touch/joystick tests
     get actionStickTouchId() { return actionStickTouchId; }, // debug/verification only
     get aimStickTouchId() { return aimStickTouchId; }, // debug/verification only
+    // NEXT IMPLEMENTATION (GAMESIR NOVA LITE GAMEPAD SUPPORT) — debug/verification only:
+    get fireHeld() { return fireHeld; },
+    set fireHeld(v) { fireHeld = v; },
+    get lastDashTriggerAt() { return lastDashTriggerAt; },
+    get gamepadIndex() { return gamepadIndex; },
+    get gamepadMappingSource() { return gamepadMappingSource; },
+    get gamepadMoveVec() { return gamepadMoveVec; },
+    get gamepadAimVec() { return gamepadAimVec; },
+    get gamepadFireHeld() { return gamepadFireHeld; },
+    // getters, not direct shorthand refs — window.__game is built before
+    // these consts are declared further down the file (function bodies can
+    // forward-reference a later top-level const safely, since they only
+    // resolve it at CALL time, but an object-literal shorthand property
+    // resolves at CONSTRUCTION time and would hit the temporal dead zone).
+    get GAMEPAD_MOVE_DEADZONE() { return GAMEPAD_MOVE_DEADZONE; },
+    get GAMEPAD_AIM_DEADZONE() { return GAMEPAD_AIM_DEADZONE; },
+    get GAMEPAD_FIRE_THRESHOLD() { return GAMEPAD_FIRE_THRESHOLD; },
+    get STANDARD_GAMEPAD_BUTTONS() { return STANDARD_GAMEPAD_BUTTONS; },
+    get FALLBACK_GAMEPAD_BUTTONS() { return FALLBACK_GAMEPAD_BUTTONS; },
+    get triggerDashInDirection() { return triggerDashInDirection; },
+    get triggerPauseNow() { return triggerPauseNow; },
+    get resumeFromPauseMenu() { return resumeFromPauseMenu; }, // debug/verification only
     flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only
     get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
     FIRE_MAG_SIZE, FIRE_COOLDOWN_MS, // debug/verification only — SECTION D
@@ -13651,10 +13736,11 @@
     }
 
     // SECTION B/C/L: CONTROL RECOVERY WATCHDOG. Reaching this line already
-    // rules out LOADING/OPENING/MAIN MENU/SETTING/RESULT/GAME OVER/
-    // landscape-block (update() only runs on screen==='gameplay' and
-    // !isLandscapeBlocked(), see loop()) and PAUSE/STAGE TRANSITION/BOSS
-    // INTRO (each returns out of update() before this point) — the
+    // rules out LOADING/OPENING/MAIN MENU/SETTING/RESULT/GAME OVER
+    // (update() only runs on screen==='gameplay', see loop() — landscape is
+    // no longer excluded there, see NEXT IMPLEMENTATION: LANDSCAPE MODE)
+    // and PAUSE/STAGE TRANSITION/BOSS INTRO (each returns out of update()
+    // before this point) — the
     // remaining exclusions (GAME CLEAR, already-STUNned) are checked
     // explicitly below. "battle active" is interpreted as boss spawned and
     // not mid-cinematic (threshold/dying/dead), since the player has
@@ -15534,12 +15620,221 @@
     drawDefenseRicochets(now);
   }
 
-  // SECTION N: reads the SAME (orientation: landscape) media feature
-  // style.css's #landscape-block-overlay keys off of, so the visual
-  // overlay and this gameplay freeze can never disagree about which
-  // orientation is currently active.
-  function isLandscapeBlocked() {
-    return !!(window.matchMedia && window.matchMedia('(orientation: landscape)').matches);
+  // ==========================================================================
+  // NEXT IMPLEMENTATION: LANDSCAPE MODE + GAMESIR NOVA LITE GAMEPAD SUPPORT
+  // ==========================================================================
+  // LANDSCAPE: the old isLandscapeBlocked()/loop() freeze + the
+  // #landscape-block-overlay "縦画面でプレイしてください" full-screen block are
+  // both retired — landscape is now a fully playable orientation (see
+  // style.css's own @media (orientation: landscape) rules for the LEFT
+  // PANEL / CENTER GAME FIELD / RIGHT PANEL layout). The world/camera/
+  // stage/AREA/collision code below this point is completely untouched:
+  // resize() already derives W/H purely from #play-area's own
+  // getBoundingClientRect() (never window.innerWidth/innerHeight), so a
+  // narrower, centered #play-area in landscape "just works" with zero
+  // coordinate-math changes here.
+  //
+  // GAMEPAD: navigator.getGamepads() is polled once per animation frame
+  // (Safari's gamepadconnected/gamepaddisconnected events are used too, as
+  // defense-in-depth, but polling is the primary detection path since those
+  // events are known to be unreliable on Safari). The design goal is a
+  // SINGLE unified input state: gamepad input is merged directly into the
+  // exact same variables the existing TOUCH pipeline already writes
+  // (actionStickVec, player.aimOffsetRaw/aimStickActive, fireHeld) and calls
+  // the exact same real trigger functions for discrete presses
+  // (triggerDashInDirection/flashPress/stealthPress/triggerManualReload/
+  // triggerPauseNow/resumeFromPauseMenu) — update()/draw() and every boss/
+  // enemy/item system remain completely unaware that a second input source
+  // even exists.
+  const GAMEPAD_DEBUG = false; // production default OFF — flip true only for local diagnostic work
+  const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
+  const GAMEPAD_AIM_DEADZONE = 0.12; // radial
+  const GAMEPAD_FIRE_THRESHOLD = 0.25; // RT analog value >= this counts as FIRE held
+
+  // W3C Standard Gamepad button indices (https://www.w3.org/TR/gamepad/#remapping).
+  // Used whenever gamepad.mapping === 'standard', which is what iOS Safari
+  // reports for a GameSir Nova Lite (and any other MFi/HID controller Apple's
+  // GameController framework recognizes) — never hardcoded as "the GameSir
+  // layout" specifically, so any other standard-mapping controller works
+  // identically.
+  const STANDARD_GAMEPAD_BUTTONS = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, BACK: 8, MENU: 9, L3: 10, R3: 11 };
+  // Fallback for a controller that reports mapping !== 'standard'. Real
+  // per-button diagnostic data for such a controller was not available while
+  // building this (this environment cannot pair a physical GameSir Nova
+  // Lite over Bluetooth), so guessing a DIFFERENT index layout would be
+  // exactly the blind hardcoding this feature was told never to do —
+  // instead this starts as a copy of the standard table (most HID game
+  // controllers still expose buttons/axes in this same physical order even
+  // when the browser can't confirm the W3C mapping) and is the one table to
+  // edit, with real on-device GAMEPAD_DEBUG readings in hand, if a
+  // non-standard controller ever needs different indices.
+  const FALLBACK_GAMEPAD_BUTTONS = Object.assign({}, STANDARD_GAMEPAD_BUTTONS);
+
+  let gamepadIndex = null; // navigator.getGamepads() index of the controller in use; null = none
+  let gamepadMappingSource = 'none'; // 'standard' | 'fallback' | 'none' — debug/report only
+  const gamepadMoveVec = { x: 0, y: 0 }; // post-deadzone LEFT STICK, debug/verification only
+  let gamepadAimVec = null; // post-deadzone RIGHT STICK {x,y}, or null while neutral — debug/verification only
+  let gamepadFireHeld = false; // RT >= GAMEPAD_FIRE_THRESHOLD
+  let gamepadLastButtons = {}; // previous-frame pressed state, for rising-edge detection
+
+  window.addEventListener('gamepadconnected', (e) => {
+    if (gamepadIndex === null) gamepadIndex = e.gamepad.index;
+  });
+  window.addEventListener('gamepaddisconnected', (e) => {
+    if (e.gamepad.index === gamepadIndex) gamepadIndex = null;
+    // Actual state zeroing happens uniformly in updateGamepadInput()'s own
+    // "no active gamepad" branch on the very next frame — never duplicated
+    // here, so there is exactly one reset code path regardless of whether a
+    // disconnect was caught by this event or only discovered by polling.
+  });
+
+  function radialDeadzone(x, y, dz) {
+    const mag = Math.hypot(x, y);
+    if (mag < dz) return { x: 0, y: 0, mag: 0 };
+    // Re-normalize the post-deadzone range back to 0..1 so crossing the
+    // deadzone boundary never produces a sudden jump in output magnitude.
+    const normMag = Math.min(1, (mag - dz) / (1 - dz));
+    const scale = normMag / mag;
+    return { x: x * scale, y: y * scale, mag: normMag };
+  }
+
+  function getActiveGamepad() {
+    if (gamepadIndex === null) return null;
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const gp = pads[gamepadIndex];
+    return (gp && gp.connected) ? gp : null;
+  }
+
+  // Safari's gamepadconnected event is known to be unreliable — this
+  // catches a controller that's already reporting through
+  // navigator.getGamepads() (which only populates once the user has
+  // actually pressed a button on it, a privacy measure every browser
+  // applies) even if the event itself never fired.
+  function pollForGamepadConnection() {
+    if (gamepadIndex !== null) return;
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const gp of pads) {
+      if (gp && gp.connected) { gamepadIndex = gp.index; return; }
+    }
+  }
+
+  function updateGamepadInput(now) {
+    pollForGamepadConnection();
+    const gp = getActiveGamepad();
+    if (!gp) {
+      // The index we had is no longer a real connected pad (it vanished
+      // without a gamepaddisconnected event ever firing — exactly the
+      // Safari unreliability this whole polling design exists to tolerate).
+      // Clearing it here, not just in the event listener, is what lets
+      // pollForGamepadConnection() re-detect ANY future reconnect —
+      // including one that lands at a different index — instead of being
+      // permanently stuck watching a dead index for the rest of the
+      // session.
+      gamepadIndex = null;
+      gamepadMappingSource = 'none';
+      gamepadMoveVec.x = 0; gamepadMoveVec.y = 0;
+      gamepadAimVec = null;
+      gamepadFireHeld = false;
+      fireHeld = touchFireHeld; // never leave a stale gamepad-driven FIRE latched on disconnect
+      // GAMEPAD disconnect must reset to neutral immediately (never
+      // "movement/firing keeps going") — but must not stomp a touch drag
+      // that is genuinely still active.
+      if (actionStickTouchId === null) { actionStickVec.x = 0; actionStickVec.y = 0; }
+      if (aimStickTouchId === null && now >= aimDoubleTapLockUntil) aimStickActive = false;
+      gamepadLastButtons = {};
+      updateGamepadDebugOverlay(null);
+      return;
+    }
+    gamepadMappingSource = (gp.mapping === 'standard') ? 'standard' : 'fallback';
+    const idx = (gp.mapping === 'standard') ? STANDARD_GAMEPAD_BUTTONS : FALLBACK_GAMEPAD_BUTTONS;
+    const btn = (i) => gp.buttons[i];
+    const pressedNow = {
+      lb: !!(btn(idx.LB) && btn(idx.LB).pressed),
+      rb: !!(btn(idx.RB) && btn(idx.RB).pressed),
+      x: !!(btn(idx.X) && btn(idx.X).pressed),
+      y: !!(btn(idx.Y) && btn(idx.Y).pressed),
+      a: !!(btn(idx.A) && btn(idx.A).pressed),
+      menu: !!(btn(idx.MENU) && btn(idx.MENU).pressed),
+    };
+    const prev = gamepadLastButtons;
+
+    // GAMEPLAY-affecting reads (MOVE/AIM/FIRE/DASH/FLASH/STEALTH/RELOAD)
+    // only apply during genuine active, unpaused gameplay — matching how
+    // the touch control zones are physically covered/unreachable outside
+    // that state. This also protects against a rising edge (e.g. a
+    // held-down LB) firing the instant PAUSE clears if it wasn't reset —
+    // MENU/PAUSE itself is handled separately below specifically so it can
+    // always toggle regardless of paused state.
+    const gameplayActive = gameState.screen === 'gameplay' && !gameState.paused;
+    if (gameplayActive) {
+      // ---- LEFT STICK -> MOVE ----
+      const moveDz = radialDeadzone(gp.axes[0] || 0, gp.axes[1] || 0, GAMEPAD_MOVE_DEADZONE);
+      gamepadMoveVec.x = moveDz.x; gamepadMoveVec.y = moveDz.y;
+      if (moveDz.mag > 0) {
+        // GAMEPAD MOVE priority: overrides touch whenever it's actually
+        // pushed past its deadzone.
+        actionStickVec.x = moveDz.x; actionStickVec.y = moveDz.y;
+      } else if (actionStickTouchId === null) {
+        // Gamepad neutral AND no active touch drag -> genuinely at rest.
+        // (Gamepad neutral but a touch drag IS active -> leave
+        // actionStickVec exactly as the touch handler already set it —
+        // never added together with the gamepad's own zero.)
+        actionStickVec.x = 0; actionStickVec.y = 0;
+      }
+
+      // ---- RIGHT STICK -> AIM (360° vector = aim direction, never a cursor) ----
+      const aimDz = radialDeadzone(gp.axes[2] || 0, gp.axes[3] || 0, GAMEPAD_AIM_DEADZONE);
+      if (aimDz.mag > 0) {
+        gamepadAimVec = { x: aimDz.x, y: aimDz.y };
+        if (!isBossIntroLocked() && !player.stunned) {
+          const angle = Math.atan2(aimDz.y, aimDz.x);
+          player.aimOffsetRaw = angle;
+          player.baseDir = angleToBucket(angle);
+          aimStickActive = true;
+          updateAimSectorOverlay();
+        }
+      } else {
+        gamepadAimVec = null;
+        if (aimStickTouchId === null && now >= aimDoubleTapLockUntil) aimStickActive = false;
+      }
+
+      // ---- RT (analog) -> FIRE ----
+      const rtVal = btn(idx.RT) ? btn(idx.RT).value : 0;
+      gamepadFireHeld = rtVal >= GAMEPAD_FIRE_THRESHOLD;
+      fireHeld = touchFireHeld || gamepadFireHeld;
+
+      // ---- rising-edge-only buttons: exactly one activation per physical press ----
+      if (pressedNow.lb && !prev.lb) triggerDashInDirection(now, BASE_ANGLE.left); // LB -> DASH LEFT
+      if (pressedNow.rb && !prev.rb) triggerDashInDirection(now, BASE_ANGLE.right); // RB -> DASH RIGHT
+      if (pressedNow.x && !prev.x) flashPress(); // X -> FLASH (existing flashPress(), no gamepad-only duplicate)
+      if (pressedNow.y && !prev.y) stealthPress(); // Y -> STEALTH (existing stealthPress())
+      if (pressedNow.a && !prev.a) triggerManualReload(); // A -> RELOAD (existing triggerManualReload())
+      // B, D-PAD, L3/R3 are deliberately unassigned this batch — never wired to any function.
+    } else {
+      gamepadFireHeld = false;
+      fireHeld = touchFireHeld;
+    }
+
+    // ---- MENU/OPTIONS -> PAUSE toggle (works during pause too, so it can resume) ----
+    if (gameState.screen === 'gameplay' && pressedNow.menu && !prev.menu) {
+      if (gameState.paused) resumeFromPauseMenu(); else triggerPauseNow();
+    }
+
+    gamepadLastButtons = pressedNow;
+    updateGamepadDebugOverlay(gp);
+  }
+
+  // ---------- GAMEPAD_DEBUG overlay (production default OFF) ----------
+  const gamepadDebugEl = document.getElementById('gamepad-debug-overlay');
+  function updateGamepadDebugOverlay(gp) {
+    if (!GAMEPAD_DEBUG || !gamepadDebugEl) return;
+    if (!gp) { gamepadDebugEl.textContent = 'GAMEPAD: not connected'; return; }
+    const axesStr = Array.from(gp.axes).map((v) => v.toFixed(2)).join(', ');
+    const pressedList = [];
+    gp.buttons.forEach((b, i) => { if (b.pressed) pressedList.push(i); });
+    gamepadDebugEl.textContent =
+      `GAMEPAD CONNECTED\nID: ${gp.id}\nMAPPING: ${gamepadMappingSource} (raw: ${gp.mapping || '(empty)'})\n` +
+      `AXES[${gp.axes.length}]: ${axesStr}\nBUTTON PRESSED: ${pressedList.length ? pressedList.join(', ') : '(none)'}`;
   }
 
   let lastBgmWatchdogAt = 0;
@@ -15557,13 +15852,16 @@
       lastBgmWatchdogAt = now;
       reassertGameplayBgmIfExpected();
     }
-    // lastTime still advances every frame either way, so dt is never a
-    // huge catch-up jump the instant play resumes back in portrait.
-    // SECTION J: the gameplay world (update()/draw(), which together own
-    // the canvas, boss AI, bullets, etc.) only ever ticks while
-    // screen==='gameplay' — LOADING/OPENING/MAIN MENU are plain DOM/CSS,
-    // so there's nothing running in the background under them.
-    if (!isLandscapeBlocked() && gameState.screen === 'gameplay') {
+    // GAMEPAD SUPPORT: polled every frame regardless of screen/orientation
+    // (updateGamepadInput() itself gates gameplay-affecting writes to
+    // screen==='gameplay'), so a disconnect/neutral-stick reset is never
+    // more than one frame late even while paused or in a menu.
+    updateGamepadInput(now);
+    // LANDSCAPE MODE: update()/draw() now run in both orientations — the
+    // previous isLandscapeBlocked() freeze + full-screen "縦画面でプレイして
+    // ください" overlay are retired; see style.css for the LEFT PANEL/
+    // CENTER FIELD/RIGHT PANEL landscape layout.
+    if (gameState.screen === 'gameplay') {
       update(dt, now);
       draw(now);
     }
