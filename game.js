@@ -2956,6 +2956,28 @@
   const ROID1_COVER_COUNTER_WARNING_MS = ROID2_MISSILE_WARNING_MS;
   const ROID1_COVER_COUNTER_BLAST_RADIUS = ROID2_MISSILE_BLAST_RADIUS;
   const ROID1_COVER_COUNTER_DAMAGE = ROID2_MISSILE_DAMAGE;
+  // COMBAT & UI HOTFIX: ROID1 BARREL SEARCH MISSILE SWEEP — root-cause fix
+  // for the reported "ROID1 permanently stops attacking" deadlock. Full
+  // trace of every ROID1 state transition (search/sniper/firing/cooldown/
+  // burstTelegraph, all their exits) found no stuck timer or broken
+  // transition — each one always resolves forward given update() keeps
+  // running. The ONE genuinely unbounded condition is roidState.barrelHidden
+  // (isPlayerBarrelShadowHiddenFrom(), the EXISTING cover mechanic folded
+  // into updateRoidTargetTracking()'s targetKnown gate): a player standing
+  // under barrel cover blocks 'search' from ever reaching its next SNIPER/
+  // BURST cycle (correctly — ROID can't lock a position it doesn't know),
+  // but nothing previously forced an end to that wait, so a player who
+  // simply stays in cover for the rest of the fight reads exactly as "ROID1
+  // never attacks again". This is that missing, always-progressing bound —
+  // driven by the SAME cover/search state already gating normal attacks
+  // (never a generic "hasn't fired in N seconds" watchdog unrelated to that
+  // state), so a legitimate cover-broken exit (LOS restored) still cancels
+  // it and returns straight to normal attack AI exactly as before.
+  const ROID1_BARREL_SWEEP_TRIGGER_MS = 5000; // spec's own literal 5.0s continuous-cover threshold
+  // Reuses ROID2_MISSILE_STAGGER_MS/_WARNING_MS/_BLAST_RADIUS/_DAMAGE
+  // verbatim for the sweep's own per-barrel cadence/warning/blast/damage —
+  // the exact "reuse an existing ROID missile/area-attack cadence constant"
+  // the spec asked for, no new tuning value invented.
 
   // POST-v1.0 SECTION 14: ROID DEATH EFFECT — several staggered explosions
   // around the body, blackening in sync, then a fade-out — previously ROID
@@ -4934,6 +4956,19 @@
     // — null when none is pending; { x, y, warnStartedAt, impacted } once
     // triggered — see updateRoidTargetTracking()/updateRoidCoverCounter().
     coverCounter: null,
+    // COMBAT & UI HOTFIX: ROID1 BARREL SEARCH MISSILE SWEEP state — see the
+    // ROID1_BARREL_SWEEP_TRIGGER_MS comment above for the full root-cause
+    // writeup. barrelHidden mirrors isPlayerBarrelShadowHiddenFrom(boss)
+    // every tick (stored so updateRoidBoss()'s 'search' branch can read it
+    // without recomputing); searchStartedAt is the timestamp the CURRENT
+    // continuous barrel-cover streak began (null when not currently in a
+    // streak — cover breaking resets this to null immediately, per spec
+    // "fully cancelled/reset, no delayed stale sweep firing later");
+    // barrelSweep holds the in-progress sweep's own EAST->WEST target list
+    // and per-barrel warning timers once triggered.
+    barrelHidden: false,
+    searchStartedAt: null,
+    barrelSweep: null,
   };
   // DARK OUT PART 4: ROID's own enemy-fire projectiles — a separate, minimal
   // array from the player's own `bullets` (never mixed with it, so the
@@ -5159,6 +5194,9 @@
     roidState.escortThresholdsConsumed.t25 = false;
     roidState.combatStartAt = boss.stateEnteredAt; // HOTFIX 2 SECTION 32-33: grace window starts exactly when the fight does
     roidState.coverCounter = null; // HOTFIX 2 SECTION 34-35: never carried over from a previous ROID fight/RETRY
+    roidState.barrelHidden = false; // COMBAT & UI HOTFIX: never carried over from a previous ROID fight/RETRY
+    roidState.searchStartedAt = null;
+    roidState.barrelSweep = null;
     enemyBullets.length = 0;
     // Same fixed reference pose spawnBoss() places the player into, minus
     // the INTRO-only lockout fields (ROID has no cinematic to lock the
@@ -5261,6 +5299,11 @@
     const known = !stealthed && !flashLost && !barrelHidden;
     const wasKnown = roidState.targetKnown;
     roidState.targetKnown = known;
+    // COMBAT & UI HOTFIX: mirrored onto roidState so updateRoidBoss()'s
+    // 'search' branch can read the barrel-specific signal directly, without
+    // re-deriving it (and without conflating it with STEALTH/FLASH, which
+    // must never feed the BARREL MISSILE SWEEP timer — see its own comment).
+    roidState.barrelHidden = barrelHidden;
     // HOTFIX 2 SECTION 34-35: ROID1's own barrel-cover counter — the instant
     // barrel cover (and ONLY barrel cover, never STEALTH/FLASH, which are
     // already-existing separate mechanics) blocks an active/about-to-start
@@ -5578,6 +5621,62 @@
     }
   }
 
+  // COMBAT & UI HOTFIX: ROID1 BARREL SEARCH MISSILE SWEEP — see
+  // ROID1_BARREL_SWEEP_TRIGGER_MS's own comment for the full root-cause
+  // writeup. Snapshots EVERY currently-alive barrel's world position ONCE,
+  // right here at sweep-start (never the player's own position, never a
+  // moving/re-tracked target — barrels don't move, so this is safe), sorted
+  // strictly by descending world X (EAST->WEST, world coordinate as the
+  // explicit source of truth, never screen/display order).
+  function beginRoidBarrelSweep(now) {
+    boss.state = 'barrelSweep';
+    const targets = barrels.filter((b) => b.alive).map((b) => ({ x: b.x, y: b.y }));
+    targets.sort((a, b) => b.x - a.x);
+    roidState.barrelSweep = { targets, index: 0, nextFireAt: now, warnings: [] };
+    // The pending 5s streak is fully consumed by actually firing the sweep —
+    // spec: after the sweep ends, a full FRESH 5-second SEARCH cycle must
+    // elapse again before any subsequent sweep (no back-to-back sweep spam).
+    roidState.searchStartedAt = null;
+  }
+  // Staggered EAST->WEST: one new warning circle every ROID2_MISSILE_STAGGER_MS
+  // (reused verbatim, per spec's own instruction to reuse an existing ROID
+  // missile/area-attack cadence constant), each resolving into an explosion/
+  // damage-check exactly like ROID2's own MISSILE impact (same
+  // spawnExplosionVisual()/applyDamageToPlayerLife()/tryExplodeBarrelAtPoint()
+  // reuse as updateRoidCoverCounter() above — no new visual/damage code).
+  function updateRoidBarrelSweep(now) {
+    const s = roidState.barrelSweep;
+    if (!s) { boss.state = 'search'; boss.stateEnteredAt = now; return; }
+    if (s.index < s.targets.length && now >= s.nextFireAt) {
+      const t = s.targets[s.index];
+      s.warnings.push({ x: t.x, y: t.y, warnStartedAt: now, impacted: false });
+      s.index++;
+      s.nextFireAt = now + ROID2_MISSILE_STAGGER_MS;
+    }
+    for (const w of s.warnings) {
+      if (w.impacted) continue;
+      if (now - w.warnStartedAt >= ROID2_MISSILE_WARNING_MS) {
+        w.impacted = true;
+        spawnExplosionVisual(w.x, w.y, now);
+        if (Math.hypot(player.x - w.x, player.y - w.y) <= ROID2_MISSILE_BLAST_RADIUS) {
+          applyDamageToPlayerLife(now, ROID2_MISSILE_DAMAGE);
+        }
+        tryExplodeBarrelAtPoint(w.x, w.y, now); // each missile lands squarely on its own targeted barrel
+      }
+    }
+    // Every target has been launched AND every launched warning has resolved
+    // -> the sweep is fully done. Per spec: if PLAYER is visible now, normal
+    // combat resumes naturally (targetKnown/stealthed already reflect that,
+    // read fresh next tick by the 'search' branch below); if still hidden,
+    // roidState.searchStartedAt stays null (cleared at sweep-start above) so
+    // a full fresh 5s streak must build up again — never an instant re-sweep.
+    if (s.index >= s.targets.length && s.warnings.every((w) => w.impacted)) {
+      roidState.barrelSweep = null;
+      boss.state = 'search';
+      boss.stateEnteredAt = now; // HOTFIX SECTION 1
+    }
+  }
+
   function updateRoidBoss(dt, now) {
     if (boss.state === 'roidDying') { updateRoidDeath(now); return; }
     updateRoidTargetTracking(now);
@@ -5587,8 +5686,29 @@
     if (boss.state === 'burstTelegraph') { updateRoidBurstTelegraph(now); return; }
     if (boss.state === 'sniper') { updateRoidSniper(now); return; }
     if (boss.state === 'missile') { updateRoidMissile(now); return; }
+    if (boss.state === 'barrelSweep') { updateRoidBarrelSweep(now); return; }
     const stealthed = !roidState.targetKnown;
     if (boss.state === 'search') {
+      // COMBAT & UI HOTFIX: ROID1 BARREL SEARCH MISSILE SWEEP timer — tracks
+      // ONLY the barrel-cover-specific signal (roidState.barrelHidden), never
+      // STEALTH/FLASH (those already have their own separate, working
+      // exit — a bounded cooldown/duration — so folding them in here would
+      // both violate the spec's explicit "PLAYER still in barrel cover AND
+      // LOS still blocked" wording and risk firing a sweep at empty air
+      // while the player is simply STEALTHed instead of hiding). A broken
+      // streak (cover exits, even briefly) fully resets to null — never a
+      // delayed/stale sweep firing later off a stitched-together streak.
+      if (boss.type === 'roid1') {
+        if (roidState.barrelHidden) {
+          if (roidState.searchStartedAt === null) roidState.searchStartedAt = now;
+          if (now - roidState.searchStartedAt >= ROID1_BARREL_SWEEP_TRIGGER_MS) {
+            beginRoidBarrelSweep(now);
+            return;
+          }
+        } else {
+          roidState.searchStartedAt = null;
+        }
+      }
       // HOTFIX SECTION 1: require a real ROID_SEARCH_MIN_MS damageable
       // window in SEARCH (target known, not attacking, not gated by
       // applyBodyHitToRoidBoss()) before the NEXT special may begin — see
@@ -5813,6 +5933,23 @@
         ctx.lineWidth = 2 + 2 * t;
         ctx.beginPath();
         ctx.arc(missile.x, missile.y, ROID2_MISSILE_BLAST_RADIUS * (0.4 + 0.6 * t), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    // COMBAT & UI HOTFIX: ROID1 BARREL SEARCH MISSILE SWEEP warning circles —
+    // identical visual shape/technique to MISSILE MODE's own above (same
+    // constants even), one ring per barrel target already launched.
+    if (boss.state === 'barrelSweep' && roidState.barrelSweep) {
+      for (const w of roidState.barrelSweep.warnings) {
+        if (w.impacted) continue;
+        const t = Math.min(1, (now - w.warnStartedAt) / ROID2_MISSILE_WARNING_MS);
+        ctx.save();
+        ctx.globalAlpha = 0.25 + 0.45 * t;
+        ctx.strokeStyle = '#ff3020';
+        ctx.lineWidth = 2 + 2 * t;
+        ctx.beginPath();
+        ctx.arc(w.x, w.y, ROID2_MISSILE_BLAST_RADIUS * (0.4 + 0.6 * t), 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
       }
@@ -7154,6 +7291,21 @@
   // fits entirely inside the tail of the existing 'locking' phase without
   // needing to touch that phase's own duration.
   const ADAM_SPHERE_ATTACK_FLASH_MS = 220;
+  // COMBAT & UI HOTFIX: DOUBLE WHITE FLASH — the single continuous 220ms
+  // white period read as "dull" on real-device review (user: "現在の白い
+  // エフェクトはダサい"). Restructured into two short, discrete pulses
+  // subdividing this SAME overall window (never lengthened — still exactly
+  // ADAM_SPHERE_ATTACK_FLASH_MS end to end, per spec's own "not dramatically
+  // lengthened" instruction): FLASH1-ON, OFF, FLASH2-ON, OFF, ending exactly
+  // at SHOT1 — see getAdamSphereAttackFlashPhase() below for the explicit,
+  // deterministic (never per-frame-random) phase breakdown.
+  // 70ms/40ms chosen so each pulse (70ms, ~4 frames @60fps) is long enough to
+  // clearly register as its own visible flash, and each gap (40ms, ~2-3
+  // frames) is long enough to read as a genuine return to normal in between
+  // — together landing on exactly two distinguishable pulses within the
+  // unchanged 220ms window (70+40+70+40=220).
+  const ADAM_SPHERE_ATTACK_FLASH_PULSE_MS = 70;
+  const ADAM_SPHERE_ATTACK_FLASH_GAP_MS = 40;
   // HOTFIX 4.2 ADDENDUM 1 SECTIONS 12-16: the short, visibly-readable gap
   // between ADAM SPHERE's own SHOT 1 and SHOT 2 within one attack cycle — a
   // genuinely new ADAM-SPHERE-only concept (DRONE's own STORY sniper only
@@ -7318,12 +7470,30 @@
   // isGabrielDownDamageableBlinking() elsewhere in this file). Only true
   // during the final ADAM_SPHERE_ATTACK_FLASH_MS of the 'locking' phase —
   // never during 'interShot'/'cooldown', so SHOT 2 gets no flash of its own.
-  function isAdamSphereAttackFlashing(now) {
+  // COMBAT & UI HOTFIX: returns the explicit, named DOUBLE WHITE FLASH phase
+  // at `now` — 'flash1'/'off1'/'flash2'/'off2' while inside the pre-SHOT1
+  // window, or null outside it entirely. Purely derived from the same
+  // attackPhase/lockOnStartedAt state as before (never a new independent
+  // timer, never per-frame randomness), just subdivided into four
+  // deterministic sub-windows instead of one continuous span.
+  function getAdamSphereAttackFlashPhase(now) {
     const s = adamSphereCombatState;
-    if (!s.active || s.dying || s.attackPhase !== 'locking') return false;
+    if (!s.active || s.dying || s.attackPhase !== 'locking') return null;
     const fireAt = s.lockOnStartedAt + ADAM_SPHERE_LOCK_ON_MS;
-    const remaining = fireAt - now;
-    return remaining >= 0 && remaining <= ADAM_SPHERE_ATTACK_FLASH_MS;
+    const windowStart = fireAt - ADAM_SPHERE_ATTACK_FLASH_MS;
+    const elapsed = now - windowStart; // 0 at window start, ADAM_SPHERE_ATTACK_FLASH_MS at SHOT1
+    if (elapsed < 0 || elapsed >= ADAM_SPHERE_ATTACK_FLASH_MS) return null;
+    if (elapsed < ADAM_SPHERE_ATTACK_FLASH_PULSE_MS) return 'flash1';
+    if (elapsed < ADAM_SPHERE_ATTACK_FLASH_PULSE_MS + ADAM_SPHERE_ATTACK_FLASH_GAP_MS) return 'off1';
+    if (elapsed < ADAM_SPHERE_ATTACK_FLASH_PULSE_MS * 2 + ADAM_SPHERE_ATTACK_FLASH_GAP_MS) return 'flash2';
+    return 'off2';
+  }
+  // Kept as a plain boolean for drawAdamSphereCombat()'s own hitBlink-vs-
+  // flash priority check below (and any other existing caller) — true during
+  // EITHER discrete pulse, false during either gap or outside the window.
+  function isAdamSphereAttackFlashing(now) {
+    const phase = getAdamSphereAttackFlashPhase(now);
+    return phase === 'flash1' || phase === 'flash2';
   }
   function drawAdamSphereCombat(now) {
     const s = adamSphereCombatState;
@@ -7365,9 +7535,13 @@
     // clearly even against the glowing sensor. No new image asset; reuses
     // an existing shared helper verbatim. Held at flashT=1 (ROID's own peak
     // intensity, not a new number) for the whole flash window rather than
-    // ROID's slower multi-pulse oscillation — ADAM SPHERE's flash is a
-    // single short (220ms) discrete telegraph, so a steady peak reads more
-    // clearly than a partial pulse cycle would in that short a window.
+    // ROID's slower multi-pulse oscillation — held at a steady peak during
+    // each of the two DOUBLE WHITE FLASH pulses (see
+    // getAdamSphereAttackFlashPhase() above) rather than a partial pulse
+    // cycle, so each individual pulse itself reads as a single clean flash;
+    // the OFF gaps between/after them (isAdamSphereAttackFlashing() false)
+    // are what makes the two pulses read as separate, discrete flashes
+    // rather than one continuous glow.
     // HIT BLINK (RED, a genuine damage event) takes priority over ATTACK
     // FLASH (WHITE, a pre-attack telegraph) on the rare frame both would
     // apply at once — getting-hit feedback is the more urgent signal.
@@ -12172,14 +12346,21 @@
   // combination that can never legitimately occur through normal input.
   function detectControlStateCorruption() {
     // A nonzero MOVE STICK vector can only ever come from an actual held
-    // touch/mouse-down on it (see handleActionStickMove()) — never
-    // legitimate with no owning touch identifier.
-    if ((actionStickVec.x !== 0 || actionStickVec.y !== 0) && actionStickTouchId === null) return true;
+    // touch/mouse-down on it (see handleActionStickMove()), OR from gamepad
+    // LEFT STICK/D-PAD input (actionStickDrivenByGamepad) — GABRIEL STUN
+    // root-cause fix: this check predates gamepad support and originally
+    // recognized only the touch-drag owner, so ANY gamepad MOVE input was
+    // misread as "a nonzero vector with no owner" and force-triggered STUN
+    // (the reported encounter-start STUN and instant RESUME->MOVE re-STUN).
+    // Anything else with no owner at all is still a genuine stuck flag.
+    if ((actionStickVec.x !== 0 || actionStickVec.y !== 0) && actionStickTouchId === null && !actionStickDrivenByGamepad) return true;
     // aimStickActive can only legitimately be true while an actual
-    // touch/mouse is down on the AIM STICK, or while a double-tap snap is
-    // still locked in (aimStickReset()'s own carve-out) — anything else is
-    // a stuck flag.
-    if (aimStickActive && aimStickTouchId === null && !aimStickMouseDown && performance.now() >= aimDoubleTapLockUntil) return true;
+    // touch/mouse is down on the AIM STICK, while a double-tap snap is
+    // still locked in (aimStickReset()'s own carve-out), or while gamepad
+    // RIGHT STICK AIM is driving it (aimStickDrivenByGamepad — identical
+    // root cause/fix as the MOVE STICK check above) — anything else is a
+    // stuck flag.
+    if (aimStickActive && aimStickTouchId === null && !aimStickMouseDown && !aimStickDrivenByGamepad && performance.now() >= aimDoubleTapLockUntil) return true;
     return false;
   }
 
@@ -12615,8 +12796,27 @@
   // ---------- ACTION STICK (movement + base facing) ----------
   const actionStickZone = document.getElementById('action-stick-zone');
   const actionStickKnob = document.getElementById('action-stick-knob');
-  let actionStickTouchId = null; // now holds a Pointer Events pointerId, not a Touch identifier — name kept because detectControlStateCorruption()/etc. elsewhere key off it purely as "is a real drag owning this stick" (see HOTFIX 4.3 ADDENDUM 3 below)
+  let actionStickTouchId = null; // now holds a Pointer Events pointerId, not a Touch identifier — name kept because detectControlStateCorruption()/etc. elsewhere key off it purely as "is a real stick/D-PAD ownership" (see HOTFIX 4.3 ADDENDUM 3 below)
   let actionStickVec = { x: 0, y: 0 }; // normalized -1..1
+  // COMBAT & UI HOTFIX (root-cause fix, this batch): GABRIEL STUN
+  // root-caused to detectControlStateCorruption()'s own nonzero-vector
+  // check below — it predates gamepad support and only ever recognized
+  // ONE legitimate owner of a nonzero actionStickVec (an active touch/
+  // pointer drag, actionStickTouchId !== null). Gamepad LEFT STICK/D-PAD
+  // movement (updateGamepadInput()) writes actionStickVec directly and
+  // NEVER sets actionStickTouchId (that field is Pointer-Events-only, by
+  // design) — so ANY gamepad MOVE input was being misread as "a nonzero
+  // vector with no owner", i.e. corrupted state, firing triggerStun() on
+  // the very next update() tick. This is the exact reported call path:
+  // RESUME clears actionStickVec via recoverControlState(), then the
+  // FIRST LEFT STICK/D-PAD push makes it nonzero again with
+  // actionStickTouchId still null -> instant re-STUN. This flag is the
+  // second legitimate "who owns this nonzero vector" answer, set true
+  // only in the same two branches of updateGamepadInput() that actually
+  // drive actionStickVec from LEFT STICK/D-PAD, and false the instant
+  // gamepad MOVE goes neutral or disconnects — never touching the STUN
+  // mechanic itself, PLAYER MOVE handling, or the touch-drag invariant.
+  let actionStickDrivenByGamepad = false;
   // HOTFIX 4.3 ADDENDUM 3: the stick's own circle rect is captured ONCE
   // when the drag begins and held fixed for the rest of that gesture,
   // never recomputed mid-drag — this is what the old per-touchmove
@@ -12632,6 +12832,7 @@
     actionStickRect = null;
     actionStickVec.x = 0;
     actionStickVec.y = 0;
+    actionStickDrivenByGamepad = false; // GABRIEL STUN root-cause fix: fully neutral, no owner of any kind — the next real frame (gamepad or touch) re-establishes ownership atomically
     actionStickKnob.style.transform = 'translate(0px, 0px)';
   }
 
@@ -12710,6 +12911,14 @@
   let aimStickTouchId = null; // holds a Pointer Events pointerId now (see the pointerdown/move/up block below) — never a Touch identifier or a real mouse flag anymore
   let aimStickMouseDown = false; // ADDENDUM 3: dead field, always false now that mouse input flows through the same pointerId path as touch — kept only because detectControlStateCorruption() still reads it (see its own comment) and removing it would need to touch that unrelated invariant check too
   let aimStickActive = false; // whether to draw the dotted prediction line
+  // COMBAT & UI HOTFIX (GABRIEL STUN root-cause fix, same pattern as
+  // actionStickDrivenByGamepad above): gamepad RIGHT STICK AIM also sets
+  // aimStickActive = true directly without ever setting aimStickTouchId
+  // (Pointer-Events-only field), so detectControlStateCorruption()'s second
+  // check had the identical false-positive-on-gamepad-input flaw as its
+  // first. Set true only in the gamepad AIM branch of updateGamepadInput(),
+  // false the instant it goes neutral/disconnects or aimStickReset() runs.
+  let aimStickDrivenByGamepad = false;
   let aimStickRect = null; // ADDENDUM 3: the stick's circle rect, captured once at pointerdown and held fixed for the whole gesture — see actionStickRect's own comment for why
   const AIM_DEADZONE_PX = 3; // reduced from 6 — just enough to ignore a resting thumb's tremor
 
@@ -12791,6 +13000,7 @@
     aimStickTouchId = null;
     aimStickMouseDown = false;
     aimStickRect = null;
+    aimStickDrivenByGamepad = false; // GABRIEL STUN root-cause fix: this reset is a touch/pointer release path, never a gamepad one
     if (performance.now() < aimDoubleTapLockUntil) {
       // A double-tap snap is still locked in — keep the reticle/aim line
       // showing the snapped angle instead of zeroing it on release.
@@ -14018,6 +14228,7 @@
     isMainAdamSphereStage, ADAM_SPHERE_MAIN_DEATH_MS, bossFrameName, // HOTFIX 4 SECTIONS 22-32/ADDENDUM F-K — debug/verification only
     adamSphereCombatState, spawnAdamSphereCombat, applyDamageToAdamSphereCombat, updateAdamSphereCombat, drawAdamSphereCombat, ADAM_SPHERE_COMBAT_HIT_RADIUS, ADAM_SPHERE_SOUTH_FRAME_INDEX, // HOTFIX 4.1 — debug/verification only
     isAdamSphereAttackFlashing, ADAM_SPHERE_ATTACK_FLASH_MS, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 18-21 — debug/verification only
+    getAdamSphereAttackFlashPhase, ADAM_SPHERE_ATTACK_FLASH_PULSE_MS, ADAM_SPHERE_ATTACK_FLASH_GAP_MS, // COMBAT & UI HOTFIX: DOUBLE WHITE FLASH — debug/verification only
     ADAM_SPHERE_COMBAT_MAX_HP, drawBossLifeHud, // HOTFIX 4.2 ADDENDUM 1 — debug/verification only
     ADAM_SPHERE_SHOT_INTERVAL_MS, ADAM_SPHERE_LOCK_ON_MS, ADAM_SPHERE_COMBAT_ATTACK_INTERVAL_MS, DRONE_SNIPER_FIRE_AT_MS, // HOTFIX 4.2 ADDENDUM 1/2 — debug/verification only
     enterStoryStage, pickFreshStoryDroneBackground,
@@ -16246,6 +16457,8 @@
       // "movement/firing keeps going") — but must not stomp a touch drag
       // that is genuinely still active.
       if (actionStickTouchId === null) { actionStickVec.x = 0; actionStickVec.y = 0; }
+      actionStickDrivenByGamepad = false; // GABRIEL STUN root-cause fix: no gamepad connected, so it can never be the owner
+      aimStickDrivenByGamepad = false; // same reasoning, AIM side
       if (aimStickTouchId === null && now >= aimDoubleTapLockUntil) aimStickActive = false;
       gamepadLastButtons = {};
       gamepadLastAnyButtonPressed = false; // TAP TO START GAMEPAD SUPPORT: no pad connected, so nothing is "pressed"
@@ -16347,14 +16560,19 @@
       // together — exactly one source drives actionStickVec each frame.
       if (moveDz.mag > 0) {
         actionStickVec.x = moveDz.x; actionStickVec.y = moveDz.y;
+        actionStickDrivenByGamepad = true; // GABRIEL STUN root-cause fix: this nonzero vector has a legitimate non-touch owner
       } else if (dpadMag > 0) {
         actionStickVec.x = dpadX; actionStickVec.y = dpadY;
+        actionStickDrivenByGamepad = true; // same as above, D-PAD source
       } else if (actionStickTouchId === null) {
         // Gamepad AND D-PAD both neutral, and no active touch drag ->
         // genuinely at rest. (A touch drag IS active -> leave
         // actionStickVec exactly as the touch handler already set it —
         // never added together with the gamepad's own zero.)
         actionStickVec.x = 0; actionStickVec.y = 0;
+        actionStickDrivenByGamepad = false;
+      } else {
+        actionStickDrivenByGamepad = false; // a touch drag owns it instead this frame
       }
 
       // ---- RIGHT STICK -> AIM (360° vector = aim direction, never a cursor) ----
@@ -16366,10 +16584,12 @@
           player.aimOffsetRaw = angle;
           player.baseDir = angleToBucket(angle);
           aimStickActive = true;
+          aimStickDrivenByGamepad = true; // GABRIEL STUN root-cause fix: this nonzero aimStickActive has a legitimate non-touch owner
           updateAimSectorOverlay();
         }
       } else {
         gamepadAimVec = null;
+        aimStickDrivenByGamepad = false;
         if (aimStickTouchId === null && now >= aimDoubleTapLockUntil) aimStickActive = false;
       }
 

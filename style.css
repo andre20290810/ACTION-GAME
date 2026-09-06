@@ -1028,6 +1028,10 @@ body {
   background: transparent;
   border: none;
   border-bottom: 1px solid rgba(230, 60, 50, 0);
+  /* COMBAT & UI HOTFIX: same always-reserved-transparent technique as
+     border-bottom above, just on the left side — .gamepad-focus's visible
+     accent border never shifts layout when focus toggles. */
+  border-left: 3px solid transparent;
   padding: 4px 10px 8px;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
@@ -1321,6 +1325,12 @@ body {
   color: rgba(220, 232, 240, 0.85);
   background: transparent;
   border: none;
+  /* COMBAT & UI HOTFIX: border-left reserved transparent at all times (same
+     "always reserve, toggle color only" technique .main-menu-item's own
+     border-bottom already uses below) so .gamepad-focus's visible left
+     accent border never shifts this element's own layout by 3px when
+     focus toggles on/off. */
+  border-left: 3px solid transparent;
   padding: 6px 10px;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
@@ -1330,24 +1340,25 @@ body {
   color: #ffffff;
   text-shadow: 0 0 10px rgba(200, 220, 235, 0.6);
 }
-/* GAMEPAD CONTROL TUNING: the PAUSE MENU item currently focused via D-PAD/
+/* COMBAT & UI HOTFIX (root-cause fix, this batch): the ▶ emoji/character
+   marker (a ::before "content" glyph) previously used alongside this
+   highlight has been removed outright per explicit spec — Gamepad focus is
+   now CSS-only (brightness/border/background/text-glow/font-weight), never
+   an inserted character. A left accent border replaces the old arrow's
+   "which side is this on" cue using a plain CSS border (not a glyph), so
+   the highlighted item still reads clearly even with the marker gone.
+   GAMEPAD CONTROL TUNING: the PAUSE MENU item currently focused via D-PAD/
    LEFT STICK navigation (see movePauseMenuFocus() in game.js) — brightness
-   + a visible left-side marker + background wash, so it reads clearly
-   distinct from the plain touch/mouse :active state above regardless of
-   which .mode-btn color variant (RESTART's amber, QUIT's red) it's on. */
+   + background wash + a left border accent, so it reads clearly distinct
+   from the plain touch/mouse :active state above regardless of which
+   .mode-btn color variant (RESTART's amber, QUIT's red) it's on. */
 .mode-btn.gamepad-focus {
   color: #ffffff;
   background: rgba(255, 255, 255, 0.1);
   text-shadow: 0 0 12px rgba(255, 255, 255, 0.8);
+  font-weight: 700;
+  border-left: 3px solid rgba(255, 255, 255, 0.85);
   position: relative;
-}
-.mode-btn.gamepad-focus::before {
-  content: '▶';
-  position: absolute;
-  left: -2px;
-  top: 50%;
-  transform: translate(-100%, -50%);
-  font-size: 0.7em;
 }
 /* GAMEPAD FINAL REMAP + FULL MENU NAVIGATION: the exact same highlight
    language as .mode-btn.gamepad-focus above (PAUSE MENU), extended to the
@@ -1356,20 +1367,25 @@ body {
    options (.life-option-btn). Never applied to a locked item — the
    generic nav system's own item list already excludes
    .main-menu-item-locked/.life-option-btn-locked from ever receiving it. */
-.main-menu-item.gamepad-focus,
+.main-menu-item.gamepad-focus {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+  text-shadow: 0 0 12px rgba(255, 255, 255, 0.8);
+  font-weight: 700;
+  border-left: 3px solid rgba(255, 255, 255, 0.85);
+  position: relative;
+}
+/* .life-option-btn sits in a horizontal row (flex:1, text-align:center) and
+   already has its own bottom-border selection language (.selected/:active
+   above) — reusing THAT side (not a left accent, which would read oddly on
+   a horizontal row) keeps this consistent with its own existing design
+   rather than importing the vertical-list treatment above. */
 .life-option-btn.gamepad-focus {
   color: #ffffff;
   background: rgba(255, 255, 255, 0.1);
   text-shadow: 0 0 12px rgba(255, 255, 255, 0.8);
-  position: relative;
-}
-.main-menu-item.gamepad-focus::before {
-  content: '▶';
-  position: absolute;
-  left: -2px;
-  top: 50%;
-  transform: translate(-100%, -50%);
-  font-size: 0.7em;
+  font-weight: 700;
+  border-bottom-color: rgba(255, 255, 255, 0.85);
 }
 #mode-restart-btn {
   color: rgba(232, 200, 150, 0.85);
