@@ -7316,26 +7316,42 @@
     // off hitFlashStartAt, which applyDamageToAdamSphereCombat() sets on
     // this EXACT same line as the real hp reduction — never a MISS-agnostic
     // display timer, so this can only ever blink on a genuine landed hit.
-    // HOTFIX 4.3 ADDENDUM 2 SECTIONS 18-21: ATTACK FLASH — a plain WHITE
-    // brightness boost (ctx.filter, same save/restore-scoped technique the
-    // BARREL COVER dim uses, just brightening instead of dimming), visually
-    // unmistakable from the HIT BLINK's RED tint below so the two can never
-    // be confused for one another even if they happened to overlap.
+    // HOTFIX ADDENDUM (root-cause fix, this batch): the old ATTACK FLASH
+    // technique was a plain `ctx.filter = 'brightness(220%)'` boost. Measured
+    // directly (frozen-frame before/after brightness sampling): this was
+    // mathematically too weak to notice in real play — pixels already near
+    // full brightness (the sphere's own glowing sensor) simply clip to 255
+    // with no visible change, and near-transparent/dark background pixels
+    // stay dark at 2.2x too (avg region brightness moved only +7.5/255, max
+    // only +6/255 — objectively present in the code but imperceptible on
+    // screen). Root cause G ("alpha/tint too weak"), not a trigger/state/
+    // draw-path bug — isAdamSphereAttackFlashing()'s own timing was already
+    // correct and verified in sync with the real SHOT 1 fire instant.
+    // Fixed by switching to drawBossFlashTint() — the exact same proven
+    // white source-atop compositing technique ROID1/ROID2's own
+    // burstTelegraph already uses for a body-wide "about to attack" flash —
+    // which blends toward white proportional to the sprite's own alpha
+    // shape regardless of the underlying pixel's brightness, so it reads
+    // clearly even against the glowing sensor. No new image asset; reuses
+    // an existing shared helper verbatim. Held at flashT=1 (ROID's own peak
+    // intensity, not a new number) for the whole flash window rather than
+    // ROID's slower multi-pulse oscillation — ADAM SPHERE's flash is a
+    // single short (220ms) discrete telegraph, so a steady peak reads more
+    // clearly than a partial pulse cycle would in that short a window.
+    // HIT BLINK (RED, a genuine damage event) takes priority over ATTACK
+    // FLASH (WHITE, a pre-attack telegraph) on the rare frame both would
+    // apply at once — getting-hit feedback is the more urgent signal.
     const flashing = isAdamSphereAttackFlashing(now);
-    if (flashing) { ctx.save(); ctx.filter = 'brightness(220%)'; }
     const blinkElapsed = now - s.hitFlashStartAt;
-    if (blinkElapsed >= 0 && blinkElapsed < BOSS_DAMAGE_BLINK_TOTAL_MS) {
-      const segment = Math.floor(blinkElapsed / BOSS_HIT_TINT_MS);
-      if (segment % 2 === 0) {
-        const tWithinHalf = 1 - (blinkElapsed % BOSS_HIT_TINT_MS) / BOSS_HIT_TINT_MS;
-        drawBossWithHitTint(frame.img, dx, dy, w, h, tWithinHalf);
-      } else {
-        ctx.drawImage(frame.img, dx, dy, w, h);
-      }
+    const hitBlinkActive = blinkElapsed >= 0 && blinkElapsed < BOSS_DAMAGE_BLINK_TOTAL_MS && Math.floor(blinkElapsed / BOSS_HIT_TINT_MS) % 2 === 0;
+    if (hitBlinkActive) {
+      const tWithinHalf = 1 - (blinkElapsed % BOSS_HIT_TINT_MS) / BOSS_HIT_TINT_MS;
+      drawBossWithHitTint(frame.img, dx, dy, w, h, tWithinHalf);
+    } else if (flashing) {
+      drawBossFlashTint(frame.img, dx, dy, w, h, 1);
     } else {
       ctx.drawImage(frame.img, dx, dy, w, h);
     }
-    if (flashing) { ctx.restore(); }
   }
 
   // ---------- ARC CLAW SLASH / CLAW STING (both share one array/shape) ----------
@@ -11559,6 +11575,26 @@
     explosions.length = 0;
 
     boss.spawned = false;
+    // HOTFIX ADDENDUM (root-cause fix, this batch): MAIN STAGE 1 was
+    // erroneously showing ADAM SPHERE — traced to real state leakage, not a
+    // wrong spawn call. adamSphereCombatState is a WHOLLY SEPARATE object
+    // from `boss` (see its own declaration/spawnAdamSphereCombat() above),
+    // so `boss.spawned = false` just above never touches it. Every real
+    // spawn site (TRAINING Stage4's enterSecurityTrainingStage(), MAIN
+    // FINAL's own plan.type==='adamSphere' branch in enterStoryStage()) is
+    // already correctly gated and was NEVER the bug — but resetModeState()
+    // (the one function every RESTART/RETRY/fresh-mode-start goes through)
+    // never reset `adamSphereCombatState.active` back to false, unlike its
+    // sibling `boss.spawned = false` right above and `adamSphereState.
+    // visible = false` further below for the OTHER (event-stage) sphere.
+    // So: play TRAINING Stage4 (active=true) -> return to MAIN MENU -> start
+    // MAIN STORY -> update()/draw() keep calling updateAdamSphereCombat()/
+    // drawAdamSphereCombat() unconditionally every frame (they are no-ops
+    // only while active===false) on the stale TRAINING-session sphere,
+    // which is what actually rendered on MAIN STAGE 1. Reset here,
+    // unconditionally (same scope as boss.spawned above, not only inside
+    // the `!preserveStoryProgress` block) so a mid-run RETRY clears it too.
+    adamSphereCombatState.active = false;
     boss.state = 'inactive';
     boss.hp = BOSS_HP_MAX;
     boss.attackType = 'blade';
@@ -12084,6 +12120,13 @@
     scenarioSelect: 'scenario-select-overlay',
     mainScenarioSub: 'main-scenario-sub-overlay',
     secretScenarioSub: 'secret-scenario-sub-overlay',
+    // HOTFIX ADDENDUM: GAME OVER's own RETRY/QUIT/ARTIST PAGE select screen
+    // — real existing .main-menu-item buttons in #game-over-screen (same
+    // class the START MENU/TRAINING/SCENARIO screens already use), so it
+    // needs nothing beyond this one extra table entry to become navigable
+    // via the exact same engine — no separate GAME-OVER-only gamepad
+    // polling loop, per spec.
+    gameover: 'game-over-screen',
   };
   let gamepadMenuNavFocusIndex = 0;
   let gamepadMenuNavStickWasUp = false;
