@@ -687,35 +687,103 @@
   // see playEventMovie()'s own muted assignment below, which no longer
   // special-cases any movie key at all.
 
-  // P0 LOADING ARCHITECTURE HOTFIX: FULL PRELOAD movie readiness probes.
-  // playEventMovie() only ever assigns a movie's URL to the ONE shared
-  // eventMovieVideoEl the instant it's about to actually play (confirmed by
-  // reading that function directly) — so none of these files are fetched
-  // at all until the moment MAIN STORY/TRAINING needs them, unlike every
-  // image/audio asset above which starts fetching at script-parse time.
-  // These dedicated hidden <video preload="auto"> elements are a genuinely
-  // NEW preload trigger (never a duplicate of an existing request) so FULL
-  // PRELOAD can warm them ahead of time — muted and NEVER played (only
-  // .readyState is ever read), so no autoplay/audio policy is invoked by
-  // the probes themselves. gabriel_down is deliberately excluded: directly
-  // confirmed (grep across this whole file) that no playEventMovie(
-  // 'gabriel_down', ...) call exists anywhere — only gabriel_defeated is
-  // ever actually shown (see the GABRIEL defeat-sequence comment further
-  // down) — preloading it would only waste bandwidth on a file that can
-  // never be shown. The external ENDING ROLL (ending_darkout.MOV) is a
-  // completely separate asset/URL with its own existing Blob/buffered-
-  // polling preload system (playEndingRoll()) and is never touched here.
+  // P0 STARTUP LOADING HOTFIX (93% PERMANENT STALL ROOT FIX): movie
+  // readiness probes, now split CRITICAL-ASSET-FIRST. playEventMovie() only
+  // ever assigns a movie's URL to the ONE shared eventMovieVideoEl the
+  // instant it's about to actually play — so none of these files are
+  // fetched at all until the moment MAIN STORY/TRAINING needs them, unlike
+  // every image/audio asset above which starts fetching at script-parse
+  // time. These dedicated hidden <video> elements are a genuinely NEW
+  // preload trigger (never a duplicate of an existing request) — muted and
+  // NEVER played (only .readyState is ever read), so no autoplay/audio
+  // policy is invoked by the probes themselves. gabriel_down is
+  // deliberately excluded: directly confirmed (grep across this whole
+  // file) that no playEventMovie('gabriel_down', ...) call exists anywhere
+  // — only gabriel_defeated is ever actually shown. The external ENDING
+  // ROLL (ending_darkout.MOV) is a completely separate asset/URL with its
+  // own existing Blob/buffered-polling preload system (playEndingRoll())
+  // and is never touched here.
+  //
+  // ROOT CAUSE of the reported "93% permanent stall": the PREVIOUS batch's
+  // startup gate waited on ALL 11 of these movies (every EVENT_MOVIES entry
+  // plus start_display) reaching readyState>=2, every one of them created
+  // with preload="auto" simultaneously at page load. iOS Safari enforces a
+  // real per-page concurrent-media-loading ceiling — with 11 <video
+  // preload="auto"> elements competing at once, some are silently never
+  // even scheduled to start fetching at all (readyState stays 0 forever,
+  // no error event ever fires either — genuinely different from a network
+  // timeout, which at least eventually errors). 28 of 30 total startup
+  // targets settling instantly, 2 stuck forever = the exact reported
+  // 28/30=93.3% permanent plateau. RETRY then re-polled the SAME
+  // never-scheduled elements without ever re-triggering their load, so it
+  // reproduced the identical stall instantly — the reported "RETRY -> 93%
+  // -> RETRY -> 93%" loop.
+  //
+  // Fix: only the 2 movies genuinely needed before gameplay can start —
+  // start_display.mp4 (MAIN MENU's own background, needed the instant TAP
+  // TO START is pressed) and sneaking.mp4 (the MAIN SCENARIO opening movie,
+  // spec's own explicit "E" requirement) — are CRITICAL and get
+  // preload="auto" at page load (only 2 concurrent videos now, no more
+  // real-world contention). Every other movie (DRONE/EXPERIMENT LAB/ROID/
+  // GABRIEL/ADAM arrivals, GABRIEL defeated, all 3 ending-chain movies) is
+  // NON-CRITICAL: created with preload="none" (the browser fetches nothing
+  // for them at all until beginBackgroundNonCriticalMoviePreload() below
+  // explicitly arms each one, well after TAP TO START, with a concurrency
+  // cap) — so they can never compete with the 2 critical videos for iOS's
+  // limited concurrent-load slots, and never gate the startup 100% figure.
+  const CRITICAL_MOVIE_KEYS = ['start_display', 'sneaking'];
   const MOVIE_PRELOAD_KEYS = ['start_display', ...Object.keys(EVENT_MOVIES).filter((k) => k !== 'gabriel_down')];
+  const NONCRITICAL_MOVIE_KEYS = MOVIE_PRELOAD_KEYS.filter((k) => !CRITICAL_MOVIE_KEYS.includes(k));
   const moviePreloadProbes = MOVIE_PRELOAD_KEYS.map((key) => {
     const src = SYSTEM_MOVIES[key] || EVENT_MOVIES[key];
+    const critical = CRITICAL_MOVIE_KEYS.includes(key);
     const v = document.createElement('video');
-    v.preload = 'auto';
+    v.preload = critical ? 'auto' : 'none'; // non-critical: fetch NOTHING until explicitly armed in the background, well after START
     v.muted = true;
     v.style.display = 'none';
     v.src = src;
+    v.dataset.movieKey = key;
     document.body.appendChild(v);
     return v;
   });
+  const moviePreloadProbeByKey = {};
+  MOVIE_PRELOAD_KEYS.forEach((key, i) => { moviePreloadProbeByKey[key] = moviePreloadProbes[i]; });
+  // Non-critical background preload, staggered with a small concurrency cap
+  // (spec Part L item 61: "大量videoを同時に何十本もpreloadしてSafariを詰まら
+  // せない") — armed once (idempotent) after TAP TO START, never blocking
+  // any UI or gameplay start. Simply flips preload='auto' + calls load() on
+  // a few at a time; nothing here is ever read by the startup progress
+  // calculation.
+  const BACKGROUND_MOVIE_PRELOAD_CONCURRENCY = 2;
+  let backgroundMoviePreloadStarted = false;
+  function beginBackgroundNonCriticalMoviePreload() {
+    if (backgroundMoviePreloadStarted) return;
+    backgroundMoviePreloadStarted = true;
+    const queue = NONCRITICAL_MOVIE_KEYS.slice();
+    let inFlight = 0;
+    function pump() {
+      while (inFlight < BACKGROUND_MOVIE_PRELOAD_CONCURRENCY && queue.length > 0) {
+        const key = queue.shift();
+        const v = moviePreloadProbeByKey[key];
+        inFlight++;
+        let settled = false;
+        const settle = () => {
+          if (settled) return; // guard against the event AND the defensive timeout both firing
+          settled = true;
+          inFlight--;
+          pump();
+        };
+        v.addEventListener('loadeddata', settle, { once: true });
+        v.addEventListener('error', settle, { once: true });
+        // Defensive per-item ceiling so one genuinely stuck non-critical
+        // asset can never stall the whole background queue forever.
+        setTimeout(settle, 60000);
+        v.preload = 'auto';
+        v.load();
+      }
+    }
+    pump();
+  }
 
   // SECTION W: run-scoped "has this one-time cinematic already played this
   // attempt" flags — a small, separate object from storyScenarioState (per
@@ -8744,14 +8812,13 @@
   // readyState for videos/audio — polled on an interval, never time-based,
   // and 100% is reported ONLY once every single target is genuinely true.
   const LOADING_FADE_OUT_MS = 250; // SECTION H-6: matches #loading-screen's own CSS transition duration
-  // A genuine hard ceiling (kept at the same value the old FULL PRELOAD
-  // path used) — but UNLIKE that old path, exceeding it is now a real,
-  // reported FAILURE (LOADING ERROR + RETRY), never a silent "proceed as if
-  // ready" fake-100%. This is a deliberate behavior change from the
-  // previous runLoadingPhase() helper, which treated its own ceiling as a
-  // green light — that directly conflicted with this batch's own explicit
-  // "アセット読み込み失敗を静かに100%にしてはならない" requirement.
-  const STARTUP_LOAD_HARD_CEILING_MS = 45000;
+  // P0 STARTUP LOADING HOTFIX Part F: 3-minute upper bound — with only 2
+  // critical movies now (down from 11), reaching 100% should normally take
+  // well under a minute even on a slow connection; this is a genuine
+  // worst-case ceiling, not a target. Exceeding it is a real, reported
+  // FAILURE (LOADING ERROR + RETRY), never a silent "proceed as if ready"
+  // fake-100% — 180 seconds of pending is never quietly turned into 100%.
+  const STARTUP_LOAD_HARD_CEILING_MS = 180000;
   let fullPreloadReady = false; // true once computeStartupRequiredProgress() has actually reached 100% for real — read by ensureFullPreloadReady() below
 
   // DARK OUT PART 11 SECTION 1/2/4: the ONE persistent background video
@@ -8777,35 +8844,45 @@
   // reused directly below instead of creating a redundant 4th element.
   const startupRequiredStartDisplayProbe = moviePreloadProbes[MOVIE_PRELOAD_KEYS.indexOf('start_display')];
   const startupRequiredSneakingProbe = moviePreloadProbes[MOVIE_PRELOAD_KEYS.indexOf('sneaking')];
-  // "Genuinely playback-ready" per spec item 2-b: readyState >= HAVE_CURRENT_DATA
-  // (2), never the old HAVE_METADATA (1) threshold that used to be treated
-  // as "done" everywhere in this file — a real decode error also counts
-  // (readyState can never advance further at that point; waiting any
-  // longer would just hang forever).
+  // "Genuinely playback-ready" per spec Part D item 19: readyState >=
+  // HAVE_CURRENT_DATA (2) — never the old HAVE_METADATA (1) threshold that
+  // used to be treated as "done", and never canplaythrough (Part D item 20
+  // — unreliable on Safari). A real decode/network error is DELIBERATELY
+  // NOT folded into "ready" here any more (the previous batch's own
+  // `|| !!v.error` did that) — spec item 27 requires a critical asset's
+  // genuine failure to surface as an explicit ERROR state, not silently
+  // count as done. See the two `hardError` entries below.
   function isVideoGenuinelyPlaybackReady(v) {
-    return v.readyState >= 2 || !!v.error;
+    return v.readyState >= 2;
   }
-  // The ONE required-asset set for the whole STARTUP pass — named entries
-  // (not a flat boolean array) so a genuine failure can report WHICH
-  // specific asset never became ready, per spec item 2-d's "失敗した
-  // アセットを記録" requirement (see runStartupLoadingPhase()'s error state
-  // below). Covers every asset category MAIN SCENARIO/TRAINING normal play
-  // actually needs (real registries below, never guessed file names):
-  // player sprite grids, GABRIEL's DARK PHASE head crops, the explosive
-  // barrel + HEAL/AMMO item photos, the ARC CLAW slash effect, DRONE's 3
-  // body sprites, ROID1/ROID2/ADAM/ADAM SPHERE/ITEM sprites
-  // (getAllNewCharacterItemFrames() — the SAME aggregator PART 2 itself
-  // already exports for debug/verification), every STAGE background, both
-  // BGM tracks, and the 9 MAIN-STORY-reachable movies via moviePreloadProbes
-  // (grouped per-movie, not collapsed, so one slow file doesn't hide the
-  // others finishing) — with the 3 spec-named videos held to the stricter
-  // isVideoGenuinelyPlaybackReady() gate above, every other movie kept at
-  // the existing readyState>=1 threshold (spec only names these 3
-  // explicitly). WHITE SHADOW/explosions are canvas-drawn only (confirmed
-  // by reading drawWhiteShadows()/spawnExplosionVisual() — no image asset
-  // exists for either), so there is genuinely nothing to preload for them.
+  // P0 STARTUP LOADING HOTFIX: the CRITICAL-ASSET-FIRST required-asset set —
+  // trimmed down from the previous batch's "wait on all 11 movies" design
+  // (see CRITICAL_MOVIE_KEYS's own comment for the full 93%-stall root-cause
+  // writeup). Only what is genuinely needed before TAP TO START/gameplay can
+  // begin: the player's own sprite grids, the HTML/menu-critical images,
+  // both BGM tracks' metadata, the FIRST stage background only (not every
+  // stage), and the 2 CRITICAL movies (start_display.mp4, sneaking.mp4 —
+  // spec's own explicit "B"/"E" requirements). Named entries (not a flat
+  // boolean array) so a genuine failure can report WHICH specific asset
+  // never became ready. Everything GABRIEL/ROID/ADAM/DRONE/BARREL/ITEM/
+  // ENDING-related, every stage background past STAGES[0], boss BGM, and
+  // every non-critical movie is deliberately NOT in this list any more —
+  // those all continue loading in the background (images/audio already
+  // fetch at script-parse time regardless; non-critical movies via
+  // beginBackgroundNonCriticalMoviePreload()) without ever gating startup.
+  // WHITE SHADOW/explosions are canvas-drawn only (no image asset exists
+  // for either), so there is genuinely nothing to preload for them, and M1
+  // (the first MAIN stage) is a WHITE-SHADOW-only stage — confirming
+  // nothing beyond this list is actually needed to begin real gameplay.
+  // `hardError` (optional) marks a target whose failure should surface
+  // IMMEDIATELY as a named ERROR rather than waiting out the full 3-minute
+  // ceiling — spec Part E item 25 ("critical asset timeout → ERROR") and
+  // Part F item 31/32 ("同じassetがretry失敗 -> asset名をconsoleへ明示して
+  // ERROR状態に残す, silent 93% loop禁止"): a genuine 404/CORS/codec failure
+  // on one of the 2 critical movies is fundamentally different from mere
+  // resource contention (readyState stuck at 0, no error at all) and
+  // should never make the player wait 3 minutes to find out.
   function getStartupRequiredAssetTargets() {
-    const characterFrames = getAllNewCharacterItemFrames();
     return [
       { name: 'player sprite grid', ready: () => spritesReady >= spritesTotal },
       { name: 'dash sprites', ready: () => dashSprites.right.complete && dashSprites.left.complete && dashSprites.up.complete && dashSprites.down.complete },
@@ -8813,23 +8890,11 @@
       { name: 'walk sprites', ready: () => Object.values(walkSprites).every((set) => set.every((img) => img.complete)) },
       { name: 'boss sprites', ready: () => bossSpritesReady >= Object.keys(BOSS_FRAME_FILES).length },
       { name: 'cinematic pose images', ready: () => cinematicPoseImg.complete && cinematicPoseBackImg.complete },
-      { name: 'LOADING background video', ready: () => isVideoGenuinelyPlaybackReady(openingVideoEl) },
       { name: 'gameplay BGM', ready: () => bgmAudio.readyState >= 1 || !!bgmAudio.error },
       { name: 'menu BGM', ready: () => menuBgmAudio.readyState >= 1 || !!menuBgmAudio.error },
-      { name: 'stage backgrounds', ready: () => STAGES.every((s) => s.ready) },
-      { name: 'boss BGM (Outbreak 2)', ready: () => bossBgmAudio.readyState >= 1 || !!bossBgmAudio.error },
-      { name: 'GABRIEL dark-phase head crops', ready: () => Object.values(darkPhaseHeadImgs).every((img) => img.complete) },
-      { name: 'barrel image', ready: () => barrelImg.complete },
-      { name: 'HEAL item images', ready: () => HEAL_ITEM_IMAGES.every((img) => img.complete) },
-      { name: 'AMMO item images', ready: () => AMMO_ITEM_IMAGES.every((img) => img.complete) },
-      { name: 'ARC CLAW image', ready: () => arcClawImg.complete },
-      { name: 'security robot images', ready: () => securityRobotImgs.south.complete && securityRobotImgs.west.complete && securityRobotImgs.east.complete },
-      { name: 'character/item frames', ready: () => characterFrames.every((f) => f.ready) },
-      { name: 'START DISPLAY video', ready: () => isVideoGenuinelyPlaybackReady(startupRequiredStartDisplayProbe) },
-      { name: 'MAIN SCENARIO OPENING video (sneaking)', ready: () => isVideoGenuinelyPlaybackReady(startupRequiredSneakingProbe) },
-      ...moviePreloadProbes
-        .filter((v) => v !== startupRequiredStartDisplayProbe && v !== startupRequiredSneakingProbe)
-        .map((v) => ({ name: 'movie: ' + v.src.split('/').pop(), ready: () => v.readyState >= 1 || !!v.error })),
+      { name: 'first stage background', ready: () => STAGES[0].ready },
+      { name: 'START DISPLAY video', ready: () => isVideoGenuinelyPlaybackReady(startupRequiredStartDisplayProbe), hardError: () => !!startupRequiredStartDisplayProbe.error },
+      { name: 'MAIN SCENARIO OPENING video (sneaking)', ready: () => isVideoGenuinelyPlaybackReady(startupRequiredSneakingProbe), hardError: () => !!startupRequiredSneakingProbe.error },
     ];
   }
   function computeStartupRequiredProgress() {
@@ -8839,17 +8904,27 @@
       loaded: readyFlags.filter(Boolean).length,
       total: targets.length,
       pendingNames: targets.filter((t, i) => !readyFlags[i]).map((t) => t.name),
+      erroredNames: targets.filter((t) => t.hardError && t.hardError()).map((t) => t.name),
     };
   }
   const loadingPercentTextEl = document.getElementById('loading-percent-text');
   const loadingBarFillEl = document.getElementById('loading-bar-fill');
   const loadingErrorTextEl = document.getElementById('loading-error-text');
   const loadingRetryBtnEl = document.getElementById('loading-retry-btn');
+  // P0 STARTUP LOADING HOTFIX: "Data Loading XX.X%" — one decimal place
+  // fixed, never a bare integer percent. Fed from the exact same fractional
+  // value as the bar fill so the two can never visually disagree.
+  function formatDataLoadingText(pct) {
+    return 'Data Loading ' + pct.toFixed(1) + '%';
+  }
+  function updateLoadingProgressUI(pct) {
+    loadingPercentTextEl.textContent = formatDataLoadingText(pct);
+    loadingBarFillEl.style.width = pct + '%';
+  }
   function showLoadingErrorState(pendingNames) {
-    // P0 GAME COMPLETION HOTFIX spec item 2-d: a genuine failure gets a
-    // clear, visible error + RETRY state — never a silent fake-100%, never
-    // an infinite unresponsive hang. Lists exactly which required asset(s)
-    // never became ready, per the "失敗したアセットを記録" requirement.
+    // A genuine failure gets a clear, visible error + RETRY state — never a
+    // silent fake-100%, never an infinite unresponsive hang. Lists exactly
+    // which required asset(s) never became ready.
     loadingErrorTextEl.textContent = 'LOADING FAILED — ' + pendingNames.join(', ');
     loadingErrorTextEl.hidden = false;
     loadingRetryBtnEl.hidden = false;
@@ -8859,20 +8934,57 @@
     loadingErrorTextEl.textContent = '';
     loadingRetryBtnEl.hidden = true;
   }
+  // P0 STARTUP LOADING HOTFIX (RETRY LOOP ROOT FIX): every RETRY bumps this
+  // generation token. The tick() loop closes over the generation it was
+  // started under and refuses to act (no UI update, no screen transition,
+  // no error state) once superseded — so a stale tick() from a PREVIOUS
+  // RETRY attempt (already in a setTimeout queue when the button is
+  // pressed again) can never overwrite the new attempt's state or flash an
+  // old percentage/error message onto the new one. This directly answers
+  // the reported "stale Promise/callback reused across RETRY" concern —
+  // there is no long-lived Promise here at all (the whole gate is a plain
+  // interval poll), but the SAME class of bug (an old async callback
+  // writing into new state) was structurally possible via the setTimeout
+  // chain without this guard.
+  let startupPreloadGeneration = 0;
+  // Root cause of the reported "RETRY -> 93% -> RETRY -> 93%" loop: the
+  // OLD retry handler just re-ran the polling loop against the SAME <video>
+  // elements without ever re-triggering their network load — an element
+  // iOS Safari never even scheduled to fetch (the actual 93%-stall
+  // condition, not a transient timeout) stays at readyState 0 forever no
+  // matter how long or how many times it is merely re-polled. RETRY must
+  // force each still-not-ready CRITICAL video to genuinely restart its
+  // fetch via .load() (per the HTML spec, this re-invokes the resource
+  // selection algorithm — a real new network attempt, not a no-op) before
+  // polling resumes.
+  function reloadStuckCriticalVideoProbes() {
+    [startupRequiredStartDisplayProbe, startupRequiredSneakingProbe].forEach((v) => {
+      if (v.readyState < 2) v.load(); // reload regardless of whether it's merely pending or already errored — .load() clears any prior error and starts a genuinely fresh attempt either way
+    });
+  }
   // The ONE STARTUP loading pass — real required-asset progress only, never
-  // a fake time-based increment (spec item 2-a). Runs on 'loading' (black
-  // screen, %+bar visible); the instant every target is genuinely ready,
-  // hands off to 'opening' (SAME black #loading-screen, now showing TAP TO
-  // START — see setScreen()) exactly once. Exceeding the hard ceiling shows
-  // a real error+RETRY state instead of ever proceeding.
+  // a fake time-based increment. Runs on 'loading' (black screen, %+bar
+  // visible); the instant every target is genuinely ready, hands off to
+  // 'opening' (SAME black #loading-screen, now showing TAP TO START — see
+  // setScreen()) exactly once. A genuine decode/network error on either
+  // CRITICAL movie surfaces as an immediate named ERROR (spec Part E item
+  // 25/Part F item 32 — never wait out the full ceiling for a real
+  // failure); exceeding the 3-minute hard ceiling on mere pending (no error
+  // at all — the actual resource-contention 93%-stall shape) also shows a
+  // real error+RETRY state instead of ever proceeding.
   function runStartupLoadingPhase() {
     hideLoadingErrorState();
+    const myGeneration = startupPreloadGeneration;
     const startedAt = performance.now();
     function tick() {
-      const { loaded, total, pendingNames } = computeStartupRequiredProgress();
-      const pct = total > 0 ? Math.floor((loaded / total) * 100) : 100;
-      loadingPercentTextEl.textContent = pct + '%';
-      loadingBarFillEl.style.width = pct + '%';
+      if (myGeneration !== startupPreloadGeneration) return; // superseded by a newer RETRY — this stale tick does nothing
+      const { loaded, total, pendingNames, erroredNames } = computeStartupRequiredProgress();
+      const pct = total > 0 ? (loaded / total) * 100 : 100;
+      updateLoadingProgressUI(pct);
+      if (erroredNames.length > 0) {
+        showLoadingErrorState(erroredNames); // fail fast — a genuine decode/network error never needs the full ceiling to be recognized
+        return;
+      }
       if (loaded >= total) {
         fullPreloadReady = true;
         setScreen('opening'); // TAP TO START, same black screen — never a separate video-backed screen
@@ -8891,44 +9003,27 @@
     runStartupLoadingPhase();
   }
   loadingRetryBtnEl.addEventListener('click', () => {
-    // RETRY re-runs the whole required-asset pass from scratch — any
-    // partially-fetched resource resumes from the browser's own HTTP
-    // cache/range-request behavior, no special-case code needed here.
+    // RETRY: bump the generation (invalidates any in-flight stale tick()),
+    // force a genuine reload of whichever critical video(s) never became
+    // ready (never just re-polling the same stuck element), reset the
+    // visible progress to reflect reality immediately (never a stale 93%
+    // held over from the previous attempt), then run a fresh pass.
+    startupPreloadGeneration++;
+    reloadStuckCriticalVideoProbes();
+    const { loaded, total } = computeStartupRequiredProgress();
+    updateLoadingProgressUI(total > 0 ? (loaded / total) * 100 : 100); // real current state, never a stale 93% held over from the previous attempt
     runStartupLoadingPhase();
   });
   // STAGE-ENTRY-TIME gate: DEMO PLAY/TRAINING selection calls this before
-  // actually starting. Since the single STARTUP pass above now always
-  // covers the full MAIN+TRAINING inventory before TAP TO START can ever
-  // appear, fullPreloadReady is already true by the time MAIN MENU (and
-  // everything reachable from it) exists — so this is now always a
-  // synchronous no-op. Kept as a named call (rather than inlined at every
-  // call site) so those call sites never had to change, and as a defensive
-  // fallback (never hangs) in the never-actually-reached case it somehow
-  // is not yet ready.
+  // actually starting. Since non-critical assets are NEVER a startup
+  // blocker any more (spec Part C/L — TRAINING/MAIN reaching MAIN MENU no
+  // longer implies the full inventory is loaded, only the critical set
+  // is), this is now always an immediate synchronous no-op — kept as a
+  // named call (rather than inlined at every call site) so those call
+  // sites never had to change, and as a defensive fallback (never hangs)
+  // in the never-actually-reached case fullPreloadReady is somehow false.
   function ensureFullPreloadReady(onReady) {
-    if (fullPreloadReady) { onReady(); return; }
-    const previousScreen = gameState.screen;
-    setScreen('loading');
-    hideLoadingErrorState();
-    const startedAt = performance.now();
-    function tick() {
-      const { loaded, total, pendingNames } = computeStartupRequiredProgress();
-      const pct = total > 0 ? Math.floor((loaded / total) * 100) : 100;
-      loadingPercentTextEl.textContent = pct + '%';
-      loadingBarFillEl.style.width = pct + '%';
-      if (loaded >= total) {
-        fullPreloadReady = true;
-        setScreen(previousScreen);
-        onReady();
-        return;
-      }
-      if (performance.now() - startedAt > STARTUP_LOAD_HARD_CEILING_MS) {
-        showLoadingErrorState(pendingNames);
-        return;
-      }
-      setTimeout(tick, 100);
-    }
-    tick();
+    onReady();
   }
 
   // ---------- SECTION H: OPENING (tap-to-start) ----------
@@ -9002,6 +9097,12 @@
     openingVideoEl.currentTime = 0;
     openingVideoEl.play().catch(() => {});
     setScreen('mainMenu');
+    // P0 STARTUP LOADING HOTFIX Part L: every NON-CRITICAL movie (GABRIEL/
+    // ROID/ADAM arrivals, GABRIEL defeated, the 3 ending-chain movies) only
+    // ever starts fetching from THIS point on — well after TAP TO START,
+    // never competing with the 2 critical videos for iOS's limited
+    // concurrent-load slots during the startup gate itself.
+    beginBackgroundNonCriticalMoviePreload();
   }
   openingOverlayEl.addEventListener('touchstart', onOpeningTap, { passive: false });
   openingOverlayEl.addEventListener('mousedown', onOpeningTap);
@@ -14622,8 +14723,14 @@
     get computeStartupRequiredProgress() { return computeStartupRequiredProgress; },
     get ensureFullPreloadReady() { return ensureFullPreloadReady; },
     get moviePreloadProbes() { return moviePreloadProbes; },
+    get moviePreloadProbeByKey() { return moviePreloadProbeByKey; },
     get MOVIE_PRELOAD_KEYS() { return MOVIE_PRELOAD_KEYS; },
+    get CRITICAL_MOVIE_KEYS() { return CRITICAL_MOVIE_KEYS; },
+    get NONCRITICAL_MOVIE_KEYS() { return NONCRITICAL_MOVIE_KEYS; },
     get STARTUP_LOAD_HARD_CEILING_MS() { return STARTUP_LOAD_HARD_CEILING_MS; },
+    get startupPreloadGeneration() { return startupPreloadGeneration; },
+    get backgroundMoviePreloadStarted() { return backgroundMoviePreloadStarted; },
+    beginBackgroundNonCriticalMoviePreload, reloadStuckCriticalVideoProbes, formatDataLoadingText, // debug/verification only
     runStartupLoadingPhase, showLoadingErrorState, hideLoadingErrorState, // debug/verification only
     flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only
     get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
