@@ -1552,6 +1552,34 @@
     const m = getStageDrawMetrics(stage);
     return { left: m.dx + stage.floorLeftFrac * m.dw, right: m.dx + stage.floorRightFrac * m.dw };
   }
+  // P0 WORK ORDER I CORRECTION (Area1/2 LOS root-cause fix): floorLeftFrac/
+  // floorRightFrac above describe the background's GENERAL walkable floor
+  // width (used for the per-row X clamp in every Area, and for DRONE
+  // placement/patrol ranges) — but until now, the Area1<->Area2 DOOR at the
+  // boundary row wrongly reused that SAME full floor width as its own
+  // opening (the old doorLeft/doorRight = floor.left+halfW/floor.right-halfW,
+  // i.e. nearly the ENTIRE floor). Direct visual inspection of the actual
+  // rendered TRAINING_BACKGROUNDS assets (the pool DRONE/MIXED STORY stages
+  // and SECURITY TRAINING both draw from) confirms these are single
+  // continuous open corridors with no narrow doorway drawn at the tile seam
+  // — so "inside the door" was true for nearly every normal player/DRONE
+  // position in the room, meaning the wall was structurally almost never
+  // actually reachable in real play. This is the direct mechanism behind
+  // the real-device "DRONE attacks through the Area1/2 wall near the exit"
+  // report: LOS was never actually blocked because the "door" was, in
+  // effect, the whole room. Fixed by giving the door its OWN, genuinely
+  // narrow width — reusing EXIT_ZONE_W (an already-tuned "how wide is a
+  // walkable target gap" constant this same file already uses for the
+  // physical EXIT band, never a newly-invented number), centered on the
+  // floor's own center, capped to never exceed the floor width itself on a
+  // narrow floor. Shared by clampPlayerToScreen() (movement) and
+  // segmentCrossesAreaWall() (LOS/projectiles/CLAW/AUTO AIM) so the two can
+  // never disagree about where the real opening is.
+  function getAreaDoorXRangeWorld(floor) {
+    const doorCenterX = (floor.left + floor.right) / 2;
+    const doorHalfW = Math.min(EXIT_ZONE_W / 2, (floor.right - floor.left) / 2);
+    return { left: doorCenterX - doorHalfW, right: doorCenterX + doorHalfW };
+  }
   // PART2-turn SECTION A: every world Y where a background tile boundary —
   // and therefore a "door" opening — actually occurs. Since dh (the drawn
   // tile height) lands almost exactly on H at the portrait aspect ratios
@@ -1583,6 +1611,7 @@
     const floor = getFloorXRangeWorld();
     if (!floor) return false;
     if (y1 === y2) return false; // a horizontal segment can only ever run exactly along a boundary, never cross one
+    const door = getAreaDoorXRangeWorld(floor); // P0 WORK ORDER I CORRECTION: the real, narrow door — never the full floor width
     for (const boundaryY of getAreaBoundaryYs()) {
       if ((y1 - boundaryY) * (y2 - boundaryY) > 0) continue; // both endpoints on the same side of this boundary — no crossing here
       // WORK ORDER I items 3-4: same door-closure condition
@@ -1592,7 +1621,7 @@
       if (boundaryY === 0 && isNonBossExterminationGateActive() && isArea1KillableEnemiesRemaining()) return true;
       const t = (boundaryY - y1) / (y2 - y1);
       const crossX = x1 + (x2 - x1) * t;
-      if (crossX < floor.left || crossX > floor.right) return true; // crosses the WALL part, not the DOOR opening
+      if (crossX < door.left || crossX > door.right) return true; // crosses the WALL part, not the real DOOR opening
     }
     return false;
   }
@@ -2634,7 +2663,8 @@
         player.x = player.lastValidX;
         player.y = player.lastValidY;
       }
-      const doorLeft = floor.left + halfW, doorRight = floor.right - halfW;
+      const doorRange = getAreaDoorXRangeWorld(floor); // P0 WORK ORDER I CORRECTION: the real, narrow door — never nearly the whole floor width
+      const doorLeft = doorRange.left, doorRight = doorRange.right;
       for (const boundaryY of getAreaBoundaryYs()) {
         if (Math.abs(player.y - boundaryY) > AREA_BOUNDARY_DOOR_BAND) continue;
         // WORK ORDER I items 3-4: the Area1<->Area2 door (boundaryY===0
@@ -16433,7 +16463,8 @@
     // (STRAIGHT_CLAW_TRIGGER_GUARDS is already exposed above).
     spawnStraightClaw, isPlayerInvulnerable,
     // Debug/verification only — AREA1<->AREA2 (and bonus-band) door-collision fix.
-    getFloorXRangeWorld, getStageDrawMetrics, AREA_BOUNDARY_DOOR_BAND, getAreaBoundaryYs,
+    getFloorXRangeWorld, getStageDrawMetrics, AREA_BOUNDARY_DOOR_BAND, getAreaBoundaryYs, getAreaDoorXRangeWorld, // P0 WORK ORDER I CORRECTION — debug/verification only
+    get DEBUG_AREA_LOS_OVERLAY() { return DEBUG_AREA_LOS_OVERLAY; }, // P0 WORK ORDER I CORRECTION — debug/verification only
     getDronePlacementRangeX, clampPlayerToScreen,
     get W() { return W; }, get H() { return H; },
     // P0 LANDSCAPE HOTFIX — debug/verification only:
@@ -17269,6 +17300,49 @@
       ctx.arc(player.x, player.y, 3, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
+    }
+
+    // P0 WORK ORDER I CORRECTION: ?debugAreaLos=1 overlay -- the real wall/
+    // door geometry (yellow = wall segment, lime = door opening) at every
+    // getAreaBoundaryYs() row, plus one line per live securityRobot straight
+    // to the player, red when segmentCrossesAreaWall() call the AI itself
+    // trusts says BLOCKED and green when CLEAR -- so a real device can
+    // visually confirm the drawn wall/door matches what actually blocks a
+    // shot/lock-on, never just a number in source.
+    if (DEBUG_AREA_LOS_OVERLAY) {
+      const losFloor = getFloorXRangeWorld();
+      if (losFloor) {
+        const losDoor = getAreaDoorXRangeWorld(losFloor);
+        ctx.save();
+        ctx.lineWidth = 3;
+        for (const boundaryY of getAreaBoundaryYs()) {
+          ctx.strokeStyle = '#ffcc00';
+          ctx.beginPath();
+          ctx.moveTo(losFloor.left, boundaryY);
+          ctx.lineTo(losDoor.left, boundaryY);
+          ctx.moveTo(losDoor.right, boundaryY);
+          ctx.lineTo(losFloor.right, boundaryY);
+          ctx.stroke();
+          ctx.strokeStyle = '#33ff66';
+          ctx.beginPath();
+          ctx.moveTo(losDoor.left, boundaryY);
+          ctx.lineTo(losDoor.right, boundaryY);
+          ctx.stroke();
+        }
+        for (const robot of securityRobots) {
+          const blocked = segmentCrossesAreaWall(robot.x, robot.y, player.x, player.y);
+          ctx.strokeStyle = blocked ? '#ff3344' : '#33ff66';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(robot.x, robot.y);
+          ctx.lineTo(player.x, player.y);
+          ctx.stroke();
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '11px monospace';
+          ctx.fillText(blocked ? 'BLOCKED' : 'CLEAR', robot.x + 8, robot.y - 8);
+        }
+        ctx.restore();
+      }
     }
 
     // PART 2: laser beams draw crossing over the player/boss layer, so the
@@ -18598,6 +18672,22 @@
       localStorage.removeItem('debugCollision');
     }
     DEBUG_COLLISION_OVERLAY = localStorage.getItem('debugCollision') === '1';
+  } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  // P0 WORK ORDER I CORRECTION: same ?debugAreaLos=1/0 -> localStorage
+  // persistence pattern as DEBUG_COLLISION_OVERLAY above — draws the actual
+  // Area1/2 wall/door geometry (getFloorXRangeWorld()/getAreaDoorXRangeWorld())
+  // plus a live DRONE->PLAYER LOS line per securityRobot, color-coded BLOCKED/
+  // CLEAR via the exact same segmentCrossesAreaWall() the real AI/movement/
+  // projectile code paths use, so a real device can visually confirm the
+  // drawn wall/door actually matches what is (and isn't) attackable/walkable.
+  let DEBUG_AREA_LOS_OVERLAY = false;
+  try {
+    if (new URLSearchParams(window.location.search).get('debugAreaLos') === '1') {
+      localStorage.setItem('debugAreaLos', '1');
+    } else if (new URLSearchParams(window.location.search).get('debugAreaLos') === '0') {
+      localStorage.removeItem('debugAreaLos');
+    }
+    DEBUG_AREA_LOS_OVERLAY = localStorage.getItem('debugAreaLos') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
