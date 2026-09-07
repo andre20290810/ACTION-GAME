@@ -246,6 +246,19 @@
   <div id="pause-zone">
     <button id="pause-button" aria-label="PAUSE">PAUSE</button>
   </div>
+  <!-- P0 STREAMING ARCHITECTURE HOTFIX: the NEXT CONTENT EXIT READY GATE's
+       own waiting HUD — shown ONLY while the player has reached an EXIT (or
+       a boss defeat) whose next movie is not yet genuinely ready. The
+       current stage/background/player/enemies/BGM all keep running
+       untouched underneath this (never a fullscreen black cut, never
+       TAP TO PLAY/TAP TO START) — this is a small non-blocking pill, not a
+       screen change. See resolveNextRequiredMovieKey()/waitForMovieThen
+       Proceed() in game.js. -->
+  <div id="next-content-wait-overlay" hidden>
+    <div id="next-content-wait-text">Preparing Next Area 0.0%</div>
+    <div id="next-content-wait-error" hidden></div>
+    <button id="next-content-wait-retry-btn" class="mode-btn" hidden>RETRY</button>
+  </div>
 </div>
 
 <!-- CONTROL AREA: every touch control lives here, in normal document flow
@@ -399,6 +412,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=p0-startup-loading-hotfix1"></script>
+<script src="game.js?v=p0-streaming-architecture-hotfix1"></script>
 </body>
 </html>

@@ -704,33 +704,37 @@
   // own existing Blob/buffered-polling preload system (playEndingRoll())
   // and is never touched here.
   //
-  // ROOT CAUSE of the reported "93% permanent stall": the PREVIOUS batch's
-  // startup gate waited on ALL 11 of these movies (every EVENT_MOVIES entry
-  // plus start_display) reaching readyState>=2, every one of them created
-  // with preload="auto" simultaneously at page load. iOS Safari enforces a
-  // real per-page concurrent-media-loading ceiling — with 11 <video
-  // preload="auto"> elements competing at once, some are silently never
-  // even scheduled to start fetching at all (readyState stays 0 forever,
-  // no error event ever fires either — genuinely different from a network
-  // timeout, which at least eventually errors). 28 of 30 total startup
-  // targets settling instantly, 2 stuck forever = the exact reported
-  // 28/30=93.3% permanent plateau. RETRY then re-polled the SAME
-  // never-scheduled elements without ever re-triggering their load, so it
-  // reproduced the identical stall instantly — the reported "RETRY -> 93%
-  // -> RETRY -> 93%" loop.
+  // ROOT CAUSE HISTORY of the reported "93% permanent stall" / "81.8%
+  // permanent stall": TWO compounding issues, discovered in sequence.
+  // (1) The batch before this one had the startup gate wait on ALL 11 of
+  // these movies reaching readyState>=2 simultaneously at page load — a
+  // real per-page concurrent-media-loading ceiling meant some were
+  // silently never even scheduled to fetch (28/30=93.3% plateau).
+  // (2) Reducing the gate to just 2 movies (start_display, sneaking) did
+  // NOT fix real iPhone Safari — it now stalled at 9/11=81.8% instead,
+  // because the true root cause is structural, not contention-based: iOS
+  // Safari never buffers ANY <video> data (readyState never advances past
+  // HAVE_METADATA) before the page has received a genuine user gesture, no
+  // matter how long you wait or how little else is competing for
+  // bandwidth. Requiring readyState>=2 for a video BEFORE the user's first
+  // tap was therefore unfixable by any amount of concurrency tuning.
   //
-  // Fix: only the 2 movies genuinely needed before gameplay can start —
-  // start_display.mp4 (MAIN MENU's own background, needed the instant TAP
-  // TO START is pressed) and sneaking.mp4 (the MAIN SCENARIO opening movie,
-  // spec's own explicit "E" requirement) — are CRITICAL and get
-  // preload="auto" at page load (only 2 concurrent videos now, no more
-  // real-world contention). Every other movie (DRONE/EXPERIMENT LAB/ROID/
-  // GABRIEL/ADAM arrivals, GABRIEL defeated, all 3 ending-chain movies) is
-  // NON-CRITICAL: created with preload="none" (the browser fetches nothing
-  // for them at all until beginBackgroundNonCriticalMoviePreload() below
-  // explicitly arms each one, well after TAP TO START, with a concurrency
-  // cap) — so they can never compete with the 2 critical videos for iOS's
-  // limited concurrent-load slots, and never gate the startup 100% figure.
+  // Current fix (P0 STREAMING ARCHITECTURE HOTFIX): the STARTUP gate no
+  // longer waits on ANY video at all — see getStartupRequiredAssetTargets()
+  // below, which now contains zero movie entries. TAP TO START is itself
+  // the real user gesture that unlocks iOS video buffering for the rest of
+  // the session (the same one unlockEventMovieElementForIOS() already
+  // relies on). CRITICAL_MOVIE_KEYS/NONCRITICAL_MOVIE_KEYS below no longer
+  // mean "blocks startup" vs "doesn't" (nothing does any more) — they now
+  // mean EAGER (fetch attempted from page load, best-effort, for the 2
+  // movies needed soonest after the tap: MAIN MENU's own background video
+  // and the MAIN SCENARIO opening movie) vs LAZY (preload="none" until
+  // explicitly armed by beginBackgroundNonCriticalMoviePreload(), well
+  // after TAP TO START, with a concurrency cap) — purely a fetch-priority
+  // ordering, never a startup blocker. The actual "is the movie needed for
+  // the NEXT transition actually ready" question is answered by the NEXT
+  // CONTENT engine's own EXIT READY GATE further down this file, which
+  // holds the current stage (never destroys it) until the answer is yes.
   const CRITICAL_MOVIE_KEYS = ['start_display', 'sneaking'];
   const MOVIE_PRELOAD_KEYS = ['start_display', ...Object.keys(EVENT_MOVIES).filter((k) => k !== 'gabriel_down')];
   const NONCRITICAL_MOVIE_KEYS = MOVIE_PRELOAD_KEYS.filter((k) => !CRITICAL_MOVIE_KEYS.includes(k));
@@ -7711,7 +7715,15 @@
       // instruction). BOSS BATTLE MODE and the ADAM STORY fight are
       // unaffected, same as before.
       if (!bossBattleState.active && storyScenarioState.scenario && boss.type !== 'adam') {
-        playEventMovie('gabriel_defeated', proceedWithDefeatRewards);
+        // P0 STREAMING ARCHITECTURE HOTFIX Part K: boss is already visually
+        // dead at this point (state set above) — this only delays actually
+        // STARTING gabriel_defeated.mp4 until it's genuinely ready to play
+        // smoothly, never the current stage's own destruction/advance (that
+        // only happens later, inside proceedWithDefeatRewards()'s own
+        // reward/GAME-CLEAR flow, well after this movie finishes).
+        waitForMovieThenProceed('gabriel_defeated', () => {
+          playEventMovie('gabriel_defeated', proceedWithDefeatRewards);
+        });
       } else {
         proceedWithDefeatRewards();
       }
@@ -8834,16 +8846,6 @@
   // same instant the user actually taps to start (SECTION 4).
   const openingVideoEl = document.getElementById('opening-video');
 
-  // P0 GAME COMPLETION HOTFIX: named lookups into moviePreloadProbes for
-  // the 2 of the 3 explicitly-required videos that live in that array
-  // already (start_display, sneaking — "MAIN SCENARIO OPENING" per spec
-  // item 2-b) — reused rather than duplicated into a second probe element,
-  // which would otherwise double-fetch the same URL. The 3rd required video
-  // (the LOADING background footage itself) has no separate probe at all:
-  // openingVideoEl's own default src IS loading.mp4, so its readyState is
-  // reused directly below instead of creating a redundant 4th element.
-  const startupRequiredStartDisplayProbe = moviePreloadProbes[MOVIE_PRELOAD_KEYS.indexOf('start_display')];
-  const startupRequiredSneakingProbe = moviePreloadProbes[MOVIE_PRELOAD_KEYS.indexOf('sneaking')];
   // "Genuinely playback-ready" per spec Part D item 19: readyState >=
   // HAVE_CURRENT_DATA (2) — never the old HAVE_METADATA (1) threshold that
   // used to be treated as "done", and never canplaythrough (Part D item 20
@@ -8874,14 +8876,37 @@
   // for either), so there is genuinely nothing to preload for them, and M1
   // (the first MAIN stage) is a WHITE-SHADOW-only stage — confirming
   // nothing beyond this list is actually needed to begin real gameplay.
-  // `hardError` (optional) marks a target whose failure should surface
-  // IMMEDIATELY as a named ERROR rather than waiting out the full 3-minute
-  // ceiling — spec Part E item 25 ("critical asset timeout → ERROR") and
-  // Part F item 31/32 ("同じassetがretry失敗 -> asset名をconsoleへ明示して
-  // ERROR状態に残す, silent 93% loop禁止"): a genuine 404/CORS/codec failure
-  // on one of the 2 critical movies is fundamentally different from mere
-  // resource contention (readyState stuck at 0, no error at all) and
-  // should never make the player wait 3 minutes to find out.
+  //
+  // P0 STREAMING ARCHITECTURE HOTFIX (root-cause fix, this batch): the
+  // previous batch's own fix reduced the movie gate from 11 videos to just
+  // these 2 (start_display.mp4, sneaking.mp4), reasoning that resource
+  // CONTENTION was the only failure mode. Real iPhone Safari testing proved
+  // that wrong — the actual stall persisted (now at 9/11=81.8%, exactly
+  // this list minus the 2 movies) because iOS Safari does not buffer ANY
+  // <video> data before a genuine user gesture, no matter how long you
+  // wait or how little else is competing for bandwidth: readyState simply
+  // never advances past HAVE_METADATA pre-gesture. Requiring readyState>=2
+  // for a video BEFORE the user's first tap was therefore a structural
+  // impossibility on iOS, not a resource-contention bug — no amount of
+  // concurrency tuning could ever have fixed it.
+  //
+  // Fix: STARTUP now requires ZERO videos to be ready. TAP TO START itself
+  // IS the real user gesture (same one unlockEventMovieElementForIOS()/
+  // unlockBackgroundBgmForIOS() already use to unlock iOS media playback
+  // for the rest of the session) — video loading only becomes meaningful
+  // AFTER that tap. start_display.mp4/sneaking.mp4 are no longer STARTUP
+  // blockers at all; they are now the first two entries the NEXT CONTENT
+  // engine manages (see resolveNextRequiredMovieKey()/the EXIT READY GATE
+  // below) — start_display begins fetching normally via onOpeningTap()'s
+  // own existing .src assignment (unaffected by this change), and sneaking
+  // is handled by playEventMovie()'s own existing retry/never-hang
+  // machinery when MAIN SCENARIO is actually chosen from the menu (a
+  // genuinely different moment from STARTUP, with no "destroy current
+  // stage" risk — worst case is a late-arriving frame, never a blocked
+  // screen). Critical set is now 9 items, all pre-gesture-safe (images/
+  // sprites already fetch eagerly at script-parse time regardless of this
+  // list; audio readyState>=1 is unaffected by the video-specific
+  // restriction above).
   function getStartupRequiredAssetTargets() {
     return [
       { name: 'player sprite grid', ready: () => spritesReady >= spritesTotal },
@@ -8893,8 +8918,6 @@
       { name: 'gameplay BGM', ready: () => bgmAudio.readyState >= 1 || !!bgmAudio.error },
       { name: 'menu BGM', ready: () => menuBgmAudio.readyState >= 1 || !!menuBgmAudio.error },
       { name: 'first stage background', ready: () => STAGES[0].ready },
-      { name: 'START DISPLAY video', ready: () => isVideoGenuinelyPlaybackReady(startupRequiredStartDisplayProbe), hardError: () => !!startupRequiredStartDisplayProbe.error },
-      { name: 'MAIN SCENARIO OPENING video (sneaking)', ready: () => isVideoGenuinelyPlaybackReady(startupRequiredSneakingProbe), hardError: () => !!startupRequiredSneakingProbe.error },
     ];
   }
   function computeStartupRequiredProgress() {
@@ -8951,17 +8974,6 @@
   // OLD retry handler just re-ran the polling loop against the SAME <video>
   // elements without ever re-triggering their network load — an element
   // iOS Safari never even scheduled to fetch (the actual 93%-stall
-  // condition, not a transient timeout) stays at readyState 0 forever no
-  // matter how long or how many times it is merely re-polled. RETRY must
-  // force each still-not-ready CRITICAL video to genuinely restart its
-  // fetch via .load() (per the HTML spec, this re-invokes the resource
-  // selection algorithm — a real new network attempt, not a no-op) before
-  // polling resumes.
-  function reloadStuckCriticalVideoProbes() {
-    [startupRequiredStartDisplayProbe, startupRequiredSneakingProbe].forEach((v) => {
-      if (v.readyState < 2) v.load(); // reload regardless of whether it's merely pending or already errored — .load() clears any prior error and starts a genuinely fresh attempt either way
-    });
-  }
   // The ONE STARTUP loading pass — real required-asset progress only, never
   // a fake time-based increment. Runs on 'loading' (black screen, %+bar
   // visible); the instant every target is genuinely ready, hands off to
@@ -9004,14 +9016,15 @@
   }
   loadingRetryBtnEl.addEventListener('click', () => {
     // RETRY: bump the generation (invalidates any in-flight stale tick()),
-    // force a genuine reload of whichever critical video(s) never became
-    // ready (never just re-polling the same stuck element), reset the
-    // visible progress to reflect reality immediately (never a stale 93%
-    // held over from the previous attempt), then run a fresh pass.
+    // reset the visible progress to reflect reality immediately (never a
+    // stale value held over from the previous attempt), then run a fresh
+    // pass. No video reload here any more — STARTUP's own critical set is
+    // now 100% video-free (see getStartupRequiredAssetTargets()'s own
+    // comment), so a STARTUP RETRY only ever concerns images/audio, which
+    // settle (or don't) on their own without needing a forced .load().
     startupPreloadGeneration++;
-    reloadStuckCriticalVideoProbes();
     const { loaded, total } = computeStartupRequiredProgress();
-    updateLoadingProgressUI(total > 0 ? (loaded / total) * 100 : 100); // real current state, never a stale 93% held over from the previous attempt
+    updateLoadingProgressUI(total > 0 ? (loaded / total) * 100 : 100);
     runStartupLoadingPhase();
   });
   // STAGE-ENTRY-TIME gate: DEMO PLAY/TRAINING selection calls this before
@@ -9449,6 +9462,29 @@
   const ENDING_ROLL_FULL_COVERAGE_FRAC = 0.999;
   const ENDING_ROLL_DOWNLOAD_STALL_MS = 15000; // no buffered.end() growth at all for this long = the stream download has genuinely died
   const ENDING_ROLL_STREAM_HARD_MAX_WAIT_MS = 180000;
+  // P0 STREAMING ARCHITECTURE HOTFIX Part L: an OPTIONAL early warm-up fetch
+  // for this large (100MB+) file, started well before playEndingRoll() is
+  // ever called — see prewarmEndingRoll() below, invoked once at MAIN's own
+  // ADAM SPHERE stage entry (enterStoryStage()) so the download has a head
+  // start during ADAM SPHERE combat instead of only beginning once the
+  // player has already reached the ending chain (main_escape ->
+  // main_bad_ending -> this). Purely additive and best-effort: on any
+  // failure this resolves to null and startEndingRollFetch() below simply
+  // falls back to its own always-existing fresh fetch() — the full
+  // download-before-play/retry/stall/hard-ceiling guarantees added by
+  // HOTFIX 4.3 ADDENDUM 2 are completely untouched, this only ever gives
+  // that same fetch a head start. MAIN-only: SECRET's own ending
+  // (true_ending.mp4, a normal bundled EVENT MOVIE) never uses this external
+  // R2-hosted file at all.
+  let endingRollPrewarmPromise = null;
+  let endingRollPrewarmStarted = false;
+  function prewarmEndingRoll() {
+    if (endingRollPrewarmStarted) return; // idempotent — a re-entry into ADAM SPHERE (e.g. RETRY) must never start a 2nd concurrent download
+    endingRollPrewarmStarted = true;
+    endingRollPrewarmPromise = fetch(ENDING_ROLL_VIDEO_URL, { mode: 'cors' })
+      .then((resp) => (resp.ok ? resp.blob() : Promise.reject(new Error('prewarm bad status ' + resp.status))))
+      .catch(() => null); // never fatal/visible — a failed prewarm just means startEndingRollFetch() does its normal fresh fetch later
+  }
   // HOTFIX 4.3 SECTIONS 12/54 (extended by ADDENDUM 2 SECTIONS 18-22): real,
   // testable diagnostics for THIS ONE ENDING ROLL attempt — reset at the top
   // of every playEndingRoll() call, read by the completion-report
@@ -9744,44 +9780,61 @@
     // scratch on a genuine failure, exactly like the initial attempt below.
     function startEndingRollFetch() {
       endingRollDiagnostics.corsFetchAttempted = true;
-      fetch(ENDING_ROLL_VIDEO_URL, { mode: 'cors' })
-        .then((resp) => {
-          endingRollDiagnostics.corsFetchStatus = resp.status;
-          if (!resp.ok) throw new Error('ending roll fetch: bad status ' + resp.status);
-          return resp.blob();
-        })
-        .then((blob) => {
-          if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
-          endingRollDiagnostics.corsFetchSucceeded = true;
-          endingRollDiagnostics.method = 'blob';
-          revokeObjectUrlIfAny(); // defensive — never double-download/leak if this somehow re-entered
-          endingRollObjectUrl = URL.createObjectURL(blob);
-          eventMovieVideoEl.loop = false;
-          eventMovieVideoEl.muted = false;
-          eventMovieVideoEl.playsInline = true;
-          eventMovieVideoEl.removeAttribute('crossorigin'); // a blob: URL is always same-origin — crossOrigin has no meaning here
-          eventMovieVideoEl.preload = 'auto';
-          eventMovieVideoEl.src = endingRollObjectUrl;
-          eventMovieVideoEl.load();
-          // A blob: URL is backed entirely by in-memory data already, so the
-          // browser can reach HAVE_ENOUGH_DATA essentially immediately —
-          // still wait for a real readyState signal (never assume) via
-          // loadeddata, with a short defensive poll fallback in case that
-          // event is missed.
-          const tryBegin = () => {
-            if (eventMovieState.key !== 'endingRoll') return;
-            if (eventMovieVideoEl.readyState >= 3) { beginConfirmedPlayback(); return; }
-            setTimeout(tryBegin, 50);
-          };
-          eventMovieVideoEl.onloadeddata = () => { eventMovieVideoEl.onloadeddata = null; tryBegin(); };
-          tryBegin();
-        })
-        .catch((err) => {
-          endingRollDiagnostics.corsFetchSucceeded = false;
-          endingRollDiagnostics.corsFetchError = String(err && err.message || err);
-          if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
-          preloadViaBufferedPolling();
-        });
+      function handleBlob(blob) {
+        if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
+        endingRollDiagnostics.corsFetchSucceeded = true;
+        endingRollDiagnostics.corsFetchStatus = 200;
+        endingRollDiagnostics.method = 'blob';
+        revokeObjectUrlIfAny(); // defensive — never double-download/leak if this somehow re-entered
+        endingRollObjectUrl = URL.createObjectURL(blob);
+        eventMovieVideoEl.loop = false;
+        eventMovieVideoEl.muted = false;
+        eventMovieVideoEl.playsInline = true;
+        eventMovieVideoEl.removeAttribute('crossorigin'); // a blob: URL is always same-origin — crossOrigin has no meaning here
+        eventMovieVideoEl.preload = 'auto';
+        eventMovieVideoEl.src = endingRollObjectUrl;
+        eventMovieVideoEl.load();
+        // A blob: URL is backed entirely by in-memory data already, so the
+        // browser can reach HAVE_ENOUGH_DATA essentially immediately —
+        // still wait for a real readyState signal (never assume) via
+        // loadeddata, with a short defensive poll fallback in case that
+        // event is missed.
+        const tryBegin = () => {
+          if (eventMovieState.key !== 'endingRoll') return;
+          if (eventMovieVideoEl.readyState >= 3) { beginConfirmedPlayback(); return; }
+          setTimeout(tryBegin, 50);
+        };
+        eventMovieVideoEl.onloadeddata = () => { eventMovieVideoEl.onloadeddata = null; tryBegin(); };
+        tryBegin();
+      }
+      function fetchFreshBlob() {
+        return fetch(ENDING_ROLL_VIDEO_URL, { mode: 'cors' })
+          .then((resp) => {
+            endingRollDiagnostics.corsFetchStatus = resp.status;
+            if (!resp.ok) throw new Error('ending roll fetch: bad status ' + resp.status);
+            return resp.blob();
+          });
+      }
+      function handleFailure(err) {
+        endingRollDiagnostics.corsFetchSucceeded = false;
+        endingRollDiagnostics.corsFetchError = String(err && err.message || err);
+        if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
+        preloadViaBufferedPolling();
+      }
+      // P0 STREAMING ARCHITECTURE HOTFIX Part L: reuse the OPTIONAL early
+      // warm-up fetch started by prewarmEndingRoll() (ADAM SPHERE MAIN stage
+      // entry) if one is in flight/already resolved — this is purely a head
+      // start; consuming it here (nulling the module-level promise so a
+      // later retryEndingRollLoad() always does a genuinely fresh fetch,
+      // never a stale/already-used blob) changes nothing about the actual
+      // full-download-before-play/retry/stall guarantees below.
+      const prewarm = endingRollPrewarmPromise;
+      endingRollPrewarmPromise = null;
+      if (prewarm) {
+        prewarm.then((blob) => (blob ? blob : fetchFreshBlob())).then(handleBlob).catch(handleFailure);
+      } else {
+        fetchFreshBlob().then(handleBlob).catch(handleFailure);
+      }
     }
     startEndingRollFetch();
   }
@@ -9836,6 +9889,156 @@
       });
     }
   }
+
+  // ==========================================================================
+  // P0 STREAMING ARCHITECTURE HOTFIX (Parts B-J): the NEXT CONTENT engine.
+  // STARTUP now only ever waits for the fixed, non-video asset set above
+  // (getStartupRequiredAssetTargets()) — see that function's own comment for
+  // why: images/audio for EVERY stage already begin fetching unconditionally
+  // at script-parse time (STAGE_REGISTRY's own `new Image()`/bgmAudio's own
+  // `new Audio()` calls), so the ONLY asset category that doesn't already
+  // eagerly load from t=0 is EVENT MOVIES (playEventMovie() only assigns a
+  // movie's real URL to the shared <video> element at the moment of actual
+  // playback intent — moviePreloadProbes above are SEPARATE hidden probe
+  // elements this engine polls/arms purely to know whether that same URL is
+  // already sitting in the browser's own HTTP cache). This engine is
+  // therefore deliberately scoped to movies only, never a generic "next
+  // stage's assets" tracker — a documented, evidence-based scoping decision,
+  // not an oversight.
+  //
+  // resolveNextRequiredMovieKey() answers "what movie (if any) does the very
+  // next STORY transition need". The single EXIT-contact choke point in
+  // update() (and updateBossDying()'s own gabriel_defeated call) both funnel
+  // through waitForMovieThenProceed(key, onReady): if the key is already
+  // null/ready, onReady() fires the SAME frame — every ordinary DRONE/WHITE
+  // SHADOW/MIXED stage transition remains exactly as instant as before. Only
+  // when the resolved movie genuinely isn't ready yet does this hold the
+  // caller's onReady — and even then the CURRENT stage/background/PLAYER/
+  // enemies/BGM are never touched; only the small #next-content-wait-overlay
+  // HUD (index.html/style.css) appears on top, and the caller's own state-
+  // mutating logic (beginStageTransition(), beginStoryEscapeEnding(),
+  // playEventMovie('gabriel_defeated', ...)) simply isn't invoked yet.
+  function isMovieProbeReady(key) {
+    const v = moviePreloadProbeByKey[key];
+    if (!v) return true; // an unknown/unregistered key can never legitimately block a transition
+    return v.readyState >= 2 && v.buffered.length > 0; // HAVE_CURRENT_DATA + a real buffered range — never HAVE_METADATA-only, never a full-download/canplaythrough requirement
+  }
+  function prioritizeMoviePreload(key) {
+    const v = moviePreloadProbeByKey[key];
+    if (!v) return;
+    if (v.preload !== 'auto') v.preload = 'auto';
+    if (v.readyState === 0 && v.networkState !== 2 /* NETWORK_LOADING */) v.load();
+  }
+  // POST-v1.0 SECTION 44 / Part I: activeStagePlanArray() is the single
+  // source of truth this reads from — never a second/duplicate route table.
+  // Scoped to gameState.mode==='boss' (STORY MODE, scenario or legacy/debug
+  // alike — see mode's own comment above) since TRAINING/SECURITY TRAINING/
+  // BOSS BATTLE/EVENT stages never have {type:'movie'} plan entries of their
+  // own and already transition instantly today (images/audio already eager-
+  // loaded) — a deliberate, documented scope limit, not an oversight.
+  function resolveNextRequiredMovieKey() {
+    if (gameState.mode !== 'boss') return null;
+    if (storyRoidInterludeState.active) return null; // PART11-era interlude — permanently unreachable, never gated
+    const plan = activeStagePlanArray();
+    const nextPlan = plan[currentStageIndex + 1];
+    if (!nextPlan) return null;
+    if (nextPlan.type === 'movie') return nextPlan.key;
+    if (nextPlan.type === 'cultivationLab') return storyCinematicState.experimentLabPlayed ? null : 'experiment_lab';
+    if (nextPlan.type === 'boss' && (nextPlan.boss === 'roid1' || nextPlan.boss === 'roid2')) {
+      if (nextPlan.dark) return null; // maybePlayStoryRoidArrival(): dark variants skip straight to combat, no arrival movie
+      const flagKey = nextPlan.boss === 'roid1' ? 'roid1ArrivalPlayed' : 'roid2ArrivalPlayed';
+      return storyCinematicState[flagKey] ? null : (nextPlan.boss + '_arrival');
+    }
+    if (nextPlan.type === 'boss' && (!nextPlan.boss || nextPlan.boss === 'gabriel')) {
+      // maybePlayStoryGabrielArrival(): only ever plays for encounterIndex 0, only under an active scenario, only once
+      if (!storyScenarioState.scenario) return null;
+      if (nextPlan.encounterIndex !== 0) return null;
+      return storyCinematicState.gabrielArrivalPlayed[0] ? null : 'gabriel_arrival';
+    }
+    return null; // whiteShadow/drone/mixed/adamSphere: no movie required to enter
+  }
+  const nextContentWaitOverlayEl = document.getElementById('next-content-wait-overlay');
+  const nextContentWaitTextEl = document.getElementById('next-content-wait-text');
+  const nextContentWaitErrorEl = document.getElementById('next-content-wait-error');
+  const nextContentWaitRetryBtnEl = document.getElementById('next-content-wait-retry-btn');
+  function formatPreparingNextAreaText(pct) {
+    return 'Preparing Next Area ' + pct.toFixed(1) + '%';
+  }
+  function movieProbeProgressPct(v) {
+    if (!v) return 100;
+    if (v.readyState >= 2 && v.buffered.length > 0) return 100;
+    if (v.buffered.length > 0 && v.duration > 0) {
+      return Math.max(0, Math.min(99.9, (v.buffered.end(v.buffered.length - 1) / v.duration) * 100));
+    }
+    return Math.max(0, Math.min(99.9, (v.readyState / 2) * 100));
+  }
+  function hideNextContentWaitUI() {
+    nextContentWaitOverlayEl.hidden = true;
+    nextContentWaitErrorEl.hidden = true;
+    nextContentWaitRetryBtnEl.hidden = true;
+  }
+  // nextContentWaitState.generation guards against a stale RETRY click or a
+  // late frame from a superseded wait (Part O — never a stale/duplicate
+  // transition). onReady is called AT MOST ONCE per wait, from
+  // updateNextContentWait() below, never synchronously from
+  // waitForMovieThenProceed() itself in the not-ready branch.
+  let nextContentWaitGeneration = 0;
+  const nextContentWaitState = { active: false, movieKey: null, generation: 0, onReady: null, erroredKey: null };
+  function waitForMovieThenProceed(movieKey, onReady) {
+    if (!movieKey || isMovieProbeReady(movieKey)) { onReady(); return; }
+    nextContentWaitGeneration += 1;
+    nextContentWaitState.active = true;
+    nextContentWaitState.movieKey = movieKey;
+    nextContentWaitState.generation = nextContentWaitGeneration;
+    nextContentWaitState.onReady = onReady;
+    nextContentWaitState.erroredKey = null;
+    prioritizeMoviePreload(movieKey);
+    nextContentWaitErrorEl.hidden = true;
+    nextContentWaitRetryBtnEl.hidden = true;
+    nextContentWaitOverlayEl.hidden = false;
+    nextContentWaitTextEl.textContent = formatPreparingNextAreaText(movieProbeProgressPct(moviePreloadProbeByKey[movieKey]));
+  }
+  // Ticked from update() every unpaused frame (Part D/G) — the only place
+  // that ever calls nextContentWaitState.onReady(), so a stale generation
+  // (superseded by a 2nd waitForMovieThenProceed() call, which can only
+  // happen after the first one already resolved/was abandoned) can never
+  // double-fire a transition.
+  function updateNextContentWait(now) {
+    if (!nextContentWaitState.active) return;
+    const generation = nextContentWaitState.generation;
+    const key = nextContentWaitState.movieKey;
+    const v = moviePreloadProbeByKey[key];
+    if (v && v.error) {
+      if (nextContentWaitState.erroredKey !== key) {
+        nextContentWaitState.erroredKey = key;
+        nextContentWaitErrorEl.hidden = false;
+        nextContentWaitErrorEl.textContent = 'PREPARING NEXT AREA FAILED';
+        nextContentWaitRetryBtnEl.hidden = false;
+      }
+      return; // holds here — never destroys/advances the current stage; waits for RETRY
+    }
+    if (isMovieProbeReady(key)) {
+      if (nextContentWaitState.generation !== generation) return; // superseded — never a stale double-fire
+      const onReady = nextContentWaitState.onReady;
+      nextContentWaitState.active = false;
+      nextContentWaitState.onReady = null;
+      hideNextContentWaitUI();
+      onReady();
+      return;
+    }
+    nextContentWaitTextEl.textContent = formatPreparingNextAreaText(movieProbeProgressPct(v));
+  }
+  nextContentWaitRetryBtnEl.addEventListener('click', () => {
+    if (!nextContentWaitState.active || !nextContentWaitState.movieKey) return;
+    nextContentWaitErrorEl.hidden = true;
+    nextContentWaitRetryBtnEl.hidden = true;
+    nextContentWaitState.erroredKey = null;
+    // prioritizeMoviePreload() already calls .load() when the probe isn't
+    // currently loading — a separate explicit .load() here would double-
+    // fetch the same URL on every RETRY click. Re-probes ONLY this one
+    // failed asset, never every movie.
+    prioritizeMoviePreload(nextContentWaitState.movieKey);
+  });
 
   // Short, simple fade sequence (never a long loading-style one): fade to
   // black -> swap to a genuinely different random stage + fresh full-HP
@@ -10147,6 +10350,14 @@
       // exact same escape-unlock and stop, never touching adamSphereState/
       // stageOverrideId at all.
       if (storyScenarioState.scenario === 'main') {
+        // P0 STREAMING ARCHITECTURE HOTFIX Part L: MAIN's own ADAM SPHERE
+        // stage is the last stop before the escape/ending chain
+        // (main_escape -> main_bad_ending -> ending_darkout.MOV) — give the
+        // large external ENDING ROLL file a head start downloading now,
+        // during this combat encounter, rather than only starting once the
+        // player is already standing at the ending chain. See
+        // prewarmEndingRoll()'s own comment for why this is purely additive.
+        prewarmEndingRoll();
         // HOTFIX 4 SECTIONS 22-32: MAIN now routes into a real ADAM SPHERE
         // combat encounter here — explicitly overriding the old POST-v1.0
         // SECTION 27 "MAIN never proceeds to ADAM combat" rule per that
@@ -14730,7 +14941,15 @@
     get STARTUP_LOAD_HARD_CEILING_MS() { return STARTUP_LOAD_HARD_CEILING_MS; },
     get startupPreloadGeneration() { return startupPreloadGeneration; },
     get backgroundMoviePreloadStarted() { return backgroundMoviePreloadStarted; },
-    beginBackgroundNonCriticalMoviePreload, reloadStuckCriticalVideoProbes, formatDataLoadingText, // debug/verification only
+    beginBackgroundNonCriticalMoviePreload, formatDataLoadingText, // debug/verification only
+    // P0 STREAMING ARCHITECTURE HOTFIX — debug/verification only:
+    resolveNextRequiredMovieKey, waitForMovieThenProceed, updateNextContentWait, isMovieProbeReady, prioritizeMoviePreload,
+    get nextContentWaitState() { return nextContentWaitState; },
+    get EXIT_ZONE_W() { return EXIT_ZONE_W; },
+    get EXIT_ZONE_H() { return EXIT_ZONE_H; },
+    prewarmEndingRoll,
+    get endingRollPrewarmStarted() { return endingRollPrewarmStarted; },
+    get endingRollPrewarmPromise() { return endingRollPrewarmPromise; },
     runStartupLoadingPhase, showLoadingErrorState, hideLoadingErrorState, // debug/verification only
     flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only
     get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
@@ -14963,6 +15182,7 @@
     updateSecretFileTimer(dt, now); // HOTFIX 2 SECTION 53: placed right after the PAUSE/EVENT-MOVIE early-returns above so it freezes for both, with no separate freeze check of its own
     updateDarkPhaseOverlay(dt); // always ticks whenever unpaused, regardless of stage-transition/intro state below
     updateStageTransition(now); // always ticks, even while frozen below
+    updateNextContentWait(now); // P0 STREAMING ARCHITECTURE HOTFIX Part D/G: polls the EXIT/defeat-movie READY GATE, auto-fires the held transition the instant its movie becomes ready
     if (stageTransition.active) {
       // Freezes player input/movement/barrels for the whole short fade
       // sequence, same spirit as the INTRO freeze below — updateBoss still
@@ -15199,21 +15419,40 @@
       cameraY = Math.max(minCameraY, Math.min(0, cameraY)); // C-10: never past whichever band is currently unlocked
       if (scrollUnlockedHere) {
         const exit = exitWorldPos();
-        if (Math.abs(player.x - exit.x) < EXIT_ZONE_W / 2 && Math.abs(player.y - exit.y) < EXIT_ZONE_H / 2) {
-          // DARK OUT PART 10 SECTION O-3: the escape-ready final-scenario
-          // case branches into the new ENDING sequence instead of the
-          // normal STAGE-advance flow, which would otherwise try to read
-          // the nonexistent STORY_STAGE_PLAN[10].
-          if (storyScenarioState.scenario && storyScenarioState.escapeReady && runInventory.escapeNavigator) {
-            beginStoryEscapeEnding(now);
-          } else {
-            // POST-v1.0 SECTIONS 24/29: ROID1/ROID2 (normal and darkened) are
-            // now ordinary sequential plan entries — the old PART11 MAIN-only
-            // ROID1-interlude branch that used to live here (beginRoidInterlude(),
-            // triggered right after GABRIEL2) is retired; storyRoidInterludeState
-            // itself is left defined/exposed but permanently unreachable.
-            beginStageTransition(now); // updateStageTransition() itself branches STORY vs TRAINING advance by gameState.mode
-          }
+        if (Math.abs(player.x - exit.x) < EXIT_ZONE_W / 2 && Math.abs(player.y - exit.y) < EXIT_ZONE_H / 2 && !nextContentWaitState.active) {
+          // P0 STREAMING ARCHITECTURE HOTFIX Part D/E: the NEXT CONTENT READY
+          // GATE — the branch decision (escape-ending vs ordinary stage
+          // advance) is captured NOW, at the moment EXIT is actually touched,
+          // exactly like before; only the ACTUAL beginStoryEscapeEnding()/
+          // beginStageTransition() call is deferred until the movie the next
+          // step needs (if any) is genuinely ready. Not ready -> neither
+          // function is called at all this frame (or any frame until ready):
+          // stageIndex/background/PLAYER/enemies/BGM are all left exactly as-
+          // is, and the small "Preparing Next Area" HUD appears instead of a
+          // black screen or any TAP TO PLAY/TAP TO START prompt. The
+          // `!nextContentWaitState.active` guard above stops this from
+          // re-triggering every frame the player stands in the EXIT zone
+          // while already waiting.
+          const goEscape = !!(storyScenarioState.scenario && storyScenarioState.escapeReady && runInventory.escapeNavigator);
+          const requiredMovieKey = goEscape
+            ? (storyScenarioState.scenario === 'secret' ? 'true_ending' : 'main_escape')
+            : resolveNextRequiredMovieKey();
+          waitForMovieThenProceed(requiredMovieKey, () => {
+            // DARK OUT PART 10 SECTION O-3: the escape-ready final-scenario
+            // case branches into the new ENDING sequence instead of the
+            // normal STAGE-advance flow, which would otherwise try to read
+            // the nonexistent STORY_STAGE_PLAN[10].
+            if (goEscape) {
+              beginStoryEscapeEnding(performance.now());
+            } else {
+              // POST-v1.0 SECTIONS 24/29: ROID1/ROID2 (normal and darkened) are
+              // now ordinary sequential plan entries — the old PART11 MAIN-only
+              // ROID1-interlude branch that used to live here (beginRoidInterlude(),
+              // triggered right after GABRIEL2) is retired; storyRoidInterludeState
+              // itself is left defined/exposed but permanently unreachable.
+              beginStageTransition(performance.now()); // updateStageTransition() itself branches STORY vs TRAINING advance by gameState.mode
+            }
+          });
         }
       }
     } else {
