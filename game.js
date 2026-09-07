@@ -305,10 +305,10 @@
     // the existing GABRIEL2->GABRIEL3 breather stage below.
     { type: 'whiteShadow', forceHeal: true },
     { type: 'randomSlot', count: 2, noDuplicate: true },
-    // VOID BRIDGE (DARK OUT PART): the IMAGE 1 bridge stage, directly before
-    // GABRIEL2 — never touches the GABRIEL encounter order itself, purely
-    // inserted ahead of it.
-    { type: 'voidBridge', key: 'g2' },
+    // WORK ORDER I item 1: the VOID BRIDGE (IMAGE 1) entry that used to sit
+    // here (directly before GABRIEL2) is removed outright — MAIN no longer
+    // reaches a VOID stage at all. GABRIEL2 now follows the random slots
+    // directly, same position it always occupied relative to them.
     { type: 'boss', boss: 'gabriel', encounterIndex: 1 },
     // HOTFIX 4.1 ADDENDUM SECTIONS 13-17: the 2nd {boss:'roid1', dark:true}
     // entry that used to sit here was a genuine duplicate STAGE PLAN entry
@@ -319,21 +319,25 @@
     // STAGE 5's own DRONE+ROID1 (enterSecurityTrainingStage()) and the
     // internal BOSS BATTLE debug ROID1 target are both untouched — this
     // array is MAIN-scenario-only.
-    // HOTFIX 4.2 SECTIONS 29-36: a dedicated WHITE-SHADOW-ONLY breather stage
-    // inserted between GABRIEL2 and GABRIEL3(final) — reuses the exact same
-    // {type:'whiteShadow'} handling every other WHITE-SHADOW-only stage
-    // already uses (2-AREA, WHITE_SHADOW_INITIAL_COUNT=3 in AREA1, no
-    // DRONE/ROID/GABRIEL/ADAM SPHERE, no kill-requirement progression rule —
-    // all inherited for free from the shared plan.type==='whiteShadow'
-    // branch in enterStoryStage()), with forceHeal:true as the ONE addition:
-    // see its own guard right after spawnStageClearReward() there, which
-    // guarantees a HEAL (never AMMO) at AREA2's center for this specific
-    // entry only — every other 'whiteShadow' entry (M1 above, SECRET's own
-    // S1) keeps the existing damage-taken-based HEAL/AMMO roll untouched.
-    { type: 'whiteShadow', forceHeal: true },
-    // VOID BRIDGE (DARK OUT PART): the IMAGE 2 bridge stage, directly before
-    // GABRIEL3 (final) — same reasoning as the G2 insertion above.
-    { type: 'voidBridge', key: 'g3' },
+    // HOTFIX 4.2 SECTIONS 29-36 / WORK ORDER I items 2-4: the intermission
+    // combat stage between GABRIEL2 and GABRIEL3(final) — was a WHITE-
+    // SHADOW-ONLY breather; now 'mixed' (WHITE SHADOW + standard DRONE,
+    // reusing the exact same plan.type==='mixed' handling every other MIXED
+    // stage already uses in enterStoryStage() — populateSecurityDroneAreas()
+    // for the DRONE(s), spawnWhiteShadow() for the single WHITE SHADOW,
+    // neither pipeline modified). droneCount is left undefined so it falls
+    // through to the standard random {3,5,7}-per-AREA roll, same as every
+    // other undated 'mixed'/'drone' entry (see the type-shape comment
+    // above). forceHeal:true is unchanged from before — still guarantees
+    // exactly 1 HEAL (never AMMO) at AREA2's center via the same
+    // spawnHealItem() call every other forceHeal entry already uses. This
+    // stage is now also subject to the new non-boss extermination gate
+    // (worldScrollUnlocked()'s plan.type==='drone'||'mixed' branch) — the
+    // DRONE(s) must be fully cleared before the EXIT opens; WHITE SHADOW is
+    // never counted (isDroneStageCleared() only reads securityRobots).
+    { type: 'mixed', whiteShadowCount: 1, forceHeal: true },
+    // WORK ORDER I item 1: the VOID BRIDGE (IMAGE 2) entry that used to sit
+    // here (directly before GABRIEL3/final) is removed outright.
     { type: 'boss', boss: 'gabriel', encounterIndex: 2, final: true },
     { type: 'adamSphere' },
   ];
@@ -479,14 +483,14 @@
   // stage 4 so TRAINING stays endlessly repeatable, exactly like it already
   // was before this rebuild.
   let trainingStageIndex = 0;
-  // VOID BRIDGE (DARK OUT PART): bumped from 5 to 7 — 2 new VOID BRIDGE
-  // stages inserted as FINAL-2/FINAL-1, directly before the existing final
-  // stage (DRONE+ROID1), which itself keeps its position as the true final
-  // stage (see enterSecurityTrainingStage()'s own stage indices below). This
+  // WORK ORDER I item 1: reverted from 7 back to 5 — the 2 VOID BRIDGE
+  // stages that used to occupy FINAL-2/FINAL-1 are removed outright (see
+  // enterSecurityTrainingStage() below); the final stage (DRONE+ROID1)
+  // keeps its position as the true final stage, now at index 4 again. This
   // is the ONE place TRAINING's stage count is defined — nothing else in
   // this file hardcodes "5"/"stage 5" for SECURITY TRAINING, so no other
   // numbering needed auditing/fixing.
-  const TRAINING_STAGE_COUNT = 7;
+  const TRAINING_STAGE_COUNT = 5;
 
   // DARK OUT PART 1: the new-content STAGE REGISTRY — every NORMAL/EVENT/BOSS
   // background for the upcoming ROID1/ROID2/ADAM content, registered as one
@@ -547,15 +551,16 @@
     // ONE background for the new MAIN SCENARIO post-GABRIEL3 ADAM SPHERE
     // STAGE — never reused for any other stage.
     { id: 'boss_c10_adam_sphere_main', type: 'boss', background: { file: 'assets/stages/boss/c10_adam_sphere_main.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.80 } },
-    // VOID BRIDGE (DARK OUT PART): the 2 new single-AREA bridge stages —
-    // deliberately no floorLeftFrac/floorRightFrac (unlike every other
-    // entry above) since these stages have no AREA1<->AREA2 door-wall at
-    // all (clampPlayerToScreen()'s own getFloorXRangeWorld() returns null
-    // without those fields, so that whole [WALL][DOOR][WALL] system is
-    // skipped outright) — walkable-vs-BLACK-VOID is governed entirely by
-    // VOID_BRIDGE_STAGES' own rect geometry instead.
-    { id: 'event_void_bridge_g2', type: 'event', background: { file: 'assets/stages/void/void_bridge_g2.jpg' } },
-    { id: 'event_void_bridge_g3', type: 'event', background: { file: 'assets/stages/void/void_bridge_g3.jpg' } },
+    // WORK ORDER I item 1: the 2 VOID BRIDGE registry entries that used to
+    // sit here (event_void_bridge_g2/g3) are removed — no route reaches a
+    // VOID stage any more, so no registry entry is needed either (the
+    // asset files themselves are left on disk, unused, per spec). The
+    // underlying VOID_BRIDGE_STAGES geometry table and its helper functions
+    // (voidBridgeImageToWorld()/spawnVoidBridgeDrones()/etc., further down)
+    // are also left in place, deliberately never deleted — they are now
+    // unreachable dead code (every plan.type==='voidBridge' check they
+    // guard behind can never match again), which is inherently safe: none
+    // of them can ever mis-apply to another stage since nothing calls them.
   ];
   STAGE_REGISTRY.forEach((s) => {
     s.background.img = new Image();
@@ -1580,6 +1585,11 @@
     if (y1 === y2) return false; // a horizontal segment can only ever run exactly along a boundary, never cross one
     for (const boundaryY of getAreaBoundaryYs()) {
       if ((y1 - boundaryY) * (y2 - boundaryY) > 0) continue; // both endpoints on the same side of this boundary — no crossing here
+      // WORK ORDER I items 3-4: same door-closure condition
+      // clampPlayerToScreen() applies to player MOVEMENT — applied here too
+      // so a shot/CLAW/AUTO-AIM/DRONE-LOS check can never disagree with
+      // movement about whether the Area1<->Area2 door is currently open.
+      if (boundaryY === 0 && isNonBossExterminationGateActive() && isArea1KillableEnemiesRemaining()) return true;
       const t = (boundaryY - y1) / (y2 - y1);
       const crossX = x1 + (x2 - x1) * t;
       if (crossX < floor.left || crossX > floor.right) return true; // crosses the WALL part, not the DOOR opening
@@ -1610,12 +1620,43 @@
   function isStoryDroneStage() {
     if (gameState.mode !== 'boss') return false;
     const plan = activeStagePlanArray()[currentStageIndex];
-    // VOID BRIDGE (DARK OUT PART): included here for the exact same reason
-    // cultivationLab already is — a physical-EXIT-only stage with no kill
-    // requirement (worldScrollUnlocked()'s own isStoryDroneStage() branch
-    // below opens the EXIT immediately, never gated on defeating the 3
-    // DRONEs — item 83/84's own explicit "DRONE全滅を必須CLEAR条件にしない").
+    // WORK ORDER I items 3/5-7 (supersedes the old item 83/84 "DRONE全滅を
+    // 必須CLEAR条件にしない" decision for 'drone'/'mixed' specifically):
+    // worldScrollUnlocked()'s own isStoryDroneStage() branch below now DOES
+    // require every killable enemy (DRONE) dead for 'drone'/'mixed' plan
+    // types before the EXIT opens — see isNonBossExterminationGateActive()/
+    // isDroneStageCleared() just below. 'whiteShadow'-only and
+    // 'cultivationLab' stay exactly as before (no killable securityRobots
+    // populated at all for whiteShadow-only, so the same gate is vacuously
+    // satisfied instantly; cultivationLab keeps its own separate item-pickup
+    // gate). 'voidBridge' is kept in this list only for the dead/unreachable
+    // VOID_BRIDGE_STAGES code's own internal consistency — no live route
+    // ever produces a 'voidBridge' plan entry any more (WORK ORDER I item 1).
     return !!plan && (plan.type === 'drone' || plan.type === 'mixed' || plan.type === 'whiteShadow' || plan.type === 'cultivationLab' || plan.type === 'voidBridge');
+  }
+  // WORK ORDER I items 3/5-7: true only for the plan types that actually
+  // populate securityRobots with genuinely killable enemies — 'whiteShadow'-
+  // only stages never do (WHITE SHADOW lives in the separate `whiteShadows`
+  // array and is explicitly a hazard, never a killable-enemy per spec), so
+  // gating them on this would be a harmless no-op but is skipped outright
+  // for clarity. cultivationLab/voidBridge are excluded on purpose (their
+  // own separate gates already apply, or they're unreachable dead code).
+  function isNonBossExterminationGateActive() {
+    if (gameState.mode !== 'boss') return false;
+    const plan = activeStagePlanArray()[currentStageIndex];
+    return !!plan && (plan.type === 'drone' || plan.type === 'mixed');
+  }
+  // WORK ORDER I item 4 (Area1->Area2 half of the extermination gate): a
+  // DRONE's own row never changes Area for its whole lifetime (see
+  // buildSecurityDrone()'s own fixed-row placement elsewhere in this file),
+  // so a plain Y-band membership test against getAreaBoundaryYs()'s own
+  // Area1/Area2 split (Area1: y>=0, Area2: y<0) is exact, never an
+  // approximation — reused by both clampPlayerToScreen()'s own movement
+  // door-check and segmentCrossesAreaWall()'s shot/CLAW/LOS check below, so
+  // "can I walk into Area2" and "can a shot/LOS cross into Area2" can never
+  // disagree with each other while this gate is active.
+  function isArea1KillableEnemiesRemaining() {
+    return securityRobots.some((r) => r.hp > 0 && r.y >= 0);
   }
   // HOTFIX 4 SECTIONS 18-21: PROJECT ADAM SITE (the cultivation lab waypoint)
   // is AREA1-only — no AREA2 is ever generated for it. Same "ask the active
@@ -2596,7 +2637,15 @@
       const doorLeft = floor.left + halfW, doorRight = floor.right - halfW;
       for (const boundaryY of getAreaBoundaryYs()) {
         if (Math.abs(player.y - boundaryY) > AREA_BOUNDARY_DOOR_BAND) continue;
-        if (player.x >= doorLeft && player.x <= doorRight) continue; // inside the door — nothing to block
+        // WORK ORDER I items 3-4: the Area1<->Area2 door (boundaryY===0
+        // only — never the Area2<->bonus-EXIT-band boundary at -H, which
+        // has nothing to do with the extermination gate) counts as fully
+        // closed (no passable X at all) while this stage's own
+        // extermination gate is active AND Area1 still has a killable
+        // enemy alive — forces every X into the "outside the door" branch
+        // below exactly like a genuine wall segment.
+        const doorClosedByExterminationGate = boundaryY === 0 && isNonBossExterminationGateActive() && isArea1KillableEnemiesRemaining();
+        if (!doorClosedByExterminationGate && player.x >= doorLeft && player.x <= doorRight) continue; // inside the door — nothing to block
         const wasOutsideBand = player.lastValidY === undefined || Math.abs(player.lastValidY - boundaryY) > AREA_BOUNDARY_DOOR_BAND;
         if (wasOutsideBand) {
           player.y = player.lastValidY !== undefined ? player.lastValidY : player.y; // block the crossing; x is untouched (slide along the wall)
@@ -4035,6 +4084,31 @@
   // EAST->WEST" is the spec's own explicit requirement to keep the two
   // mechanics visually/functionally distinct.
   const ROID1_BARREL_PURGE_HIT_THRESHOLD = 5;
+  // WORK ORDER I items 15-20: ROID1 ANTI-BURST COUNTER — a SEPARATE trigger
+  // from the 5-CONSECUTIVE-hit BARREL PURGE COUNTER above (that one has no
+  // time window at all; this one is a genuine rolling 2000ms window).
+  // Searched the existing codebase first per spec's own instruction — no
+  // pre-existing constant already modeled "N hits within a time window" for
+  // ROID1 (ROID1_BARREL_PURGE_HIT_THRESHOLD is a plain running counter,
+  // reset only by consumption/fresh-spawn, never by elapsed time), so this
+  // defaults to the spec's own fallback: 3 valid hits within 2000ms.
+  const ROID1_ANTI_BURST_WINDOW_MS = 2000;
+  const ROID1_ANTI_BURST_HIT_THRESHOLD = 3;
+  const ROID1_ANTI_BURST_COUNTER_DURATION_MS = 2000; // total invincibility window
+  // Per-shot lock duration during the counter's own 4-shot barrage —
+  // reuses ROID1_SNIPER_INTERSHOT_MS (an EXISTING short-interval cadence
+  // constant, per spec's own "reuse existing sniper/burst cadence
+  // constants where possible" instruction) rather than the normal SNIPER
+  // mode's own much longer ROID1_SNIPER_LOCK_MS (780ms) — 4 shots at that
+  // pace would take >3000ms, well past the ~2000ms window the counter is
+  // supposed to fit inside using SHORT intervals.
+  const ROID1_ANTI_BURST_SHOT_COUNT = 4;
+  const ROID1_ANTI_BURST_PER_SHOT_LOCK_MS = ROID1_SNIPER_INTERSHOT_MS;
+  // Small, UI-only flash duration (never a "large" cadence constant) — how
+  // long the new red/yellow lock-on frame (item 12-14) stays YELLOW after a
+  // real shot fires, synced to fireRoidSniperBullet()'s own
+  // roidState.lastShotFiredAt timestamp, never an independent timer.
+  const ROID1_LOCK_FRAME_YELLOW_MS = 150;
   // Reuses ROID2_MISSILE_STAGGER_MS/_WARNING_MS/_BLAST_RADIUS/_DAMAGE
   // verbatim for the sweep's own per-barrel cadence/warning/blast/damage —
   // the exact "reuse an existing ROID missile/area-attack cadence constant"
@@ -4934,6 +5008,32 @@
   // invented size) — no new asset, no PNG changes.
   const BLOOD_SAMPLE_OVERLAY_MS = 1200;
   const bloodSampleOverlayState = { active: false, key: null, startedAt: 0 };
+  // WORK ORDER I items 12-14: unfilled red square frame around the PLAYER,
+  // rendered above the player sprite (see its own call site right after the
+  // player/boss painter-sort block) — used by BOTH ROID1's normal LOCK-ON
+  // SNIPER (boss.state==='sniper') and the new COUNTER SNIPER
+  // (boss.state==='antiBurstCounter'). Drawn at the player's OWN current
+  // world position (never the stale locked-point the existing "+" marker
+  // uses), so it always tracks the player through camera/world movement —
+  // this call site is still inside the world-translated draw block, same
+  // as every other world-anchored marker in this file. Turns YELLOW only
+  // for a brief, real-event-synced window right after roidState.lastShotFiredAt
+  // (set exactly inside fireRoidSniperBullet(), never an independent timer)
+  // — never yellow with no shot actually fired. Deliberately additive, not
+  // a replacement for the existing "+" lock-on marker at the locked point
+  // (POST-v2.0 SECTION 14) — a different shape at a different (though
+  // usually nearby) anchor, never visually conflicting since one is a tiny
+  // crosshair and the other a larger outline frame.
+  function drawRoid1LockOnFrame(now) {
+    if (boss.state !== 'sniper' && boss.state !== 'antiBurstCounter') return;
+    const justFired = (now - roidState.lastShotFiredAt) < ROID1_LOCK_FRAME_YELLOW_MS;
+    const half = PLAYER_HIT_RADIUS + 10;
+    ctx.save();
+    ctx.strokeStyle = justFired ? '#ffd400' : '#ff2d2d';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(player.x - half, player.y - half, half * 2, half * 2);
+    ctx.restore();
+  }
   function drawBloodSampleOverlay(now) {
     if (!bloodSampleOverlayState.active) return;
     if (now - bloodSampleOverlayState.startedAt >= BLOOD_SAMPLE_OVERLAY_MS) {
@@ -6051,6 +6151,17 @@
     // but with a randomized (Fisher-Yates) target order instead of sorted.
     consecutivePlayerHits: 0,
     barrelPurge: null,
+    // WORK ORDER I items 15-20: ROID1 ANTI-BURST COUNTER state — completely
+    // separate from consecutivePlayerHits/barrelPurge above (never merged).
+    // antiBurstHitTimes holds the timestamp of every valid hit still inside
+    // the rolling ROID1_ANTI_BURST_WINDOW_MS window (pruned on every new
+    // hit); cleared only once the counter itself ENDS (never at trigger
+    // time), so a fresh burst can be tracked afterward, per spec.
+    // antiBurstCounter mirrors sniper's own {shotIndex,phase,phaseStartedAt,
+    // lockedX,lockedY} shape while the counter is actively firing its 4
+    // shots; null when inactive.
+    antiBurstHitTimes: [],
+    antiBurstCounter: null,
   };
   // DARK OUT PART 4: ROID's own enemy-fire projectiles — a separate, minimal
   // array from the player's own `bullets` (never mixed with it, so the
@@ -6281,6 +6392,8 @@
     roidState.barrelSweep = null;
     roidState.consecutivePlayerHits = 0; // P0 GAME COMPLETION HOTFIX: never carried over from a previous ROID fight/RETRY
     roidState.barrelPurge = null;
+    roidState.antiBurstHitTimes = []; // WORK ORDER I: never carried over from a previous ROID fight/RETRY
+    roidState.antiBurstCounter = null;
     enemyBullets.length = 0;
     // Same fixed reference pose spawnBoss() places the player into, minus
     // the INTRO-only lockout fields (ROID has no cinematic to lock the
@@ -6302,6 +6415,54 @@
     // STORY, TRAINING Stage5, BOSS BATTLE debug) already funnels through —
     // ROID2's own escort spec is completely untouched.
     if (type !== 'roid1') spawnRoidEscortBatch();
+    // WORK ORDER I item 8: exactly 2 STANDARD-behavior DRONE escorts for
+    // EVERY ROID1 encounter. spawnRoidBoss() is the ONE shared funnel every
+    // ROID1 context already uses (MAIN STORY, SECURITY TRAINING's own final
+    // stage, BOSS BATTLE MODE debug — confirmed via this same function's
+    // own existing comments elsewhere), so calling it from here covers all
+    // of them with zero per-context duplication, satisfying both "MAINの
+    // ROID1戦" and "TrainingのROID1戦" (item 8) via one call site.
+    else spawnRoid1StandardEscorts();
+  }
+  // WORK ORDER I item 8: the shared spawn helper for ROID1's own 2 standard
+  // escorts. Deliberately NOT spawnRoidEscortBatch()'s own 'ROID_ESCORT'
+  // behaviorType (a FASTER, ROID2-only multiplier per its "FAST DRONE
+  // escorts" comment above) — these draw from pickSecurityBehaviorTypes(),
+  // the SAME random standard-behavior pool every plain DRONE stage already
+  // uses, so movement/lock/attack timing/STEALTH/FLASH/collision/wall-LOS
+  // are all genuinely unmodified for ROID1 specifically (spec's own
+  // explicit "never weakened/frozen"). Placed one left, one right of
+  // ROID1's own spawn X, clamped inside the real measured floor (never a
+  // hardcoded offset that could land outside a narrow floor/inside a
+  // wall). Both escorts share ROID1's own Area/row, so segmentCrossesAreaWall()
+  // never blocks their very first lock-on at spawn (spec's own "must not
+  // attack through a wall immediately at spawn") — there is no Area
+  // boundary between a freshly-spawned escort and the player in a ROID1
+  // fight, both starting in the same Area by construction. Cleanup on
+  // ROID1 defeat follows the EXISTING boss-encounter architecture exactly
+  // as every other securityRobots entry already does (dead entries simply
+  // stop acting via updateSecurityRobots()'s own `hp<=0` guard, and the
+  // array itself is cleared by whichever function enters the NEXT stage —
+  // enterSecurityTrainingStage()/enterStoryStage()/resetModeState(), all
+  // already doing `securityRobots.length = 0` on every fresh entry) — no
+  // new cleanup code needed or written.
+  const ROID1_STANDARD_ESCORT_SPACING = 130; // world px each side of ROID1's own spawn X — roughly symmetric, clamped to the real floor below
+  function spawnRoid1StandardEscorts() {
+    for (let i = securityRobots.length - 1; i >= 0; i--) {
+      if (securityRobots[i].isRoid1StandardEscort) securityRobots.splice(i, 1);
+    }
+    const floor = getFloorXRangeWorld();
+    const margin = SECURITY_ROBOT_DRAW_D * 0.5 + DRONE_PLACEMENT_BODY_MARGIN;
+    const leftX = floor ? Math.max(floor.left + margin, boss.x - ROID1_STANDARD_ESCORT_SPACING) : boss.x - ROID1_STANDARD_ESCORT_SPACING;
+    const rightX = floor ? Math.min(floor.right - margin, boss.x + ROID1_STANDARD_ESCORT_SPACING) : boss.x + ROID1_STANDARD_ESCORT_SPACING;
+    const escortY = boss.y + SECURITY_ROBOT_DRAW_D * 1.5; // just south of ROID1's own row — never exactly overlapping its sprite
+    const types = pickSecurityBehaviorTypes(2);
+    const left = buildSecurityDrone(leftX, escortY, types[0], 1.0);
+    left.isRoid1StandardEscort = true;
+    securityRobots.push(left);
+    const right = buildSecurityDrone(rightX, escortY, types[1], 1.0);
+    right.isRoid1StandardEscort = true;
+    securityRobots.push(right);
   }
 
   // HOTFIX SECTION 9: the ONE place ROID_ESCORT_COUNT fresh escort DRONEs
@@ -6831,6 +6992,53 @@
     }
   }
 
+  // WORK ORDER I items 15-20: ROID1 ANTI-BURST COUNTER — invincible for
+  // ROID1_ANTI_BURST_COUNTER_DURATION_MS (~2000ms total) while firing
+  // EXACTLY ROID1_ANTI_BURST_SHOT_COUNT (4) real LOCK-ON SNIPER shots in
+  // sequence, each with its own short lock phase (reuses
+  // fireRoidSniperBullet() verbatim — same real projectile/damage path the
+  // normal SNIPER mode uses, never a fake "flash only" shot) — mirrors
+  // updateRoidSniper()'s own locking/intershot pattern, but with its own
+  // separate sub-state (roidState.antiBurstCounter) and a fixed, short
+  // per-shot lock (ROID1_ANTI_BURST_PER_SHOT_LOCK_MS) so 4 shots comfortably
+  // fit inside the ~2000ms window instead of the normal mode's much longer
+  // per-shot cadence.
+  function beginRoidAntiBurstCounter(now) {
+    boss.state = 'antiBurstCounter';
+    roidState.antiBurstCounter = {
+      startedAt: now,
+      shotIndex: 0,
+      phase: 'locking',
+      phaseStartedAt: now,
+      lockedX: player.x,
+      lockedY: player.y,
+    };
+  }
+  function updateRoidAntiBurstCounter(now) {
+    const s = roidState.antiBurstCounter;
+    if (!s) { boss.state = 'search'; boss.stateEnteredAt = now; return; }
+    // The counter's own fixed ~2000ms duration is the ONE authority for
+    // when it ends — not "all 4 shots fired" (which happens sooner, per
+    // the per-shot cadence comment above) — so ROID1 stays visibly
+    // invincible/animating for the full spec'd window even after its last
+    // shot has already gone out.
+    if (now - s.startedAt >= ROID1_ANTI_BURST_COUNTER_DURATION_MS) {
+      roidState.antiBurstCounter = null;
+      roidState.antiBurstHitTimes = []; // spec: window resets ONLY once the counter ends, never at trigger time
+      boss.state = 'search';
+      boss.stateEnteredAt = now;
+      return;
+    }
+    if (s.shotIndex >= ROID1_ANTI_BURST_SHOT_COUNT) return; // all 4 already fired — just coasting out the remaining invincibility window
+    if (s.phase === 'locking' && now - s.phaseStartedAt >= ROID1_ANTI_BURST_PER_SHOT_LOCK_MS) {
+      fireRoidSniperBullet(now, s.lockedX, s.lockedY);
+      s.shotIndex++;
+      if (s.shotIndex < ROID1_ANTI_BURST_SHOT_COUNT) {
+        s.lockedX = player.x; s.lockedY = player.y; // fresh re-lock for the next shot, same convention as updateRoidSniper()
+        s.phaseStartedAt = now;
+      }
+    }
+  }
   function updateRoidBoss(dt, now) {
     if (boss.state === 'roidDying') { updateRoidDeath(now); return; }
     updateRoidTargetTracking(now);
@@ -6842,6 +7050,7 @@
     if (boss.state === 'missile') { updateRoidMissile(now); return; }
     if (boss.state === 'barrelSweep') { updateRoidBarrelSweep(now); return; }
     if (boss.state === 'barrelPurge') { updateRoidBarrelPurge(now); return; }
+    if (boss.state === 'antiBurstCounter') { updateRoidAntiBurstCounter(now); return; }
     const stealthed = !roidState.targetKnown;
     if (boss.state === 'search') {
       // COMBAT & UI HOTFIX: ROID1 BARREL SEARCH MISSILE SWEEP timer — tracks
@@ -6962,7 +7171,15 @@
   // SNIPER/MISSILE special-attack window — restored to normal damageability
   // the instant either mode ends (boss.state leaves 'sniper'/'missile').
   function applyBodyHitToRoidBoss(now) {
-    if (boss.state === 'sniper' || boss.state === 'missile' || boss.state === 'roidDying' || boss.state === 'dead') return;
+    // WORK ORDER I items 15-20: ROID1's own ANTI-BURST COUNTER invincibility
+    // — a SEPARATE state/timer from 'sniper'/'missile' (never merged with
+    // them), added to this exact same early-return list so it blocks HP
+    // loss AND (since this whole function returns before reaching the
+    // consecutivePlayerHits/antiBurstHitTimes tracking below) also
+    // guarantees hits landed during the counter's own invincibility window
+    // never count toward a NEW counter and never feed the separate BARREL
+    // PURGE counter either — both trackers share this one gate.
+    if (boss.state === 'sniper' || boss.state === 'missile' || boss.state === 'antiBurstCounter' || boss.state === 'roidDying' || boss.state === 'dead') return;
     // HOTFIX 4.2 SECTIONS 10-12: ROID1's own opening-grace INVINCIBILITY is
     // removed — player fire damages ROID1 from the very first frame it
     // spawns. The grace window ITSELF (ROID_COMBAT_START_GRACE_MS) is a
@@ -6991,8 +7208,25 @@
     // a purge on a boss that's already dying.
     if (boss.type === 'roid1' && boss.hp > 0) {
       roidState.consecutivePlayerHits++;
-      if (roidState.consecutivePlayerHits >= ROID1_BARREL_PURGE_HIT_THRESHOLD && boss.state !== 'roidDying' && boss.state !== 'dead') {
+      const barrelPurgeTriggered = roidState.consecutivePlayerHits >= ROID1_BARREL_PURGE_HIT_THRESHOLD && boss.state !== 'roidDying' && boss.state !== 'dead';
+      if (barrelPurgeTriggered) {
         beginRoidBarrelPurge(now);
+      }
+      // WORK ORDER I items 15-20: ANTI-BURST COUNTER hit tracking — a
+      // rolling ROID1_ANTI_BURST_WINDOW_MS window, completely independent
+      // of consecutivePlayerHits above. Explicit priority per spec's own
+      // recommendation ("don't start a new counter while one is already
+      // active"): if the BARREL PURGE counter just triggered on this exact
+      // hit, the anti-burst counter is deferred rather than stomping
+      // boss.state the same tick — its own hit-time history is NOT reset
+      // by this, so it can still trigger on the very next opportunity once
+      // barrelPurge ends.
+      const cutoff = now - ROID1_ANTI_BURST_WINDOW_MS;
+      roidState.antiBurstHitTimes = roidState.antiBurstHitTimes.filter((t) => t > cutoff);
+      roidState.antiBurstHitTimes.push(now);
+      if (!barrelPurgeTriggered && roidState.antiBurstHitTimes.length >= ROID1_ANTI_BURST_HIT_THRESHOLD &&
+          boss.state !== 'roidDying' && boss.state !== 'dead' && boss.state !== 'barrelPurge') {
+        beginRoidAntiBurstCounter(now);
       }
     }
     if (boss.hp <= 0) {
@@ -10270,18 +10504,22 @@
     if (storyScenarioState.awaitingRewardPickup) return false;
     // SECTION 15-18: no longer restricted to portrait (H >= W) — see the
     // matching note above the currentArea/area1Cleared block in update().
-    // HOTFIX SECTION 4/16: reverts the old "SECTION E" full-elimination
-    // requirement below — normal (non-boss) combat stages (WHITE SHADOW/
-    // DRONE/MIXED/cultivationLab) must NOT require every enemy dead before
-    // the EXIT-hunting band opens; reaching the physical EXIT/doorway alive
-    // is sufficient on its own, exactly like TRAINING already works
-    // (trainingWorldScrollUnlocked() below never gates on a kill condition
-    // either). isDroneStageCleared() is kept (debug/verification only,
-    // still exposed on window.__game) but no longer read here — GABRIEL/
-    // ROID/ADAM boss defeats remain mandatory via the unchanged
-    // area2Cleared branch just below (boss.state==='dead'), and ADAM
-    // SPHERE's own exit condition is its sample-submission event, handled
-    // entirely separately (see the escapeReady branch above).
+    // WORK ORDER I items 3/5-7 (supersedes HOTFIX SECTION 4/16's old full-
+    // elimination reversal below, for 'drone'/'mixed' only): non-boss
+    // combat stages that actually populate killable enemies (DRONE) now
+    // DO require them all dead before the EXIT-hunting band opens.
+    // WHITE-SHADOW-only stays exactly as before (WHITE SHADOW is a hazard,
+    // never a killable enemy, never counted — isDroneStageCleared() only
+    // reads securityRobots, which a whiteShadow-only stage never
+    // populates, so the gate below is vacuously satisfied instantly for
+    // it, identical to its pre-existing behavior). TRAINING is unaffected
+    // (trainingWorldScrollUnlocked() below is a completely separate
+    // function, deliberately left untouched — SECURITY TRAINING keeps its
+    // own long-standing, explicitly-documented "not a kill-everything
+    // stage" design). GABRIEL/ROID/ADAM boss defeats remain mandatory via
+    // the unchanged area2Cleared branch just below (boss.state==='dead'),
+    // and ADAM SPHERE's own exit condition is its sample-submission event,
+    // handled entirely separately (see the escapeReady branch above).
     if (isStoryDroneStage()) {
       // HOTFIX 4.3 SECTIONS 41-44: PROJECT ADAM SITE (cultivationLab) is the
       // one isStoryDroneStage() member whose whole point is a required event
@@ -10297,6 +10535,13 @@
       // itself, which (per beginStageTransition()) only ever advances from
       // the EXIT-zone contact check in update().
       if (isCultivationLabStage() && !runInventory.projectAdamCollected) return false;
+      // WORK ORDER I items 3/5-7: the actual new extermination gate — never
+      // bypassable by NEXT CONTENT READY or DASH, since both of those still
+      // only ever act through this same worldScrollUnlocked() check (DASH
+      // is just fast movement, still subject to the identical EXIT-zone
+      // contact check in update(); no other code path advances
+      // currentStageIndex without going through it).
+      if (isNonBossExterminationGateActive() && !isDroneStageCleared()) return false;
       return gameState.mode === 'boss' && !stageTransition.active;
     }
     return gameState.mode === 'boss' && area2Cleared && !stageTransition.active;
@@ -10992,42 +11237,11 @@
       // STRAIGHT CLAW/DARK PHASE engine.
       spawnBarrels(BARREL_COUNT);
       spawnAdamSphereCombat(W / 2, areaTopY(currentArea) + H * 0.4, now);
-    } else if (stage === 4) {
-      // VOID BRIDGE (DARK OUT PART), STAGE 5 of 7 (FINAL-2): the IMAGE 1
-      // bridge geometry, reused verbatim from MAIN — same AREA1-only,
-      // no-barrel, 3-DRONE, foot-based-fall stage, same
-      // spawnVoidBridgeDrones()/voidBridgeEntranceWorldPos() helpers.
-      trainingVoidBridgeKey = 'g2';
-      spawnBarrels(0);
-      currentArea = 1;
-      cameraY = 0;
-      resetPlayerToBattlePose();
-      const voidSpawn = voidBridgeEntranceWorldPos('g2');
-      player.x = voidSpawn.x;
-      player.y = voidSpawn.y;
-      player.lastValidX = player.x;
-      player.lastValidY = player.y;
-      player.fallRecoveryUntil = -Infinity;
-      spawnVoidBridgeDrones('g2');
-    } else if (stage === 5) {
-      // VOID BRIDGE (DARK OUT PART), STAGE 6 of 7 (FINAL-1): the IMAGE 2
-      // bridge geometry.
-      trainingVoidBridgeKey = 'g3';
-      spawnBarrels(0);
-      currentArea = 1;
-      cameraY = 0;
-      resetPlayerToBattlePose();
-      const voidSpawn = voidBridgeEntranceWorldPos('g3');
-      player.x = voidSpawn.x;
-      player.y = voidSpawn.y;
-      player.lastValidX = player.x;
-      player.lastValidY = player.y;
-      player.fallRecoveryUntil = -Infinity;
-      spawnVoidBridgeDrones('g3');
     } else {
-      // STAGE 7 of 7 (final — unchanged position/content, was STAGE 5 of 5
-      // before the 2 VOID BRIDGE stages were inserted above it): DRONE +
-      // ROID1 — ROID1 keeps its existing
+      // WORK ORDER I item 1: the 2 VOID BRIDGE stages that used to occupy
+      // `stage === 4`/`stage === 5` here are removed outright — this final
+      // stage (index 4 again, TRAINING_STAGE_COUNT back to 5) is the true
+      // final stage: DRONE + ROID1 — ROID1 keeps its existing
       // ROID_COMBAT_START_GRACE_MS opening grace unchanged — roidState.
       // combatStartAt/isRoidCombatStartGraceActive() are entirely mode-
       // agnostic, so it applies here exactly as it does in STORY/BOSS BATTLE.
@@ -15904,6 +16118,9 @@
     // Debug/verification only — DARK OUT PART 4: ROID1/ROID2 shared BOSS AI.
     spawnRoidBoss, updateRoidBoss, drawRoidBoss, applyBodyHitToRoidBoss, maintainRoidEscortDrones, ROID_ESCORT_COUNT, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 50-56 — debug/verification only
     roidState, enemyBullets, updateEnemyBullets, fireRoidBullet, fireDroneSniperShot, isRoidActivelyFiring, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 44-49 — debug/verification only
+    beginRoidAntiBurstCounter, updateRoidAntiBurstCounter, spawnRoid1StandardEscorts, // WORK ORDER I — debug/verification only
+    ROID1_ANTI_BURST_HIT_THRESHOLD, ROID1_ANTI_BURST_WINDOW_MS, ROID1_ANTI_BURST_COUNTER_DURATION_MS, ROID1_ANTI_BURST_SHOT_COUNT, ROID1_BARREL_PURGE_HIT_THRESHOLD, // WORK ORDER I — debug/verification only
+    isNonBossExterminationGateActive, isArea1KillableEnemiesRemaining, // WORK ORDER I — debug/verification only
     beginRoidSniper, updateRoidSniper, ROID1_SNIPER_SHOT_COUNT, ROID1_HP_MULTIPLIER, // P0 FULL GAMEPAD E2E HOTFIX (Part K/L) — debug/verification only
     ROID_BOSS_PROFILES, ROID_MAX_HP, ROID_BULLET_DAMAGE, ROID_HURT_RADIUS,
     ROID_BURST_SHOT_COUNT, ROID_BURST_SHOT_INTERVAL_MS, ROID_BURST_COOLDOWN_MS,
@@ -17012,6 +17229,7 @@
       drawPlayer(now);
       if (bossVisible) drawBoss(now);
     }
+    drawRoid1LockOnFrame(now); // WORK ORDER I items 12-14: drawn right after the player/boss painter-sort above, so it always renders ABOVE the player sprite regardless of which draw order this frame took
     drawBloodSampleOverlay(now); // HOTFIX 3 SECTIONS 22-27: always drawn immediately after the player, regardless of the boss painter-sort above, so it's never hidden behind either
     // HOTFIX 4 SECTIONS 33-38: EVERY item's pickup text (HEAL/AMMO/Blood
     // Sample/ESCAPE NAVIGATOR/SECRET FILE) now draws here too — directly on/
