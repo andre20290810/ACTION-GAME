@@ -2382,6 +2382,17 @@
     player.baseDir = 'up'; // P-2: facing north, same as STORY's BOSS battle pose
     player.aimOffsetRaw = BASE_ANGLE.up;
     player.aimOffset = BASE_ANGLE.up;
+    // WORK ORDER H / PART A (stage-skip root fix, defense-in-depth): every
+    // caller that repositions the player onto a fresh stage/area/mode-start
+    // pose must also cancel any in-flight DASH, else updateDash() overwrites
+    // this exact reposition on the next frame using stale dashFromX/Y from
+    // wherever the player physically was before. triggerDashInDirection()
+    // now rejects new DASH presses during stageTransition/eventMovie, but
+    // resetting it here too means every current AND future caller of this
+    // shared repositioning function gets the guarantee for free, matching
+    // the pattern every other reposition site (spawnBoss/resetModeState/
+    // enterEventStage/resolveVoidBridgeFall) already follows individually.
+    player.dashing = false;
   }
 
   // Unconditionally applies a new base facing. PART 9/10: AIM STICK is now
@@ -2623,6 +2634,13 @@
     // clamps just above (after DASH's own movement, before the final
     // lastValidX/Y snapshot below).
     clampPlayerAwayFromProjectAdamTank();
+    // WORK ORDER H / PART B/C: BARREL body + ADAM SPHERE (combat) solid-body
+    // collision — same per-frame timing/order as every other solid clamp
+    // above (after DASH's own movement, before the final lastValidX/Y
+    // snapshot below), each gated internally (barrel.alive / active&&!dying)
+    // so this is a safe no-op on any stage/state that doesn't have them.
+    clampPlayerAwayFromBarrels();
+    clampPlayerAwayFromAdamSphereCombat();
     // HOTFIX SECTION 7: ADAM SPHERE is a strictly single-AREA context, same
     // requirement as ROID above — AREA2 must never be enterable at all.
     // ADAM SPHERE is its own STORY_STAGE_PLAN entry (plan.type==='adamSphere',
@@ -3088,9 +3106,22 @@
   // positive at this game's own portrait aspect ratios).
   const PROJECT_ADAM_TANK_POS_FRAC = { x: 0.5, y: 0.50 }; // kept for reference/back-compat — projectAdamTankWorldPos() below returns the RECT's own center now
   const PROJECT_ADAM_TANK_RADIUS_FRAC = 0.06; // superseded by the rect half-width/y-bounds below — kept only so this constant's old meaning stays documented, not read anywhere
-  const PROJECT_ADAM_TANK_RECT_HALFWIDTH_FRAC = 0.09; // half the pod's real visible width (measured ~0.13 at its widest; kept slightly inside that footprint)
-  const PROJECT_ADAM_TANK_RECT_TOP_FRAC = 0.32; // just below the topmost hatch collar
-  const PROJECT_ADAM_TANK_RECT_BOTTOM_FRAC = 0.55; // just above the pedestal/control-panel's own bottom edge, well clear of the y=0.60 pickup
+  // WORK ORDER H / PART D: real-device testing found the LID/CAP portion
+  // (the flat ribbed disc sitting ABOVE the glass tendril-capsule) still
+  // walk-through-able, and the PEDESTAL/control-panel's own true bottom
+  // edge extended past the old BOTTOM_FRAC too — re-cropped and re-measured
+  // b1.jpg directly (event_b1_project_adam's own file) rather than
+  // eyeballing: the disc's own top edge sits at ~y=0.317 (not 0.32 — close,
+  // but the old value clipped its very top rim), and the full lid+capsule+
+  // pedestal footprint together extends down to ~y=0.585 (well past the old
+  // 0.55, which stopped partway up the pedestal). Both edges widened a
+  // further ~1-1.5% past those measured edges for safety margin, while
+  // BOTTOM_FRAC is still kept comfortably short of the y=0.60 SECRET FILE
+  // pickup point (PROJECT_ADAM_POS_FRAC.y) so that pickup never becomes
+  // unreachable — re-verified below.
+  const PROJECT_ADAM_TANK_RECT_HALFWIDTH_FRAC = 0.095; // half the pod's real visible width, including the lid's own slightly-wider rim (measured ~0.08-0.10 at the rim's widest; kept slightly inside that footprint)
+  const PROJECT_ADAM_TANK_RECT_TOP_FRAC = 0.305; // now covers the lid/cap disc's own top edge, not just the capsule below it
+  const PROJECT_ADAM_TANK_RECT_BOTTOM_FRAC = 0.575; // now covers the full pedestal/control-panel base, still clear of the y=0.60 pickup
   function projectAdamTankWorldPos() {
     // Center of the rect — kept as a named export/helper since window.__game
     // and the old comment block above both referenced "the tank's world
@@ -3183,74 +3214,211 @@
     }
   }
 
+  // WORK ORDER H / PART R: shared swept-circle solid-body helper —
+  // generalizes clampPlayerAwayFromProjectAdamTank()'s own "sample the
+  // travelled segment at <=4-world-unit steps, revert outright if any
+  // sample overlaps; otherwise resting push-back toward the nearest edge"
+  // pattern from a rect target to an arbitrary CIRCLE target, so a new solid
+  // entity (BARREL, ADAM SPHERE) gets real DASH-tunnel protection without
+  // re-deriving this sampling logic per caller. Deliberately NOT applied to
+  // the existing GABRIEL/ADAM/ROID1/ROID2 (clampPlayerAwayFromBoss()) or
+  // DRONE (clampPlayerAwayFromDrones()) collision in this pass — those are
+  // already live, tested, real-combat-critical paths, and the explicit
+  // instruction for this batch is a shared helper "without destructively
+  // refactoring existing working BOSS collision"; swapping their resting-
+  // only checks over to this helper is a real, separately-testable follow-up,
+  // not bundled into this fix.
+  function sweepAndClampPlayerAwayFromCircle(cx, cy, minDist) {
+    if (player.lastValidX !== undefined && player.lastValidY !== undefined &&
+        (player.lastValidX !== player.x || player.lastValidY !== player.y)) {
+      const sx = player.lastValidX, sy = player.lastValidY, ex = player.x, ey = player.y;
+      const segLen = Math.hypot(ex - sx, ey - sy);
+      const sampleCount = Math.max(1, Math.ceil(segLen / 4));
+      for (let i = 0; i <= sampleCount; i++) {
+        const t = i / sampleCount;
+        const sampX = sx + (ex - sx) * t;
+        const sampY = sy + (ey - sy) * t;
+        if (Math.hypot(sampX - cx, sampY - cy) < minDist) {
+          player.x = sx;
+          player.y = sy;
+          return true; // reverted outright — no further push-back needed this frame
+        }
+      }
+    }
+    let dx = player.x - cx, dy = player.y - cy;
+    let dist = Math.hypot(dx, dy);
+    if (dist < minDist) {
+      if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+      const scale = minDist / dist;
+      player.x = cx + dx * scale;
+      player.y = cy + dy * scale;
+      return true;
+    }
+    return false;
+  }
+
+  // WORK ORDER H / PART B/C: BARREL solid body — previously BARREL had NO
+  // collision at all beyond LOS-blocking/shadow-cover geometry, so the
+  // player could walk straight through a barrel's own drawn drum (real-
+  // device symptom B). Reuses BARREL_LOS_BLOCK_RADIUS (already the
+  // established "approximates the drawn drum's visual half-width" constant
+  // for this exact sprite, not a new invented number) as the solid radius —
+  // measured against barrelShadowEllipse()'s own geometry, this radius's
+  // southern extent (b.y + BARREL_LOS_BLOCK_RADIUS) only marginally reaches
+  // into the shadow ellipse's own northernmost edge (b.y + BARREL_DRAW_H*
+  // 0.42), so the new solid BODY and the existing walkable south SHADOW
+  // COVER stay clearly separate mechanics, never merged/confused — a player
+  // standing in the shadow cover is never inside the solid circle. Skips
+  // dead/exploded barrels (b.alive) exactly like every other barrel
+  // consumer already does.
+  function clampPlayerAwayFromBarrels() {
+    for (const b of barrels) {
+      if (!b.alive) continue;
+      sweepAndClampPlayerAwayFromCircle(b.x, b.y, PLAYER_BODY_RADIUS + BARREL_LOS_BLOCK_RADIUS);
+    }
+  }
+
+  // WORK ORDER H / PART C: ADAM SPHERE (the separate ATTACKING entity,
+  // adamSphereCombatState — not the ground pickup drawAdamSphere()) also had
+  // no full solid-body collision, only the existing one-directional NORTH-
+  // only blockade (clampPlayerToScreen()'s own adamSphereBlockadeY check).
+  // Reuses ADAM_SPHERE_COMBAT_HIT_RADIUS — the same "radius = half the
+  // drawn diameter" convention already used for its own bullet-hit test —
+  // as the solid radius, applied omnidirectionally via the same swept
+  // helper. Only while genuinely alive/present (active && !dying), matching
+  // isSolidCollisionBossType()'s own "no physical presence once
+  // dead/dying" convention for every other solid enemy in this file.
+  function clampPlayerAwayFromAdamSphereCombat() {
+    if (!adamSphereCombatState.active || adamSphereCombatState.dying) return;
+    sweepAndClampPlayerAwayFromCircle(adamSphereCombatState.x, adamSphereCombatState.y, PLAYER_BODY_RADIUS + ADAM_SPHERE_COMBAT_HIT_RADIUS);
+  }
+
   // ==========================================================================
   // DARK OUT: VOID BRIDGE stages — 2 new single-AREA "cross a BLACK VOID
   // bridge" stages (MAIN, before GABRIEL2/GABRIEL3; and TRAINING, before the
-  // existing final stage). Same AREA1-only, W/H-canvas-fraction-rect
-  // convention PROJECT_ADAM_TANK_RECT_*_FRAC above already established for
-  // single-screen stages — never image-native fractions (getStageDrawMetrics()
-  // depends on stage.img.naturalWidth being loaded; W/H-fraction geometry
-  // works immediately and matches what the player actually sees, since the
-  // background is drawn "cover"-style centered in the same W×H canvas).
-  // Geometry is a small set of rects approximating the visible metal
-  // walkway/junction/platform structure in each attached photo — verticals +
-  // horizontal cross-walkways + top/bottom platforms — deliberately "a few
-  // generous rects" rather than a pixel-traced polygon, per this batch's own
-  // explicit instruction that a rect-combination approximation is acceptable
-  // as long as it doesn't visibly drift from the art. Any point inside ANY
-  // rect is walkable; everywhere else is BLACK VOID (fall).
+  // existing final stage).
   //
-  // IMPORTANT (found via direct Playwright testing, not guessed): the fall
-  // check tests the PLAYER's own FOOT point, which sits noticeably BELOW
-  // player.y (getPlayerFootWorldPosition()'s own footFrac offset — a fixed
-  // ~55-60px south of player.y at this game's SPRITE_DRAW_H, i.e. roughly an
-  // extra 6-9% of H depending on device). The top/bottom PLATFORM rects
-  // below are therefore each given a few extra percent of vertical margin
-  // beyond where the artwork's own platform edge visually sits, and
-  // entranceFrac.y is deliberately placed a bit above (north of) where the
-  // bottom platform visually starts — so the PLAYER's drawn FOOT (not
-  // player.y itself) lands correctly on the platform once spawned, and a
-  // standing player is never immediately flagged as having fallen.
+  // WORK ORDER H / PART T (geometry rebuild, root-cause fix): the previous
+  // W/H-CANVAS-fraction rects below were wrong — the comment that used to
+  // justify them ("cover-style centered in the same W×H canvas" therefore
+  // "matches what the player actually sees") only holds true for a point at
+  // the exact CENTER of a cropped axis. getStageDrawMetrics()'s own cover-fit
+  // (scale=max(W/iw,H/ih)) crops one axis by a device-aspect-ratio-dependent
+  // amount k=drawnAxisSize/canvasAxisSize (>1 whenever that axis is
+  // cropped); a canvas-fraction f on that axis actually lands at image-
+  // fraction 0.5+(f-0.5)/k — i.e. it drifts further from center as the
+  // device's aspect ratio diverges from the source image's own 1008x1792,
+  // and by a DIFFERENT amount on every device. This is exactly why VOID1's
+  // fall/EXIT geometry and VOID2's own spawn point (itself off the real
+  // platform on real hardware) were reported broken while sandboxed testing
+  // at one single viewport kept passing (that one viewport's own H/ih
+  // happened to be the binding, uncropped axis — pure luck, not correctness).
+  //
+  // The fix: every rect/entrance/exit/drone-spot coordinate below is now an
+  // IMAGE-NATIVE fraction (0..1 of the source JPEG's own 1008x1792 pixels),
+  // re-measured directly from each actual file (assets/stages/void/
+  // void_bridge_g2.jpg / g3.jpg, analyzed programmatically via a per-row/
+  // per-column brightness-profile scan of the real pixels — never eyeballed,
+  // never brightness-thresholding used at RUNTIME, only offline for this
+  // one-time measurement). voidBridgeImageToWorld() below converts an
+  // image-fraction to a WORLD coordinate using the exact same dx/dw/baseDy/
+  // dh getStageDrawMetrics() returns to draw() itself for this same
+  // currentStage() — i.e. the same numbers that place the actual pixels on
+  // screen — so walkable/fall/spawn/EXIT/DRONE geometry can never disagree
+  // with what's rendered, on any device aspect ratio, by construction. MAIN
+  // and SECURITY TRAINING both resolve their VOID BRIDGE background through
+  // the same STAGE_REGISTRY entry (currentStage(), confirmed above) and
+  // therefore both read this exact same VOID_BRIDGE_STAGES table — single
+  // source of truth, never independently duplicated/tuned per route.
+  //
+  // Real per-row/per-column measurement (g2, 3-walkway bridge; all fractions
+  // of iw=1008/ih=1792): top platform bright band y:[0.0285,0.0893]
+  // x:[0.262,0.740]; 3 junction rows at y:[0.2785,0.3125]/[0.4844,0.5212]/
+  // [0.6741,0.7109] (NOT 4 — the old rect list's 4th row at y0=0.785 never
+  // existed in the actual artwork, pure fabrication); bottom platform
+  // y:[0.8811,0.9727] x:[0.226,0.773]; 3 vertical pillars, each re-sampled
+  // at 4 different Y corridors to capture this scene's own perspective taper
+  // (the pillars visibly converge toward the top vanishing point, so a
+  // single fixed-width rect must cover their full swept X-range, not just
+  // one Y-slice) — west col spans x:[0.279,0.339] across the full height,
+  // center col x:[0.477,0.519], east col x:[0.663,0.719]. g3 (2-walkway
+  // bridge) similarly: top platform y:[0.0285,0.0999] x:[0.260,0.740];
+  // bottom platform y:[0.8783,0.9604] x:[0.254,0.746]; 2 junction rows
+  // y:[0.3415,0.3683]/[0.6021,0.6289] (matches the original's own 2-row
+  // count — no fabricated row here); 2 pillars, negligible perspective
+  // taper measured, x:[0.310,0.348] (west) / x:[0.652,0.691] (east).
+  //
+  // Any point inside ANY rect is walkable; everywhere else is BLACK VOID
+  // (fall) — same "a few generous rects, not a pixel-traced polygon"
+  // convention as before, still explicitly permitted, now anchored to real
+  // measured art instead of guessed proportions.
+  //
+  // entranceFrac/exitFrac place PLAYER.Y itself (not the foot) — the fall
+  // check tests the PLAYER's own FOOT point, which sits a FIXED ~55-60
+  // world-px south of player.y (getPlayerFootWorldPosition()'s own footFrac
+  // offset, a constant screen-pixel sprite measurement, independent of the
+  // stage image's own scale). Since dh (the image's drawn height in world
+  // px) can never be smaller than H itself (dh=ih*scale, scale>=H/ih), the
+  // worst case for "does the fixed foot offset still land inside the
+  // platform's own measured band" is exactly dh=H (no vertical cropping at
+  // all) — entranceFrac.y=0.850 is chosen so that even in that worst case
+  // the foot (player.y+~56px) lands comfortably inside the bottom
+  // platform's own y:[0.875,0.978] rect (padded a few percent past the
+  // measured 0.881/0.973 edges for exactly this margin), while player.y
+  // itself still sits within the center pillar's own rect at that Y — no
+  // gap between "spawned" and "on solid ground" on any device.
+  // WORK ORDER H / PART T: the exact same two constants clampPlayerToScreen()
+  // uses for its own generic "never draw the sprite off the top/bottom of
+  // the canvas" clamp (SPRITE_DRAW_H/2) and getPlayerFootWorldPosition()
+  // uses for its own foot offset — reused here (never re-derived/guessed)
+  // so isPointWalkableOnVoidBridge()'s own edge-margin extension (below) is
+  // mathematically the tightest bound that still provably covers every
+  // position that clamp could ever produce, rather than an arbitrary one.
+  const VOID_BRIDGE_EDGE_CLAMP_HALF_H = SPRITE_DRAW_H / 2;
+  const VOID_BRIDGE_FOOT_DY = SPRITE_DRAW_H * (PLAYER_FOOT_Y / PLAYER_CANVAS_H - 0.5);
+  const VOID_BRIDGE_EDGE_MARGIN = 8; // extra safety margin past the exact clamp-derived worst-case, never a knife-edge boundary equality
+
   const VOID_BRIDGE_STAGES = {
     g2: {
       stageId: 'event_void_bridge_g2', // STAGE_REGISTRY entry — void_bridge_g2.jpg (IMAGE 1, 3-walkway bridge)
-      entranceFrac: { x: 0.50, y: 0.85 }, // bottom platform — PLAYER spawn / fall-return point (player.y, NOT foot — see comment above)
+      entranceFrac: { x: 0.50, y: 0.850 }, // bottom platform — PLAYER spawn / fall-return point
+      exitFrac: { x: 0.50, y: 0.060 }, // top platform — EXIT sits at this stage's real measured platform center, not the generic areaTopY()-derived formula
       rects: [
-        { x0: 0.20, x1: 0.80, y0: 0.03, y1: 0.14 }, // top platform (EXIT sits here) — widened to overlap the columns' own y0=0.10 seam
-        { x0: 0.20, x1: 0.80, y0: 0.86, y1: 0.99 }, // bottom platform (entrance) — widened north to cover the foot-offset margin
-        { x0: 0.275, x1: 0.365, y0: 0.10, y1: 0.90 }, // vertical walkway 1 (west)
-        { x0: 0.455, x1: 0.545, y0: 0.10, y1: 0.90 }, // vertical walkway 2 (center)
-        { x0: 0.635, x1: 0.725, y0: 0.10, y1: 0.90 }, // vertical walkway 3 (east)
-        { x0: 0.12, x1: 0.88, y0: 0.245, y1: 0.315 }, // horizontal junction row 1
-        { x0: 0.12, x1: 0.88, y0: 0.425, y1: 0.495 }, // horizontal junction row 2
-        { x0: 0.12, x1: 0.88, y0: 0.605, y1: 0.675 }, // horizontal junction row 3
-        { x0: 0.12, x1: 0.88, y0: 0.785, y1: 0.855 }, // horizontal junction row 4
+        { x0: 0.25, x1: 0.75, y0: 0.020, y1: 0.100, edge: 'top' }, // top platform (EXIT sits here)
+        { x0: 0.21, x1: 0.79, y0: 0.875, y1: 0.978, edge: 'bottom' }, // bottom platform (entrance) — y1 padded past the measured 0.973 edge for the foot-offset margin (see comment above)
+        { x0: 0.270, x1: 0.345, y0: 0.085, y1: 0.885 }, // vertical walkway 1 (west) — widened to cover this scene's own perspective taper
+        { x0: 0.470, x1: 0.525, y0: 0.085, y1: 0.885 }, // vertical walkway 2 (center)
+        { x0: 0.655, x1: 0.725, y0: 0.085, y1: 0.885 }, // vertical walkway 3 (east) — widened, same taper reasoning
+        { x0: 0.075, x1: 0.920, y0: 0.273, y1: 0.318 }, // horizontal junction row 1
+        { x0: 0.040, x1: 0.892, y0: 0.479, y1: 0.527 }, // horizontal junction row 2
+        { x0: 0.093, x1: 0.910, y0: 0.669, y1: 0.716 }, // horizontal junction row 3
       ],
-      // 3 DRONE spawn nodes, one per mid junction row (top/bottom rows kept
-      // clear near the EXIT/entrance) — x/y in W/H-canvas fractions, swing is
-      // the safe patrol half-range (also a W-fraction) confined to that
-      // row's own horizontal-walkway rect, well inside its [0.12,0.88] span.
+      // 3 DRONE spawn nodes, one per junction row — x/y are IMAGE-NATIVE
+      // fractions now (see voidBridgeImageToWorld() below), swing is the
+      // safe patrol half-range as a fraction of the drawn image WIDTH,
+      // confined well inside that row's own rect above.
       droneSpotsFrac: [
-        { x: 0.50, y: 0.28, swing: 0.25 },
-        { x: 0.50, y: 0.46, swing: 0.25 },
-        { x: 0.50, y: 0.64, swing: 0.25 },
+        { x: 0.50, y: 0.296, swing: 0.30 },
+        { x: 0.50, y: 0.503, swing: 0.30 },
+        { x: 0.50, y: 0.693, swing: 0.30 },
       ],
     },
     g3: {
       stageId: 'event_void_bridge_g3', // STAGE_REGISTRY entry — void_bridge_g3.jpg (IMAGE 2, 2-walkway bridge)
-      entranceFrac: { x: 0.50, y: 0.85 }, // see the foot-offset comment above VOID_BRIDGE_STAGES
+      entranceFrac: { x: 0.50, y: 0.850 }, // see the foot-offset comment above VOID_BRIDGE_STAGES
+      exitFrac: { x: 0.50, y: 0.065 }, // top platform center — same real-measured-geometry reasoning as g2
       rects: [
-        { x0: 0.25, x1: 0.75, y0: 0.03, y1: 0.14 }, // top platform (EXIT sits here) — widened, same reasoning as g2
-        { x0: 0.25, x1: 0.75, y0: 0.86, y1: 0.99 }, // bottom platform (entrance) — widened, same reasoning as g2
-        { x0: 0.335, x1: 0.425, y0: 0.10, y1: 0.90 }, // vertical walkway 1 (west)
-        { x0: 0.575, x1: 0.665, y0: 0.10, y1: 0.90 }, // vertical walkway 2 (east)
-        { x0: 0.15, x1: 0.85, y0: 0.315, y1: 0.385 }, // horizontal junction row 1
-        { x0: 0.15, x1: 0.85, y0: 0.615, y1: 0.685 }, // horizontal junction row 2
+        { x0: 0.24, x1: 0.76, y0: 0.020, y1: 0.108, edge: 'top' }, // top platform (EXIT sits here)
+        { x0: 0.24, x1: 0.76, y0: 0.872, y1: 0.968, edge: 'bottom' }, // bottom platform (entrance) — padded past the measured 0.878/0.960 edges
+        { x0: 0.305, x1: 0.352, y0: 0.095, y1: 0.878 }, // vertical walkway 1 (west)
+        { x0: 0.647, x1: 0.696, y0: 0.095, y1: 0.878 }, // vertical walkway 2 (east)
+        { x0: 0.15, x1: 0.85, y0: 0.338, y1: 0.372 }, // horizontal junction row 1
+        { x0: 0.15, x1: 0.85, y0: 0.598, y1: 0.633 }, // horizontal junction row 2
       ],
       droneSpotsFrac: [
-        { x: 0.50, y: 0.35, swing: 0.25 },
-        { x: 0.50, y: 0.65, swing: 0.25 },
-        { x: 0.50, y: 0.065, swing: 0.15 }, // guards the top platform / EXIT approach
+        { x: 0.50, y: 0.355, swing: 0.30 },
+        { x: 0.50, y: 0.615, swing: 0.30 },
+        { x: 0.50, y: 0.065, swing: 0.18 }, // guards the top platform / EXIT approach
       ],
     },
   };
@@ -3282,19 +3450,88 @@
     if (gameState.mode === 'securityTraining') return trainingVoidBridgeKey;
     return null;
   }
+  // WORK ORDER H / PART T: the ONE image-fraction -> WORLD conversion every
+  // VOID BRIDGE consumer below shares — reuses currentStage() (already
+  // confirmed to resolve the correct STAGE_REGISTRY background for both
+  // MAIN and SECURITY TRAINING void bridge stages, same object draw()
+  // itself renders) and getStageDrawMetrics()'s own dx/dw/baseDy/dh, so this
+  // can never drift from what's actually on screen on any device aspect
+  // ratio. Recomputed fresh on every call (never cached) since W/H can
+  // change under resize/orientation, exactly like getFloorXRangeWorld()'s
+  // own established pattern. Fails safe (returns the raw W/H-fraction
+  // fallback) only if the background image genuinely hasn't loaded yet —
+  // should never actually happen once a VOID BRIDGE stage is entered, since
+  // stage entry only ever follows full asset preload, but this keeps the
+  // function total rather than crashing on a 0x0 naturalWidth/Height.
+  function voidBridgeImageToWorld(fracX, fracY) {
+    const stage = currentStage();
+    if (!stage || !stage.img || !stage.img.naturalWidth) return { x: W * fracX, y: H * fracY };
+    const m = getStageDrawMetrics(stage);
+    return { x: m.dx + fracX * m.dw, y: m.baseDy + fracY * m.dh };
+  }
   function voidBridgeEntranceWorldPos(key) {
     const cfg = VOID_BRIDGE_STAGES[key];
-    return { x: W * cfg.entranceFrac.x, y: H * cfg.entranceFrac.y };
+    return voidBridgeImageToWorld(cfg.entranceFrac.x, cfg.entranceFrac.y);
+  }
+  // The real, geometry-derived EXIT position for the active VOID BRIDGE
+  // stage — read by exitWorldPos() below instead of that function's generic
+  // areaTopY()-based formula (WORK ORDER H symptom E: the generic formula
+  // has no relationship to where this stage's own top platform is actually
+  // drawn, which is exactly why VOID1's EXIT was reported reachable without
+  // ever standing on the platform / not reachable while standing on it).
+  function voidBridgeExitWorldPos(key) {
+    const cfg = VOID_BRIDGE_STAGES[key];
+    return voidBridgeImageToWorld(cfg.exitFrac.x, cfg.exitFrac.y);
   }
   // Point-in-any-rect membership test — the ONE definition of "walkable"
   // every consumer (the fall check below, and implicitly the DRONE patrol
   // swing set at spawn time) shares, so visual/geometry/fall detection can
-  // never disagree with each other.
+  // never disagree with each other. Rect bounds are converted through the
+  // exact same voidBridgeImageToWorld() transform as every other consumer.
   function isPointWalkableOnVoidBridge(x, y, key) {
     const cfg = VOID_BRIDGE_STAGES[key];
     if (!cfg) return true; // fail open — never trap the player on an unrecognized key
+    const stage = currentStage();
+    if (!stage || !stage.img || !stage.img.naturalWidth) return true; // fail open — background not loaded yet, never fall-check against garbage geometry
+    const m = getStageDrawMetrics(stage);
     for (const r of cfg.rects) {
-      if (x >= W * r.x0 && x <= W * r.x1 && y >= H * r.y0 && y <= H * r.y1) return true;
+      const wx0 = m.dx + r.x0 * m.dw, wx1 = m.dx + r.x1 * m.dw;
+      let wy0 = m.baseDy + r.y0 * m.dh, wy1 = m.baseDy + r.y1 * m.dh;
+      // WORK ORDER H / PART T (found via direct Playwright testing across
+      // several viewport aspect ratios, not guessed): clampPlayerToScreen()
+      // applies its own GENERIC, stage-agnostic "never draw the sprite off
+      // the top/bottom of the canvas" clamp (player.y capped to
+      // [-H+halfH, H-halfH]) on every frame, completely independent of this
+      // stage's own geometry. On an aspect ratio where the drawn image is
+      // taller relative to H than this dev viewport (dh far exceeds H — a
+      // real, common case on wide-but-short-#play-area real devices, not
+      // just a contrived edge case), the entrance/EXIT platform's own
+      // measured image-fraction band can end up placed further from the
+      // screen edge than that generic clamp allows the player to ever
+      // reach — silently pulling the just-spawned player back OFF the
+      // platform into VOID before their first frame even renders (this is
+      // the concrete mechanism behind symptom F, VOID2's own spawn point
+      // being a fall zone). Fix: the top platform's rect is extended up to
+      // AT LEAST world Y=0 (the generic clamp's own north bound for this
+      // stage) and the bottom platform's rect is extended down to AT LEAST
+      // world Y=H (the generic clamp's own south bound) — i.e. these two
+      // rects always cover the full range the clamp could ever leave the
+      // player in, on top of whatever the real artwork itself measures to,
+      // so the two systems can never disagree regardless of device aspect.
+      // The bound is the clamp's own worst-case output, not the full screen
+      // edge (0/H) — using 0/H outright was tried first and rejected: it
+      // made the ENTIRE x:[wx0,wx1] column walkable across the whole stage
+      // height even at NORMAL aspect ratios where the margin was never
+      // needed, trivializing the void-crossing gameplay. The clamp only
+      // ever pulls player.y to at most H-VOID_BRIDGE_EDGE_CLAMP_HALF_H (for
+      // the south/entrance side) or at least -H+VOID_BRIDGE_EDGE_CLAMP_HALF_H
+      // (for the north/EXIT side) — extending the rect only that far (plus
+      // the same fixed FOOT offset the fall-check itself samples at) is the
+      // tightest bound that still provably covers every position the clamp
+      // could ever produce.
+      if (r.edge === 'top') wy1 = Math.max(wy1, -H + VOID_BRIDGE_EDGE_CLAMP_HALF_H + VOID_BRIDGE_FOOT_DY + VOID_BRIDGE_EDGE_MARGIN);
+      if (r.edge === 'bottom') wy0 = Math.min(wy0, H - VOID_BRIDGE_EDGE_CLAMP_HALF_H + VOID_BRIDGE_FOOT_DY - VOID_BRIDGE_EDGE_MARGIN);
+      if (x >= wx0 && x <= wx1 && y >= wy0 && y <= wy1) return true;
     }
     return false;
   }
@@ -3308,13 +3545,20 @@
   // requirement), so a DRONE can never patrol out over BLACK VOID.
   function spawnVoidBridgeDrones(key) {
     const cfg = VOID_BRIDGE_STAGES[key];
+    const stage = currentStage();
+    const m = (stage && stage.img && stage.img.naturalWidth) ? getStageDrawMetrics(stage) : null;
     const types = pickSecurityBehaviorTypes(cfg.droneSpotsFrac.length);
     cfg.droneSpotsFrac.forEach((spot, i) => {
-      const x = W * spot.x, y = H * spot.y;
-      const drone = buildSecurityDrone(x, y, types[i], 1.0);
-      drone.x = x; drone.y = y;
-      drone.patrolCenterX = x;
-      drone.patrolRange = Math.min(drone.patrolRange, W * spot.swing);
+      const pos = voidBridgeImageToWorld(spot.x, spot.y);
+      const drone = buildSecurityDrone(pos.x, pos.y, types[i], 1.0);
+      drone.x = pos.x; drone.y = pos.y;
+      drone.patrolCenterX = pos.x;
+      // swing is a fraction of the drawn image WIDTH (m.dw), not the raw
+      // canvas W, matching every other image-fraction quantity here — a
+      // DRONE's patrol range must scale with the SAME rendered geometry its
+      // spawn point/walkway rect do, not the canvas.
+      const swingWorld = m ? spot.swing * m.dw : spot.swing * W;
+      drone.patrolRange = Math.min(drone.patrolRange, swingWorld);
       securityRobots.push(drone);
     });
   }
@@ -9906,6 +10150,18 @@
     return (gameState.mode === 'training' || gameState.mode === 'securityTraining') && !stageTransition.active;
   }
   function exitWorldPos() {
+    // WORK ORDER H / PART T: VOID BRIDGE's own EXIT is anchored to its real
+    // measured top-platform geometry (voidBridgeExitWorldPos(), converted
+    // through the exact same transform the background/walkable/fall/DRONE
+    // geometry all share) rather than the generic areaTopY()-derived
+    // formula below — that formula has no relationship to where this
+    // stage's own artwork actually places the platform, which is exactly
+    // what made VOID1's EXIT reachable/unreachable independent of the
+    // player's real position on real devices (symptom E).
+    if (isVoidBridgeStage()) {
+      const key = activeVoidBridgeKey();
+      if (key) return voidBridgeExitWorldPos(key);
+    }
     // HOTFIX 4 SECTIONS 18-21: PROJECT ADAM SITE (cultivation lab) is AREA1-
     // only — its own EXIT sits just south of AREA1's own top edge (the exact
     // same "areaTop - worldExtraAbove + EXIT_ZONE_H/2 + 20" formula every
@@ -9913,7 +10169,7 @@
     // areaTopY(2)) since there is no AREA2 for it to sit beyond. This is the
     // "same-AREA exit" the stage now uses — reaching it never requires (and,
     // per the player.y>=0 pin above, never permits) crossing into AREA2.
-    const topEdge = (isCultivationLabStage() || isVoidBridgeStage()) ? areaTopY(1) : areaTopY(2);
+    const topEdge = isCultivationLabStage() ? areaTopY(1) : areaTopY(2);
     // Anchored an extra H further north than before this batch, since AREA
     // 2's own full-screen band now sits between the original screen and
     // this bonus space.
@@ -14650,6 +14906,16 @@
   // clear it).
   function triggerDashInDirection(now, angleOverride) {
     if (isBossIntroLocked() || player.stunned) return; // PART 8 / SECTION C
+    // WORK ORDER H / PART A (stage-skip root fix): a DASH armed while a
+    // stage/area fade or an EVENT MOVIE is in flight captures dashFromX/Y
+    // from the OLD stage's (frozen) position, then applies on top of the
+    // NEW stage's just-reset spawn once the fade/movie ends -- landing the
+    // player back inside the (stage-invariant) EXIT_ZONE without ever
+    // walking there, chaining an un-walked second/third stage advance.
+    // Rejecting the trigger outright here (rather than only cleaning up
+    // dash state after the fact) closes the window at its source for both
+    // MAIN and every TRAINING route, regardless of DASH press timing/count.
+    if (stageTransition.active || eventMovieState.active) return;
     lastPlayerInputAt = now; // SECTION B: DASH counts as combat input for the watchdog
     const knockbackLockedNow = now < player.knockbackUntil;
     const firingNow = !knockbackLockedNow && (fireHeld || keys.fire);
