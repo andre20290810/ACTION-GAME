@@ -441,6 +441,16 @@
      so it can never steal MOVE/AIM/button input regardless of state. -->
 <div id="debug-input-overlay"></div>
 
+<!-- P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD): a SEPARATE overlay
+     from #debug-input-overlay above (?debugStartup=1/0 in the URL, then
+     sticks via localStorage, same DEBUG_AREA_LOS_OVERLAY/DEBUG_INPUT_OVERLAY
+     pattern) — top-left so the two can coexist without ever overlapping,
+     and neither this addition nor its logic touches any existing
+     #debug-input-overlay field. Shows startup-phase-specific readiness
+     (load progress/current task/ETA/waiting/failed/ready), never a
+     replacement for #debug-input-overlay's own detailed gamepad/audio trace. -->
+<div id="debug-startup-overlay"></div>
+
 <!-- PART 9 SECTION G: shared EVENT MOVIE PLAYER — one DOM overlay reused
      by every SYSTEM/EVENT movie (opening/sneaking/drone_arrival/
      gabriel_arrival/gabriel_down/gabriel_defeated/experiment_lab/

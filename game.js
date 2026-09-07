@@ -10093,10 +10093,35 @@
       { name: 'walk sprites', ready: () => Object.values(walkSprites).every((set) => set.every((img) => img.complete)) },
       { name: 'boss sprites', ready: () => bossSpritesReady >= Object.keys(BOSS_FRAME_FILES).length },
       { name: 'cinematic pose images', ready: () => cinematicPoseImg.complete && cinematicPoseBackImg.complete },
+      // AUDIO DATA READY (media initialized/no fatal error/usable readyState)
+      // is deliberately a DIFFERENT concept from AUDIO PERMISSION/AUDIBLE
+      // START (the iOS trusted-gesture unlock, only ever attempted at TAP TO
+      // START itself via attemptStartupAudioUnlock()) -- this never waits on
+      // a user gesture, so a gamepad-only user is never blocked here.
       { name: 'gameplay BGM', ready: () => bgmAudio.readyState >= 1 || !!bgmAudio.error },
       { name: 'menu BGM', ready: () => menuBgmAudio.readyState >= 1 || !!menuBgmAudio.error },
       { name: 'first stage background', ready: () => STAGES[0].ready },
+      // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD) items 19-26: the
+      // game loop and gamepad subsystem are structurally alive from the very
+      // first requestAnimationFrame(loop) call (well before this LOADING
+      // screen even renders — see loop()'s own unconditional updateGamepadInput()
+      // call every frame regardless of screen), so these two never add real
+      // wait time; they exist so TAP TO START's own 100% can never precede
+      // them even in a pathological case (e.g. a caught per-frame exception
+      // suppressing progress), and so ?debugStartup=1 has a real signal to show.
+      { name: 'game loop alive', ready: () => rafFrameCount > 0 },
+      { name: 'gamepad subsystem ready', ready: () => gamepadSubsystemInitialized },
     ];
+  }
+  // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD) item 19: the single
+  // final gate before 100%/TAP TO START — true only once every required
+  // task above is genuinely ready, matching computeStartupRequiredProgress()'s
+  // own loaded>=total condition exactly (kept as a separate named predicate,
+  // rather than inlined, purely so ?debugStartup=1 and runStartupLoadingPhase()
+  // can both call ONE shared "are we really ready" answer).
+  function assertStartupReady() {
+    const { loaded, total, erroredNames } = computeStartupRequiredProgress();
+    return loaded >= total && erroredNames.length === 0;
   }
   function computeStartupRequiredProgress() {
     const targets = getStartupRequiredAssetTargets();
@@ -10135,6 +10160,51 @@
     loadingErrorTextEl.textContent = '';
     loadingRetryBtnEl.hidden = true;
   }
+  // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD) items 34-44/45-54:
+  // ?debugStartup=1 overlay — separate DOM element/flag from ?debugInput=1
+  // (updateDebugInputOverlay() below is completely untouched by this
+  // function), showing the startup-specific fields the spec calls for. Cheap
+  // read-only computation (no side effects beyond the existing throttled
+  // audio watchdog this file already runs elsewhere), safe to call every
+  // frame from loop() same as updateDebugInputOverlay() already is.
+  let startupLoadStartedAt = -Infinity;
+  const debugStartupEl = document.getElementById('debug-startup-overlay');
+  function updateDebugStartupOverlay(now) {
+    if (!DEBUG_STARTUP_OVERLAY || !debugStartupEl) return;
+    const { loaded, total, pendingNames, erroredNames } = computeStartupRequiredProgress();
+    const pct = total > 0 ? (loaded / total) * 100 : 100;
+    const elapsedMs = startupLoadStartedAt > 0 ? now - startupLoadStartedAt : 0;
+    let eta = 'N/A (already ready)';
+    if (erroredNames.length > 0) eta = 'N/A (error)';
+    else if (loaded < total) {
+      eta = (loaded <= 0 || elapsedMs <= 0)
+        ? 'ESTIMATING...'
+        : Math.max(0, Math.round((elapsedMs / loaded) * (total - loaded) / 1000)) + 's';
+    }
+    const allPads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const connectedPadCount = allPads.filter((p) => p && p.connected).length;
+    const audioTracksForDebug = [['menu', menuBgmAudio], ['normal', bgmAudio], ['boss', bossBgmAudio], ['ending', endingRevealAudio]];
+    const audibleCount = audioTracksForDebug.filter(([, el]) => isBgmTrackAudible(el)).length;
+    const ready = assertStartupReady();
+    let blockedReason = '(none — ready)';
+    if (erroredNames.length > 0) blockedReason = 'ERROR: ' + erroredNames.join(', ');
+    else if (!ready) blockedReason = 'WAITING: ' + pendingNames.join(', ');
+    debugStartupEl.textContent =
+      `--- STARTUP (?debugStartup=1) ---\n` +
+      `LOAD PROGRESS: ${pct.toFixed(1)}%  (${loaded}/${total})\n` +
+      `CURRENT TASK: ${pendingNames[0] || '(none pending)'}\n` +
+      `WAITING TASK: ${pendingNames.length ? pendingNames.join(', ') : '(none)'}\n` +
+      `FAILED TASK: ${erroredNames.length ? erroredNames.join(', ') : '(none)'}\n` +
+      `ETA: ${eta}\n` +
+      `RAF COUNT: ${rafFrameCount}  RAF DELTA: ${rafLastDeltaMs.toFixed(1)}ms\n` +
+      `GAMEPAD SUBSYSTEM READY: ${gamepadSubsystemInitialized}\n` +
+      `CONNECTED PADS: ${connectedPadCount}  ACTIVE PAD: ${gamepadIndex === null ? '(none)' : gamepadIndex}\n` +
+      `INPUT ARMED: ${gamepadInputArmed}  RELEASE GATE: ${gamepadInputArmed ? 'open' : 'waiting-for-release'}\n` +
+      `MENU READY: ${!!document.getElementById('main-menu-overlay') && !!document.getElementById('main-menu-story-btn')}\n` +
+      `AUDIO OWNER: ${audibleBgmKey || '(none)'}  AUDIBLE BGM COUNT: ${audibleCount}\n` +
+      `STARTUP READY: ${ready}\n` +
+      `BLOCKED REASON: ${blockedReason}`;
+  }
   // P0 STARTUP LOADING HOTFIX (RETRY LOOP ROOT FIX): every RETRY bumps this
   // generation token. The tick() loop closes over the generation it was
   // started under and refuses to act (no UI update, no screen transition,
@@ -10166,6 +10236,7 @@
     hideLoadingErrorState();
     const myGeneration = startupPreloadGeneration;
     const startedAt = performance.now();
+    startupLoadStartedAt = startedAt; // ?debugStartup=1 overlay ETA computation only
     function tick() {
       if (myGeneration !== startupPreloadGeneration) return; // superseded by a newer RETRY — this stale tick does nothing
       const { loaded, total, pendingNames, erroredNames } = computeStartupRequiredProgress();
@@ -10175,7 +10246,7 @@
         showLoadingErrorState(erroredNames); // fail fast — a genuine decode/network error never needs the full ceiling to be recognized
         return;
       }
-      if (loaded >= total) {
+      if (assertStartupReady()) {
         fullPreloadReady = true;
         setScreen('opening'); // TAP TO START, same black screen — never a separate video-backed screen
         return;
@@ -16465,6 +16536,7 @@
     // Debug/verification only — AREA1<->AREA2 (and bonus-band) door-collision fix.
     getFloorXRangeWorld, getStageDrawMetrics, AREA_BOUNDARY_DOOR_BAND, getAreaBoundaryYs, getAreaDoorXRangeWorld, // P0 WORK ORDER I CORRECTION — debug/verification only
     get DEBUG_AREA_LOS_OVERLAY() { return DEBUG_AREA_LOS_OVERLAY; }, // P0 WORK ORDER I CORRECTION — debug/verification only
+    get DEBUG_STARTUP_OVERLAY() { return DEBUG_STARTUP_OVERLAY; }, assertStartupReady, computeStartupRequiredProgress, get gamepadSubsystemInitialized() { return gamepadSubsystemInitialized; }, // P0 INTEGRATED WORK ORDER — debug/verification only
     getDronePlacementRangeX, clampPlayerToScreen,
     get W() { return W; }, get H() { return H; },
     // P0 LANDSCAPE HOTFIX — debug/verification only:
@@ -18689,6 +18761,19 @@
     }
     DEBUG_AREA_LOS_OVERLAY = localStorage.getItem('debugAreaLos') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD): same ?debugStartup=1/0
+  // -> localStorage persistence pattern as the other debug overlays above —
+  // a SEPARATE overlay from ?debugInput=1 (never replaces or alters it),
+  // showing startup-phase-specific readiness (see updateDebugStartupOverlay()).
+  let DEBUG_STARTUP_OVERLAY = false;
+  try {
+    if (new URLSearchParams(window.location.search).get('debugStartup') === '1') {
+      localStorage.setItem('debugStartup', '1');
+    } else if (new URLSearchParams(window.location.search).get('debugStartup') === '0') {
+      localStorage.removeItem('debugStartup');
+    }
+    DEBUG_STARTUP_OVERLAY = localStorage.getItem('debugStartup') === '1';
+  } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
   const GAMEPAD_FIRE_THRESHOLD = 0.25; // RT analog value >= this counts as FIRE held
@@ -18749,6 +18834,19 @@
   let debugLastRejectedBranch = '(none)';
   let gamepadIndex = null; // navigator.getGamepads() index of the controller in use; null = none
   let gamepadMappingSource = 'none'; // 'standard' | 'fallback' | 'none' — debug/report only
+  // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD): true the instant
+  // updateGamepadInput() has run at least once — this is a subsystem-ALIVE
+  // signal, never "a gamepad is connected" (spec's own explicit "no
+  // gamepad connected must never block Loading" rule) and never "a button
+  // was pressed" (also explicitly forbidden as a readiness condition). The
+  // real gamepad polling loop (pollForGamepadConnection()) has actually run
+  // by this point via loop()'s own unconditional every-frame call — folded
+  // into getStartupRequiredAssetTargets() below purely so a real device can
+  // SEE (via ?debugStartup=1) that the subsystem was alive before TAP TO
+  // START, never because it can plausibly still be false by the time
+  // Loading's own tick() polls it (the RAF loop starts before Loading's own
+  // screen even renders).
+  let gamepadSubsystemInitialized = false;
   const gamepadMoveVec = { x: 0, y: 0 }; // post-deadzone LEFT STICK, debug/verification only
   let gamepadAimVec = null; // post-deadzone RIGHT STICK {x,y}, or null while neutral — debug/verification only
   let gamepadFireHeld = false; // RT >= GAMEPAD_FIRE_THRESHOLD
@@ -18858,6 +18956,7 @@
   }
 
   function updateGamepadInput(now) {
+    gamepadSubsystemInitialized = true; // P0 INTEGRATED WORK ORDER: subsystem-alive, independent of whether any pad is actually connected
     pollForGamepadConnection();
     const gp = getActiveGamepad();
     if (!gp) {
@@ -19385,6 +19484,7 @@
         updateEndingReveal(now);
       }
       updateDebugInputOverlay(now);
+      updateDebugStartupOverlay(now); // P0 INTEGRATED WORK ORDER: separate overlay/flag, never touches updateDebugInputOverlay()'s own fields
     } catch (err) {
       console.error('[LOOP] uncaught error this frame, continuing next frame:', err);
       debugLastLoopException = { message: String(err && err.message || err), at: now };

@@ -806,6 +806,32 @@ body {
   display: none;
 }
 
+/* P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD): top-LEFT, mirroring
+   #debug-input-overlay's own top-right styling exactly, so the two never
+   overlap when both are enabled at once. */
+#debug-startup-overlay {
+  position: fixed;
+  bottom: max(8px, env(safe-area-inset-bottom));
+  left: max(8px, env(safe-area-inset-left));
+  z-index: 25;
+  pointer-events: none;
+  font-family: monospace;
+  font-size: 9px;
+  line-height: 1.4;
+  color: rgba(140, 220, 255, 0.9);
+  background: rgba(0, 0, 0, 0.55);
+  padding: 4px 6px;
+  border-radius: 4px;
+  white-space: pre;
+  max-width: 48vw;
+  max-height: 46vh;
+  overflow: hidden;
+  text-align: left;
+}
+#debug-startup-overlay:empty {
+  display: none;
+}
+
 /* ---------- SECTION G/H/I/J: LOADING / OPENING / MAIN MENU ----------
    Each is position:fixed/inset:0, shown one at a time via [hidden]
    (game.js's screen state machine — see setScreen()) — stacked below the
@@ -823,7 +849,18 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #000; /* P0 GAME COMPLETION HOTFIX: pure black, no background video, for the entire LOADING + TAP TO START pass */
+  /* P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD): the user's own
+     supplied reference photo as the LOADING + TAP TO START background —
+     #000 stays as the base-color fallback (never a blank/broken image), a
+     dark scrim on top keeps the "Data Loading XX.X%"/TAP TO START text and
+     the progress bar readable regardless of the photo's own brightness at
+     that spot, and cover+center means the image always fills the viewport
+     in both portrait and landscape without ever showing a blank edge (some
+     cropping of the edges is expected/acceptable at extreme aspect ratios —
+     the subject stays centered). */
+  background:
+    linear-gradient(rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.55)),
+    #000 url('assets/ui/loading_bg.jpg') center center / cover no-repeat;
   opacity: 1;
   transition: opacity 250ms ease; /* H-6: fades out naturally instead of an instant cut */
 }
@@ -854,6 +891,7 @@ body {
   letter-spacing: 0.08em;
   white-space: nowrap;
   color: rgba(235, 235, 238, 0.9);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); /* readability over the new photo background, any brightness region */
 }
 #loading-bar-track {
   width: 50%; /* H-5: ~40-60% of screen width on portrait */
@@ -1011,6 +1049,7 @@ body {
   font-size: 14px;
   letter-spacing: 0.25em;
   color: rgba(230, 220, 220, 0.85);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); /* readability over the new photo background, any brightness region */
   animation: opening-tap-pulse 1.6s ease-in-out infinite;
 }
 @keyframes opening-tap-pulse {
