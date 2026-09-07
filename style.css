@@ -1268,19 +1268,20 @@ body {
   background: #000;
 }
 #ending-reveal-screen[hidden] { display: none; }
-/* Portrait source image (1206x2622) — object-fit:cover keeps it filling the
-   screen in both PORTRAIT and LANDSCAPE without ever stretching; the
-   subject (ANDERSEN, walking away down a centered corridor) stays framed
-   near horizontal-center at every aspect ratio, so object-position only
-   needs to bias the vertical anchor slightly toward the upper-middle of the
-   figure rather than the very top/bottom of the frame. */
-#ending-reveal-image {
+/* P0 INTEGRATED REGRESSION HOTFIX (Part K): looping background VIDEO
+   (portrait-shot, 464x816) replaces the old static andersen_walk.png —
+   object-fit:cover keeps it filling the screen in both PORTRAIT and
+   LANDSCAPE without ever stretching, centered by default since (unlike the
+   old image's known ANDERSEN-corridor framing) this clip has no single
+   established off-center subject to bias toward. */
+#ending-reveal-video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: 50% 32%;
+  object-position: 50% 50%;
+  background: #000; /* never a flash of the page's own default background color while the very first frame is still decoding */
 }
 /* A gentle gradient only — stronger toward the bottom (where RESULT/nav
    live) and near-transparent through the middle, so the image itself is
@@ -1292,16 +1293,25 @@ body {
   background:
     linear-gradient(180deg, rgba(0, 0, 0, 0.38) 0%, rgba(0, 0, 0, 0.05) 22%, rgba(0, 0, 0, 0.05) 60%, rgba(0, 0, 0, 0.55) 100%);
 }
+/* P0 INTEGRATED REGRESSION HOTFIX (Part M): the block AS A WHOLE sits near
+   vertical screen-center (top:50%+translateY, replacing the old top-
+   anchored max(28px,...) position) — explicitly NOT about centering the
+   TEXT itself, which is why align-items switches from center to
+   flex-start below: a left-aligned block of text whose container happens
+   to be vertically centered on the screen, never individual centered
+   lines. left (not left+right:0) is what lets align-items:flex-start
+   actually hug the left edge of this fixed-width column instead of the
+   old full-bleed centering. */
 #ending-reveal-result {
   position: absolute;
-  top: max(28px, env(safe-area-inset-top));
-  left: 0;
-  right: 0;
+  top: 50%;
+  left: 9vw;
+  transform: translateY(-50%);
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
-  padding: 0 8vw;
+  max-width: 82vw;
 }
 /* Each row fades in independently, timed off the song's own duration (see
    updateEndingReveal()) — a slow, single opacity transition only, never a
@@ -1309,7 +1319,7 @@ body {
 .ending-reveal-stat {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 2px;
   opacity: 0;
   transition: opacity 2.2s ease;
@@ -1322,6 +1332,7 @@ body {
   letter-spacing: 0.28em;
   color: rgba(255, 255, 255, 0.6);
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+  text-align: left;
 }
 .ending-reveal-stat .ending-reveal-stat-value {
   font-family: sans-serif;
@@ -1330,6 +1341,23 @@ body {
   letter-spacing: 0.1em;
   color: rgba(255, 255, 255, 0.96);
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.75);
+  text-align: left;
+}
+/* P0 INTEGRATED REGRESSION HOTFIX (Part L): "RESULTS" heading — same quiet
+   film-credits tone as the stat rows (no box/border/HUD panel), sized
+   between the small stat-label and the large RANK value, left-aligned
+   with the rest of the block, part of the SAME fade-in mechanism
+   (.ending-reveal-stat/.ending-reveal-visible) as every other row so it
+   reveals first per updateEndingReveal()'s own ordering. */
+#ending-reveal-heading {
+  margin: 0 0 4px 0;
+  font-family: sans-serif;
+  font-weight: 700;
+  font-size: clamp(20px, 5.6vw, 26px);
+  letter-spacing: 0.22em;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.75);
+  text-align: left;
 }
 /* RANK reads last and slightly larger — the one moment of visual emphasis
    in an otherwise restrained screen (item 35). */

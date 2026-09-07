@@ -908,6 +908,63 @@
   const eventMovieOverlayEl = document.getElementById('event-movie-overlay');
   const eventMovieVideoEl = document.getElementById('event-movie-video');
   const eventMovieTapFallbackEl = document.getElementById('event-movie-tap-fallback');
+  // P0 INTEGRATED REGRESSION HOTFIX (Part H): gabriel_defeated.mp4's audio
+  // needs to be genuinely LOUDER than every other movie played through this
+  // SAME shared eventMovieVideoEl — but that element's own .volume (the only
+  // control playEventMovie() has ever set/left alone before this batch) was
+  // already at its default 1.0 (never explicitly lowered anywhere in this
+  // file), the HTMLMediaElement maximum — so a naive "just increase .volume"
+  // fix has no real effect at all (values above 1.0 are silently clamped by
+  // every browser, never actually amplified). Genuinely exceeding 1.0
+  // requires routing the element through the Web Audio API's GainNode
+  // (gain > 1.0 IS true amplification, unlike element.volume). This is
+  // lazily wired up once (via ensureEventMovieGainNode(), called both from
+  // unlockEventMovieElementForIOS()'s own real gesture and defensively on
+  // every playEventMovie() call in case the AudioContext was created
+  // suspended) and reused for every movie through this same element — the
+  // gain itself is reset to 1.0 (no change vs the old behavior) for every
+  // key except 'gabriel_defeated', which alone gets GABRIEL_DEFEATED_GAIN,
+  // so no other movie's volume is ever affected. connect()ing a
+  // MediaElementAudioSourceNode is a ONE-TIME, irreversible operation per
+  // element (a second call throws) — the element's own .volume/.muted
+  // still apply as normal (Web Audio sits downstream of them), so the
+  // existing gabriel_arrival/main_escape/main_bad_ending .muted logic and
+  // the whole Outbreak2-continuity-during-movie BGM matrix are completely
+  // untouched by this addition.
+  const GABRIEL_DEFEATED_GAIN = 2.0;
+  let eventMovieAudioContext = null;
+  let eventMovieGainNode = null;
+  function ensureEventMovieGainNode() {
+    if (eventMovieGainNode) {
+      // Already wired — just make sure a previously-suspended context (iOS
+      // Safari creates AudioContext in 'suspended' state outside a real
+      // gesture) gets a fresh resume() attempt every time this is called
+      // from a genuine gesture.
+      if (eventMovieAudioContext && eventMovieAudioContext.state === 'suspended') {
+        eventMovieAudioContext.resume().catch(() => {});
+      }
+      return;
+    }
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return; // no Web Audio support at all — .volume stays the only control, gain simply never applies
+      eventMovieAudioContext = new Ctx();
+      const source = eventMovieAudioContext.createMediaElementSource(eventMovieVideoEl);
+      eventMovieGainNode = eventMovieAudioContext.createGain();
+      eventMovieGainNode.gain.value = 1.0;
+      source.connect(eventMovieGainNode);
+      eventMovieGainNode.connect(eventMovieAudioContext.destination);
+      if (eventMovieAudioContext.state === 'suspended') {
+        eventMovieAudioContext.resume().catch(() => {});
+      }
+    } catch (e) {
+      // Never let a Web Audio setup failure block movie playback itself —
+      // eventMovieGainNode simply stays null, and every movie (including
+      // gabriel_defeated) still plays at the normal .volume=1.0 level, just
+      // without the extra amplification.
+      eventMovieGainNode = null;
+    }
+  }
   const endingLoadingVideoEl = document.getElementById('ending-loading-video'); // HOTFIX 4 ADDENDUM SECTIONS L-Y
   // HOTFIX 4.2 ADDENDUM SECTIONS 13-16: preload this the instant the script
   // runs, at the very top of the game's own init — never wait for the first
@@ -956,9 +1013,26 @@
   // real movie source is used (never src="") since some WebKit versions
   // only grant the unlock for a source that actually attempted to load.
   let eventMovieElementUnlocked = false;
-  function unlockEventMovieElementForIOS() {
-    if (eventMovieElementUnlocked) return; // only ever needs to happen once per page life
-    eventMovieElementUnlocked = true;
+  // P0 INTEGRATED REGRESSION HOTFIX (STARTUP GAMEPAD root cause): the WebKit
+  // per-element unlock this whole function exists for only actually takes
+  // effect when play() is called synchronously inside a REAL trusted user
+  // gesture (touchstart/mousedown) — a gamepad button rising-edge read via
+  // navigator.getGamepads() polling is NOT a trusted DOM gesture, so calling
+  // this from a gamepad-driven TAP TO START never satisfies WebKit's rule,
+  // even though the code runs identically either way. The old version set
+  // eventMovieElementUnlocked=true unconditionally on the very first call —
+  // if that first call happened to be gamepad-driven, the flag was
+  // permanently (and incorrectly) consumed, so no LATER real touch could
+  // ever retry, silently breaking every movie's audio for the rest of the
+  // session. Now the flag only latches once a call actually happened inside
+  // isTrustedGesture===true; a gamepad-driven call still attempts the prime
+  // (harmless either way) but leaves the door open for a later real touch
+  // (see the document-level touchstart/mousedown safety-net listener below)
+  // to complete the unlock.
+  function unlockEventMovieElementForIOS(isTrustedGesture) {
+    if (eventMovieElementUnlocked) return; // already unlocked by a genuine gesture — nothing left to do
+    if (isTrustedGesture) eventMovieElementUnlocked = true;
+    ensureEventMovieGainNode(); // P0 INTEGRATED REGRESSION HOTFIX (Part H): best chance of an un-suspended AudioContext is inside this same real STARTUP gesture
     try {
       const primeSrc = EVENT_MOVIES.sneaking; // any always-registered, already-preloaded movie works — this one is simply the first ever played
       eventMovieVideoEl.muted = true;
@@ -1055,6 +1129,14 @@
     // is not the same as pausing BGM — beginStoryEscapeEnding()'s own
     // bgmAudio.pause() call, unrelated to this line, still decides that).
     eventMovieVideoEl.muted = key === 'gabriel_arrival' || key === 'main_escape' || key === 'main_bad_ending';
+    // P0 INTEGRATED REGRESSION HOTFIX (Part H): gabriel_defeated alone gets
+    // GABRIEL_DEFEATED_GAIN; every other key resets to 1.0 (identical to
+    // the old, un-amplified behavior) — see ensureEventMovieGainNode()'s
+    // own comment for why plain .volume can't achieve this.
+    ensureEventMovieGainNode();
+    if (eventMovieGainNode) {
+      eventMovieGainNode.gain.value = (key === 'gabriel_defeated') ? GABRIEL_DEFEATED_GAIN : 1.0;
+    }
     eventMovieVideoEl.src = src;
     eventMovieVideoEl.currentTime = 0;
     eventMovieOverlayEl.hidden = false;
@@ -2907,85 +2989,129 @@
     }
   }
 
-  // P0 GAME COMPLETION HOTFIX: PROJECT ADAM SITE's own central cultivation
-  // tank/vat — a solid obstacle using the tank's actual FLOOR-CONTACT
-  // footprint, never a crude full-image bounding rectangle (which would
-  // also block the image's transparent/upper portions — the tall glowing
-  // tube reaching up toward the ceiling is never actually at floor level).
-  // Measured directly from event_b1_project_adam's own pixels (b1.jpg,
-  // 1008x1792): the tank's own base/pedestal — the part a top-down player
-  // sprite would genuinely collide with — sits centered horizontally
-  // (matching PROJECT_ADAM_POS_FRAC's own x=0.5) and just north of the
-  // SECRET FILE pickup spot (PROJECT_ADAM_POS_FRAC.y=0.60, itself already
-  // placed "just south of its base/control panel" per that constant's own
-  // comment), never overlapping the pickup point itself so the existing
-  // "pick up in front of the monitor" interaction stays fully reachable.
-  // y=0.50 (not the visually-wider full ring at ~0.535-0.54) and a tighter
-  // radius_frac=0.06 (the pedestal/control-panel core, not the full ring's
-  // outer width) are deliberately conservative: measured directly from the
-  // image, the base's own vertical center sits close to the SECRET FILE
-  // pickup spot (PROJECT_ADAM_POS_FRAC.y=0.60) already, and this collision
-  // must never make that existing pickup point unreachable (verified below
-  // by Playwright — distance(tank, pickup) must exceed minDist with real
-  // margin at this game's own portrait aspect ratios).
-  const PROJECT_ADAM_TANK_POS_FRAC = { x: 0.5, y: 0.50 };
-  const PROJECT_ADAM_TANK_RADIUS_FRAC = 0.06; // half the pedestal/control-panel core's own visible width in the source image
+  // P0 GAME COMPLETION HOTFIX / P0 INTEGRATED REGRESSION HOTFIX (Part G):
+  // PROJECT ADAM SITE's own central cultivation tank/vat — a solid obstacle
+  // using the tank's actual FLOOR-CONTACT footprint, never a crude full-
+  // image bounding rectangle (which would also block the image's
+  // transparent/upper portions — the tall glowing tube reaching up toward
+  // the ceiling is never actually at floor level).
+  //
+  // P0 INTEGRATED REGRESSION HOTFIX: real-device testing found the ORIGINAL
+  // single-circle collision (below, kept in this comment for the record)
+  // too broad — a circle sized to reach the pedestal's own width
+  // necessarily also extends that same radius sideways into the open aisle
+  // floor on both sides (the tank is a tall, NARROW column, not round from
+  // above), blocking walkable space no visible artwork occupies. Re-
+  // measured directly from event_b1_project_adam's own pixels (b1.jpg,
+  // 1008x1792, analyzed programmatically by cropping+inspecting the actual
+  // glowing pod region rather than eyeballing): the tank's real visible
+  // footprint (hatch top through pedestal/control-panel base) spans
+  // roughly x:[0.39,0.65] (half-width ~0.13 centered near x=0.5, matching
+  // PROJECT_ADAM_TANK_POS_FRAC/PROJECT_ADAM_POS_FRAC's existing x=0.5) and
+  // y:[0.31,0.59] of the stage image — clearly a tall vertical RECTANGLE,
+  // not a circle. Replaced with an axis-aligned rect (a shape explicitly
+  // permitted by spec alongside capsule/polygon/circle) sized slightly
+  // inside that measured footprint (half-width 0.09, y:[0.32,0.55]) so the
+  // solid zone stays comfortably WITHIN the drawn pod rather than right at
+  // its edge, while still leaving real margin before the SECRET FILE
+  // pickup at PROJECT_ADAM_POS_FRAC.y=0.60 (this collision must never make
+  // that pickup unreachable — re-verified by Playwright, distance from the
+  // rect's own inflated bottom edge to the pickup point stays clearly
+  // positive at this game's own portrait aspect ratios).
+  const PROJECT_ADAM_TANK_POS_FRAC = { x: 0.5, y: 0.50 }; // kept for reference/back-compat — projectAdamTankWorldPos() below returns the RECT's own center now
+  const PROJECT_ADAM_TANK_RADIUS_FRAC = 0.06; // superseded by the rect half-width/y-bounds below — kept only so this constant's old meaning stays documented, not read anywhere
+  const PROJECT_ADAM_TANK_RECT_HALFWIDTH_FRAC = 0.09; // half the pod's real visible width (measured ~0.13 at its widest; kept slightly inside that footprint)
+  const PROJECT_ADAM_TANK_RECT_TOP_FRAC = 0.32; // just below the topmost hatch collar
+  const PROJECT_ADAM_TANK_RECT_BOTTOM_FRAC = 0.55; // just above the pedestal/control-panel's own bottom edge, well clear of the y=0.60 pickup
   function projectAdamTankWorldPos() {
-    return { x: W * PROJECT_ADAM_TANK_POS_FRAC.x, y: H * PROJECT_ADAM_TANK_POS_FRAC.y };
+    // Center of the rect — kept as a named export/helper since window.__game
+    // and the old comment block above both referenced "the tank's world
+    // position" as a single point; still meaningful for debug/verification.
+    return { x: W * PROJECT_ADAM_TANK_POS_FRAC.x, y: H * (PROJECT_ADAM_TANK_RECT_TOP_FRAC + PROJECT_ADAM_TANK_RECT_BOTTOM_FRAC) / 2 };
+  }
+  function projectAdamTankRectWorld() {
+    const halfW = W * PROJECT_ADAM_TANK_RECT_HALFWIDTH_FRAC;
+    return {
+      x0: W * PROJECT_ADAM_TANK_POS_FRAC.x - halfW,
+      x1: W * PROJECT_ADAM_TANK_POS_FRAC.x + halfW,
+      y0: H * PROJECT_ADAM_TANK_RECT_TOP_FRAC,
+      y1: H * PROJECT_ADAM_TANK_RECT_BOTTOM_FRAC,
+    };
   }
   function projectAdamTankSolidMinDist() {
-    return PLAYER_BODY_RADIUS + W * PROJECT_ADAM_TANK_RADIUS_FRAC;
+    return PLAYER_BODY_RADIUS; // the rect itself already IS the tank's footprint; only the player's own body radius needs adding, unlike the old circle which had to add both radii to a single center point
+  }
+  // Closest point ON the rect to an arbitrary world point — the standard
+  // AABB-vs-circle primitive (clamp the point into the rect's own bounds on
+  // each axis independently); distance from that closest point to the
+  // player's position, compared against PLAYER_BODY_RADIUS, is exactly
+  // equivalent to "does a circle of that radius overlap this rect", which
+  // is what both the resting push-back and the swept tunneling check below
+  // need.
+  function closestPointOnProjectAdamTankRect(px, py) {
+    const r = projectAdamTankRectWorld();
+    return { x: Math.max(r.x0, Math.min(r.x1, px)), y: Math.max(r.y0, Math.min(r.y1, py)) };
   }
   // Called every frame from clampPlayerToScreen() alongside clampPlayerAway
   // FromDrones() (same "after DASH's own movement" timing), gated to the
   // PROJECT ADAM SITE stage only (isProjectAdamSiteStage()) so this can
   // never affect any other background that happens to reuse the same
   // event_b1_project_adam id's own coordinate space. Two parts: (1) a
-  // swept-segment check (same primitive AREA-boundary walls already use
-  // via segmentCrossesAreaWall()'s own lastValidX/Y convention) so a single
+  // swept multi-sample check along the travelled segment (same intent as
+  // the old circle's own analytic closest-point-on-segment check, but
+  // sampled rather than closed-form since "closest point on a segment to a
+  // RECTANGLE" has no single clean formula the way "...to a POINT" does —
+  // samples are spaced at most 4 world-units apart, comfortably finer than
+  // DASH's own real per-frame travel distance, so a single fast DASH frame
+  // still can never tunnel clean through the rect in one step) so a single
   // fast DASH frame can never tunnel clean through the tank in one step;
-  // (2) the standard resting-position circle push-back every other solid
-  // body (BOSS/DRONE) already uses. Blocks all 4 directions identically —
-  // a circle has no "side", so MOVE from north/south/east/west and DASH
-  // through any of them all resolve through this same clamp.
+  // (2) the standard resting-position push-back (toward the rect's own
+  // closest edge point) every other solid body already uses in spirit,
+  // adapted from a circle-center target to a rect-closest-point target.
+  // Blocks all 4 directions identically — MOVE from north/south/east/west
+  // and DASH through any of them all resolve through this same clamp.
   function clampPlayerAwayFromProjectAdamTank() {
     if (!isProjectAdamSiteStage()) return;
-    const tank = projectAdamTankWorldPos();
     const minDist = projectAdamTankSolidMinDist();
-    // Only meaningful when the player actually moved this frame (segLenSq
-    // > 0) — if lastValid and current are the same point, there is no path
-    // to sweep, and falling into "revert to lastValid" here would just
-    // re-embed the player in place instead of falling through to the
-    // ordinary resting push-back below (which is the branch that actually
-    // resolves an already-overlapping position, e.g. right after a resize
-    // moved the tank's own fraction-based world position under a
-    // stationary player).
     if (player.lastValidX !== undefined && player.lastValidY !== undefined &&
         (player.lastValidX !== player.x || player.lastValidY !== player.y)) {
-      // Closest approach of the travelled segment to the tank center — if
-      // it ever comes within minDist, the whole path is rejected (revert to
-      // the last confirmed-safe spot) rather than just clamping the
-      // endpoint, which is what let a fast single-frame DASH cut a corner
-      // straight through a solid circle elsewhere in this file too.
       const sx = player.lastValidX, sy = player.lastValidY, ex = player.x, ey = player.y;
-      const segDx = ex - sx, segDy = ey - sy;
-      const segLenSq = segDx * segDx + segDy * segDy;
-      const t = Math.max(0, Math.min(1, ((tank.x - sx) * segDx + (tank.y - sy) * segDy) / segLenSq));
-      const closestX = sx + t * segDx;
-      const closestY = sy + t * segDy;
-      if (Math.hypot(closestX - tank.x, closestY - tank.y) < minDist) {
-        player.x = sx;
-        player.y = sy;
-        return; // reverted outright — no further push-back needed this frame
+      const segLen = Math.hypot(ex - sx, ey - sy);
+      const sampleCount = Math.max(1, Math.ceil(segLen / 4));
+      for (let i = 0; i <= sampleCount; i++) {
+        const t = i / sampleCount;
+        const sampX = sx + (ex - sx) * t;
+        const sampY = sy + (ey - sy) * t;
+        const closest = closestPointOnProjectAdamTankRect(sampX, sampY);
+        if (Math.hypot(sampX - closest.x, sampY - closest.y) < minDist) {
+          player.x = sx;
+          player.y = sy;
+          return; // reverted outright — no further push-back needed this frame
+        }
       }
     }
-    let dx = player.x - tank.x, dy = player.y - tank.y;
+    const closest = closestPointOnProjectAdamTankRect(player.x, player.y);
+    let dx = player.x - closest.x, dy = player.y - closest.y;
     let dist = Math.hypot(dx, dy);
     if (dist < minDist) {
-      if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+      if (dist === 0) {
+        // Player's own position is already inside the rect (e.g. right
+        // after a resize moved the rect's fraction-based bounds under a
+        // stationary player) — push out along whichever axis needs the
+        // least correction, toward the nearer edge.
+        const r = projectAdamTankRectWorld();
+        const distLeft = player.x - r.x0, distRight = r.x1 - player.x;
+        const distTop = player.y - r.y0, distBottom = r.y1 - player.y;
+        const minEdge = Math.min(distLeft, distRight, distTop, distBottom);
+        if (minEdge === distLeft) { player.x = r.x0 - minDist; }
+        else if (minEdge === distRight) { player.x = r.x1 + minDist; }
+        else if (minEdge === distTop) { player.y = r.y0 - minDist; }
+        else { player.y = r.y1 + minDist; }
+        return;
+      }
       const scale = minDist / dist;
-      player.x = tank.x + dx * scale;
-      player.y = tank.y + dy * scale;
+      player.x = closest.x + dx * scale;
+      player.y = closest.y + dy * scale;
     }
   }
 
@@ -3846,6 +3972,7 @@
     bloodSample1: {
       scaleMultiplier: 0.30,
       useHealItemSize: true,
+      groundDrawScale: 0.70, // P0 INTEGRATED REGRESSION HOTFIX (Part I): match drawBloodSampleOverlay()'s own acquired-icon scale exactly — see spawnWorldItem()'s targetDrawWidth line
       frames: [
         makeSpriteFrame('assets/items/blood_sample_1/blood_sample_1_01.png', 662, 1280, 0.08, 0.95),
         makeSpriteFrame('assets/items/blood_sample_1/blood_sample_1_02.png', 726, 1280, 0.08, 0.95),
@@ -3855,6 +3982,7 @@
     bloodSample2: {
       scaleMultiplier: 0.30,
       useHealItemSize: true,
+      groundDrawScale: 0.70, // P0 INTEGRATED REGRESSION HOTFIX (Part I): match drawBloodSampleOverlay()'s own acquired-icon scale exactly
       frames: [
         makeSpriteFrame('assets/items/blood_sample_2/blood_sample_2_01.png', 738, 1280, 0.08, 0.95),
         makeSpriteFrame('assets/items/blood_sample_2/blood_sample_2_02.png', 625, 1280, 0.08, 0.95),
@@ -3864,6 +3992,7 @@
     bloodSample3: {
       scaleMultiplier: 0.30,
       useHealItemSize: true,
+      groundDrawScale: 0.70, // P0 INTEGRATED REGRESSION HOTFIX (Part I): match drawBloodSampleOverlay()'s own acquired-icon scale exactly
       frames: [
         makeSpriteFrame('assets/items/blood_sample_3/blood_sample_3_01.png', 682, 1280, 0.08, 0.95),
         makeSpriteFrame('assets/items/blood_sample_3/blood_sample_3_02.png', 735, 1280, 0.08, 0.95),
@@ -4046,7 +4175,15 @@
       // types real-device testing found screen-covering huge — see
       // useHealItemSize's own comment on ITEM_SPRITES above. null for every
       // other item type (drawWorldItems() falls back to targetHeightPx then).
-      targetDrawWidth: sprite.useHealItemSize ? HEAL_ITEM_DRAW_W : null,
+      // P0 INTEGRATED REGRESSION HOTFIX (Part I): Blood Sample①②③'s own
+      // groundDrawScale (0.70) shrinks this VISUAL draw width to exactly
+      // match drawBloodSampleOverlay()'s own acquired-icon size (`HEAL_ITEM_
+      // DRAW_W * 0.70`, unchanged) — real-device feedback found the ground-
+      // placed icon noticeably larger than the acquired one. This only ever
+      // affects drawWorldItems()'s own draw size; WORLD_ITEM_PICKUP_RADIUS
+      // (the actual pickup/collision radius, a fixed constant read
+      // separately in updateWorldItems()) is completely untouched.
+      targetDrawWidth: sprite.useHealItemSize ? HEAL_ITEM_DRAW_W * (sprite.groundDrawScale || 1) : null,
       // HOTFIX SECTION 13: PROJECT ADAM only (see its own ITEM_SPRITES
       // comment) — "contain within a box" sizing so wildly different
       // per-frame aspect ratios can never make one frame spike in scale.
@@ -8667,9 +8804,19 @@
   // (beginEndingRevealPreload()/enterEndingReveal()/updateEndingReveal()/
   // the RESULT-reveal timeline/navigation) lives further down, near
   // beginStoryEscapeEnding(), its one real call site.
-  const ENDING_REVEAL_IMAGE_URL = 'assets/images/ending/andersen_walk.png';
+  // P0 INTEGRATED REGRESSION HOTFIX (Part K): the static andersen_walk.png
+  // cinematic image is replaced by a looping background VIDEO (the user's
+  // own attached clip, transcoded to H.264/no-audio MP4 to match this
+  // repo's existing assets/video/endings/ convention — the clip has no
+  // audio track of its own regardless, but muted/loop/playsinline are set
+  // as real HTML attributes in index.html so its own audio, if any were
+  // ever added later, could still never be heard and it could never
+  // trigger iOS's native fullscreen player). No separate offscreen preload
+  // object is needed the way Image() provided for the old picture — the
+  // real DOM <video> element (endingRevealVideoEl below) IS the preload
+  // target, exactly like every other movie element in this file.
+  const ENDING_REVEAL_VIDEO_URL = 'assets/video/endings/result_loop.mp4';
   const ENDING_REVEAL_AUDIO_URL = 'assets/audio/shining_grace_dark_out_ver.mp3';
-  const endingRevealImg = new Image();
   // A persistent Audio() instance exactly like bgmAudio/menuBgmAudio/
   // bossBgmAudio above (never recreated), so it can be primed by the SAME
   // per-element iOS Safari unlock pass those three already go through (see
@@ -8738,9 +8885,17 @@
   // programmatic startBossBgm()/startGameplayBgm() call succeeds regardless
   // of whether it happens inside a real gesture or a stage-transition.
   let backgroundBgmUnlocked = false;
-  function unlockBackgroundBgmForIOS() {
+  // P0 INTEGRATED REGRESSION HOTFIX (STARTUP GAMEPAD/AUDIO root cause): same
+  // isTrustedGesture reasoning as unlockEventMovieElementForIOS() above — a
+  // gamepad-driven TAP TO START never satisfies WebKit's real per-element
+  // gesture-unlock rule, so this flag must not latch permanently on a call
+  // that wasn't actually inside a trusted DOM gesture, or bgmAudio/
+  // bossBgmAudio/endingRevealAudio could stay silently unprimed (and
+  // therefore silently un-playable later) for the entire session with no
+  // remaining retry path.
+  function unlockBackgroundBgmForIOS(isTrustedGesture) {
     if (backgroundBgmUnlocked) return;
-    backgroundBgmUnlocked = true;
+    if (isTrustedGesture) backgroundBgmUnlocked = true;
     // DARK OUT ENDING & RESULT REDESIGN item 20: endingRevealAudio primed
     // here too, so its own first real play() (deep into a MAIN run, well
     // after this startup gesture) never needs a fresh TAP TO PLAY.
@@ -9107,6 +9262,21 @@
     openingVideoEl.play().catch(() => {});
     resetAttractIdleTimer();
   }
+  // P0 INTEGRATED REGRESSION HOTFIX (STARTUP GAMEPAD/AUDIO): single entry
+  // point for the whole per-element iOS unlock pass, called both from
+  // onOpeningTap() (the normal path) and from the document-level trusted-
+  // gesture safety net below (the fallback path for a session whose very
+  // first TAP TO START dismissal happened to be gamepad-driven, which never
+  // satisfies WebKit's real per-element gesture-unlock rule — see
+  // unlockEventMovieElementForIOS()'s own comment). Passing the real
+  // isTrustedGesture through (rather than always true) is what lets a LATER
+  // genuine touch retry and actually complete the unlock instead of the old
+  // one-shot flags permanently (and wrongly) considering it already done.
+  function attemptStartupAudioUnlock(isTrustedGesture) {
+    startMenuBgmOnce();
+    unlockEventMovieElementForIOS(isTrustedGesture);
+    unlockBackgroundBgmForIOS(isTrustedGesture);
+  }
   function onOpeningTap(e) {
     e.preventDefault();
     if (gameState.screen !== 'opening') return; // guards against a stray double-fire (touchstart + mousedown) doing this twice
@@ -9116,19 +9286,19 @@
     if (attractIdleTimer) { clearTimeout(attractIdleTimer); attractIdleTimer = null; }
     attractPlaying = false;
     openingVideoEl.onended = null;
-    // DARK OUT PART 9 SECTION E: this exact tap is the user-gesture unlock —
-    // now starts the MENU-only Outbreak0 track (startBgmOnce()/bgmAudio are
-    // gameplay-only from this PART on, started later by startGameplayBgm()).
-    startMenuBgmOnce();
-    // P0 GAME FLOW & COMBAT HOTFIX: this exact tap is ALSO the one and only
-    // real user gesture eventMovieVideoEl (every mid-story EVENT/SYSTEM
-    // movie + the ENDING ROLL) ever needs for the rest of the session — see
-    // unlockEventMovieElementForIOS()'s own comment.
-    unlockEventMovieElementForIOS();
-    // P0 ADDENDUM: same reasoning, for bgmAudio/bossBgmAudio — see
-    // unlockBackgroundBgmForIOS()'s own comment (the actual root cause of
-    // the reported ROID1 arrival BGM silence).
-    unlockBackgroundBgmForIOS();
+    // DARK OUT PART 9 SECTION E / P0 INTEGRATED REGRESSION HOTFIX: this tap
+    // (or, on iOS Safari, the LATER real touch that finally satisfies
+    // WebKit's per-element gesture rule if this exact call turns out to be
+    // gamepad-driven — see attemptStartupAudioUnlock() above) is the
+    // user-gesture unlock for the MENU-only Outbreak0 track
+    // (startBgmOnce()/bgmAudio are gameplay-only from this PART on, started
+    // later by startGameplayBgm()), eventMovieVideoEl (every mid-story
+    // EVENT/SYSTEM movie + the ENDING ROLL — see
+    // unlockEventMovieElementForIOS()'s own comment), and bgmAudio/
+    // bossBgmAudio/endingRevealAudio (see unlockBackgroundBgmForIOS()'s own
+    // comment — the original root cause of the reported ROID1 arrival BGM
+    // silence).
+    attemptStartupAudioUnlock(!!e.isTrusted);
     // SECTION 4: swap the shared video over to start_display.mp4 for MAIN
     // MENU/SELECT — this is the ONE place that ever happens, exactly at the
     // moment the user actually starts.
@@ -9147,6 +9317,36 @@
   }
   openingOverlayEl.addEventListener('touchstart', onOpeningTap, { passive: false });
   openingOverlayEl.addEventListener('mousedown', onOpeningTap);
+  // P0 INTEGRATED REGRESSION HOTFIX (STARTUP GAMEPAD/AUDIO root cause,
+  // safety net): if the session's very first TAP TO START dismissal was
+  // gamepad-driven, attemptStartupAudioUnlock() above deliberately left the
+  // per-element unlock flags un-latched (isTrustedGesture was false) so a
+  // later real gesture can still complete it. This is that later real
+  // gesture's catch-all: every genuinely trusted touchstart/mousedown
+  // ANYWHERE on the page, for the whole session (not just the TAP TO START
+  // overlay), retries the exact same unlock pass. Idempotent and cheap once
+  // already unlocked (each of the three unlock functions' own internal flag
+  // check short-circuits immediately), so this never re-primes/re-starts
+  // anything once a real gesture has already completed the unlock.
+  document.addEventListener('touchstart', (e) => { if (e.isTrusted) attemptStartupAudioUnlock(true); }, { passive: true, capture: true });
+  document.addEventListener('mousedown', (e) => { if (e.isTrusted) attemptStartupAudioUnlock(true); }, { capture: true });
+  // P0 INTEGRATED REGRESSION HOTFIX (AUDIO SINGLE-OWNER, refresh-duplicate-
+  // Outbreak root cause): a plain page refresh/navigation discards this
+  // page's whole JS context, but does NOT guarantee the OS audio session for
+  // any still-playing Audio element is torn down before the NEW page's own
+  // BGM starts — on iOS Safari in particular this can leave a brief window
+  // where the outgoing page's still-decaying track and the incoming page's
+  // freshly started track are both audible ("duplicate Outbreak on
+  // refresh"). pagehide fires reliably before that teardown (including for
+  // a bfcache-eligible navigation, unlike beforeunload) — explicitly pausing
+  // every BGM track here closes that window as early as the platform allows,
+  // with zero effect on the normal in-session pause/resume/watchdog logic
+  // above (this only ever runs while the page itself is being torn down).
+  window.addEventListener('pagehide', () => {
+    for (const audioEl of [menuBgmAudio, bgmAudio, bossBgmAudio, endingRevealAudio]) {
+      try { audioEl.pause(); } catch (e) {}
+    }
+  });
 
   // ---------- SECTION I: MAIN MENU ----------
   // STORY MODE / TRAINING MODE route through the EXACT SAME startMode()
@@ -9448,8 +9648,9 @@
   function beginEndingRevealPreload() {
     if (endingRevealPreloadStarted) return;
     endingRevealPreloadStarted = true;
-    endingRevealImg.onerror = () => console.error('[ENDING REVEAL] image preload failed:', ENDING_REVEAL_IMAGE_URL);
-    endingRevealImg.src = ENDING_REVEAL_IMAGE_URL;
+    endingRevealVideoEl.addEventListener('error', () => console.error('[ENDING REVEAL] loop video preload failed:', endingRevealVideoEl.error), { once: true });
+    endingRevealVideoEl.src = ENDING_REVEAL_VIDEO_URL;
+    endingRevealVideoEl.load();
     endingRevealAudio.preload = 'auto';
     endingRevealAudio.addEventListener('error', () => console.error('[ENDING REVEAL] audio preload failed:', endingRevealAudio.error), { once: true });
     endingRevealAudio.load();
@@ -9473,7 +9674,8 @@
   // forever waiting for an 'ended' event that will never come (item 81/83).
   const ENDING_REVEAL_AUDIO_FAILURE_FALLBACK_MS = 20000;
 
-  const endingRevealImageEl = document.getElementById('ending-reveal-image');
+  const endingRevealVideoEl = document.getElementById('ending-reveal-video');
+  const endingRevealHeadingEl = document.getElementById('ending-reveal-heading');
   const endingRevealClearTimeRowEl = document.getElementById('ending-reveal-clear-time-row');
   const endingRevealContinueRowEl = document.getElementById('ending-reveal-continue-row');
   const endingRevealRankRowEl = document.getElementById('ending-reveal-rank-row');
@@ -9615,14 +9817,27 @@
 
     setScreen('endingReveal');
 
-    // Image: shown the instant it's actually ready — no loading UI/percentage
-    // at all (item 87's own explicit "不要: loading percentage"); the
-    // #ending-reveal-screen background stays plain black until then.
-    if (endingRevealImg.complete && endingRevealImg.naturalWidth > 0) {
-      endingRevealImageEl.src = endingRevealImg.src;
-    } else {
-      endingRevealImg.onload = () => { endingRevealImageEl.src = endingRevealImg.src; };
-    }
+    // P0 INTEGRATED REGRESSION HOTFIX (Part K): the loop video starts (or
+    // resumes, on REPLAY) from 0 every entry, same "always fresh" rule the
+    // song already follows — no loading UI/percentage at all (item 87's own
+    // explicit "不要: loading percentage"); the #ending-reveal-screen
+    // background stays plain black (see its own CSS) until the first real
+    // frame decodes, same visual guarantee the old image swap had. autoplay
+    // is already set as a real HTML attribute, but calling .play() here too
+    // (same defensive belt-and-suspenders every other movie/BGM element in
+    // this file uses) covers a browser that didn't honor the attribute
+    // alone after a src change.
+    endingRevealVideoEl.currentTime = 0;
+    const loopPlayPromise = endingRevealVideoEl.play();
+    if (loopPlayPromise && typeof loopPlayPromise.catch === 'function') loopPlayPromise.catch(() => {});
+
+    // P0 INTEGRATED REGRESSION HOTFIX (Part L): "RESULTS" is always the
+    // FIRST thing revealed — shown immediately rather than waiting on any
+    // song-fraction threshold (it is static text, not a computed value),
+    // via the exact same .ending-reveal-visible fade mechanism every other
+    // row uses.
+    endingRevealHeadingEl.classList.remove('ending-reveal-visible');
+    requestAnimationFrame(() => endingRevealHeadingEl.classList.add('ending-reveal-visible'));
 
     startEndingRevealSong(now);
   }
@@ -9633,7 +9848,13 @@
     endingRevealState.active = false;
     endingRevealAudio.pause();
     endingRevealAudio.currentTime = 0;
-    endingRevealImageEl.removeAttribute('src');
+    // P0 INTEGRATED REGRESSION HOTFIX (Part K): pause + rewind only — unlike
+    // the old Image()'s src, this is a small already-loaded local asset, so
+    // there is no reason to tear its src down and force a re-fetch on the
+    // next entry (mirrors how every persistent BGM/movie element in this
+    // file is treated: stopped, never discarded).
+    endingRevealVideoEl.pause();
+    endingRevealVideoEl.currentTime = 0;
     if (endingRevealState.fallbackTimer) { clearTimeout(endingRevealState.fallbackTimer); endingRevealState.fallbackTimer = null; }
   }
   endingRevealBackToTopBtnEl.addEventListener('click', () => {
@@ -9677,7 +9898,7 @@
       // HOTFIX 2 SECTION 15/18/20: MAIN's escape chain now keeps whatever
       // BGM/context was already active (Outbreak 2, since GABRIEL3 combat
       // leads directly here with no normal-stage transition in between)
-      // playing THROUGH main_escape.mp4 and main_bad_ending.mp4 — each with
+      // playing THROUGH main_bad_ending.mp4 and main_escape.mp4 — each with
       // its own movie audio also on — and does NOT touch BGM at all here;
       // only the external ENDING ROLL (playEndingRoll(), below) fully
       // silences everything. This is an explicit override of the previous
@@ -9687,10 +9908,20 @@
       // synchronously, so the 2nd movie's overlay/video swap happens within
       // the very same synchronous call stack as the 1st movie's teardown,
       // before any frame is painted.
-      playEventMovie('main_escape', () => {
-        playEventMovie('main_bad_ending', () => {
-          // DARK OUT ENDING & RESULT REDESIGN item 72: MOVIE1 (main_escape/
-          // main_bad_ending) is fully preserved above, unchanged — only what
+      // P0 INTEGRATED REGRESSION HOTFIX (Part J): order reversed per the
+      // real-device report — was main_escape.mp4 THEN main_bad_ending.mp4
+      // (identified directly from EVENT_MOVIES: main_escape='assets/video/
+      // endings/main_escape.mp4', main_bad_ending='assets/video/endings/
+      // main_bad_ending.mp4', confirmed as the exact 2 movies
+      // beginStoryEscapeEnding() plays back-to-back for MAIN, never
+      // guessed), now main_bad_ending.mp4 THEN main_escape.mp4 — each still
+      // plays exactly once (playEventMovie()'s own per-play token guard is
+      // untouched), and the chain still proceeds into enterEndingReveal()
+      // afterward exactly as before.
+      playEventMovie('main_bad_ending', () => {
+        playEventMovie('main_escape', () => {
+          // DARK OUT ENDING & RESULT REDESIGN item 72: MOVIE1 (main_bad_ending/
+          // main_escape) is fully preserved above, unchanged — only what
           // used to happen AFTER it (the external ending_darkout.MOV wait +
           // playback) is replaced. enterEndingReveal() IS the RESULT screen
           // for MAIN now — storyEndingState.active is cleared inside it. A
@@ -9864,6 +10095,22 @@
     stageTransition.active = true;
     stageTransition.phase = 'out';
     stageTransition.startedAt = now;
+    // P0 INTEGRATED REGRESSION HOTFIX (DASH stage-skip investigation, Part
+    // 8): explicitly cancel any DASH still in flight the instant a
+    // transition begins, rather than relying on updateDash() simply never
+    // being called again until it happens to be stale (stageTransition.
+    // active gates its own call site in update() with an early return, and
+    // the ~520ms fade window happens to already exceed DASH_DURATION_MS
+    // 400ms in every build so far) — that was correct today but purely
+    // coincidental, not an enforced invariant, so tightening either
+    // constant later could silently reopen a window where a resumed DASH
+    // repositions the player using dashFromX/dashFromY captured in the OLD
+    // stage's world coordinates once the new stage's identical-range
+    // coordinate system is in effect. Direct Playwright testing (rapid
+    // DASH-at-EXIT-arrival, worst-case timing) found no reproducible skip
+    // under the current constants — this is defensive hardening for that
+    // timing relationship, not a fix for an observed failure.
+    player.dashing = false;
   }
   // PART 4 SECTION M/N/O: TRAINING's own AREA2-EXIT stage advance — never
   // spawns GABRIEL, never triggers GAME CLEAR/RESULT (L-2), just a fresh
@@ -14625,6 +14872,8 @@
     PLAYER_BODY_RADIUS, BOSS_SOLID_RADIUS, BOSS_SOLID_MIN_DIST, clampPlayerAwayFromBoss, clampBossAwayFromPlayer, // debug/verification only — HOTFIX SECTION 22
     DRONE_SOLID_RADIUS, DRONE_SOLID_MIN_DIST, clampPlayerAwayFromDrones, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 37-43 — debug/verification only
     isProjectAdamSiteStage, projectAdamTankWorldPos, projectAdamTankSolidMinDist, clampPlayerAwayFromProjectAdamTank, PROJECT_ADAM_TANK_POS_FRAC, // P0 GAME COMPLETION HOTFIX — debug/verification only
+    projectAdamTankRectWorld, closestPointOnProjectAdamTankRect, // P0 INTEGRATED REGRESSION HOTFIX (Part G) — debug/verification only
+    get eventMovieGainNode() { return eventMovieGainNode; }, GABRIEL_DEFEATED_GAIN, // P0 INTEGRATED REGRESSION HOTFIX (Part H) — debug/verification only
     beginScenarioOpening, // debug/verification only — HOTFIX SECTION 12-2: FULL PLAY's UI entry is LOCKED, but its underlying 'secret' scenario route must stay directly launchable for internal verification
     // Debug/verification only — DARK OUT PART 9: CINEMATIC INTEGRATION.
     menuBgmAudio, startMenuBgmOnce, startGameplayBgm, stopMenuBgm,
@@ -14749,6 +14998,14 @@
     get confirmGamepadMenuNavFocus() { return confirmGamepadMenuNavFocus; },
     get GAMEPAD_MENU_NAV_SCREEN_OVERLAY() { return GAMEPAD_MENU_NAV_SCREEN_OVERLAY; },
     get onOpeningTap() { return onOpeningTap; },
+    // P0 INTEGRATED REGRESSION HOTFIX (STARTUP GAMEPAD/AUDIO) — debug/verification only:
+    get eventMovieElementUnlocked() { return eventMovieElementUnlocked; },
+    get backgroundBgmUnlocked() { return backgroundBgmUnlocked; },
+    get menuBgmStarted() { return menuBgmStarted; },
+    attemptStartupAudioUnlock, // debug/verification only
+    get menuBgmAudio() { return menuBgmAudio; },
+    get bgmAudio() { return bgmAudio; },
+    get bossBgmAudio() { return bossBgmAudio; },
     // P0 GAME COMPLETION HOTFIX (STARTUP PRELOAD UI REBUILD) — debug/verification only:
     get fullPreloadReady() { return fullPreloadReady; },
     get computeStartupRequiredProgress() { return computeStartupRequiredProgress; },
@@ -14771,9 +15028,9 @@
     beginEndingRevealPreload, enterEndingReveal, exitEndingReveal, updateEndingReveal,
     get endingRevealState() { return endingRevealState; },
     get endingRevealPreloadStarted() { return endingRevealPreloadStarted; },
-    get endingRevealImg() { return endingRevealImg; },
+    get endingRevealVideoEl() { return endingRevealVideoEl; },
     get endingRevealAudio() { return endingRevealAudio; },
-    ENDING_REVEAL_IMAGE_URL, ENDING_REVEAL_AUDIO_URL,
+    ENDING_REVEAL_VIDEO_URL, ENDING_REVEAL_AUDIO_URL,
     ENDING_REVEAL_CLEAR_TIME_FRAC, ENDING_REVEAL_CONTINUE_FRAC, ENDING_REVEAL_RANK_FRAC,
     runStartupLoadingPhase, showLoadingErrorState, hideLoadingErrorState, // debug/verification only
     flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only

@@ -23,7 +23,7 @@
 <meta name="twitter:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_site_v2.jpg">
 <link rel="icon" href="assets/branding/dark_out_site_v2.jpg" type="image/jpeg">
 <link rel="apple-touch-icon" href="assets/branding/dark_out_site_v2.jpg">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=p0-regression-hotfix1">
 </head>
 <body>
 
@@ -203,9 +203,19 @@
      true_ending->#result-screen path above is completely untouched. See
      enterEndingReveal()/updateEndingReveal() in game.js. -->
 <div id="ending-reveal-screen" hidden>
-  <img id="ending-reveal-image" src="" alt="">
+  <!-- P0 INTEGRATED REGRESSION HOTFIX (Part K): the static andersen_walk.png
+       cinematic image is replaced by a looping background VIDEO (the
+       user's own attached loop clip, no lyrics/audio of its own that
+       should ever be heard — muted is critical here, only Shining Grace
+       plays during RESULT). autoplay+muted+loop+playsinline together are
+       what let this play automatically, silently, endlessly, and WITHOUT
+       ever triggering iOS's native fullscreen video player. -->
+  <video id="ending-reveal-video" src="" autoplay muted loop playsinline disablepictureinpicture></video>
   <div id="ending-reveal-scrim"></div>
   <div id="ending-reveal-result">
+    <!-- P0 INTEGRATED REGRESSION HOTFIX (Part L): "RESULTS" (not "RESULT"),
+         part of the same left-aligned content block, above CLEAR TIME. -->
+    <h1 id="ending-reveal-heading" class="ending-reveal-stat">RESULTS</h1>
     <div id="ending-reveal-clear-time-row" class="ending-reveal-stat">
       <span class="ending-reveal-stat-label">CLEAR TIME</span>
       <span id="ending-reveal-clear-time" class="ending-reveal-stat-value"></span>
@@ -441,6 +451,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=ending-result-redesign1"></script>
+<script src="game.js?v=p0-regression-hotfix1"></script>
 </body>
 </html>
