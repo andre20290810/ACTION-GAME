@@ -2437,20 +2437,29 @@
   // clampPlayerToScreen() below, right alongside every other player-position
   // clamp, so it runs exactly once per frame after the player's own
   // movement has already been applied.
+  // WORK ORDER H CONTINUATION / PART D: upgraded from a resting-only push-
+  // back to the same swept-circle check BARREL/ADAM SPHERE already use
+  // (sweepAndClampPlayerAwayFromCircle(), declared below in this same
+  // file — a plain function declaration, so its position later in the file
+  // doesn't matter, only that it's in scope by the time this actually runs)
+  // — a resting-only check can never stop a single fast DASH frame from
+  // landing on the FAR side of the boss in one step (the boundary-circle
+  // push-back only ever fires once the frame's END position is already
+  // known to be too close, by which point a large single-frame DASH
+  // displacement may have already crossed clean through). The swept
+  // segment sample (player.lastValidX/Y -> current position, same <=4-
+  // world-unit spacing as the tank/BARREL/ADAM SPHERE checks) catches that
+  // mid-frame crossing and reverts the player to lastValidX/Y outright
+  // instead of resolving to a push — this can never place the player on
+  // the boss's far side, unlike a naive "push along the final displacement
+  // vector" fix would. Falls back to the exact same resting push-back this
+  // function always had whenever no crossing occurred (dist< MIN_DIST at
+  // rest) — so ordinary MOVE-speed contact behaves identically to before,
+  // only DASH-speed tunneling is newly caught. AI/attack timing/animation
+  // state are never touched by this function, only player.x/y.
   function clampPlayerAwayFromBoss() {
     if (!boss.spawned || !isSolidCollisionBossType(boss.type) || bossHasNoPhysicalPresence()) return;
-    let dx = player.x - boss.x, dy = player.y - boss.y;
-    let dist = Math.hypot(dx, dy);
-    if (dist < BOSS_SOLID_MIN_DIST) {
-      // Degenerate case: exactly overlapping (dist===0) has no defined push
-      // direction — fall back to straight up, same as every other "just
-      // pick a direction" default already used elsewhere (resetPlayerToBattlePose()'s
-      // own north-facing spawn convention).
-      if (dist === 0) { dx = 0; dy = -1; dist = 1; }
-      const scale = BOSS_SOLID_MIN_DIST / dist;
-      player.x = boss.x + dx * scale;
-      player.y = boss.y + dy * scale;
-    }
+    sweepAndClampPlayerAwayFromCircle(boss.x, boss.y, BOSS_SOLID_MIN_DIST);
   }
   // 22-3: when the BOSS itself moves toward the player, ITS OWN movement
   // must also stop at the same shared boundary — called right after every
@@ -3061,17 +3070,29 @@
   // is left completely alone; only the PLAYER is ever displaced, exactly
   // like the existing BOSS solid-body convention, which also never budges
   // the boss on this specific contact path.
+  // WORK ORDER H CONTINUATION / PART D/F: upgraded to the same swept-circle
+  // check as clampPlayerAwayFromBoss() above, for the same DASH-tunneling
+  // reason — see that function's own comment for the full explanation.
+  // DRONE gets particular attention here (per this batch's own explicit
+  // ask) because it's a MOVING solid, unlike the boss (which only chases
+  // slowly, if at all): the swept sample is taken against THIS frame's
+  // current robot.x/y (its post-AI-movement position, since
+  // updateSecurityRobots() already ran earlier in the same frame), so a
+  // fast PLAYER DASH and a moving DRONE's own patrol sweep are both
+  // captured at their real current-frame positions — a high-speed pass
+  // between "DRONE was here last frame" and "DRONE is here now" still
+  // can't let the player's own swept segment cross cleanly through it.
+  // Iterating multiple DRONEs in sequence composes correctly: if an
+  // earlier DRONE's check reverts player.x/y back to lastValidX/Y, the
+  // next DRONE's own swept segment (start==end at that reverted position)
+  // trivially finds no further crossing and falls through to its own
+  // resting check against the now-safe position — never re-opening the
+  // just-blocked crossing. DRONE's own AI/patrol/fire timing is completely
+  // unread and untouched here, exactly as before.
   function clampPlayerAwayFromDrones() {
     for (const robot of securityRobots) {
       if (droneHasNoPhysicalPresence(robot)) continue;
-      let dx = player.x - robot.x, dy = player.y - robot.y;
-      let dist = Math.hypot(dx, dy);
-      if (dist < DRONE_SOLID_MIN_DIST) {
-        if (dist === 0) { dx = 0; dy = -1; dist = 1; }
-        const scale = DRONE_SOLID_MIN_DIST / dist;
-        player.x = robot.x + dx * scale;
-        player.y = robot.y + dy * scale;
-      }
+      sweepAndClampPlayerAwayFromCircle(robot.x, robot.y, DRONE_SOLID_MIN_DIST);
     }
   }
 
@@ -3214,21 +3235,36 @@
     }
   }
 
-  // WORK ORDER H / PART R: shared swept-circle solid-body helper —
-  // generalizes clampPlayerAwayFromProjectAdamTank()'s own "sample the
-  // travelled segment at <=4-world-unit steps, revert outright if any
-  // sample overlaps; otherwise resting push-back toward the nearest edge"
-  // pattern from a rect target to an arbitrary CIRCLE target, so a new solid
-  // entity (BARREL, ADAM SPHERE) gets real DASH-tunnel protection without
-  // re-deriving this sampling logic per caller. Deliberately NOT applied to
-  // the existing GABRIEL/ADAM/ROID1/ROID2 (clampPlayerAwayFromBoss()) or
-  // DRONE (clampPlayerAwayFromDrones()) collision in this pass — those are
-  // already live, tested, real-combat-critical paths, and the explicit
-  // instruction for this batch is a shared helper "without destructively
-  // refactoring existing working BOSS collision"; swapping their resting-
-  // only checks over to this helper is a real, separately-testable follow-up,
-  // not bundled into this fix.
+  // WORK ORDER H / PART R (extended, WORK ORDER H CONTINUATION / PART D):
+  // shared swept-circle solid-body helper — generalizes
+  // clampPlayerAwayFromProjectAdamTank()'s own "sample the travelled
+  // segment at <=4-world-unit steps, revert outright if any sample
+  // overlaps; otherwise resting push-back toward the nearest edge" pattern
+  // from a rect target to an arbitrary CIRCLE target. Originally applied
+  // only to the new BARREL/ADAM SPHERE collision; WORK ORDER H CONTINUATION
+  // extended it to the existing GABRIEL/ADAM/ROID1/ROID2
+  // (clampPlayerAwayFromBoss()) and DRONE (clampPlayerAwayFromDrones())
+  // collision too, once this shared helper itself had been proven correct
+  // via the BARREL/ADAM SPHERE usage first.
+  //
+  // WORK ORDER H CONTINUATION fix: the revert branch used to `return`
+  // immediately once it snapped the player back to lastValidX/Y, skipping
+  // the resting push-back entirely. That's correct when lastValidX/Y was
+  // itself a valid (non-overlapping) position — true on every ordinary
+  // frame, since THIS SAME function already resolved it as such the
+  // previous frame — but breaks down the one case where the SOLID OBJECT
+  // itself moved (a chasing GABRIEL, a patrolling DRONE) into a
+  // stationary/slow player: lastValidX/Y can then ALSO be inside minDist of
+  // the object's new position, and reverting to it would leave the player
+  // stuck overlapping forever, never pushed back out — worse than the old
+  // resting-only behavior, and a direct violation of this batch's own
+  // "minimum separationで自然に止める" requirement. Fixed by never
+  // returning early on a revert — the resting push-back below always still
+  // runs afterward, against whatever the (possibly just-reverted) current
+  // position is, so the final position is provably never inside minDist
+  // regardless of why the overlap happened.
   function sweepAndClampPlayerAwayFromCircle(cx, cy, minDist) {
+    let reverted = false;
     if (player.lastValidX !== undefined && player.lastValidY !== undefined &&
         (player.lastValidX !== player.x || player.lastValidY !== player.y)) {
       const sx = player.lastValidX, sy = player.lastValidY, ex = player.x, ey = player.y;
@@ -3241,7 +3277,8 @@
         if (Math.hypot(sampX - cx, sampY - cy) < minDist) {
           player.x = sx;
           player.y = sy;
-          return true; // reverted outright — no further push-back needed this frame
+          reverted = true;
+          break; // fall through to the resting push-back below rather than returning early
         }
       }
     }
@@ -3254,7 +3291,7 @@
       player.y = cy + dy * scale;
       return true;
     }
-    return false;
+    return reverted;
   }
 
   // WORK ORDER H / PART B/C: BARREL solid body — previously BARREL had NO
@@ -10630,7 +10667,23 @@
   let nextContentWaitGeneration = 0;
   const nextContentWaitState = { active: false, movieKey: null, generation: 0, onReady: null, erroredKey: null };
   function waitForMovieThenProceed(movieKey, onReady) {
-    if (!movieKey || isMovieProbeReady(movieKey)) { onReady(); return; }
+    // WORK ORDER H CONTINUATION / PART A/C: this is the ONE shared choke
+    // point every EXIT-contact/escape-ending trigger already funnels
+    // through (STORY normal advance, SECURITY TRAINING advance via the
+    // same update() block, the escape-ending branch) — logging REQUEST/
+    // REJECT here once covers all of them rather than duplicating the same
+    // logging at each caller. "REQUEST" here corresponds to the spec's
+    // "player physically reached EXIT" moment; "REJECT reason=next_not_ready"
+    // is logged (not silently swallowed) when the movie isn't buffered yet
+    // — this never blocks anything new, it's exactly the existing
+    // NEXT CONTENT READY GATE behavior, now traceable.
+    if (!movieKey || isMovieProbeReady(movieKey)) {
+      logTransitionEvent('TRANSITION REQUEST', { source: 'exitReady', playerReachedExit: true, nextReady: true });
+      onReady();
+      return;
+    }
+    logTransitionEvent('TRANSITION REQUEST', { source: 'exitReady', playerReachedExit: true, nextReady: false });
+    logTransitionEvent('TRANSITION REJECT', { source: 'exitReady', reason: 'next_not_ready' });
     nextContentWaitGeneration += 1;
     nextContentWaitState.active = true;
     nextContentWaitState.movieKey = movieKey;
@@ -10690,12 +10743,57 @@
   // boss (with its full existing intro cinematic) + reposition the player
   // -> fade back in.
   const STAGE_FADE_MS = 260;
-  const stageTransition = { active: false, phase: null, startedAt: 0 }; // phase: 'out' | 'in'
-  function beginStageTransition(now) {
-    if (stageTransition.active) return;
+  // WORK ORDER H CONTINUATION / PART A/C: explicit generation counter +
+  // debug trace for every real stage/area transition commit — layered ON
+  // TOP of the existing stageTransition/nextContentWaitState/eventMovieState
+  // machinery (already re-audited and confirmed correctly single-fire per
+  // the prior investigation) rather than replacing it, per this batch's own
+  // explicit "no feature delta / don't destructively refactor" instruction.
+  // "transitionLock" in the spec's own terms IS stageTransition.active —
+  // exposed under both names here so the two can never drift out of sync
+  // (a real regression risk a SEPARATE parallel lock boolean would create).
+  let transitionGeneration = 0;
+  function isTransitionLocked() { return stageTransition.active; }
+  // Single shared trace logger for every REQUEST/ACCEPT/REJECT/ENTER event
+  // below — plain console.log (matches this file's existing [EVENT MOVIE]/
+  // [LOOP] console.warn/error convention), always on (cheap, and the whole
+  // point is being readable straight off a real device's remote console
+  // without needing a separate ?debug= flag to remember to add first).
+  function logTransitionEvent(kind, info) {
+    console.log(`[${kind}]`, JSON.stringify({
+      t: Math.round(performance.now()),
+      source: info.source || null,
+      stageId: info.stageId !== undefined ? info.stageId : null,
+      stageIndex: info.stageIndex !== undefined ? info.stageIndex : currentStageIndex,
+      areaIndex: info.areaIndex !== undefined ? info.areaIndex : currentArea,
+      generation: info.generation !== undefined ? info.generation : transitionGeneration,
+      transitionLock: isTransitionLocked(),
+      playerReachedExit: info.playerReachedExit !== undefined ? info.playerReachedExit : null,
+      nextReady: info.nextReady !== undefined ? info.nextReady : null,
+      reason: info.reason || null,
+    }));
+  }
+  const stageTransition = { active: false, phase: null, startedAt: 0, generation: 0 }; // phase: 'out' | 'in'
+  function beginStageTransition(now, source) {
+    // WORK ORDER H CONTINUATION / PART A: the ONE real acceptance point for
+    // every physical-EXIT-driven advance (STORY normal + escape-ending) and
+    // the (permanently unreachable, kept for the record) ROID interlude
+    // return — see the call sites' own comments. A 2nd call while a
+    // transition is already active is REJECTed (reason='locked') and
+    // logged rather than silently no-op'd, per this batch's explicit
+    // "every reject must be traceable" requirement — behavior (a safe no-
+    // op) is unchanged from before, only the visibility of it is new.
+    logTransitionEvent('TRANSITION REQUEST', { source, playerReachedExit: true, nextReady: true });
+    if (stageTransition.active) {
+      logTransitionEvent('TRANSITION REJECT', { source, reason: 'locked' });
+      return;
+    }
+    transitionGeneration += 1;
     stageTransition.active = true;
     stageTransition.phase = 'out';
     stageTransition.startedAt = now;
+    stageTransition.generation = transitionGeneration;
+    logTransitionEvent('TRANSITION ACCEPT', { source, generation: stageTransition.generation });
     // P0 INTEGRATED REGRESSION HOTFIX (DASH stage-skip investigation, Part
     // 8): explicitly cancel any DASH still in flight the instant a
     // transition begins, rather than relying on updateDash() simply never
@@ -10710,7 +10808,10 @@
     // coordinate system is in effect. Direct Playwright testing (rapid
     // DASH-at-EXIT-arrival, worst-case timing) found no reproducible skip
     // under the current constants — this is defensive hardening for that
-    // timing relationship, not a fix for an observed failure.
+    // timing relationship, not a fix for an observed failure. WORK ORDER H
+    // (prior batch) additionally closed the actual root cause at its own
+    // source — see triggerDashInDirection()'s own stageTransition.active/
+    // eventMovieState.active gate.
     player.dashing = false;
   }
   // PART 4 SECTION M/N/O: TRAINING's own AREA2-EXIT stage advance — never
@@ -11001,12 +11102,26 @@
       securityRobots.length = 0;
       whiteShadows.length = 0;
       spawnBarrels(0);
+      // WORK ORDER H CONTINUATION / PART A: this is the one advance path
+      // that bypasses stageTransition entirely (no fade) — playEventMovie()'s
+      // own eventMovieState.token already guards its onComplete against
+      // double-firing (re-confirmed this batch), and eventMovieState.active
+      // already gates DASH input for its whole duration (WORK ORDER H's own
+      // triggerDashInDirection() fix), so this was never actually reachable
+      // as a stage-skip vector — tagged into the same generation counter/
+      // trace log here purely for uniform observability, not because a gap
+      // was found.
+      transitionGeneration += 1;
+      const movieTransitionGeneration = transitionGeneration;
+      logTransitionEvent('TRANSITION ACCEPT', { source: 'movieEnded', generation: movieTransitionGeneration, playerReachedExit: false, nextReady: true });
       playEventMovie(plan.key, () => {
         currentStageIndex += 1;
         cameraY = 0;
         currentArea = 1;
         area1Cleared = false;
         area2Cleared = false;
+        player.dashing = false;
+        logTransitionEvent('STAGE ENTER', { source: 'movieEnded', generation: movieTransitionGeneration });
         enterStoryStage(performance.now());
       });
     } else if (plan.type === 'cultivationLab') {
@@ -11274,8 +11389,34 @@
           enterStoryStage(now);
         }
       }
+      // WORK ORDER H CONTINUATION / PART A: this is the ONE real commit
+      // point for both STORY and TRAINING advances (the branch above just
+      // decided which) — logged here rather than inside advanceTrainingStage()/
+      // enterStoryStage() individually since those are also called from
+      // resetModeState() (a fresh run start, not a "transition"), and this
+      // is the single place that's unambiguously "a transition, not a
+      // fresh start". "nextContent state renewal": nextContentWaitState is
+      // already guaranteed inactive here (it's what resolved TO reach this
+      // point, or was never engaged), but hard-reset defensively anyway so
+      // no stale movieKey/onReady/erroredKey can ever leak into the new
+      // stage regardless of which path got here. "held dash release gate":
+      // lastDashTriggerAt is reset so the new stage's own
+      // DASH_RETRIGGER_INTERVAL_MS window starts fresh rather than
+      // inheriting whatever moment the OLD stage's last DASH press was at.
+      nextContentWaitState.active = false;
+      nextContentWaitState.movieKey = null;
+      nextContentWaitState.onReady = null;
+      nextContentWaitState.erroredKey = null;
+      lastDashTriggerAt = -Infinity;
+      logTransitionEvent('STAGE ENTER', { source: 'updateStageTransition', generation: stageTransition.generation });
+      logTransitionEvent('AREA ENTER', { source: 'updateStageTransition', generation: stageTransition.generation, areaIndex: currentArea });
       stageTransition.phase = 'in';
       stageTransition.startedAt = now;
+      // "minimum 1 stable frame" before the lock can release: the 'in'
+      // phase below already holds stageTransition.active=true (still fully
+      // locked — DASH/EXIT-contact/a 2nd beginStageTransition() call all
+      // still rejected) for a further STAGE_FADE_MS (260ms, comfortably
+      // more than 1 frame at any real framerate) before releasing.
     } else if (stageTransition.phase === 'in') {
       if (elapsed < STAGE_FADE_MS) return;
       stageTransition.active = false;
@@ -15587,6 +15728,7 @@
     get musicContext() { return musicContext; }, setMusicContext, syncMusicContext, // debug/verification only — HOTFIX 2 SECTION 2
     PLAYER_BODY_RADIUS, BOSS_SOLID_RADIUS, BOSS_SOLID_MIN_DIST, clampPlayerAwayFromBoss, clampBossAwayFromPlayer, // debug/verification only — HOTFIX SECTION 22
     DRONE_SOLID_RADIUS, DRONE_SOLID_MIN_DIST, clampPlayerAwayFromDrones, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 37-43 — debug/verification only
+    clampPlayerAwayFromBarrels, clampPlayerAwayFromAdamSphereCombat, sweepAndClampPlayerAwayFromCircle, // WORK ORDER H / WORK ORDER H CONTINUATION — debug/verification only
     isProjectAdamSiteStage, projectAdamTankWorldPos, projectAdamTankSolidMinDist, clampPlayerAwayFromProjectAdamTank, PROJECT_ADAM_TANK_POS_FRAC, // P0 GAME COMPLETION HOTFIX — debug/verification only
     projectAdamTankRectWorld, closestPointOnProjectAdamTankRect, // P0 INTEGRATED REGRESSION HOTFIX (Part G) — debug/verification only
     get eventMovieGainNode() { return eventMovieGainNode; }, GABRIEL_DEFEATED_GAIN, // P0 INTEGRATED REGRESSION HOTFIX (Part H) — debug/verification only
@@ -15668,6 +15810,7 @@
     get stageTransition() { return stageTransition; },
     getAmbientDarkenAlpha,
     requestDash, // debug/verification only — drives the DASH chain directly, bypassing touch-gesture detection
+    triggerDashInDirection, // WORK ORDER H CONTINUATION — debug/verification only: unlike requestDash() above, this goes through the REAL gate (stageTransition.active/eventMovieState.active/isBossIntroLocked()/DASH_RETRIGGER_INTERVAL_MS), needed so a stress test can exercise the actual fix rather than bypassing it
     HALF_RANGE, clampToHalfRange, BASE_ANGLE, keys, getFinalAimAngle,
     getAimAngle: getFinalAimAngle, // back-compat alias for existing verification scripts — same function, PART 12's new name is getFinalAimAngle
     getCinematicImageInfo, CINEMATIC_SCALE, CINEMATIC_BACK_SCALE, DIR_TO_BOSS_KEY, // debug/verification only
@@ -15887,6 +16030,8 @@
     set securityTrainingBgIndex(v) { securityTrainingBgIndex = v; }, // debug/verification only
     get trainingStageIndex() { return trainingStageIndex; },
     set trainingStageIndex(v) { trainingStageIndex = v; }, // HOTFIX 4 SECTIONS 1-6 — debug/verification only
+    stageTransition, isTransitionLocked, get transitionGeneration() { return transitionGeneration; }, // WORK ORDER H CONTINUATION — debug/verification only
+    nextContentWaitState, eventMovieState, // WORK ORDER H CONTINUATION — debug/verification only, lets a stress test detect/reset a stuck "movie not ready" wait between unrelated test iterations rather than that one legitimate hold cascading into every later assertion
     TRAINING_STAGE_COUNT, enterSecurityTrainingStage, // HOTFIX 4 SECTIONS 1-6 — debug/verification only
     SECURITY_ROBOT_COUNT, SECURITY_ROBOTS_PER_AREA,
     SECURITY_TELEGRAPH_MS, SECURITY_LASER_VISUAL_MS,
@@ -16262,7 +16407,7 @@
               // ROID1-interlude branch that used to live here (beginRoidInterlude(),
               // triggered right after GABRIEL2) is retired; storyRoidInterludeState
               // itself is left defined/exposed but permanently unreachable.
-              beginStageTransition(performance.now()); // updateStageTransition() itself branches STORY vs TRAINING advance by gameState.mode
+              beginStageTransition(performance.now(), 'exit'); // updateStageTransition() itself branches STORY vs TRAINING advance by gameState.mode
             }
           });
         }
@@ -16492,7 +16637,7 @@
     // fade is in flight — same pattern the EXIT-reach check above relies on
     // every frame the player stands in an EXIT zone).
     if (storyRoidInterludeState.active && boss.state === 'dead') {
-      beginStageTransition(now);
+      beginStageTransition(now, 'roidInterlude');
     }
   }
 
