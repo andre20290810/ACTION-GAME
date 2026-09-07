@@ -780,6 +780,32 @@ body {
   display: none;
 }
 
+/* P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION: same production-
+   default-hidden, non-interactive diagnostic pattern as
+   #gamepad-debug-overlay above, positioned top-right instead so the two
+   never overlap if both are enabled at once. */
+#debug-input-overlay {
+  position: fixed;
+  top: max(8px, env(safe-area-inset-top));
+  right: max(8px, env(safe-area-inset-right));
+  z-index: 25;
+  pointer-events: none;
+  font-family: monospace;
+  font-size: 9px;
+  line-height: 1.4;
+  color: rgba(255, 210, 120, 0.9);
+  background: rgba(0, 0, 0, 0.55);
+  padding: 4px 6px;
+  border-radius: 4px;
+  white-space: pre;
+  max-width: 62vw;
+  overflow: hidden;
+  text-align: left;
+}
+#debug-input-overlay:empty {
+  display: none;
+}
+
 /* ---------- SECTION G/H/I/J: LOADING / OPENING / MAIN MENU ----------
    Each is position:fixed/inset:0, shown one at a time via [hidden]
    (game.js's screen state machine — see setScreen()) — stacked below the

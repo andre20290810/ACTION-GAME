@@ -9019,9 +9019,25 @@
     if (menuBgmStarted) return;
     menuBgmStarted = true;
     musicContext = 'menu'; // HOTFIX 2 SECTION 3: TAP TO START -> MENU context, menuBgmAudio only
-    menuBgmAudio.play().catch(() => {
-      menuBgmStarted = false; // same one-more-attempt-on-next-tap defensiveness as startBgmOnce() above
-    });
+    // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION: wrapped in
+    // try/catch, not just a promise .catch() — a .catch() only handles a
+    // REJECTED Promise, never a synchronous throw from the play() call
+    // itself (a real possibility on WebKit if the OS audio session isn't
+    // in a ready state yet). Without this, a synchronous throw here would
+    // propagate all the way out of onOpeningTap() and updateGamepadInput(),
+    // which (see loop()'s own new top-level try/catch below) is exactly
+    // the class of bug that could leave gamepadInputArmed stuck true and,
+    // pre-existing-loop-hardening aside, is never an acceptable reason for
+    // TAP TO START's own screen transition to fail — audio outcome and
+    // screen-transition outcome must stay fully decoupled.
+    try {
+      const p = menuBgmAudio.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => { menuBgmStarted = false; }); // same one-more-attempt-on-next-tap defensiveness as startBgmOnce() above
+      }
+    } catch (err) {
+      menuBgmStarted = false;
+    }
   }
   function stopMenuBgm() {
     menuBgmAudio.pause();
@@ -9177,15 +9193,39 @@
     // DARK OUT ENDING & RESULT REDESIGN item 20: endingRevealAudio primed
     // here too, so its own first real play() (deep into a MAIN run, well
     // after this startup gesture) never needs a fresh TAP TO PLAY.
+    //
+    // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION (root-cause fix,
+    // this batch): this used to "silence" the priming play() by setting
+    // audioEl.volume = 0 and restoring it in teardown() — that works in
+    // every desktop browser (including this project's own sandboxed
+    // Playwright/Chromium testing, which is exactly why it was never
+    // caught), but iOS Safari deliberately ignores script writes to
+    // HTMLMediaElement.volume (playback volume there is fixed at 1.0 and
+    // controlled only by the hardware buttons — a long-standing, documented
+    // WebKit restriction). So on a real iPhone this priming play() of
+    // bgmAudio (Outbreak 1_1) / bossBgmAudio (Outbreak 2) / endingRevealAudio
+    // (Shining Grace) was NOT silent — it played at full volume for however
+    // long the returned Promise took to settle, at the exact same moment
+    // startMenuBgmOnce() (called immediately before this, from the same
+    // attemptStartupAudioUnlock()) started menuBgmAudio (Outbreak 0) for
+    // real. That is the direct root cause of the reported real-device
+    // "Shining Grace + Outbreak" / "Outbreak + Outbreak" simultaneous
+    // playback at STARTUP/START MENU. Fixed by using the SAME technique
+    // unlockEventMovieElementForIOS() already uses correctly for the movie
+    // element — audioEl.muted, which iOS Safari DOES honor — instead of
+    // volume. Muting (rather than lowering volume) still counts as a real,
+    // in-gesture play() call for WebKit's per-element unlock purposes, so
+    // every later real (unmuted) play() from startBossBgm()/
+    // startGameplayBgm()/enterEndingReveal() is unaffected.
     for (const audioEl of [bgmAudio, bossBgmAudio, endingRevealAudio]) {
       try {
-        const restoreVolume = audioEl.volume;
-        audioEl.volume = 0;
+        const wasMuted = audioEl.muted;
+        audioEl.muted = true;
         const p = audioEl.play();
         const teardown = () => {
           audioEl.pause();
           audioEl.currentTime = 0;
-          audioEl.volume = restoreVolume;
+          audioEl.muted = wasMuted;
         };
         if (p && typeof p.then === 'function') p.then(teardown).catch(teardown);
         else teardown();
@@ -9576,7 +9616,18 @@
     // bossBgmAudio/endingRevealAudio (see unlockBackgroundBgmForIOS()'s own
     // comment — the original root cause of the reported ROID1 arrival BGM
     // silence).
-    attemptStartupAudioUnlock(!!e.isTrusted);
+    // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION Part C item 12-15:
+    // audio-unlock outcome must NEVER block the screen transition itself —
+    // wrapped here as the outermost safety net (on top of the try/catch
+    // already inside each of the 3 unlock functions this calls) so that
+    // literally nothing inside audio-unlock, now or in any future change,
+    // can prevent the setScreen('mainMenu') call a few lines below from
+    // running.
+    try {
+      attemptStartupAudioUnlock(!!e.isTrusted);
+    } catch (err) {
+      console.error('[STARTUP AUDIO UNLOCK] failed, continuing screen transition anyway:', err);
+    }
     // SECTION 4: swap the shared video over to start_display.mp4 for MAIN
     // MENU/SELECT — this is the ONE place that ever happens, exactly at the
     // moment the user actually starts.
@@ -13784,6 +13835,19 @@
   let gamepadMenuNavStickWasUp = false;
   let gamepadMenuNavStickWasDown = false;
   let gamepadMenuNavLastContainer = null; // detects a screen/panel change so focus resets + stick trackers reseed automatically, without patching every individual screen-transition call site
+  // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION Part A/F: debug-only
+  // last-action timestamps/labels for the new ?debugInput=1 overlay
+  // (updateDebugInputOverlay() below) — never read by any real game logic.
+  let debugLastDpadNavAt = 0;
+  let debugLastStickNavAt = 0;
+  let debugLastAConfirmAt = 0;
+  let debugLastAConfirmTarget = '(none)';
+  let debugStartHandlerCalledAt = 0;
+  let debugLastButtonIndex = -1;
+  let debugLastButtonPressed = false;
+  let debugLastButtonValue = 0;
+  let debugLastButtonAt = 0;
+  let debugPrevButtonsPressedSnapshot = [];
   // SETTING panel checked FIRST — it can overlay either mainMenu (opened
   // from START MENU) or PAUSE (opened from the PAUSE MENU button), and in
   // both cases its own DOM (#setting-panel) is what's actually visible.
@@ -13823,6 +13887,8 @@
   function confirmGamepadMenuNavFocus() {
     const items = getGamepadMenuNavItems();
     const el = items[gamepadMenuNavFocusIndex];
+    debugLastAConfirmAt = performance.now();
+    debugLastAConfirmTarget = el ? (el.id || el.textContent.trim().slice(0, 24) || '(unlabeled)') : '(no item at focus index)';
     if (el) el.click();
   }
 
@@ -15401,6 +15467,9 @@
     get menuBgmAudio() { return menuBgmAudio; },
     get bgmAudio() { return bgmAudio; },
     get bossBgmAudio() { return bossBgmAudio; },
+    onOpeningTap, // debug/verification only — P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION
+    updateDebugInputOverlay, get DEBUG_INPUT_OVERLAY() { return DEBUG_INPUT_OVERLAY; }, set DEBUG_INPUT_OVERLAY(v) { DEBUG_INPUT_OVERLAY = v; },
+    get debugInputEl() { return debugInputEl; },
     // P0 GAME COMPLETION HOTFIX (STARTUP PRELOAD UI REBUILD) — debug/verification only:
     get fullPreloadReady() { return fullPreloadReady; },
     get computeStartupRequiredProgress() { return computeStartupRequiredProgress; },
@@ -17707,6 +17776,23 @@
     }
     GAMEPAD_DEBUG = localStorage.getItem('gamepadDebug') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF, never crash boot over a diagnostic convenience */ }
+  // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION Part A/L: a SEPARATE
+  // flag/overlay from GAMEPAD_DEBUG above (same persistence pattern —
+  // ?debugInput=1/0 in the URL, then sticks via localStorage) — production-
+  // visible but off by default, small/corner/pointer-events:none per spec,
+  // and purpose-built to answer "why was this real button press ignored"
+  // (BLOCKED reason) plus real-device audio double-play diagnostics
+  // (active BGM count/Shining Grace/Outbreak), which GAMEPAD_DEBUG's own
+  // overlay never showed. See updateDebugInputOverlay() below.
+  let DEBUG_INPUT_OVERLAY = false;
+  try {
+    if (new URLSearchParams(window.location.search).get('debugInput') === '1') {
+      localStorage.setItem('debugInput', '1');
+    } else if (new URLSearchParams(window.location.search).get('debugInput') === '0') {
+      localStorage.removeItem('debugInput');
+    }
+    DEBUG_INPUT_OVERLAY = localStorage.getItem('debugInput') === '1';
+  } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
   const GAMEPAD_FIRE_THRESHOLD = 0.25; // RT analog value >= this counts as FIRE held
@@ -17879,6 +17965,23 @@
     if (!gamepadInputArmed && !anyButtonPressedNow) gamepadInputArmed = true;
     const prev = gamepadLastButtons;
 
+    // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION Part A: track the
+    // most recent RAW button-state change (any index, pressed or released) —
+    // debug-only, for the ?debugInput=1 overlay (updateDebugInputOverlay()
+    // below), so a real device can show "the last button touched" even
+    // before any game-logic branch decides what (if anything) to do with it.
+    gp.buttons.forEach((b, i) => {
+      const wasPressed = !!debugPrevButtonsPressedSnapshot[i];
+      const isPressed = !!(b && b.pressed);
+      if (isPressed !== wasPressed) {
+        debugLastButtonIndex = i;
+        debugLastButtonPressed = isPressed;
+        debugLastButtonValue = b ? b.value : 0;
+        debugLastButtonAt = now;
+      }
+    });
+    debugPrevButtonsPressedSnapshot = gp.buttons.map((b) => !!(b && b.pressed));
+
     // GAMEPLAY-affecting reads (MOVE/AIM/FIRE/DASH/FLASH/STEALTH/RELOAD)
     // only apply during genuine active, unpaused gameplay — matching how
     // the touch control zones are physically covered/unreachable outside
@@ -18016,6 +18119,7 @@
       // D-PAD-nav/A-confirm rising edge.
       let tapToStartFiredThisFrame = false;
       if (gameState.screen === 'opening' && gamepadInputArmed && anyButtonPressedNow && !gamepadLastAnyButtonPressed) {
+        debugStartHandlerCalledAt = now; // ?debugInput=1 overlay — see updateDebugInputOverlay()
         onOpeningTap({ preventDefault() {} });
         gamepadInputArmed = false;
         tapToStartFiredThisFrame = true;
@@ -18063,13 +18167,13 @@
           if (navContainer) updateGamepadMenuNavFocusVisual();
         }
         if (navContainer) {
-          if (pressedNow.dpadUp && !prev.dpadUp) moveGamepadMenuNavFocus(-1);
-          if (pressedNow.dpadDown && !prev.dpadDown) moveGamepadMenuNavFocus(1);
+          if (pressedNow.dpadUp && !prev.dpadUp) { moveGamepadMenuNavFocus(-1); debugLastDpadNavAt = now; }
+          if (pressedNow.dpadDown && !prev.dpadDown) { moveGamepadMenuNavFocus(1); debugLastDpadNavAt = now; }
           const stickY = gp.axes[1] || 0;
           const stickPastUp = stickY <= -GAMEPAD_PAUSE_MENU_STICK_THRESHOLD;
           const stickPastDown = stickY >= GAMEPAD_PAUSE_MENU_STICK_THRESHOLD;
-          if (stickPastUp && !gamepadMenuNavStickWasUp) moveGamepadMenuNavFocus(-1);
-          if (stickPastDown && !gamepadMenuNavStickWasDown) moveGamepadMenuNavFocus(1);
+          if (stickPastUp && !gamepadMenuNavStickWasUp) { moveGamepadMenuNavFocus(-1); debugLastStickNavAt = now; }
+          if (stickPastDown && !gamepadMenuNavStickWasDown) { moveGamepadMenuNavFocus(1); debugLastStickNavAt = now; }
           gamepadMenuNavStickWasUp = stickPastUp;
           gamepadMenuNavStickWasDown = stickPastDown;
           // MENU中はGAMEPLAY actionを発動しない — A is CONFIRM-only here
@@ -18162,35 +18266,115 @@
       `AUDIO UNLOCK: movie=${eventMovieElementUnlocked} bgm=${backgroundBgmUnlocked} menu=${menuBgmStarted}`;
   }
 
+  // ---------- ?debugInput=1 overlay (production default OFF) ----------
+  // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION Part A/L: answers
+  // "why was this real button press ignored" (BLOCKED reason, reusing the
+  // exact same reason string recordGamepadDebugTrace() already computes —
+  // one shared source of truth, never two divergent implementations) and
+  // surfaces the audio double-play state directly (active BGM count/which
+  // tracks are actually .paused===false right now) so a real iPhone can be
+  // read back without a remote debugger session.
+  const debugInputEl = document.getElementById('debug-input-overlay');
+  function computeGamepadBlockedReason(gp) {
+    const trace = gamepadDebugTrace[gamepadDebugTrace.length - 1];
+    return trace ? trace.reason : 'n/a (no trace recorded yet)';
+  }
+  function updateDebugInputOverlay(now) {
+    if (!DEBUG_INPUT_OVERLAY || !debugInputEl) return;
+    const gp = getActiveGamepad();
+    const screen = gameState.screen;
+    const navContainerEl = (screen !== 'gameplay' && !eventMovieState.active) ? getGamepadMenuNavContainer() : null;
+    const navItems = navContainerEl ? getGamepadMenuNavItems() : [];
+    const focusedEl = navItems[gamepadMenuNavFocusIndex];
+    const focusedLabel = focusedEl ? (focusedEl.id || focusedEl.textContent.trim().slice(0, 24) || '(unlabeled)') : '(none)';
+    const ago = (t) => (t <= 0 ? 'never' : Math.round(now - t) + 'ms ago');
+
+    // AUDIO: which of the 4 BGM/song tracks are genuinely playing right
+    // now (.paused===false) — the direct, real-device-readable answer to
+    // "how many BGMs are audible at once" that no amount of code-reading
+    // could substitute for.
+    const audioTracks = [
+      { label: 'Outbreak0(menu)', el: menuBgmAudio },
+      { label: 'Outbreak1(bgm)', el: bgmAudio },
+      { label: 'Outbreak2(boss)', el: bossBgmAudio },
+      { label: 'ShiningGrace(ending)', el: endingRevealAudio },
+    ];
+    const playingTracks = audioTracks.filter((t) => !t.el.paused);
+    const outbreakPlaying = playingTracks.filter((t) => t.label.startsWith('Outbreak')).map((t) => t.label);
+    const shiningGracePlaying = !endingRevealAudio.paused;
+
+    debugInputEl.textContent =
+      `SCREEN: ${screen}${gameState.paused ? ' (PAUSED)' : ''}\n` +
+      `GAMEPAD: connected=${!!gp} index=${gamepadIndex}\n` +
+      (gp ? `  id=${gp.id.slice(0, 40)}\n  mapping=${gamepadMappingSource} buttons=${gp.buttons.length} axes=${gp.axes.length}\n` : '') +
+      `LAST BUTTON: index=${debugLastButtonIndex} pressed=${debugLastButtonPressed} value=${debugLastButtonValue.toFixed(2)} (${ago(debugLastButtonAt)})\n` +
+      `RISING EDGE(any): ${gamepadLastAnyButtonPressed}\n` +
+      `START HANDLER: called ${ago(debugStartHandlerCalledAt)}\n` +
+      `BLOCKED REASON: ${computeGamepadBlockedReason(gp)}\n` +
+      `RELEASE GATE(armed): ${gamepadInputArmed}\n` +
+      `MENU INPUT ENABLED: ${!!navContainerEl}\n` +
+      `--- START MENU ---\n` +
+      `FOCUSED: ${focusedLabel}  ITEMS: ${navItems.length}\n` +
+      `LAST DPAD NAV: ${ago(debugLastDpadNavAt)}  LAST STICK NAV: ${ago(debugLastStickNavAt)}\n` +
+      `LAST A CONFIRM: ${debugLastAConfirmTarget} (${ago(debugLastAConfirmAt)})\n` +
+      `--- AUDIO ---\n` +
+      `ACTIVE BGM: ${playingTracks.length ? playingTracks.map((t) => t.label).join('+') : '(none)'}\n` +
+      `ACTIVE COUNT: ${playingTracks.length}${playingTracks.length > 1 ? '  !! DOUBLE-PLAY !!' : ''}\n` +
+      `SHINING GRACE PLAYING: ${shiningGracePlaying}\n` +
+      `OUTBREAK PLAYING: ${outbreakPlaying.length ? outbreakPlaying.join('+') : '(none)'}`;
+  }
+
   let lastBgmWatchdogAt = 0;
+  // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION (Part D/K root-
+  // cause candidate): before this batch, an uncaught exception ANYWHERE in
+  // one frame's body (updateGamepadInput()/update()/draw()/the BGM
+  // watchdog — including, notably, a real synchronous throw from an
+  // HTMLMediaElement.play() call inside the STARTUP audio-unlock chain,
+  // which this batch also hardened separately) would propagate straight out
+  // of loop() and PERMANENTLY stop the requestAnimationFrame chain, since
+  // the requestAnimationFrame(loop) call at the very end would simply never
+  // run again. That failure mode is indistinguishable, on a real device,
+  // from "the gamepad/game stopped responding to any input at all" — the
+  // exact class of intermittent real-device symptom this session exists to
+  // close off, regardless of which specific line inside a given frame
+  // happens to throw. requestAnimationFrame(loop) is now unconditionally
+  // re-armed every frame (moved outside the try, so it runs whether or not
+  // this frame's own body threw), and any error is logged rather than
+  // swallowed silently — visible in a real Safari remote-inspector console,
+  // and any future crash report tooling could hook this same catch.
   function loop(now) {
-    const dt = Math.min((now - lastTime) / 1000, 0.05);
-    lastTime = now;
-    // HOTFIX SECTION 14-2/14-4: continuous coverage for the WHITE SHADOW
-    // stage that follows sneaking.mp4 — eventMovieVideoEl's own 'timeupdate'
-    // watchdog only fires while a movie is actually playing, so this throttled
-    // (every ~500ms, never every frame) call is the one that keeps bgmAudio
-    // reasserted through real STORY gameplay too, satisfying the "5 seconds
-    // into WHITE SHADOW gameplay" checkpoint (14-5) with the SAME continuous
-    // mechanism rather than a one-off check.
-    if (now - lastBgmWatchdogAt > 500) {
-      lastBgmWatchdogAt = now;
-      reassertGameplayBgmIfExpected();
-    }
-    // GAMEPAD SUPPORT: polled every frame regardless of screen/orientation
-    // (updateGamepadInput() itself gates gameplay-affecting writes to
-    // screen==='gameplay'), so a disconnect/neutral-stick reset is never
-    // more than one frame late even while paused or in a menu.
-    updateGamepadInput(now);
-    // LANDSCAPE MODE: update()/draw() now run in both orientations — the
-    // previous isLandscapeBlocked() freeze + full-screen "縦画面でプレイして
-    // ください" overlay are retired; see style.css for the LEFT PANEL/
-    // CENTER FIELD/RIGHT PANEL landscape layout.
-    if (gameState.screen === 'gameplay') {
-      update(dt, now);
-      draw(now);
-    } else if (gameState.screen === 'endingReveal') {
-      updateEndingReveal(now);
+    try {
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
+      // HOTFIX SECTION 14-2/14-4: continuous coverage for the WHITE SHADOW
+      // stage that follows sneaking.mp4 — eventMovieVideoEl's own 'timeupdate'
+      // watchdog only fires while a movie is actually playing, so this throttled
+      // (every ~500ms, never every frame) call is the one that keeps bgmAudio
+      // reasserted through real STORY gameplay too, satisfying the "5 seconds
+      // into WHITE SHADOW gameplay" checkpoint (14-5) with the SAME continuous
+      // mechanism rather than a one-off check.
+      if (now - lastBgmWatchdogAt > 500) {
+        lastBgmWatchdogAt = now;
+        reassertGameplayBgmIfExpected();
+      }
+      // GAMEPAD SUPPORT: polled every frame regardless of screen/orientation
+      // (updateGamepadInput() itself gates gameplay-affecting writes to
+      // screen==='gameplay'), so a disconnect/neutral-stick reset is never
+      // more than one frame late even while paused or in a menu.
+      updateGamepadInput(now);
+      // LANDSCAPE MODE: update()/draw() now run in both orientations — the
+      // previous isLandscapeBlocked() freeze + full-screen "縦画面でプレイして
+      // ください" overlay are retired; see style.css for the LEFT PANEL/
+      // CENTER FIELD/RIGHT PANEL landscape layout.
+      if (gameState.screen === 'gameplay') {
+        update(dt, now);
+        draw(now);
+      } else if (gameState.screen === 'endingReveal') {
+        updateEndingReveal(now);
+      }
+      updateDebugInputOverlay(now);
+    } catch (err) {
+      console.error('[LOOP] uncaught error this frame, continuing next frame:', err);
     }
     requestAnimationFrame(loop);
   }

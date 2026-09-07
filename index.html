@@ -432,6 +432,15 @@
      steal MOVE/AIM/button input regardless of state. -->
 <div id="gamepad-debug-overlay"></div>
 
+<!-- P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION Part A/L: a
+     SEPARATE real-device diagnostic overlay from gamepad-debug-overlay
+     above (?debugInput=1 in the URL, persists via localStorage — see
+     DEBUG_INPUT_OVERLAY in game.js) — top-right so the two can never
+     overlap if both happen to be on at once. Empty text (CSS :empty rule)
+     while the flag is off; production default is empty. pointer-events:none
+     so it can never steal MOVE/AIM/button input regardless of state. -->
+<div id="debug-input-overlay"></div>
+
 <!-- PART 9 SECTION G: shared EVENT MOVIE PLAYER — one DOM overlay reused
      by every SYSTEM/EVENT movie (opening/sneaking/drone_arrival/
      gabriel_arrival/gabriel_down/gabriel_defeated/experiment_lab/
@@ -463,6 +472,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=void-bridge1"></script>
+<script src="game.js?v=real-device-input1"></script>
 </body>
 </html>
