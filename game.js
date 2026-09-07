@@ -871,9 +871,24 @@
     const wantMenu = musicContext === 'menu';
     const wantNormal = musicContext === 'normal';
     const wantBoss = musicContext === 'boss';
+    const wantEnding = musicContext === 'ending';
     if (!wantMenu && !menuBgmAudio.paused) menuBgmAudio.pause();
     if (!wantNormal && !bgmAudio.paused) bgmAudio.pause();
     if (!wantBoss && !bossBgmAudio.paused) bossBgmAudio.pause();
+    // P0 FULL GAMEPAD E2E HOTFIX (Part E, audio single-owner hardening):
+    // endingRevealAudio (Shining Grace) was previously excluded from this
+    // watchdog entirely — enterEndingReveal()/exitEndingReveal() were its
+    // only two touch points, so if anything ever left it playing outside
+    // the ENDING RESULT screen (a priming-teardown race, a future
+    // regression, a stray call this audit didn't find), NOTHING would ever
+    // correct it. This closes that gap: the SAME every-~500ms watchdog
+    // that already guarantees "at most one of menu/normal/boss BGM is ever
+    // playing" now also guarantees Shining Grace is paused whenever
+    // musicContext isn't 'ending' — belt-and-suspenders on top of
+    // enterEndingReveal()/exitEndingReveal()'s own direct control, never a
+    // replacement for it (this never itself STARTS the song — only 'ending'
+    // entry does that — it only ever silences it when it shouldn't be on).
+    if (!wantEnding && typeof endingRevealAudio !== 'undefined' && !endingRevealAudio.paused) endingRevealAudio.pause();
     if (wantMenu && menuBgmStarted && menuBgmAudio.paused) menuBgmAudio.play().catch(() => {});
     if (wantNormal && bgmAudio.paused) {
       const p = bgmAudio.play();
@@ -2210,6 +2225,7 @@
     y: 0,
     lastValidY: 0, // PART2-turn SECTION A: last Y clampPlayerToScreen() itself resolved to — the AREA-boundary wall check's "were we already inside the door band" reference, reset alongside x/y on every stage/mode reset
     lastValidX: 0, // P0 GAME FLOW & COMBAT HOTFIX: paired with lastValidY — the last position confirmed NOT to have tunneled through an AREA-boundary wall, used by clampPlayerToScreen()'s own swept-segment safety net (see its comment) to catch a single frame's movement (typically a DASH, especially in a wide LANDSCAPE-locked W) leaping clean over the ±AREA_BOUNDARY_DOOR_BAND band the door-band check alone can miss
+    coverRevealedAt: -Infinity, // P0 FULL GAMEPAD E2E HOTFIX (Part O): the last time FIRE broke barrel-shadow cover — see isPlayerUnderBarrelShadowCover()
 
     speed: 240 * 0.80, // px/sec — PART 28: 80% of the previous 240 (DASH speed/distance untouched)
     baseDir: 'down',   // discrete sprite bucket — driven by AIM STICK while it's engaged, by MOVE STICK otherwise (see update())
@@ -3260,6 +3276,14 @@
   // BOSS_HP_MAX constant with no boss.type branch — any other value here
   // would silently desync ROID's own gauge fill from its real HP.
   const ROID_MAX_HP = BOSS_HP_MAX;
+  // P0 FULL GAMEPAD E2E HOTFIX (Part K): ROID1-only HP doubling — spawnRoidBoss()
+  // applies this multiplier ONLY when type==='roid1' (ROID2/GABRIEL/ADAM/
+  // ADAM SPHERE all keep reading BOSS_HP_MAX unmodified everywhere else in
+  // this file). drawBossLifeHud()'s own maxHp calculation is updated to
+  // match (see its own comment) so the on-screen gauge still fills/empties
+  // correctly across ROID1's real HP range instead of clipping at 100% for
+  // the first half of the fight.
+  const ROID1_HP_MULTIPLIER = 2;
   // ROID_BULLET_DAMAGE: reuses BULLET_DAMAGE — the SAME constant DRONE's own
   // laser already reuses for its enemy-fire damage (see
   // resolveSecurityLaserHit()), rather than inventing a new number.
@@ -5634,7 +5658,7 @@
     boss.name = profile.name;
     boss.spawned = true;
     roidState.dark = !!dark; // POST-v1.0 SECTION 15: late-STORY darkened variant — same AI, tint only (see drawRoidBoss())
-    boss.hp = ROID_MAX_HP;
+    boss.hp = type === 'roid1' ? ROID_MAX_HP * ROID1_HP_MULTIPLIER : ROID_MAX_HP; // P0 FULL GAMEPAD E2E HOTFIX (Part K): ROID1 only, ROID2 untouched
     boss.state = 'search'; // no INTRO cinematic for ROID (spec section 32) — combat starts immediately
     boss.stateEnteredAt = performance.now();
     const areaTop = areaTopY(currentArea); // same fixed-composition reference spawnBoss() itself uses
@@ -9675,10 +9699,18 @@
   const ENDING_REVEAL_AUDIO_FAILURE_FALLBACK_MS = 20000;
 
   const endingRevealVideoEl = document.getElementById('ending-reveal-video');
-  const endingRevealHeadingEl = document.getElementById('ending-reveal-heading');
-  const endingRevealClearTimeRowEl = document.getElementById('ending-reveal-clear-time-row');
-  const endingRevealContinueRowEl = document.getElementById('ending-reveal-continue-row');
-  const endingRevealRankRowEl = document.getElementById('ending-reveal-rank-row');
+  // P0 FULL GAMEPAD E2E HOTFIX (Part F/G): "RESULTS" and every row LABEL
+  // are now plain always-visible text (see style.css's .ending-reveal-row/
+  // #ending-reveal-heading — no opacity:0 rule applies to them at all) —
+  // only these 3 VALUE spans still fade in on the song-fraction timeline,
+  // and the row-name -> variable mapping is now "which value", not "which
+  // row" (endingRevealClearTimeValueEl is still named after the internal
+  // clear-time/PLAY-TIME value it holds — see computeResultRank()'s own
+  // untouched playTimeSec math — only the on-screen LABEL text changed to
+  // "PLAY TIME" in index.html).
+  const endingRevealClearTimeValueEl = document.getElementById('ending-reveal-clear-time');
+  const endingRevealContinueValueEl = document.getElementById('ending-reveal-continue');
+  const endingRevealRankValueEl = document.getElementById('ending-reveal-rank');
   const endingRevealArtistBtnEl = document.getElementById('ending-reveal-artist-btn');
   const endingRevealBackToTopBtnEl = document.getElementById('ending-reveal-backtotop-btn');
 
@@ -9697,9 +9729,9 @@
     endingRevealState.revealedClearTime = true;
     endingRevealState.revealedContinue = true;
     endingRevealState.revealedRank = true;
-    endingRevealClearTimeRowEl.classList.add('ending-reveal-visible');
-    endingRevealContinueRowEl.classList.add('ending-reveal-visible');
-    endingRevealRankRowEl.classList.add('ending-reveal-visible');
+    endingRevealClearTimeValueEl.classList.add('ending-reveal-visible');
+    endingRevealContinueValueEl.classList.add('ending-reveal-visible');
+    endingRevealRankValueEl.classList.add('ending-reveal-visible');
   }
   function armEndingRevealAudioFailureFallback() {
     if (endingRevealState.fallbackTimer) return; // only ever one fallback timer in flight
@@ -9764,17 +9796,22 @@
     const duration = endingRevealAudio.duration;
     if (!isFinite(duration) || duration <= 0) return; // duration not known yet this tick — the 'ended' handler's own revealAllEndingRevealStatsNow() is the guaranteed backstop regardless
     const frac = (now - endingRevealState.songStartedAt) / (duration * 1000);
+    // P0 FULL GAMEPAD E2E HOTFIX (Part G item 39/41): reveal order is
+    // PLAY TIME value -> CONTINUE value -> RANK letter (RANK always last)
+    // — the SAME three fraction thresholds as before, just now applied to
+    // the value spans instead of the whole row (labels are already
+    // visible from screen-entry).
     if (!endingRevealState.revealedClearTime && frac >= ENDING_REVEAL_CLEAR_TIME_FRAC) {
       endingRevealState.revealedClearTime = true;
-      endingRevealClearTimeRowEl.classList.add('ending-reveal-visible');
+      endingRevealClearTimeValueEl.classList.add('ending-reveal-visible');
     }
     if (!endingRevealState.revealedContinue && frac >= ENDING_REVEAL_CONTINUE_FRAC) {
       endingRevealState.revealedContinue = true;
-      endingRevealContinueRowEl.classList.add('ending-reveal-visible');
+      endingRevealContinueValueEl.classList.add('ending-reveal-visible');
     }
     if (!endingRevealState.revealedRank && frac >= ENDING_REVEAL_RANK_FRAC) {
       endingRevealState.revealedRank = true;
-      endingRevealRankRowEl.classList.add('ending-reveal-visible');
+      endingRevealRankValueEl.classList.add('ending-reveal-visible');
     }
   }
   // The ONE entry point — called from beginStoryEscapeEnding()'s MAIN
@@ -9791,10 +9828,17 @@
     // RESULT values — the EXACT same source of truth as enterResultScreen()/
     // computeResultRank() (item 21/22/36: rank calculation untouched).
     const playTimeSec = Math.max(0, (performance.now() - storyStartTime) - storyPausedAccumMs) / 1000;
-    const rank = computeResultRank(continueCount, playTimeSec);
-    document.getElementById('ending-reveal-clear-time').textContent = formatPlayTime(playTimeSec);
-    document.getElementById('ending-reveal-continue').textContent = continueCount;
-    document.getElementById('ending-reveal-rank').textContent = rank;
+    const rank = computeResultRank(continueCount, playTimeSec); // untouched — same S/A/B/C/D thresholds as always (Part H only changes this letter's on-screen COLOR, never the calculation)
+    endingRevealClearTimeValueEl.textContent = formatPlayTime(playTimeSec);
+    endingRevealContinueValueEl.textContent = continueCount;
+    endingRevealRankValueEl.textContent = rank;
+    // P0 FULL GAMEPAD E2E HOTFIX (Part H): S is gold, every other rank is
+    // red — toggled here since `rank` is only known at this exact moment;
+    // .toggle(cls, bool) form so REPLAY (a 2nd enterEndingReveal() call
+    // with a possibly-different rank this time) never leaves a stale color
+    // class from the previous run.
+    endingRevealRankValueEl.classList.toggle('ending-reveal-rank-s', rank === 'S');
+    endingRevealRankValueEl.classList.toggle('ending-reveal-rank-other', rank !== 'S');
 
     // item 117 (REPLAY): every entry starts completely fresh, regardless of
     // whatever state a previous run through this same screen left behind.
@@ -9804,9 +9848,9 @@
     endingRevealState.revealedRank = false;
     endingRevealState.artistPageShown = false;
     endingRevealState.backToTopShown = false;
-    endingRevealClearTimeRowEl.classList.remove('ending-reveal-visible');
-    endingRevealContinueRowEl.classList.remove('ending-reveal-visible');
-    endingRevealRankRowEl.classList.remove('ending-reveal-visible');
+    endingRevealClearTimeValueEl.classList.remove('ending-reveal-visible');
+    endingRevealContinueValueEl.classList.remove('ending-reveal-visible');
+    endingRevealRankValueEl.classList.remove('ending-reveal-visible');
     endingRevealArtistBtnEl.hidden = true;
     endingRevealArtistBtnEl.classList.remove('ending-reveal-visible');
     endingRevealBackToTopBtnEl.hidden = true;
@@ -9831,14 +9875,10 @@
     const loopPlayPromise = endingRevealVideoEl.play();
     if (loopPlayPromise && typeof loopPlayPromise.catch === 'function') loopPlayPromise.catch(() => {});
 
-    // P0 INTEGRATED REGRESSION HOTFIX (Part L): "RESULTS" is always the
-    // FIRST thing revealed — shown immediately rather than waiting on any
-    // song-fraction threshold (it is static text, not a computed value),
-    // via the exact same .ending-reveal-visible fade mechanism every other
-    // row uses.
-    endingRevealHeadingEl.classList.remove('ending-reveal-visible');
-    requestAnimationFrame(() => endingRevealHeadingEl.classList.add('ending-reveal-visible'));
-
+    // P0 FULL GAMEPAD E2E HOTFIX (Part F/I): "RESULTS", the row LABELS, and
+    // "THANK YOU FOR PLAYING!!" are all plain always-visible text now (see
+    // style.css) — no JS reveal step needed for any of them; only the 3
+    // value spans above still fade in on the song timeline below.
     startEndingRevealSong(now);
   }
   // item 60-65: BACK TO TOP — the same safe return-to-menu reset every other
@@ -12466,7 +12506,17 @@
   // the manual STEALTH button (never reads/writes player.stealthUntil or
   // its cooldown) — see isPlayerBarrelShadowHiddenFrom() below, the actual
   // per-enemy check every AI target-acquisition site calls.
+  // P0 FULL GAMEPAD E2E HOTFIX (Part N/O): shadow cover is a risk/reward
+  // mechanic, not a permanent invisibility cloak — firing FROM cover
+  // exposes the shot's origin for a short window (BARREL_COVER_REVEAL_MS),
+  // during which every enemy's own isPlayerBarrelShadowHiddenFrom() call
+  // (this function's only real consumer) must see the player as NOT
+  // hidden, exactly as if they'd stepped out of the shadow. Geometry is
+  // otherwise unchanged — still purely "is the player's world position
+  // inside any alive barrel's own south shadow ellipse".
+  const BARREL_COVER_REVEAL_MS = 1200; // within the requested ~0.8-1.5s band
   function isPlayerUnderBarrelShadowCover() {
+    if (performance.now() < player.coverRevealedAt + BARREL_COVER_REVEAL_MS) return false;
     for (const b of barrels) {
       if (!b.alive) continue;
       const s = barrelShadowEllipse(b);
@@ -14709,6 +14759,20 @@
   let lastFireTime = -Infinity;
 
   function spawnBullet() {
+    // P0 FULL GAMEPAD E2E HOTFIX (Part O): this real shot-fired moment is
+    // exactly "PLAYERが射撃した瞬間" — checked against the RAW geometric
+    // shadow test (barrels/ellipse math only, not isPlayerUnderBarrelShadowCover()
+    // itself, which would already be reading the reveal window we're about
+    // to set) so a shot fired right at the boundary of an already-active
+    // reveal window still correctly re-arms a fresh one rather than no-op'ing.
+    let firedFromCover = false;
+    for (const b of barrels) {
+      if (!b.alive) continue;
+      const s = barrelShadowEllipse(b);
+      const dx = (player.x - s.cx) / s.rx, dy = (player.y - s.cy) / s.ry;
+      if (dx * dx + dy * dy <= 1) { firedFromCover = true; break; }
+    }
+    if (firedFromCover) player.coverRevealedAt = performance.now();
     const angle = getFinalAimAngle();
     const muzzle = getMuzzleWorldPosition(angle);
     const bx = muzzle.x, by = muzzle.y;
@@ -14861,6 +14925,7 @@
     applyBodyHitToBoss, applyWeakPointHitToBoss, applyExplosionDamageToBoss, bossEnterState,
     getWeakPointScreenPos, arcClawSlashes, spawnArcClawSlash,
     gameState, barrels, explosions, bullets, spawnBarrels, startMode, explodeBarrel, // debug/verification only — SECTION F
+    spawnBullet, BARREL_COVER_REVEAL_MS, updateRoidTargetTracking, // P0 FULL GAMEPAD E2E HOTFIX (Part N/O) — debug/verification only
     BARREL_COUNT, get barrelTargetCount() { return barrelTargetCount; }, // debug/verification only
     tryExplodeBarrelAtPoint, tryExplodeBarrelsAlongSegment, updateRoidMissile, beginRoidMissile, updateRoidCoverCounter, // HOTFIX 4 SECTIONS 13-17 — debug/verification only
     isPlayerBarrelShadowHiddenFrom, isPlayerUnderBarrelShadowCover, barrelShadowEllipse, // POST-v2.0 SECTION 24 — debug/verification only
@@ -14910,6 +14975,7 @@
     // Debug/verification only — DARK OUT PART 4: ROID1/ROID2 shared BOSS AI.
     spawnRoidBoss, updateRoidBoss, drawRoidBoss, applyBodyHitToRoidBoss, maintainRoidEscortDrones, ROID_ESCORT_COUNT, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 50-56 — debug/verification only
     roidState, enemyBullets, updateEnemyBullets, fireRoidBullet, fireDroneSniperShot, isRoidActivelyFiring, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 44-49 — debug/verification only
+    beginRoidSniper, updateRoidSniper, ROID1_SNIPER_SHOT_COUNT, ROID1_HP_MULTIPLIER, // P0 FULL GAMEPAD E2E HOTFIX (Part K/L) — debug/verification only
     ROID_BOSS_PROFILES, ROID_MAX_HP, ROID_BULLET_DAMAGE, ROID_HURT_RADIUS,
     ROID_BURST_SHOT_COUNT, ROID_BURST_SHOT_INTERVAL_MS, ROID_BURST_COOLDOWN_MS,
     ROID_SEARCH_FRAME_MS, ROID_FIRE_FRAME_MS, ROID_ATTACK_POSE_HOLD_MS, // GAMEPAD/ROID1 FIRE-SPRITE SYNC BATCH — debug/verification only
@@ -15002,6 +15068,11 @@
     get eventMovieElementUnlocked() { return eventMovieElementUnlocked; },
     get backgroundBgmUnlocked() { return backgroundBgmUnlocked; },
     get menuBgmStarted() { return menuBgmStarted; },
+    // P0 FULL GAMEPAD E2E HOTFIX (Part A) — debug/verification only: the
+    // rolling per-frame gamepad trace (see recordGamepadDebugTrace()) —
+    // readable from a real device's console (window.__game.gamepadDebugTrace)
+    // or by this batch's own Playwright E2E test.
+    get gamepadDebugTrace() { return gamepadDebugTrace; },
     attemptStartupAudioUnlock, // debug/verification only
     get menuBgmAudio() { return menuBgmAudio; },
     get bgmAudio() { return bgmAudio; },
@@ -17209,7 +17280,11 @@
     const x = W - HUD_MARGIN_X - HUD_BAR_W;
     const name = usingAdamSphere ? 'ADAM SPHERE' : boss.name;
     const hp = usingAdamSphere ? adamSphereCombatState.hp : boss.hp;
-    const maxHp = usingAdamSphere ? ADAM_SPHERE_COMBAT_MAX_HP : BOSS_HP_MAX;
+    // P0 FULL GAMEPAD E2E HOTFIX (Part K): ROID1's own doubled max — every
+    // other boss (ROID2/GABRIEL/ADAM/ADAM SPHERE) keeps its exact previous
+    // maxHp value, so this gauge is the only other place (besides
+    // spawnRoidBoss() itself) that needed to know about the multiplier.
+    const maxHp = usingAdamSphere ? ADAM_SPHERE_COMBAT_MAX_HP : (boss.type === 'roid1' ? BOSS_HP_MAX * ROID1_HP_MULTIPLIER : BOSS_HP_MAX);
     ctx.save();
     ctx.textAlign = 'right';
     ctx.font = 'bold 11px sans-serif';
@@ -17691,19 +17766,76 @@
     gamepadLastButtons = pressedNow;
     gamepadLastAnyButtonPressed = anyButtonPressedNow;
     updateGamepadDebugOverlay(gp);
+    recordGamepadDebugTrace(gp, anyButtonPressedNow, pressedNow);
+  }
+
+  // P0 FULL GAMEPAD E2E HOTFIX (Part A items 2-4): a per-frame rolling trace
+  // — not gated behind GAMEPAD_DEBUG/localStorage (this is cheap: a capped
+  // ring buffer, plain object push+shift) — so BOTH a real device (read via
+  // the console: `window.__game.gamepadDebugTrace`) and this batch's own
+  // Playwright E2E test can inspect EXACTLY what updateGamepadInput() saw
+  // and decided on any given frame: connection state, every button/axis
+  // value, which branch (movie/gameplay/pause-menu/full-menu-nav) was
+  // taken, the menu container/focus it resolved, the input-lock (armed)/
+  // release-gate state, and a human-readable `reason` explaining why a
+  // press did or didn't do anything — the exact "何故STARTしないか" trace
+  // the spec calls for, rather than re-asserting "polling runs" alone.
+  let gamepadDebugTrace = [];
+  const GAMEPAD_DEBUG_TRACE_MAX = 180; // ~3s at 60fps — enough to see a whole TAP TO START/menu-confirm sequence without unbounded growth
+  function recordGamepadDebugTrace(gp, anyButtonPressedNow, pressedNow) {
+    const screen = gameState.screen;
+    const gameplayActive = screen === 'gameplay' && !gameState.paused;
+    const inPauseMenu = screen === 'gameplay' && gameState.paused && pauseMenuPanel && !pauseMenuPanel.hidden;
+    const navContainerEl = (!gameplayActive && !eventMovieState.active) ? getGamepadMenuNavContainer() : null;
+    let reason = 'n/a';
+    if (!gp) reason = 'no-gamepad-detected (navigator.getGamepads() returned nothing connected at this index)';
+    else if (eventMovieState.active) reason = eventMovieTapFallbackEl.hidden ? 'movie-playing-no-fallback-visible' : 'movie-tap-fallback-visible';
+    else if (gameplayActive) reason = 'gameplay-active-direct-control';
+    else if (inPauseMenu) reason = 'pause-menu-nav';
+    else if (screen === 'opening') reason = gamepadInputArmed ? 'opening-armed-waiting-for-press' : 'opening-disarmed-waiting-for-full-release';
+    else if (navContainerEl) reason = 'full-menu-nav:' + navContainerEl.id;
+    else reason = 'no-nav-container-resolved-for-screen:' + screen;
+    gamepadDebugTrace.push({
+      t: Math.round(performance.now()),
+      screen,
+      paused: gameState.paused,
+      connected: !!gp,
+      index: gamepadIndex,
+      buttonsLength: gp ? gp.buttons.length : 0,
+      anyButtonPressedNow: !!anyButtonPressedNow,
+      pressedButtons: gp ? gp.buttons.reduce((acc, b, i) => { if (b && b.pressed) acc.push(i); return acc; }, []) : [],
+      axes: gp ? Array.from(gp.axes).map((v) => Math.round(v * 100) / 100) : [],
+      gamepadInputArmed,
+      gamepadLastAnyButtonPressed,
+      eventMovieActive: eventMovieState.active,
+      gameplayActive,
+      inPauseMenu,
+      navContainerId: navContainerEl ? navContainerEl.id : null,
+      gamepadMenuNavFocusIndex,
+      eventMovieElementUnlocked,
+      backgroundBgmUnlocked,
+      menuBgmStarted,
+      reason,
+    });
+    if (gamepadDebugTrace.length > GAMEPAD_DEBUG_TRACE_MAX) gamepadDebugTrace.shift();
   }
 
   // ---------- GAMEPAD_DEBUG overlay (production default OFF) ----------
   const gamepadDebugEl = document.getElementById('gamepad-debug-overlay');
   function updateGamepadDebugOverlay(gp) {
     if (!GAMEPAD_DEBUG || !gamepadDebugEl) return;
-    if (!gp) { gamepadDebugEl.textContent = 'GAMEPAD: not connected'; return; }
+    if (!gp) { gamepadDebugEl.textContent = 'GAMEPAD: not connected\nSCREEN: ' + gameState.screen; return; }
     const axesStr = Array.from(gp.axes).map((v) => v.toFixed(2)).join(', ');
     const pressedList = [];
     gp.buttons.forEach((b, i) => { if (b.pressed) pressedList.push(i); });
+    const navContainerEl = (gameState.screen !== 'gameplay' && !eventMovieState.active) ? getGamepadMenuNavContainer() : null;
     gamepadDebugEl.textContent =
       `GAMEPAD CONNECTED\nID: ${gp.id}\nMAPPING: ${gamepadMappingSource} (raw: ${gp.mapping || '(empty)'})\n` +
-      `AXES[${gp.axes.length}]: ${axesStr}\nBUTTON PRESSED: ${pressedList.length ? pressedList.join(', ') : '(none)'}`;
+      `AXES[${gp.axes.length}]: ${axesStr}\nBUTTON PRESSED: ${pressedList.length ? pressedList.join(', ') : '(none)'}\n` +
+      `SCREEN: ${gameState.screen}  PAUSED: ${gameState.paused}\n` +
+      `ARMED: ${gamepadInputArmed}  LAST_ANY: ${gamepadLastAnyButtonPressed}\n` +
+      `NAV CONTAINER: ${navContainerEl ? navContainerEl.id : '(none)'}  FOCUS: ${gamepadMenuNavFocusIndex}\n` +
+      `AUDIO UNLOCK: movie=${eventMovieElementUnlocked} bgm=${backgroundBgmUnlocked} menu=${menuBgmStarted}`;
   }
 
   let lastBgmWatchdogAt = 0;

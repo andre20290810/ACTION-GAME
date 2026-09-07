@@ -1313,19 +1313,17 @@ body {
   gap: 10px;
   max-width: 82vw;
 }
-/* Each row fades in independently, timed off the song's own duration (see
-   updateEndingReveal()) — a slow, single opacity transition only, never a
-   slide/bounce/scale (item 32/37). */
-.ending-reveal-stat {
+/* P0 FULL GAMEPAD E2E HOTFIX (Part F/G): rows are plain, always-visible
+   containers now — only the VALUE span inside each (.ending-reveal-fade)
+   ever fades. Labels (RANK/PLAY TIME/CONTINUE) show immediately, per
+   spec item 40. */
+.ending-reveal-row {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
-  opacity: 0;
-  transition: opacity 2.2s ease;
 }
-.ending-reveal-stat.ending-reveal-visible { opacity: 1; }
-.ending-reveal-stat .ending-reveal-stat-label {
+.ending-reveal-row .ending-reveal-stat-label {
   font-family: sans-serif;
   font-weight: 600;
   font-size: clamp(10px, 2.6vw, 12px);
@@ -1334,7 +1332,7 @@ body {
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
   text-align: left;
 }
-.ending-reveal-stat .ending-reveal-stat-value {
+.ending-reveal-row .ending-reveal-stat-value {
   font-family: sans-serif;
   font-weight: 700;
   font-size: clamp(16px, 4.2vw, 20px);
@@ -1343,13 +1341,23 @@ body {
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.75);
   text-align: left;
 }
-/* P0 INTEGRATED REGRESSION HOTFIX (Part L): "RESULTS" heading — same quiet
-   film-credits tone as the stat rows (no box/border/HUD panel), sized
-   between the small stat-label and the large RANK value, left-aligned
-   with the rest of the block, part of the SAME fade-in mechanism
-   (.ending-reveal-stat/.ending-reveal-visible) as every other row so it
-   reveals first per updateEndingReveal()'s own ordering. */
+/* The reveal-by-song-fraction timeline (see updateEndingReveal()) now
+   targets just the value span, in order PLAY TIME -> CONTINUE -> RANK
+   letter — a slow, single opacity transition only, never a slide/bounce/
+   scale (item 32/37 from the prior batch, unchanged principle). */
+.ending-reveal-fade {
+  opacity: 0;
+  transition: opacity 2.2s ease;
+}
+.ending-reveal-fade.ending-reveal-visible { opacity: 1; }
+/* P0 FULL GAMEPAD E2E HOTFIX (Part F): "RESULTS" is the one CENTERED line
+   in this block — align-self:stretch makes it span the same width as the
+   left-aligned rows below it so text-align:center actually has room to
+   center within, rather than just centering within its own (already
+   left-hugging) content box. Not part of the fade timeline — visible from
+   screen-entry, like the row labels. */
 #ending-reveal-heading {
+  align-self: stretch;
   margin: 0 0 4px 0;
   font-family: sans-serif;
   font-weight: 700;
@@ -1357,13 +1365,33 @@ body {
   letter-spacing: 0.22em;
   color: rgba(255, 255, 255, 0.92);
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.75);
-  text-align: left;
+  text-align: center;
 }
 /* RANK reads last and slightly larger — the one moment of visual emphasis
-   in an otherwise restrained screen (item 35). */
+   in an otherwise restrained screen (item 35 from the prior batch). */
 .ending-reveal-rank-row .ending-reveal-stat-value {
   font-size: clamp(28px, 8vw, 40px);
   letter-spacing: 0.06em;
+}
+/* P0 FULL GAMEPAD E2E HOTFIX (Part H): S is gold, every other rank
+   (A/B/C/D) is red — toggled by enterEndingReveal() via this one class
+   rather than a per-letter lookup table in CSS, since the rank text
+   itself is already computed in JS (computeResultRank(), untouched). */
+.ending-reveal-rank-s { color: #d4af37; }
+.ending-reveal-rank-other { color: #e0483e; }
+/* P0 FULL GAMEPAD E2E HOTFIX (Part I): quiet, subdued — never competes
+   with the loop-video background or the RANK/PLAY TIME/CONTINUE block
+   above it. Not part of the value fade timeline (visible from screen-
+   entry, same as the row labels/heading). */
+#ending-reveal-thankyou {
+  margin-top: 6px;
+  font-family: sans-serif;
+  font-weight: 600;
+  font-size: clamp(12px, 3vw, 14px);
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.55);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+  text-align: left;
 }
 #ending-reveal-nav {
   position: absolute;
