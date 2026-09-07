@@ -305,6 +305,10 @@
     // the existing GABRIEL2->GABRIEL3 breather stage below.
     { type: 'whiteShadow', forceHeal: true },
     { type: 'randomSlot', count: 2, noDuplicate: true },
+    // VOID BRIDGE (DARK OUT PART): the IMAGE 1 bridge stage, directly before
+    // GABRIEL2 — never touches the GABRIEL encounter order itself, purely
+    // inserted ahead of it.
+    { type: 'voidBridge', key: 'g2' },
     { type: 'boss', boss: 'gabriel', encounterIndex: 1 },
     // HOTFIX 4.1 ADDENDUM SECTIONS 13-17: the 2nd {boss:'roid1', dark:true}
     // entry that used to sit here was a genuine duplicate STAGE PLAN entry
@@ -327,6 +331,9 @@
     // entry only — every other 'whiteShadow' entry (M1 above, SECRET's own
     // S1) keeps the existing damage-taken-based HEAL/AMMO roll untouched.
     { type: 'whiteShadow', forceHeal: true },
+    // VOID BRIDGE (DARK OUT PART): the IMAGE 2 bridge stage, directly before
+    // GABRIEL3 (final) — same reasoning as the G2 insertion above.
+    { type: 'voidBridge', key: 'g3' },
     { type: 'boss', boss: 'gabriel', encounterIndex: 2, final: true },
     { type: 'adamSphere' },
   ];
@@ -472,7 +479,14 @@
   // stage 4 so TRAINING stays endlessly repeatable, exactly like it already
   // was before this rebuild.
   let trainingStageIndex = 0;
-  const TRAINING_STAGE_COUNT = 5;
+  // VOID BRIDGE (DARK OUT PART): bumped from 5 to 7 — 2 new VOID BRIDGE
+  // stages inserted as FINAL-2/FINAL-1, directly before the existing final
+  // stage (DRONE+ROID1), which itself keeps its position as the true final
+  // stage (see enterSecurityTrainingStage()'s own stage indices below). This
+  // is the ONE place TRAINING's stage count is defined — nothing else in
+  // this file hardcodes "5"/"stage 5" for SECURITY TRAINING, so no other
+  // numbering needed auditing/fixing.
+  const TRAINING_STAGE_COUNT = 7;
 
   // DARK OUT PART 1: the new-content STAGE REGISTRY — every NORMAL/EVENT/BOSS
   // background for the upcoming ROID1/ROID2/ADAM content, registered as one
@@ -533,6 +547,15 @@
     // ONE background for the new MAIN SCENARIO post-GABRIEL3 ADAM SPHERE
     // STAGE — never reused for any other stage.
     { id: 'boss_c10_adam_sphere_main', type: 'boss', background: { file: 'assets/stages/boss/c10_adam_sphere_main.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.80 } },
+    // VOID BRIDGE (DARK OUT PART): the 2 new single-AREA bridge stages —
+    // deliberately no floorLeftFrac/floorRightFrac (unlike every other
+    // entry above) since these stages have no AREA1<->AREA2 door-wall at
+    // all (clampPlayerToScreen()'s own getFloorXRangeWorld() returns null
+    // without those fields, so that whole [WALL][DOOR][WALL] system is
+    // skipped outright) — walkable-vs-BLACK-VOID is governed entirely by
+    // VOID_BRIDGE_STAGES' own rect geometry instead.
+    { id: 'event_void_bridge_g2', type: 'event', background: { file: 'assets/stages/void/void_bridge_g2.jpg' } },
+    { id: 'event_void_bridge_g3', type: 'event', background: { file: 'assets/stages/void/void_bridge_g3.jpg' } },
   ];
   STAGE_REGISTRY.forEach((s) => {
     s.background.img = new Image();
@@ -1444,6 +1467,15 @@
       const entry = getStageRegistryEntry(bossBattleState.stageId);
       if (entry) return entry.background;
     }
+    // VOID BRIDGE (DARK OUT PART): SECURITY TRAINING's own 2 VOID BRIDGE
+    // stages (stage 4/5, see enterSecurityTrainingStage()) resolve their
+    // background from STAGE_REGISTRY, same mechanism MAIN's own voidBridge
+    // plan entries use via storyScenarioState.stageOverrideId — checked
+    // before the plain TRAINING_BACKGROUNDS pool lookup just below.
+    if (gameState.mode === 'securityTraining' && trainingVoidBridgeKey) {
+      const entry = getStageRegistryEntry(VOID_BRIDGE_STAGES[trainingVoidBridgeKey].stageId);
+      if (entry) return entry.background;
+    }
     if (gameState.mode === 'training') return TRAINING_BACKGROUNDS[basicTrainingBgIndex];
     if (gameState.mode === 'securityTraining') return TRAINING_BACKGROUNDS[securityTrainingBgIndex];
     // SECTION S: a DRONE-type STORY STAGE reads from the same TRAINING
@@ -1566,7 +1598,12 @@
   function isStoryDroneStage() {
     if (gameState.mode !== 'boss') return false;
     const plan = activeStagePlanArray()[currentStageIndex];
-    return !!plan && (plan.type === 'drone' || plan.type === 'mixed' || plan.type === 'whiteShadow' || plan.type === 'cultivationLab');
+    // VOID BRIDGE (DARK OUT PART): included here for the exact same reason
+    // cultivationLab already is — a physical-EXIT-only stage with no kill
+    // requirement (worldScrollUnlocked()'s own isStoryDroneStage() branch
+    // below opens the EXIT immediately, never gated on defeating the 3
+    // DRONEs — item 83/84's own explicit "DRONE全滅を必須CLEAR条件にしない").
+    return !!plan && (plan.type === 'drone' || plan.type === 'mixed' || plan.type === 'whiteShadow' || plan.type === 'cultivationLab' || plan.type === 'voidBridge');
   }
   // HOTFIX 4 SECTIONS 18-21: PROJECT ADAM SITE (the cultivation lab waypoint)
   // is AREA1-only — no AREA2 is ever generated for it. Same "ask the active
@@ -2226,6 +2263,7 @@
     lastValidY: 0, // PART2-turn SECTION A: last Y clampPlayerToScreen() itself resolved to — the AREA-boundary wall check's "were we already inside the door band" reference, reset alongside x/y on every stage/mode reset
     lastValidX: 0, // P0 GAME FLOW & COMBAT HOTFIX: paired with lastValidY — the last position confirmed NOT to have tunneled through an AREA-boundary wall, used by clampPlayerToScreen()'s own swept-segment safety net (see its comment) to catch a single frame's movement (typically a DASH, especially in a wide LANDSCAPE-locked W) leaping clean over the ±AREA_BOUNDARY_DOOR_BAND band the door-band check alone can miss
     coverRevealedAt: -Infinity, // P0 FULL GAMEPAD E2E HOTFIX (Part O): the last time FIRE broke barrel-shadow cover — see isPlayerUnderBarrelShadowCover()
+    fallRecoveryUntil: -Infinity, // VOID BRIDGE (DARK OUT PART): brief invulnerability window after a BLACK VOID fall — see resolveVoidBridgeFall()/isPlayerInvulnerable()
 
     speed: 240 * 0.80, // px/sec — PART 28: 80% of the previous 240 (DASH speed/distance untouched)
     baseDir: 'down',   // discrete sprite bucket — driven by AIM STICK while it's engaged, by MOVE STICK otherwise (see update())
@@ -2606,6 +2644,15 @@
     // gets the identical pin — this stage must never be enterable into a
     // phantom AREA2 either, regardless of how far the player walks north.
     if (isCultivationLabStage() && player.y < 0) player.y = 0;
+    // VOID BRIDGE (DARK OUT PART): the same AREA1-only pin as PROJECT ADAM
+    // SITE/cultivation lab just above — no AREA2 exists for this stage
+    // either. The fall check itself runs right after (still before the
+    // final lastValidX/Y snapshot below, so it can read this frame's REAL
+    // pre-snapshot travelled segment) and may itself teleport the player
+    // back to the entrance — never blocked/overridden by this pin since a
+    // fall-teleport always lands well inside the y>=0 band anyway.
+    if (isVoidBridgeStage() && player.y < 0) player.y = 0;
+    updateVoidBridgeFallCheck();
     player.lastValidY = player.y;
     player.lastValidX = player.x;
   }
@@ -2682,8 +2729,13 @@
   // Single source of truth for "can the player be damaged right now" — DASH
   // grants full invulnerability to every enemy-origin hit for its whole
   // 0.8s duration (boss melee, boss claw projectile, any future source).
+  // VOID BRIDGE PART S item 87/88: the same brief window after a BLACK VOID
+  // fall (player.fallRecoveryUntil, set by resolveVoidBridgeFall()) is
+  // folded in here rather than a second parallel invulnerability check, so
+  // every existing enemy-damage call site that already gates on this one
+  // function automatically also respects fall recovery for free.
   function isPlayerInvulnerable() {
-    return player.dashing;
+    return player.dashing || performance.now() < player.fallRecoveryUntil;
   }
 
   // ---------- Boss ----------
@@ -3128,6 +3180,208 @@
       const scale = minDist / dist;
       player.x = closest.x + dx * scale;
       player.y = closest.y + dy * scale;
+    }
+  }
+
+  // ==========================================================================
+  // DARK OUT: VOID BRIDGE stages — 2 new single-AREA "cross a BLACK VOID
+  // bridge" stages (MAIN, before GABRIEL2/GABRIEL3; and TRAINING, before the
+  // existing final stage). Same AREA1-only, W/H-canvas-fraction-rect
+  // convention PROJECT_ADAM_TANK_RECT_*_FRAC above already established for
+  // single-screen stages — never image-native fractions (getStageDrawMetrics()
+  // depends on stage.img.naturalWidth being loaded; W/H-fraction geometry
+  // works immediately and matches what the player actually sees, since the
+  // background is drawn "cover"-style centered in the same W×H canvas).
+  // Geometry is a small set of rects approximating the visible metal
+  // walkway/junction/platform structure in each attached photo — verticals +
+  // horizontal cross-walkways + top/bottom platforms — deliberately "a few
+  // generous rects" rather than a pixel-traced polygon, per this batch's own
+  // explicit instruction that a rect-combination approximation is acceptable
+  // as long as it doesn't visibly drift from the art. Any point inside ANY
+  // rect is walkable; everywhere else is BLACK VOID (fall).
+  //
+  // IMPORTANT (found via direct Playwright testing, not guessed): the fall
+  // check tests the PLAYER's own FOOT point, which sits noticeably BELOW
+  // player.y (getPlayerFootWorldPosition()'s own footFrac offset — a fixed
+  // ~55-60px south of player.y at this game's SPRITE_DRAW_H, i.e. roughly an
+  // extra 6-9% of H depending on device). The top/bottom PLATFORM rects
+  // below are therefore each given a few extra percent of vertical margin
+  // beyond where the artwork's own platform edge visually sits, and
+  // entranceFrac.y is deliberately placed a bit above (north of) where the
+  // bottom platform visually starts — so the PLAYER's drawn FOOT (not
+  // player.y itself) lands correctly on the platform once spawned, and a
+  // standing player is never immediately flagged as having fallen.
+  const VOID_BRIDGE_STAGES = {
+    g2: {
+      stageId: 'event_void_bridge_g2', // STAGE_REGISTRY entry — void_bridge_g2.jpg (IMAGE 1, 3-walkway bridge)
+      entranceFrac: { x: 0.50, y: 0.85 }, // bottom platform — PLAYER spawn / fall-return point (player.y, NOT foot — see comment above)
+      rects: [
+        { x0: 0.20, x1: 0.80, y0: 0.03, y1: 0.14 }, // top platform (EXIT sits here) — widened to overlap the columns' own y0=0.10 seam
+        { x0: 0.20, x1: 0.80, y0: 0.86, y1: 0.99 }, // bottom platform (entrance) — widened north to cover the foot-offset margin
+        { x0: 0.275, x1: 0.365, y0: 0.10, y1: 0.90 }, // vertical walkway 1 (west)
+        { x0: 0.455, x1: 0.545, y0: 0.10, y1: 0.90 }, // vertical walkway 2 (center)
+        { x0: 0.635, x1: 0.725, y0: 0.10, y1: 0.90 }, // vertical walkway 3 (east)
+        { x0: 0.12, x1: 0.88, y0: 0.245, y1: 0.315 }, // horizontal junction row 1
+        { x0: 0.12, x1: 0.88, y0: 0.425, y1: 0.495 }, // horizontal junction row 2
+        { x0: 0.12, x1: 0.88, y0: 0.605, y1: 0.675 }, // horizontal junction row 3
+        { x0: 0.12, x1: 0.88, y0: 0.785, y1: 0.855 }, // horizontal junction row 4
+      ],
+      // 3 DRONE spawn nodes, one per mid junction row (top/bottom rows kept
+      // clear near the EXIT/entrance) — x/y in W/H-canvas fractions, swing is
+      // the safe patrol half-range (also a W-fraction) confined to that
+      // row's own horizontal-walkway rect, well inside its [0.12,0.88] span.
+      droneSpotsFrac: [
+        { x: 0.50, y: 0.28, swing: 0.25 },
+        { x: 0.50, y: 0.46, swing: 0.25 },
+        { x: 0.50, y: 0.64, swing: 0.25 },
+      ],
+    },
+    g3: {
+      stageId: 'event_void_bridge_g3', // STAGE_REGISTRY entry — void_bridge_g3.jpg (IMAGE 2, 2-walkway bridge)
+      entranceFrac: { x: 0.50, y: 0.85 }, // see the foot-offset comment above VOID_BRIDGE_STAGES
+      rects: [
+        { x0: 0.25, x1: 0.75, y0: 0.03, y1: 0.14 }, // top platform (EXIT sits here) — widened, same reasoning as g2
+        { x0: 0.25, x1: 0.75, y0: 0.86, y1: 0.99 }, // bottom platform (entrance) — widened, same reasoning as g2
+        { x0: 0.335, x1: 0.425, y0: 0.10, y1: 0.90 }, // vertical walkway 1 (west)
+        { x0: 0.575, x1: 0.665, y0: 0.10, y1: 0.90 }, // vertical walkway 2 (east)
+        { x0: 0.15, x1: 0.85, y0: 0.315, y1: 0.385 }, // horizontal junction row 1
+        { x0: 0.15, x1: 0.85, y0: 0.615, y1: 0.685 }, // horizontal junction row 2
+      ],
+      droneSpotsFrac: [
+        { x: 0.50, y: 0.35, swing: 0.25 },
+        { x: 0.50, y: 0.65, swing: 0.25 },
+        { x: 0.50, y: 0.065, swing: 0.15 }, // guards the top platform / EXIT approach
+      ],
+    },
+  };
+  // TRAINING's own equivalent of storyScenarioState.stageOverrideId for
+  // MAIN — which VOID BRIDGE geometry set (if any) is active in SECURITY
+  // TRAINING right now. Reset to null at the top of every
+  // enterSecurityTrainingStage() call; only the 2 new VOID BRIDGE stage
+  // branches there set it.
+  let trainingVoidBridgeKey = null;
+  // True only while a VOID BRIDGE stage is genuinely the active stage, in
+  // EITHER MAIN (plan.type==='voidBridge') or SECURITY TRAINING
+  // (trainingVoidBridgeKey) — mirrors isCultivationLabStage()'s own
+  // "ask the active plan/state" pattern.
+  function isVoidBridgeStage() {
+    if (gameState.mode === 'boss') {
+      const plan = activeStagePlanArray()[currentStageIndex];
+      return !!plan && plan.type === 'voidBridge';
+    }
+    if (gameState.mode === 'securityTraining') return !!trainingVoidBridgeKey;
+    return false;
+  }
+  // 'g2' | 'g3' | null — which VOID_BRIDGE_STAGES geometry set applies right
+  // now, resolved the same way for both MAIN and TRAINING.
+  function activeVoidBridgeKey() {
+    if (gameState.mode === 'boss') {
+      const plan = activeStagePlanArray()[currentStageIndex];
+      return (plan && plan.type === 'voidBridge') ? plan.key : null;
+    }
+    if (gameState.mode === 'securityTraining') return trainingVoidBridgeKey;
+    return null;
+  }
+  function voidBridgeEntranceWorldPos(key) {
+    const cfg = VOID_BRIDGE_STAGES[key];
+    return { x: W * cfg.entranceFrac.x, y: H * cfg.entranceFrac.y };
+  }
+  // Point-in-any-rect membership test — the ONE definition of "walkable"
+  // every consumer (the fall check below, and implicitly the DRONE patrol
+  // swing set at spawn time) shares, so visual/geometry/fall detection can
+  // never disagree with each other.
+  function isPointWalkableOnVoidBridge(x, y, key) {
+    const cfg = VOID_BRIDGE_STAGES[key];
+    if (!cfg) return true; // fail open — never trap the player on an unrecognized key
+    for (const r of cfg.rects) {
+      if (x >= W * r.x0 && x <= W * r.x1 && y >= H * r.y0 && y <= H * r.y1) return true;
+    }
+    return false;
+  }
+  // Builds the stage's 3 DRONEs at their fixed nodes, reusing the EXISTING
+  // buildSecurityDrone() constructor verbatim (never a new enemy type) —
+  // only patrolCenterX/patrolRange/x/y are overridden after construction so
+  // each DRONE's own horizontal swing stays confined to its spawn node's
+  // containing walkway rect (buildSecurityDrone()'s own getFloorXRangeWorld()
+  // clamp is a no-op here since this stage declares no floorLeftFrac/
+  // floorRightFrac — see PART D/E's own "no wall, VOID takes over instead"
+  // requirement), so a DRONE can never patrol out over BLACK VOID.
+  function spawnVoidBridgeDrones(key) {
+    const cfg = VOID_BRIDGE_STAGES[key];
+    const types = pickSecurityBehaviorTypes(cfg.droneSpotsFrac.length);
+    cfg.droneSpotsFrac.forEach((spot, i) => {
+      const x = W * spot.x, y = H * spot.y;
+      const drone = buildSecurityDrone(x, y, types[i], 1.0);
+      drone.x = x; drone.y = y;
+      drone.patrolCenterX = x;
+      drone.patrolRange = Math.min(drone.patrolRange, W * spot.swing);
+      securityRobots.push(drone);
+    });
+  }
+  // VOID BRIDGE fall mechanics: 25% of MAX LIFE, a brief recovery/
+  // invulnerability window, and back to this same stage's own entrance —
+  // never a stage/next-stage transition, never a full stage reset (item
+  // 40-42).
+  const VOID_BRIDGE_FALL_DAMAGE_FRAC = 0.25;
+  const VOID_BRIDGE_RECOVERY_MS = 500; // within the requested 300-600ms band
+  const VOID_BRIDGE_SAMPLE_STEP = 4; // world px between swept-path samples — same spacing projectAdamTankRectWorld()'s own swept check above uses
+  function resolveVoidBridgeFall(now, key) {
+    // LIFE INFINITY (playerMaxLife===Infinity) must never be broken by fall
+    // damage — item 33/34. applyDamageToPlayerLife()'s own "Infinity minus a
+    // finite amount stays Infinity" trick only works for a FINITE damage
+    // amount; playerMaxLife*0.25 would itself be Infinity here, and
+    // Infinity-Infinity is NaN, so LIFE INFINITY is special-cased to skip the
+    // subtraction outright while still giving the same hit-flash/blink
+    // feedback applyDamageToPlayerLife() gives on every other hit.
+    if (Number.isFinite(playerMaxLife)) {
+      applyDamageToPlayerLife(now, playerMaxLife * VOID_BRIDGE_FALL_DAMAGE_FRAC);
+    } else {
+      playerHitFlashUntil = now + 150;
+      playerHitBlinkRemainingMs = PLAYER_HIT_BLINK_TOTAL_MS;
+    }
+    // item 44: cancel any in-flight DASH outright so its own trajectory
+    // (still referencing the OLD, pre-fall dashFromX/Y) can never carry the
+    // player straight back into VOID the instant they're returned to the
+    // entrance.
+    player.dashing = false;
+    const spawn = voidBridgeEntranceWorldPos(key);
+    player.x = spawn.x;
+    player.y = spawn.y;
+    // This frame's segment is already fully resolved by the teleport above —
+    // snapshot lastValid now so next frame's swept check starts fresh from
+    // the (walkable) entrance, never re-flagging the OLD pre-fall segment.
+    player.lastValidX = player.x;
+    player.lastValidY = player.y;
+    player.fallRecoveryUntil = now + VOID_BRIDGE_RECOVERY_MS;
+  }
+  // Called every frame from clampPlayerToScreen() (after DASH's own
+  // movement, same timing as clampPlayerAwayFromProjectAdamTank() above),
+  // gated to an active VOID BRIDGE stage only. Samples the PLAYER's own FOOT
+  // point (getPlayerFootWorldPosition()'s exact footFrac offset, applied
+  // here to the swept lastValid->current segment rather than a single
+  // resting point) at VOID_BRIDGE_SAMPLE_STEP intervals — this is what
+  // makes a fast DASH across a gap fall exactly like a slow walk off an
+  // edge: MOVE and DASH share this one check, never two separate
+  // implementations (PART L/M).
+  function updateVoidBridgeFallCheck() {
+    const key = activeVoidBridgeKey();
+    if (!key) return;
+    const now = performance.now();
+    if (now < player.fallRecoveryUntil) return; // just returned from a fall — the entrance itself is safe ground, nothing to re-check yet
+    const footFrac = PLAYER_FOOT_Y / PLAYER_CANVAS_H;
+    const footDY = -SPRITE_DRAW_H / 2 + SPRITE_DRAW_H * footFrac;
+    const x0 = (player.lastValidX !== undefined ? player.lastValidX : player.x);
+    const y0 = (player.lastValidY !== undefined ? player.lastValidY : player.y) + footDY;
+    const x1 = player.x, y1 = player.y + footDY;
+    const segLen = Math.hypot(x1 - x0, y1 - y0);
+    const steps = Math.max(1, Math.ceil(segLen / VOID_BRIDGE_SAMPLE_STEP));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const sx = x0 + (x1 - x0) * t, sy = y0 + (y1 - y0) * t;
+      if (!isPointWalkableOnVoidBridge(sx, sy, key)) {
+        resolveVoidBridgeFall(now, key);
+        return;
+      }
     }
   }
 
@@ -9608,7 +9862,7 @@
     // areaTopY(2)) since there is no AREA2 for it to sit beyond. This is the
     // "same-AREA exit" the stage now uses — reaching it never requires (and,
     // per the player.y>=0 pin above, never permits) crossing into AREA2.
-    const topEdge = isCultivationLabStage() ? areaTopY(1) : areaTopY(2);
+    const topEdge = (isCultivationLabStage() || isVoidBridgeStage()) ? areaTopY(1) : areaTopY(2);
     // Anchored an extra H further north than before this batch, since AREA
     // 2's own full-screen band now sits between the original screen and
     // this bonus space.
@@ -10176,6 +10430,7 @@
     adamSphereCombatState.active = false; // HOTFIX 4.1: clears whatever the PREVIOUS stage's ADAM SPHERE left behind
     securityAttackSlotsInUse = 0;
     enemyBullets.length = 0;
+    trainingVoidBridgeKey = null; // VOID BRIDGE (DARK OUT PART): reset on every entry — only stage 4/5 below set it
     const stage = trainingStageIndex % TRAINING_STAGE_COUNT;
     if (stage === 0) {
       // STAGE 1: WHITE SHADOW only.
@@ -10199,8 +10454,42 @@
       // STRAIGHT CLAW/DARK PHASE engine.
       spawnBarrels(BARREL_COUNT);
       spawnAdamSphereCombat(W / 2, areaTopY(currentArea) + H * 0.4, now);
+    } else if (stage === 4) {
+      // VOID BRIDGE (DARK OUT PART), STAGE 5 of 7 (FINAL-2): the IMAGE 1
+      // bridge geometry, reused verbatim from MAIN — same AREA1-only,
+      // no-barrel, 3-DRONE, foot-based-fall stage, same
+      // spawnVoidBridgeDrones()/voidBridgeEntranceWorldPos() helpers.
+      trainingVoidBridgeKey = 'g2';
+      spawnBarrels(0);
+      currentArea = 1;
+      cameraY = 0;
+      resetPlayerToBattlePose();
+      const voidSpawn = voidBridgeEntranceWorldPos('g2');
+      player.x = voidSpawn.x;
+      player.y = voidSpawn.y;
+      player.lastValidX = player.x;
+      player.lastValidY = player.y;
+      player.fallRecoveryUntil = -Infinity;
+      spawnVoidBridgeDrones('g2');
+    } else if (stage === 5) {
+      // VOID BRIDGE (DARK OUT PART), STAGE 6 of 7 (FINAL-1): the IMAGE 2
+      // bridge geometry.
+      trainingVoidBridgeKey = 'g3';
+      spawnBarrels(0);
+      currentArea = 1;
+      cameraY = 0;
+      resetPlayerToBattlePose();
+      const voidSpawn = voidBridgeEntranceWorldPos('g3');
+      player.x = voidSpawn.x;
+      player.y = voidSpawn.y;
+      player.lastValidX = player.x;
+      player.lastValidY = player.y;
+      player.fallRecoveryUntil = -Infinity;
+      spawnVoidBridgeDrones('g3');
     } else {
-      // STAGE 5: DRONE + ROID1 — ROID1 keeps its existing
+      // STAGE 7 of 7 (final — unchanged position/content, was STAGE 5 of 5
+      // before the 2 VOID BRIDGE stages were inserted above it): DRONE +
+      // ROID1 — ROID1 keeps its existing
       // ROID_COMBAT_START_GRACE_MS opening grace unchanged — roidState.
       // combatStartAt/isRoidCombatStartGraceActive() are entirely mode-
       // agnostic, so it applies here exactly as it does in STORY/BOSS BATTLE.
@@ -10365,6 +10654,36 @@
         spawnInitialWhiteShadows(); // SECTION 9: WHITE_SHADOW_INITIAL_COUNT (3), not just 1
       }
       securityAttackSlotsInUse = 0;
+    } else if (plan.type === 'voidBridge') {
+      // VOID BRIDGE (DARK OUT PART): a single-AREA "cross a BLACK VOID
+      // bridge" connective stage — no boss intro, no BARREL (the walkway is
+      // too narrow for the existing BARREL placement to make sense), 3
+      // DRONE via the exact same DRONE implementation every other STORY
+      // DRONE-carrying stage already uses (spawnVoidBridgeDrones() ->
+      // buildSecurityDrone(), never a new enemy type). HEAL/AMMO are
+      // suppressed here for the same reason cultivationLab suppresses them
+      // (a narrow single-AREA floor — see spawnHealItem()/spawnAmmoItem()'s
+      // own getAreaCenterPos()-based placement, not guaranteed to land on
+      // this stage's own constrained walkway geometry).
+      boss.spawned = false;
+      boss.state = 'inactive';
+      securityRobots.length = 0;
+      whiteShadows.length = 0;
+      spawnBarrels(0);
+      worldItems.length = 0;
+      healItem.active = false;
+      ammoItem.active = false;
+      storyScenarioState.stageOverrideId = VOID_BRIDGE_STAGES[plan.key].stageId;
+      currentArea = 1;
+      cameraY = 0;
+      resetPlayerToBattlePose();
+      const voidSpawn = voidBridgeEntranceWorldPos(plan.key);
+      player.x = voidSpawn.x;
+      player.y = voidSpawn.y;
+      player.lastValidX = player.x;
+      player.lastValidY = player.y;
+      player.fallRecoveryUntil = -Infinity;
+      spawnVoidBridgeDrones(plan.key);
     } else if (plan.type === 'movie') {
       // POST-v1.0 SECTION 33: drone_arrival.mp4 — zero gameplay, plays once
       // then advances straight to the NEXT plan entry (no player interaction,
@@ -14966,6 +15285,11 @@
     BULLET_DAMAGE, // debug/verification only — PART 2: the reused normal-attack damage constant for SECURITY ROBOT's laser
     TRAINING_BACKGROUNDS, get currentStage() { return currentStage(); }, // debug/verification only — SECTION D (this turn)
     STAGE_REGISTRY, getStageRegistryEntry, // debug/verification only — DARK OUT PART 1
+    // VOID BRIDGE (DARK OUT PART) — debug/verification only
+    VOID_BRIDGE_STAGES, isVoidBridgeStage, activeVoidBridgeKey, isPointWalkableOnVoidBridge,
+    voidBridgeEntranceWorldPos, spawnVoidBridgeDrones, updateVoidBridgeFallCheck, resolveVoidBridgeFall,
+    VOID_BRIDGE_FALL_DAMAGE_FRAC, VOID_BRIDGE_RECOVERY_MS,
+    get trainingVoidBridgeKey() { return trainingVoidBridgeKey; },
     ROID1_SPRITES, ROID2_SPRITES, ADAM_SPRITES, ADAM_SPHERE_SPRITES, ITEM_SPRITES,
     getAllNewCharacterItemFrames, computeBodyVisualScale, getAdamReferenceBodyHeightPx, getItemReferenceBodyHeightPx,
     ROID_BODY_TARGET_HEIGHT, ADAM_SPHERE_TARGET_DIAMETER, makeSpriteFrame, // debug/verification only — DARK OUT PART 2
