@@ -1252,6 +1252,140 @@ body {
   0% { background-position: 0% 50%; }
   100% { background-position: 400% 50%; }
 }
+
+/* ========== DARK OUT ENDING & RESULT REDESIGN ==========
+   Replaces the old ending_darkout.MOV external-video ending for MAIN's own
+   escape/ending chain — a static cinematic image + song, a slowly-revealed
+   RESULT, then a rainbow ARTIST PAGE followed by a delayed BACK TO TOP.
+   Quiet/minimal/film-credits tone throughout (item 86-90): no HUD panel, no
+   border/box, no progress meter — the image is the star. See
+   enterEndingReveal()/updateEndingReveal() in game.js. */
+#ending-reveal-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 13;
+  overflow: hidden;
+  background: #000;
+}
+#ending-reveal-screen[hidden] { display: none; }
+/* Portrait source image (1206x2622) — object-fit:cover keeps it filling the
+   screen in both PORTRAIT and LANDSCAPE without ever stretching; the
+   subject (ANDERSEN, walking away down a centered corridor) stays framed
+   near horizontal-center at every aspect ratio, so object-position only
+   needs to bias the vertical anchor slightly toward the upper-middle of the
+   figure rather than the very top/bottom of the frame. */
+#ending-reveal-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 32%;
+}
+/* A gentle gradient only — stronger toward the bottom (where RESULT/nav
+   live) and near-transparent through the middle, so the image itself is
+   never darkened more than legibility actually requires (item 13). */
+#ending-reveal-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.38) 0%, rgba(0, 0, 0, 0.05) 22%, rgba(0, 0, 0, 0.05) 60%, rgba(0, 0, 0, 0.55) 100%);
+}
+#ending-reveal-result {
+  position: absolute;
+  top: max(28px, env(safe-area-inset-top));
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8vw;
+}
+/* Each row fades in independently, timed off the song's own duration (see
+   updateEndingReveal()) — a slow, single opacity transition only, never a
+   slide/bounce/scale (item 32/37). */
+.ending-reveal-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 2.2s ease;
+}
+.ending-reveal-stat.ending-reveal-visible { opacity: 1; }
+.ending-reveal-stat .ending-reveal-stat-label {
+  font-family: sans-serif;
+  font-weight: 600;
+  font-size: clamp(10px, 2.6vw, 12px);
+  letter-spacing: 0.28em;
+  color: rgba(255, 255, 255, 0.6);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+}
+.ending-reveal-stat .ending-reveal-stat-value {
+  font-family: sans-serif;
+  font-weight: 700;
+  font-size: clamp(16px, 4.2vw, 20px);
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.96);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.75);
+}
+/* RANK reads last and slightly larger — the one moment of visual emphasis
+   in an otherwise restrained screen (item 35). */
+.ending-reveal-rank-row .ending-reveal-stat-value {
+  font-size: clamp(28px, 8vw, 40px);
+  letter-spacing: 0.06em;
+}
+#ending-reveal-nav {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: max(22px, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+/* Reuses .mode-btn wholesale (already borderless/boxless by default — see
+   its own base rule above) so the shared gamepad-focus accent border and
+   release-gated A-confirm behavior come for free via the existing generic
+   GAMEPAD_MENU_NAV_SCREEN_OVERLAY engine — only text sizing/opacity-reveal
+   are added here. */
+.ending-reveal-nav-btn {
+  font-size: clamp(13px, 3.4vw, 15px);
+  text-align: center;
+  padding: 6px 18px;
+  opacity: 0;
+  transition: opacity 1.6s ease;
+}
+.ending-reveal-nav-btn.ending-reveal-visible { opacity: 1; }
+.ending-reveal-nav-btn[hidden] { display: none; }
+/* ARTIST PAGE: the SAME rainbow gradient-text treatment as #result-artist-btn
+   (item 44/67 — reuse, not reinvent). */
+#ending-reveal-artist-btn {
+  background-image: linear-gradient(
+    90deg,
+    #ff3b30, #ff9500, #ffcc00, #34c759, #00c7be, #007aff, #af52de, #ff2d92, #ff3b30
+  );
+  background-size: 400% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: #ffffff;
+  animation: result-artist-rainbow 6s linear infinite;
+}
+/* BACK TO TOP: quiet translucent white, deliberately less prominent than
+   ARTIST PAGE's rainbow — a clear visual hierarchy (item 50/51). */
+#ending-reveal-backtotop-btn {
+  color: rgba(255, 255, 255, 0.65);
+  font-weight: 500;
+}
+#ending-reveal-backtotop-btn.gamepad-focus,
+#ending-reveal-backtotop-btn:active {
+  color: rgba(255, 255, 255, 0.92);
+}
+
 /* SECTION M: GAME OVER — a real DOM screen (never a canvas overlay on the
    frozen frame, unlike GAME CLEAR), entered the instant PLAYER LIFE hits 0
    on a finite setting. Same restrained white/red/black DARK OUT language

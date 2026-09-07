@@ -196,6 +196,35 @@
   </div>
 </div>
 
+<!-- DARK OUT ENDING & RESULT REDESIGN: replaces the old external
+     ending_darkout.MOV ending for MAIN's own escape/ending chain with a
+     static cinematic image + song, a slowly-revealed RESULT, then a rainbow
+     ARTIST PAGE followed by a delayed BACK TO TOP — SECRET's own
+     true_ending->#result-screen path above is completely untouched. See
+     enterEndingReveal()/updateEndingReveal() in game.js. -->
+<div id="ending-reveal-screen" hidden>
+  <img id="ending-reveal-image" src="" alt="">
+  <div id="ending-reveal-scrim"></div>
+  <div id="ending-reveal-result">
+    <div id="ending-reveal-clear-time-row" class="ending-reveal-stat">
+      <span class="ending-reveal-stat-label">CLEAR TIME</span>
+      <span id="ending-reveal-clear-time" class="ending-reveal-stat-value"></span>
+    </div>
+    <div id="ending-reveal-continue-row" class="ending-reveal-stat">
+      <span class="ending-reveal-stat-label">CONTINUE</span>
+      <span id="ending-reveal-continue" class="ending-reveal-stat-value"></span>
+    </div>
+    <div id="ending-reveal-rank-row" class="ending-reveal-stat ending-reveal-rank-row">
+      <span class="ending-reveal-stat-label">RANK</span>
+      <span id="ending-reveal-rank" class="ending-reveal-stat-value ending-reveal-rank-value"></span>
+    </div>
+  </div>
+  <div id="ending-reveal-nav">
+    <a class="mode-btn ending-reveal-nav-btn" id="ending-reveal-artist-btn" href="https://www.tunecore.co.jp/artists?id=1140292&amp;utm_source=ig&amp;utm_medium=social&amp;utm_content=link_in_bio&amp;fbclid=PAdGRleAUBDaFwZG9mAmZkaWQWUNfnDNp7K4OsR1rDORVcLG0AXA4O12V4dG4DYWVtAjExAHNydGMGYXBwX2lkDzEyNDAyNDU3NDI4NzQxNAABpwXbm4sakBiMJ9ZlYKC8rJYDSVbb6nyHcFcsnqaYmSRyGKJCnX_N71DFNmgD_aem_YS0e_NpMoesX0DHRet6cWQ" target="_blank" rel="noopener noreferrer" hidden>ARTIST PAGE</a>
+    <button class="mode-btn ending-reveal-nav-btn ending-reveal-backtotop-btn" id="ending-reveal-backtotop-btn" hidden>BACK TO TOP</button>
+  </div>
+</div>
+
 <!-- SECTION M: GAME OVER — a real DOM screen (unlike GAME CLEAR's canvas
      overlay-on-frozen-frame), entered the instant PLAYER LIFE reaches 0 on
      a finite setting (see triggerGameOver() in game.js). Reaching this
@@ -412,6 +441,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=p0-streaming-architecture-hotfix1"></script>
+<script src="game.js?v=ending-result-redesign1"></script>
 </body>
 </html>

@@ -1183,20 +1183,18 @@
     eventMovieState.key = null;
     eventMovieState.onComplete = null;
     eventMovieVideoEl.onended = null;
-    eventMovieVideoEl.onerror = null; // HOTFIX SECTION 1/27: playEndingRoll()'s own error handler — cleared here too so a stale ENDING ROLL load-error can never fire after a cancel
+    eventMovieVideoEl.onerror = null;
     eventMovieVideoEl.pause();
     eventMovieVideoEl.removeAttribute('src');
     eventMovieVideoEl.load();
     eventMovieOverlayEl.hidden = true;
     eventMovieTapFallbackEl.hidden = true;
     eventMovieTapFallbackEl.onclick = null;
-    // HOTFIX 4 ADDENDUM SECTIONS L-Y: a cancel mid-preload (RETRY/QUIT
-    // while ENDING ROLL's own LOADING screen is still showing) must stop
-    // the looping LOADING footage and free any in-flight blob: URL too —
-    // otherwise both would keep running/leaking in the background even
-    // though the overlay itself is hidden.
+    // A cancel mid-preload must stop the shared LOADING-footage bridge if
+    // it happened to be showing for whatever movie this was — otherwise it
+    // would keep looping in the background even though the overlay itself
+    // is hidden.
     if (!endingLoadingVideoEl.hidden) { endingLoadingVideoEl.hidden = true; endingLoadingVideoEl.pause(); }
-    if (endingRollObjectUrl) { URL.revokeObjectURL(endingRollObjectUrl); endingRollObjectUrl = null; }
   }
 
   // SECTION U: debug-only skip — window.__game exposure only, never a
@@ -1214,17 +1212,16 @@
     eventMovieState.key = null;
     eventMovieState.onComplete = null;
     eventMovieVideoEl.onended = null;
-    eventMovieVideoEl.onerror = null; // HOTFIX SECTION 1/27: see cancelEventMovie()'s own matching comment
+    eventMovieVideoEl.onerror = null;
     eventMovieVideoEl.pause();
     eventMovieVideoEl.removeAttribute('src');
     eventMovieVideoEl.load();
     eventMovieOverlayEl.hidden = true;
     eventMovieTapFallbackEl.hidden = true;
     eventMovieTapFallbackEl.onclick = null;
-    // HOTFIX 4 ADDENDUM SECTIONS L-Y: same LOADING-footage/blob-URL cleanup
-    // as cancelEventMovie() above, for a debug-only skip mid-preload.
+    // Same LOADING-footage bridge cleanup as cancelEventMovie() above, for a
+    // debug-only skip mid-preload.
     if (!endingLoadingVideoEl.hidden) { endingLoadingVideoEl.hidden = true; endingLoadingVideoEl.pause(); }
-    if (endingRollObjectUrl) { URL.revokeObjectURL(endingRollObjectUrl); endingRollObjectUrl = null; }
     if (resumeBgm) bgmAudio.play().catch(() => {});
     reassertGameplayBgmIfExpected();
     if (onComplete) onComplete();
@@ -8543,6 +8540,7 @@
     document.getElementById('main-scenario-sub-overlay').hidden = next !== 'mainScenarioSub';
     document.getElementById('secret-scenario-sub-overlay').hidden = next !== 'secretScenarioSub';
     document.getElementById('result-screen').hidden = next !== 'result';
+    document.getElementById('ending-reveal-screen').hidden = next !== 'endingReveal';
     document.getElementById('game-over-screen').hidden = next !== 'gameover';
     // PLAY AREA / CONTROL AREA are only meaningful during actual gameplay —
     // hidden (not just covered) the rest of the time so no stray touch can
@@ -8660,6 +8658,33 @@
   bossBgmAudio.loop = true;
   bossBgmAudio.preload = 'auto';
   bossBgmAudio.volume = BGM_VOLUME;
+  // DARK OUT ENDING & RESULT REDESIGN: the STATIC ENDING/RESULT screen's own
+  // image + song, replacing the old ending_darkout.MOV external video for
+  // MAIN's own escape/ending chain. Declared here (asset URLs first, so the
+  // `new Audio()`/`new Image()` calls right below have them available —
+  // this file's top-level statements run in order, same as bgmAudio/
+  // menuBgmAudio/bossBgmAudio just above) — the rest of this system
+  // (beginEndingRevealPreload()/enterEndingReveal()/updateEndingReveal()/
+  // the RESULT-reveal timeline/navigation) lives further down, near
+  // beginStoryEscapeEnding(), its one real call site.
+  const ENDING_REVEAL_IMAGE_URL = 'assets/images/ending/andersen_walk.png';
+  const ENDING_REVEAL_AUDIO_URL = 'assets/audio/shining_grace_dark_out_ver.mp3';
+  const endingRevealImg = new Image();
+  // A persistent Audio() instance exactly like bgmAudio/menuBgmAudio/
+  // bossBgmAudio above (never recreated), so it can be primed by the SAME
+  // per-element iOS Safari unlock pass those three already go through (see
+  // unlockBackgroundBgmForIOS() just below) rather than needing its own
+  // fresh user gesture the first time it's actually played, deep into a
+  // MAIN run. loop=false (item 17); currentTime is always reset to 0 on
+  // every entry (item 18, see enterEndingReveal()). preload stays 'none'
+  // until beginEndingRevealPreload() arms it (item 74/77: never a STARTUP
+  // blocker either way, since getStartupRequiredAssetTargets() never
+  // references it) — called no later than MAIN's own ADAM SPHERE stage
+  // entry (item 78).
+  const endingRevealAudio = new Audio(ENDING_REVEAL_AUDIO_URL);
+  endingRevealAudio.loop = false;
+  endingRevealAudio.preload = 'none';
+  endingRevealAudio.volume = BGM_VOLUME;
   // HOTFIX 4 ADDENDUM SECTIONS A-E: real-device (iOS Safari) reports of BGM
   // audibly cutting out every time an EVENT MOVIE's own <video> starts —
   // starting a new media element competes with this page's already-playing
@@ -8716,7 +8741,10 @@
   function unlockBackgroundBgmForIOS() {
     if (backgroundBgmUnlocked) return;
     backgroundBgmUnlocked = true;
-    for (const audioEl of [bgmAudio, bossBgmAudio]) {
+    // DARK OUT ENDING & RESULT REDESIGN item 20: endingRevealAudio primed
+    // here too, so its own first real play() (deep into a MAIN run, well
+    // after this startup gesture) never needs a fresh TAP TO PLAY.
+    for (const audioEl of [bgmAudio, bossBgmAudio, endingRevealAudio]) {
       try {
         const restoreVolume = audioEl.volume;
         audioEl.volume = 0;
@@ -9397,447 +9425,230 @@
     updateSecretScenarioLockUI();
   }
 
-  // ---------- HOTFIX SECTION 1/27: external ENDING ROLL video ----------
-  // The real ending-roll footage is ~120MB — section 38's own explicit
-  // "never commit the 120MB video to Git" constraint means it can never be
-  // a bundled local asset like every other movie in SYSTEM_MOVIES/
-  // EVENT_MOVIES. Instead it's streamed from an external HTTPS CDN/cloud
-  // URL, configured here. HOTFIX 2 SECTION 16: official Cloudflare R2 URL
-  // now set. If this ever needs to go back to unconfigured, an empty string
-  // makes playEndingRoll() below take its own error-fallback path (27-1)
-  // immediately, without ever attempting a network request, so the game
-  // never breaks either way.
-  // HOTFIX 4 ADDENDUM SECTIONS L-Y: same host/path as before, but the R2
-  // object's own CONTENT has been replaced this batch — the explicit
-  // `?v=hotfix4-ending2` cache-busting query (permitted verbatim by the
-  // ADDENDUM) guards against a mobile browser/CDN edge serving back a stale
-  // cached copy of the OLD video from the exact same URL.
-  const ENDING_ROLL_VIDEO_URL = 'https://pub-c78c0b31663b4a5692c914b87616b615.r2.dev/ending_darkout.MOV?v=hotfix4-ending2';
-  // HOTFIX 4.3 ADDENDUM 2 SECTIONS 24-28: superseded — this used to be a
-  // hand-set assumption flag gating whether the fetch->Blob path was even
-  // attempted. Per this addendum's own explicit "CORSを推測してはいけない、
-  // 実ブラウザでfetchが成功するか確認" requirement, playEndingRoll() below
-  // now ALWAYS attempts a real fetch() first and only falls back to direct-
-  // URL streaming on a genuine failure — there is no more hardcoded
-  // assumption to flip. Kept as a debug/verification constant (always
-  // false) purely so anything still reading it externally doesn't break.
-  const ENDING_ROLL_CORS_SAFE = false;
-  // Reuses the SAME shared <video>/overlay element every other SYSTEM/EVENT
-  // movie already uses (never a second, separate movie engine — section 1's
-  // own explicit requirement) but is deliberately NOT a call to
-  // playEventMovie(): that function assumes a locally-bundled, already-
-  // registered SYSTEM_MOVIES/EVENT_MOVIES key and always preloads eagerly,
-  // neither of which applies to an external, potentially-120MB URL. Keyed
-  // off eventMovieState.key==='endingRoll' (a plain string, not the token
-  // counter playEventMovie() itself uses) purely to detect being superseded
-  // by a QUIT/RETRY mid-playback (cancelEventMovie()/skipEventMovie() both
-  // already reset eventMovieState.key generically) — this needs no
-  // coordination with playEventMovie()'s own token beyond that.
-  // HOTFIX 4 ADDENDUM SECTIONS L-Y: how long the LOADING screen is willing
-  // to wait for ending_darkout.MOV to become genuinely safely-playable
-  // before concluding this is a real failure (never just "momentarily
-  // slow") and falling back to TAP TO CONTINUE. Generous on purpose — this
-  // is a large video and a slow/throttled connection must still be given a
-  // real chance to finish buffering rather than bailing early.
-  // HOTFIX 4.3 ADDENDUM 2 SECTIONS 23-29 (supersedes HOTFIX 4.3's own
-  // partial-buffer design above): the explicit new requirement is "全部
-  // ロードしてから再生" — ending_darkout.MOV must be FULLY downloaded before
-  // playback ever starts, never a 90%-buffered/45-second-timeout compromise
-  // (both of those were real root causes of mid-playback stop/audio-cut
-  // reports). Two paths now exist:
-  //   1. fetch() the whole file -> Blob -> object URL (preferred — once the
-  //      fetch() promise itself resolves, 100% of the bytes are already in
-  //      memory, so there is no "mostly there" state to gate on at all).
-  //   2. Direct-URL <video> streaming, used only if fetch() genuinely fails
-  //      (network error or a real CORS rejection — playEndingRoll() always
-  //      attempts the real fetch first, per this addendum's own "never
-  //      assume CORS" requirement) — here playback is gated on
-  //      buffered.end() reaching ENDING_ROLL_FULL_COVERAGE_FRAC of the real
-  //      duration (effectively 100%, with a hair of float-precision slack),
-  //      never a partial percentage.
-  // ENDING_ROLL_STREAM_HARD_MAX_WAIT_MS is a pure last-resort escape hatch
-  // (a genuinely dead download must not hang the LOADING screen forever) —
-  // reaching it is itself reported as a real failure, never treated as
-  // "close enough, start anyway".
-  const ENDING_ROLL_FULL_COVERAGE_FRAC = 0.999;
-  const ENDING_ROLL_DOWNLOAD_STALL_MS = 15000; // no buffered.end() growth at all for this long = the stream download has genuinely died
-  const ENDING_ROLL_STREAM_HARD_MAX_WAIT_MS = 180000;
-  // P0 STREAMING ARCHITECTURE HOTFIX Part L: an OPTIONAL early warm-up fetch
-  // for this large (100MB+) file, started well before playEndingRoll() is
-  // ever called — see prewarmEndingRoll() below, invoked once at MAIN's own
-  // ADAM SPHERE stage entry (enterStoryStage()) so the download has a head
-  // start during ADAM SPHERE combat instead of only beginning once the
-  // player has already reached the ending chain (main_escape ->
-  // main_bad_ending -> this). Purely additive and best-effort: on any
-  // failure this resolves to null and startEndingRollFetch() below simply
-  // falls back to its own always-existing fresh fetch() — the full
-  // download-before-play/retry/stall/hard-ceiling guarantees added by
-  // HOTFIX 4.3 ADDENDUM 2 are completely untouched, this only ever gives
-  // that same fetch a head start. MAIN-only: SECRET's own ending
-  // (true_ending.mp4, a normal bundled EVENT MOVIE) never uses this external
-  // R2-hosted file at all.
-  let endingRollPrewarmPromise = null;
-  let endingRollPrewarmStarted = false;
-  function prewarmEndingRoll() {
-    if (endingRollPrewarmStarted) return; // idempotent — a re-entry into ADAM SPHERE (e.g. RETRY) must never start a 2nd concurrent download
-    endingRollPrewarmStarted = true;
-    endingRollPrewarmPromise = fetch(ENDING_ROLL_VIDEO_URL, { mode: 'cors' })
-      .then((resp) => (resp.ok ? resp.blob() : Promise.reject(new Error('prewarm bad status ' + resp.status))))
-      .catch(() => null); // never fatal/visible — a failed prewarm just means startEndingRollFetch() does its normal fresh fetch later
+  // ==========================================================================
+  // DARK OUT ENDING & RESULT REDESIGN: the STATIC ENDING/RESULT screen.
+  // Replaces the old external ending_darkout.MOV video for MAIN's own
+  // escape/ending chain (ADAM SPHERE defeat -> main_escape -> main_bad_ending
+  // -> [was: ending_darkout.MOV] -> RESULT) with a single static cinematic
+  // image + song screen that IS the RESULT screen — CLEAR TIME/CONTINUE/RANK
+  // fade in slowly while the song plays, then (song 'ended' event) a rainbow
+  // ARTIST PAGE appears, then (a further short delay) a quiet BACK TO TOP.
+  // SECRET's own true_ending.mp4 -> #result-screen path is completely
+  // untouched — this is MAIN-only, mirroring exactly where ending_darkout.MOV
+  // itself was MAIN-only before.
+  let endingRevealPreloadStarted = false;
+  // Idempotent, session-persistent — called at MAIN scenario start and
+  // (defensively) again at MAIN's own ADAM SPHERE stage entry; either call
+  // is "no later than ADAM SPHERE" (item 78), and a 2nd call is always a
+  // no-op. `new Image()`'s .src assignment and Audio's own .load() both
+  // begin fetching immediately, same as every other eagerly-loaded asset in
+  // this file (STAGE_REGISTRY backgrounds, bgmAudio/menuBgmAudio/
+  // bossBgmAudio) — never a STARTUP blocker either way, since
+  // getStartupRequiredAssetTargets() never references either element.
+  function beginEndingRevealPreload() {
+    if (endingRevealPreloadStarted) return;
+    endingRevealPreloadStarted = true;
+    endingRevealImg.onerror = () => console.error('[ENDING REVEAL] image preload failed:', ENDING_REVEAL_IMAGE_URL);
+    endingRevealImg.src = ENDING_REVEAL_IMAGE_URL;
+    endingRevealAudio.preload = 'auto';
+    endingRevealAudio.addEventListener('error', () => console.error('[ENDING REVEAL] audio preload failed:', endingRevealAudio.error), { once: true });
+    endingRevealAudio.load();
   }
-  // HOTFIX 4.3 SECTIONS 12/54 (extended by ADDENDUM 2 SECTIONS 18-22): real,
-  // testable diagnostics for THIS ONE ENDING ROLL attempt — reset at the top
-  // of every playEndingRoll() call, read by the completion-report
-  // verification script (never used to change any actual playback
-  // decision, purely observational). `method` and `corsFetch*` record which
-  // path was actually used and the REAL fetch() outcome, so the completion
-  // report never has to guess or assume.
-  const endingRollDiagnostics = {
-    waitingCount: 0, stalledCount: 0, loadingShownDuringPlaybackCount: 0, bufferedRangesAtStart: null,
-    bufferedEndAtStart: 0, durationAtStart: 0, readyStateAtStart: 0, networkStateAtStart: 0,
-    method: null, // 'blob' | 'stream' | null (not yet resolved)
-    corsFetchAttempted: false, corsFetchSucceeded: null, corsFetchStatus: null, corsFetchError: null,
+
+  // Reveal timing is expressed as a FRACTION of the song's own real runtime
+  // (item 28 — never a hard-coded 144s), read from endingRevealAudio.duration
+  // at the moment it's actually needed, so it works correctly for whatever
+  // the real file's exact duration turns out to be. Recommended ranges from
+  // spec item 29: CLEAR TIME ~8-12%, CONTINUE ~15-20%, RANK ~25-30% — the
+  // exact values below sit centrally within each range, and Part F item 30
+  // ("主要RESULTをすべて表示完了" well within the song's first third) holds
+  // since 27.5% < 33%.
+  const ENDING_REVEAL_CLEAR_TIME_FRAC = 0.10;
+  const ENDING_REVEAL_CONTINUE_FRAC = 0.175;
+  const ENDING_REVEAL_RANK_FRAC = 0.275;
+  const ENDING_REVEAL_BACK_TO_TOP_DELAY_MS = 2000; // item 49: ~1.5-3s after ARTIST PAGE appears
+  // Part P (AUDIO FAILURE SAFETY): if the song genuinely can't play at all
+  // (load error, or a play() rejection that never recovers), RESULT must
+  // still eventually become fully visible and navigable rather than hang
+  // forever waiting for an 'ended' event that will never come (item 81/83).
+  const ENDING_REVEAL_AUDIO_FAILURE_FALLBACK_MS = 20000;
+
+  const endingRevealImageEl = document.getElementById('ending-reveal-image');
+  const endingRevealClearTimeRowEl = document.getElementById('ending-reveal-clear-time-row');
+  const endingRevealContinueRowEl = document.getElementById('ending-reveal-continue-row');
+  const endingRevealRankRowEl = document.getElementById('ending-reveal-rank-row');
+  const endingRevealArtistBtnEl = document.getElementById('ending-reveal-artist-btn');
+  const endingRevealBackToTopBtnEl = document.getElementById('ending-reveal-backtotop-btn');
+
+  const endingRevealState = {
+    active: false,
+    songStartedAt: 0,
+    revealedClearTime: false,
+    revealedContinue: false,
+    revealedRank: false,
+    artistPageShown: false,
+    backToTopShown: false,
+    fallbackTimer: null,
   };
-  let endingRollObjectUrl = null; // revoked in finish() below — never leaked
-  function playEndingRoll(onComplete) {
-    // Section 1/18: BGM must be fully silent throughout — stop+reset
-    // gameplay, boss, AND menu BGM alike, immediately before anything else
-    // here. musicContext='ending' means syncMusicContext()/the watchdog can
-    // never resurrect any of the 3 tracks while this plays (this helper
-    // must never assume what state it was called from — main_escape/
-    // main_bad_ending may have left Outbreak 2 still genuinely playing).
+
+  function revealAllEndingRevealStatsNow() {
+    endingRevealState.revealedClearTime = true;
+    endingRevealState.revealedContinue = true;
+    endingRevealState.revealedRank = true;
+    endingRevealClearTimeRowEl.classList.add('ending-reveal-visible');
+    endingRevealContinueRowEl.classList.add('ending-reveal-visible');
+    endingRevealRankRowEl.classList.add('ending-reveal-visible');
+  }
+  function armEndingRevealAudioFailureFallback() {
+    if (endingRevealState.fallbackTimer) return; // only ever one fallback timer in flight
+    endingRevealState.fallbackTimer = setTimeout(() => {
+      endingRevealState.fallbackTimer = null;
+      if (!endingRevealState.active) return;
+      console.warn('[ENDING REVEAL] song never played/ended — falling back to an immediate full RESULT reveal + navigation so the player is never stuck.');
+      revealAllEndingRevealStatsNow();
+      onEndingRevealSongEnded();
+    }, ENDING_REVEAL_AUDIO_FAILURE_FALLBACK_MS);
+  }
+  function startEndingRevealSong(now) {
+    endingRevealAudio.currentTime = 0; // item 18: always from 0, every single entry
+    endingRevealState.songStartedAt = now;
+    const p = endingRevealAudio.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch((err) => {
+        console.error('[ENDING REVEAL] song play() rejected:', err && err.name, err && err.message);
+        armEndingRevealAudioFailureFallback();
+      });
+    }
+    if (endingRevealAudio.error) {
+      console.error('[ENDING REVEAL] song already in error state:', endingRevealAudio.error);
+      armEndingRevealAudioFailureFallback();
+    }
+  }
+  // item 42/85: the REAL 'ended' event is the one and only official
+  // completion trigger — never a computed/estimated timer.
+  endingRevealAudio.addEventListener('ended', () => {
+    if (!endingRevealState.active) return;
+    if (endingRevealState.fallbackTimer) { clearTimeout(endingRevealState.fallbackTimer); endingRevealState.fallbackTimer = null; }
+    revealAllEndingRevealStatsNow(); // guarantees all 3 are visible by song end even if duration was momentarily unavailable
+    onEndingRevealSongEnded();
+  });
+  function onEndingRevealSongEnded() {
+    // item 43-45: ARTIST PAGE first, immediately selectable.
+    endingRevealState.artistPageShown = true;
+    endingRevealArtistBtnEl.hidden = false;
+    // A fresh [hidden]->unhidden element needs one committed frame before a
+    // class-driven opacity transition will actually animate rather than
+    // snapping straight to visible.
+    requestAnimationFrame(() => endingRevealArtistBtnEl.classList.add('ending-reveal-visible'));
+    // item 48-52: BACK TO TOP a little later, deliberately not stealing
+    // gamepad focus from ARTIST PAGE (item 54 — getGamepadMenuNavItems()
+    // simply grows from 1 to 2 items; gamepadMenuNavFocusIndex stays 0,
+    // which is still ARTIST PAGE, the first DOM-order item, no extra code
+    // needed here for that guarantee).
+    setTimeout(() => {
+      if (!endingRevealState.active) return;
+      endingRevealState.backToTopShown = true;
+      endingRevealBackToTopBtnEl.hidden = false;
+      requestAnimationFrame(() => endingRevealBackToTopBtnEl.classList.add('ending-reveal-visible'));
+    }, ENDING_REVEAL_BACK_TO_TOP_DELAY_MS);
+  }
+  // Ticked from loop() every frame the 'endingReveal' screen is active (see
+  // its own call site) — purely a read of elapsed-time-as-fraction-of-
+  // duration against the 3 thresholds above; each row only ever transitions
+  // false->true once per entry (guarded by its own revealed* flag), so this
+  // is safe to call every frame with no debouncing of its own.
+  function updateEndingReveal(now) {
+    if (!endingRevealState.active) return;
+    const duration = endingRevealAudio.duration;
+    if (!isFinite(duration) || duration <= 0) return; // duration not known yet this tick — the 'ended' handler's own revealAllEndingRevealStatsNow() is the guaranteed backstop regardless
+    const frac = (now - endingRevealState.songStartedAt) / (duration * 1000);
+    if (!endingRevealState.revealedClearTime && frac >= ENDING_REVEAL_CLEAR_TIME_FRAC) {
+      endingRevealState.revealedClearTime = true;
+      endingRevealClearTimeRowEl.classList.add('ending-reveal-visible');
+    }
+    if (!endingRevealState.revealedContinue && frac >= ENDING_REVEAL_CONTINUE_FRAC) {
+      endingRevealState.revealedContinue = true;
+      endingRevealContinueRowEl.classList.add('ending-reveal-visible');
+    }
+    if (!endingRevealState.revealedRank && frac >= ENDING_REVEAL_RANK_FRAC) {
+      endingRevealState.revealedRank = true;
+      endingRevealRankRowEl.classList.add('ending-reveal-visible');
+    }
+  }
+  // The ONE entry point — called from beginStoryEscapeEnding()'s MAIN
+  // branch, right after main_bad_ending finishes (never ealier: MOVIE1
+  // itself never needed the image/song, so this never delays it).
+  function enterEndingReveal(now) {
+    storyEndingState.active = false; // the escape/movie chain that led here is now fully complete — this screen IS the RESULT screen for MAIN
+    // item 16: every other BGM track stops — ending music only.
     musicContext = 'ending';
     bgmAudio.pause(); bgmAudio.currentTime = 0;
     bossBgmAudio.pause(); bossBgmAudio.currentTime = 0;
-    menuBgmAudio.pause(); menuBgmAudio.currentTime = 0;
+    menuBgmAudio.pause();
 
-    // HOTFIX 4.3 SECTIONS 12/54: fresh diagnostics for this ONE attempt.
-    endingRollDiagnostics.waitingCount = 0;
-    endingRollDiagnostics.stalledCount = 0;
-    endingRollDiagnostics.loadingShownDuringPlaybackCount = 0;
-    endingRollDiagnostics.bufferedRangesAtStart = null;
-    endingRollDiagnostics.bufferedEndAtStart = 0;
-    endingRollDiagnostics.durationAtStart = 0;
-    endingRollDiagnostics.readyStateAtStart = 0;
-    endingRollDiagnostics.networkStateAtStart = 0;
-    endingRollDiagnostics.method = null;
-    endingRollDiagnostics.corsFetchAttempted = false;
-    endingRollDiagnostics.corsFetchSucceeded = null;
-    endingRollDiagnostics.corsFetchStatus = null;
-    endingRollDiagnostics.corsFetchError = null;
+    // RESULT values — the EXACT same source of truth as enterResultScreen()/
+    // computeResultRank() (item 21/22/36: rank calculation untouched).
+    const playTimeSec = Math.max(0, (performance.now() - storyStartTime) - storyPausedAccumMs) / 1000;
+    const rank = computeResultRank(continueCount, playTimeSec);
+    document.getElementById('ending-reveal-clear-time').textContent = formatPlayTime(playTimeSec);
+    document.getElementById('ending-reveal-continue').textContent = continueCount;
+    document.getElementById('ending-reveal-rank').textContent = rank;
 
-    eventMovieState.active = true;
-    eventMovieState.key = 'endingRoll';
-    eventMovieState.onComplete = onComplete || null;
-    eventMovieState.resumeBgm = false; // 27-2: a load failure must never auto-resume any BGM — finish()/skipEventMovie() both read this
+    // item 117 (REPLAY): every entry starts completely fresh, regardless of
+    // whatever state a previous run through this same screen left behind.
+    endingRevealState.active = true;
+    endingRevealState.revealedClearTime = false;
+    endingRevealState.revealedContinue = false;
+    endingRevealState.revealedRank = false;
+    endingRevealState.artistPageShown = false;
+    endingRevealState.backToTopShown = false;
+    endingRevealClearTimeRowEl.classList.remove('ending-reveal-visible');
+    endingRevealContinueRowEl.classList.remove('ending-reveal-visible');
+    endingRevealRankRowEl.classList.remove('ending-reveal-visible');
+    endingRevealArtistBtnEl.hidden = true;
+    endingRevealArtistBtnEl.classList.remove('ending-reveal-visible');
+    endingRevealBackToTopBtnEl.hidden = true;
+    endingRevealBackToTopBtnEl.classList.remove('ending-reveal-visible');
+    if (endingRevealState.fallbackTimer) { clearTimeout(endingRevealState.fallbackTimer); endingRevealState.fallbackTimer = null; }
 
-    // P0 GAME COMPLETION & COMBAT HOTFIX (root-cause fix, this batch): this
-    // used to be giveUpAndFinish() — on ANY genuine content failure (missing
-    // URL/decode error/download stall/hard-ceiling), it called finish(),
-    // which unconditionally calls onComplete() exactly as if the video had
-    // actually played. For the MAIN ADAM SPHERE defeat path, that
-    // onComplete is enterResultScreen() (see beginStoryEscapeEnding()) — so
-    // a real-world load failure (R2 fetch/CORS/network issue on real
-    // hardware) was silently and invisibly routing straight to RESULT,
-    // reported as "ending_darkout.MOVが再生されずRESULTへ進んだ". This was a
-    // genuine regression introduced by the immediately-preceding batch's own
-    // TAP TO PLAY removal, which correctly retired the VISIBLE "TAP TO
-    // CONTINUE" fallback UI but wrongly replaced it with "proceed as if it
-    // had succeeded" instead of "keep trying, never call onComplete on
-    // failure". Spec's own explicit, unconditional requirement this batch:
-    // "ending_darkout.MOVをskipしてRESULTへ進むfallback" is forbidden outright
-    // — there is no longer ANY tap-based UI to fall back to (Part B retires
-    // that entirely), so the only remaining option that satisfies both "no
-    // TAP TO PLAY" and "never skip to RESULT" is an AUTOMATIC retry: keep
-    // the existing LOADING bridge visible, wait, then re-run the entire
-    // fetch/buffered-poll attempt from scratch. finish() is now reached ONLY
-    // from a genuine 'ended' event (real completed playback) — every one of
-    // this function's own failure branches below calls this instead.
-    const ENDING_ROLL_RETRY_DELAY_MS = 5000;
-    let endingRollRetryCount = 0;
-    function retryEndingRollLoad(reason) {
-      if (eventMovieState.key !== 'endingRoll') return; // superseded by a cancel/skip — never resurrect a stale retry
-      endingRollRetryCount++;
-      console.warn('[ENDING ROLL] genuine failure (' + reason + '), retry #' + endingRollRetryCount + ' in ' + ENDING_ROLL_RETRY_DELAY_MS + 'ms — never falling back to RESULT.');
-      showEndingLoading(); // keep/re-show the existing loading.mp4 bridge — never a blank/frozen frame while retrying
-      setTimeout(() => {
-        if (eventMovieState.key !== 'endingRoll') return;
-        startEndingRollFetch();
-      }, ENDING_ROLL_RETRY_DELAY_MS);
-    }
-    let endingLoadingStartedAt = 0; // HOTFIX 4.1 ADDENDUM: this wait must not count toward PLAY TIME, same exclusion mechanism as PAUSE/GAME OVER
-    function showEndingLoading() {
-      // HOTFIX 4 ADDENDUM SECTIONS L-Y: reuses the SAME loading.mp4 footage
-      // every other LOADING context already uses (never a new asset),
-      // looping continuously so there is never a black/frozen frame while
-      // ending_darkout.MOV preloads in the background.
-      endingLoadingStartedAt = performance.now();
-      eventMovieOverlayEl.hidden = false;
-      eventMovieVideoEl.hidden = true;
-      endingLoadingVideoEl.hidden = false;
-      endingLoadingVideoEl.currentTime = 0;
-      endingLoadingVideoEl.play().catch(() => {}); // muted+loop — autoplay-block here is harmless, just a missed loop restart
-    }
-    function hideEndingLoading() {
-      if (!endingLoadingVideoEl.hidden && endingLoadingStartedAt) {
-        storyPausedAccumMs += performance.now() - endingLoadingStartedAt; // HOTFIX 4.1 ADDENDUM: exclude ENDING ROLL preload wait from PLAY TIME
-      }
-      endingLoadingStartedAt = 0;
-      endingLoadingVideoEl.hidden = true;
-      endingLoadingVideoEl.pause();
-      eventMovieVideoEl.hidden = false;
-    }
-    function revokeObjectUrlIfAny() {
-      if (endingRollObjectUrl) { URL.revokeObjectURL(endingRollObjectUrl); endingRollObjectUrl = null; }
-    }
-    function finish() {
-      if (eventMovieState.key !== 'endingRoll') return; // superseded by a cancel/skip — never double-fire onComplete
-      eventMovieState.active = false;
-      eventMovieState.key = null;
-      eventMovieState.onComplete = null;
-      eventMovieOverlayEl.hidden = true;
-      hideEndingLoading();
-      eventMovieVideoEl.onended = null;
-      eventMovieVideoEl.onerror = null;
-      eventMovieVideoEl.onwaiting = null;
-      eventMovieVideoEl.onstalled = null;
-      eventMovieVideoEl.onplaying = null;
-      eventMovieVideoEl.removeAttribute('src');
-      eventMovieVideoEl.load();
-      revokeObjectUrlIfAny();
-      eventMovieTapFallbackEl.hidden = true;
-      eventMovieTapFallbackEl.onclick = null;
-      if (onComplete) onComplete();
+    beginEndingRevealPreload(); // idempotent — defensive, in case ADAM SPHERE entry was somehow skipped this run
+
+    setScreen('endingReveal');
+
+    // Image: shown the instant it's actually ready — no loading UI/percentage
+    // at all (item 87's own explicit "不要: loading percentage"); the
+    // #ending-reveal-screen background stays plain black until then.
+    if (endingRevealImg.complete && endingRevealImg.naturalWidth > 0) {
+      endingRevealImageEl.src = endingRevealImg.src;
+    } else {
+      endingRevealImg.onload = () => { endingRevealImageEl.src = endingRevealImg.src; };
     }
 
-    eventMovieTapFallbackEl.hidden = true;
-    eventMovieTapFallbackEl.onclick = null;
-    eventMovieOverlayEl.hidden = false;
-
-    // Once the src (blob: or the direct R2 URL) is confirmed safely
-    // playable, this actually starts playback — never called speculatively
-    // "just in case", only once one of the two preload strategies below
-    // has genuinely confirmed readiness.
-    function beginConfirmedPlayback() {
-      if (eventMovieState.key !== 'endingRoll') return; // superseded mid-preload
-      // HOTFIX 4.3 SECTIONS 7/54: snapshot the exact buffered/duration/
-      // readyState/networkState this attempt actually started with, for the
-      // completion report — captured once, right here, never recomputed
-      // later (so it always reflects the real state at the moment playback
-      // was judged safe to begin).
-      {
-        const buffered = eventMovieVideoEl.buffered;
-        endingRollDiagnostics.bufferedRangesAtStart = buffered ? buffered.length : 0;
-        endingRollDiagnostics.bufferedEndAtStart = (buffered && buffered.length > 0) ? buffered.end(buffered.length - 1) : 0;
-        endingRollDiagnostics.durationAtStart = eventMovieVideoEl.duration;
-        endingRollDiagnostics.readyStateAtStart = eventMovieVideoEl.readyState;
-        endingRollDiagnostics.networkStateAtStart = eventMovieVideoEl.networkState;
-      }
-      hideEndingLoading();
-      eventMovieVideoEl.currentTime = 0;
-      eventMovieVideoEl.onended = finish;
-      eventMovieVideoEl.onerror = () => {
-        // 27-1: a genuine network/load failure mid-playback — retry the
-        // whole load from scratch rather than ever proceeding to RESULT.
-        if (eventMovieState.key !== 'endingRoll') return;
-        retryEndingRollLoad('mid-playback error');
-      };
-      // HOTFIX 4.3 SECTIONS 8/12/54: waiting/stalled monitoring DURING
-      // playback — the actual root cause of "映像が途中で停止/音声が途切れる"
-      // reports was that NOTHING watched for a mid-playback rebuffer at all;
-      // the browser's own auto-pause-until-more-data-arrives behavior just
-      // read as a silently frozen frame with no feedback. This never
-      // pause()s/play()s the video itself (the existing "never touch
-      // playback state once started" contract is unchanged) — it only
-      // toggles the SAME loading.mp4 overlay the initial preload wait
-      // already uses, so a genuine network stall reads as "still loading",
-      // never as "broken", and the video's own playback naturally resumes
-      // and fires 'playing' the instant the browser has enough data again.
-      let rebufferOverlayShowing = false;
-      eventMovieVideoEl.onwaiting = () => {
-        if (eventMovieState.key !== 'endingRoll') return;
-        endingRollDiagnostics.waitingCount++;
-        if (!rebufferOverlayShowing) { rebufferOverlayShowing = true; showEndingLoading(); endingRollDiagnostics.loadingShownDuringPlaybackCount++; }
-      };
-      eventMovieVideoEl.onstalled = () => {
-        if (eventMovieState.key !== 'endingRoll') return;
-        endingRollDiagnostics.stalledCount++;
-      };
-      eventMovieVideoEl.onplaying = () => {
-        if (eventMovieState.key !== 'endingRoll') return;
-        if (rebufferOverlayShowing) { rebufferOverlayShowing = false; hideEndingLoading(); }
-      };
-      // Once playback has genuinely started, this file's own contract
-      // (ADDENDUM section L-Y) is "never pause()/play() again for
-      // non-error reasons, never recreate the video element" — the only
-      // handlers wired past this point are onended (normal completion) and
-      // onerror (a genuine mid-playback failure), never a resume-after-
-      // pause watchdog of any kind. waiting/stalled/playing above are pure
-      // observation + the same visual overlay swap the initial wait already
-      // does — neither one calls .play()/.pause() on eventMovieVideoEl.
-      let endingPlayRetryAttempt = 0;
-      const ENDING_PLAY_RETRY_DELAYS_MS = [200, 600, 1500];
-      function attemptEndingPlay() {
-        eventMovieVideoEl.play().catch((err) => {
-          if (eventMovieState.key !== 'endingRoll') return;
-          // HOTFIX 2 SECTION 17/19: a genuinely unreachable src rejects BOTH
-          // this play() promise AND fires its own 'error' event — checking
-          // for an already-present MediaError means a genuine load failure
-          // always wins and skips straight to finish(), regardless of
-          // firing order; only a true (now essentially unreachable, thanks
-          // to unlockEventMovieElementForIOS()) autoplay-block gets the
-          // silent retry below — never a user-facing TAP TO PLAY/CONTINUE.
-          if (eventMovieVideoEl.error) { retryEndingRollLoad('play() rejected with a MediaError'); return; }
-          console.warn('[ENDING ROLL] play() rejected (attempt ' + endingPlayRetryAttempt + '):', err && err.name, err && err.message);
-          if (endingPlayRetryAttempt < ENDING_PLAY_RETRY_DELAYS_MS.length) {
-            const delay = ENDING_PLAY_RETRY_DELAYS_MS[endingPlayRetryAttempt];
-            endingPlayRetryAttempt++;
-            setTimeout(() => { if (eventMovieState.key === 'endingRoll') attemptEndingPlay(); }, delay);
-            return;
-          }
-          retryEndingRollLoad('play() rejected after all short retries');
-        });
-      }
-      attemptEndingPlay();
-    }
-
-    // FALLBACK STRATEGY — used only if the real fetch() below genuinely
-    // fails (network error or an actual CORS rejection). HOTFIX 4.3
-    // ADDENDUM 2 SECTIONS 23-29: this must ALSO wait for the FULL file, not
-    // a 90%-buffered compromise — "全部ロードしてから再生", no exceptions.
-    // Polls buffered.end() (the range starting at/near 0 — where playback
-    // begins — never just whatever the LAST buffered range happens to be,
-    // since some browsers fill ranges out of order) until it reaches
-    // ENDING_ROLL_FULL_COVERAGE_FRAC of the real duration. A genuinely dead
-    // download (no growth at all for ENDING_ROLL_DOWNLOAD_STALL_MS) or the
-    // absolute ENDING_ROLL_STREAM_HARD_MAX_WAIT_MS ceiling triggers TAP TO
-    // CONTINUE — a real, reported failure, never a silent "close enough".
-    function preloadViaBufferedPolling() {
-      endingRollDiagnostics.method = 'stream';
-      eventMovieVideoEl.loop = false;
-      eventMovieVideoEl.muted = false; // the video's own embedded audio may play (section 1) — no existing BGM is playing underneath it (see above)
-      eventMovieVideoEl.playsInline = true;
-      eventMovieVideoEl.removeAttribute('crossorigin'); // no CORS header confirmed for this path — never set crossOrigin against a non-CORS-safe host (silently blocks playback in some browsers)
-      eventMovieVideoEl.preload = 'auto';
-      eventMovieVideoEl.src = ENDING_ROLL_VIDEO_URL;
-      eventMovieVideoEl.load();
-
-      const startedAt = performance.now();
-      let lastBufferedEnd = -1;
-      let stableSinceMs = startedAt; // last time bufEnd actually grew — used only to detect a genuinely dead download below
-      function poll(nowTick) {
-        if (eventMovieState.key !== 'endingRoll') return; // superseded mid-preload
-        if (eventMovieVideoEl.error) { retryEndingRollLoad('stream load error'); return; } // genuine load failure — retry, never proceed to RESULT
-        const elapsed = nowTick - startedAt;
-        const readyState = eventMovieVideoEl.readyState;
-        const buffered = eventMovieVideoEl.buffered;
-        const duration = eventMovieVideoEl.duration;
-        let bufEnd = 0;
-        let coveredFrac = 0;
-        if (buffered && buffered.length > 0) {
-          for (let i = 0; i < buffered.length; i++) {
-            if (buffered.start(i) <= 0.5) { bufEnd = buffered.end(i); break; }
-          }
-          if (isFinite(duration) && duration > 0) coveredFrac = bufEnd / duration;
-          if (bufEnd > lastBufferedEnd) { lastBufferedEnd = bufEnd; stableSinceMs = nowTick; }
-        }
-        const downloadGenuinelyStalled = (nowTick - stableSinceMs) >= ENDING_ROLL_DOWNLOAD_STALL_MS;
-        // The ONLY success condition now: the file is (effectively) FULLY
-        // downloaded — never a percentage compromise, never a timeout-based
-        // "good enough".
-        if (readyState >= 3 && coveredFrac >= ENDING_ROLL_FULL_COVERAGE_FRAC) {
-          beginConfirmedPlayback();
-          return;
-        }
-        if (downloadGenuinelyStalled || elapsed > ENDING_ROLL_STREAM_HARD_MAX_WAIT_MS) {
-          // A real failure — the download never reached full coverage and
-          // has either genuinely stopped growing or exhausted the hard
-          // ceiling. Never starts playback in this branch (that would be
-          // exactly the "fake full, start anyway" this addendum forbids) —
-          // retry the whole load from scratch instead of ever proceeding to RESULT.
-          retryEndingRollLoad('download stalled or exceeded hard ceiling');
-          return;
-        }
-        setTimeout(() => poll(performance.now()), 200);
-      }
-      poll(performance.now());
-    }
-
-    // HOTFIX 4.3 ADDENDUM 2 SECTIONS 27-28: ALWAYS attempt the real fetch()
-    // first — never gated behind a hand-set "is this CDN CORS-safe"
-    // assumption (that flag is exactly what section 28 forbids: "CORSを
-    // 推測してはいけない"). Recorded in endingRollDiagnostics.corsFetch* so
-    // the completion report states the REAL measured outcome rather than a
-    // guess. On success, the ENTIRE file is already in memory as a Blob by
-    // the time .then() runs — no further buffered-range gating is needed at
-    // all, playback can start immediately. On any failure (network error or
-    // a genuine CORS rejection — indistinguishable from JS, both surface as
-    // a rejected promise), falls back to preloadViaBufferedPolling() above,
-    // which now also enforces full download before playing.
-    //
-    // Wrapped in a named function (P0 GAME COMPLETION HOTFIX, this batch) so
-    // retryEndingRollLoad() above can re-run this whole pipeline from
-    // scratch on a genuine failure, exactly like the initial attempt below.
-    function startEndingRollFetch() {
-      endingRollDiagnostics.corsFetchAttempted = true;
-      function handleBlob(blob) {
-        if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
-        endingRollDiagnostics.corsFetchSucceeded = true;
-        endingRollDiagnostics.corsFetchStatus = 200;
-        endingRollDiagnostics.method = 'blob';
-        revokeObjectUrlIfAny(); // defensive — never double-download/leak if this somehow re-entered
-        endingRollObjectUrl = URL.createObjectURL(blob);
-        eventMovieVideoEl.loop = false;
-        eventMovieVideoEl.muted = false;
-        eventMovieVideoEl.playsInline = true;
-        eventMovieVideoEl.removeAttribute('crossorigin'); // a blob: URL is always same-origin — crossOrigin has no meaning here
-        eventMovieVideoEl.preload = 'auto';
-        eventMovieVideoEl.src = endingRollObjectUrl;
-        eventMovieVideoEl.load();
-        // A blob: URL is backed entirely by in-memory data already, so the
-        // browser can reach HAVE_ENOUGH_DATA essentially immediately —
-        // still wait for a real readyState signal (never assume) via
-        // loadeddata, with a short defensive poll fallback in case that
-        // event is missed.
-        const tryBegin = () => {
-          if (eventMovieState.key !== 'endingRoll') return;
-          if (eventMovieVideoEl.readyState >= 3) { beginConfirmedPlayback(); return; }
-          setTimeout(tryBegin, 50);
-        };
-        eventMovieVideoEl.onloadeddata = () => { eventMovieVideoEl.onloadeddata = null; tryBegin(); };
-        tryBegin();
-      }
-      function fetchFreshBlob() {
-        return fetch(ENDING_ROLL_VIDEO_URL, { mode: 'cors' })
-          .then((resp) => {
-            endingRollDiagnostics.corsFetchStatus = resp.status;
-            if (!resp.ok) throw new Error('ending roll fetch: bad status ' + resp.status);
-            return resp.blob();
-          });
-      }
-      function handleFailure(err) {
-        endingRollDiagnostics.corsFetchSucceeded = false;
-        endingRollDiagnostics.corsFetchError = String(err && err.message || err);
-        if (eventMovieState.key !== 'endingRoll') return; // superseded mid-fetch
-        preloadViaBufferedPolling();
-      }
-      // P0 STREAMING ARCHITECTURE HOTFIX Part L: reuse the OPTIONAL early
-      // warm-up fetch started by prewarmEndingRoll() (ADAM SPHERE MAIN stage
-      // entry) if one is in flight/already resolved — this is purely a head
-      // start; consuming it here (nulling the module-level promise so a
-      // later retryEndingRollLoad() always does a genuinely fresh fetch,
-      // never a stale/already-used blob) changes nothing about the actual
-      // full-download-before-play/retry/stall guarantees below.
-      const prewarm = endingRollPrewarmPromise;
-      endingRollPrewarmPromise = null;
-      if (prewarm) {
-        prewarm.then((blob) => (blob ? blob : fetchFreshBlob())).then(handleBlob).catch(handleFailure);
-      } else {
-        fetchFreshBlob().then(handleBlob).catch(handleFailure);
-      }
-    }
-    startEndingRollFetch();
+    startEndingRevealSong(now);
   }
+  // item 60-65: BACK TO TOP — the same safe return-to-menu reset every other
+  // route already uses, plus this screen's own teardown (music/overlay/
+  // temporary RESULT state) so nothing from THIS run bleeds into the next.
+  function exitEndingReveal() {
+    endingRevealState.active = false;
+    endingRevealAudio.pause();
+    endingRevealAudio.currentTime = 0;
+    endingRevealImageEl.removeAttribute('src');
+    if (endingRevealState.fallbackTimer) { clearTimeout(endingRevealState.fallbackTimer); endingRevealState.fallbackTimer = null; }
+  }
+  endingRevealBackToTopBtnEl.addEventListener('click', () => {
+    if (!endingRevealState.backToTopShown) return; // release gate — matches [hidden] but defensive against any stray programmatic click
+    exitEndingReveal();
+    // Same run-inventory reset #result-back-btn's own handler already does
+    // (PART 10 SECTION T) — never leaked into the period between here and
+    // the next run actually starting.
+    runInventory.projectAdamCollected = false;
+    runInventory.bloodSample1 = false;
+    runInventory.bloodSample2 = false;
+    runInventory.bloodSample3 = false;
+    runInventory.escapeNavigator = false;
+    returnToTopMenu();
+  });
 
   // Reached ONLY from the EXIT-reach branch in update(), and only when
   // worldScrollUnlocked()'s own O-1/O-2 escape-ready condition already held
@@ -9878,13 +9689,15 @@
       // before any frame is painted.
       playEventMovie('main_escape', () => {
         playEventMovie('main_bad_ending', () => {
-          // HOTFIX SECTION 1/23-5: the external ENDING ROLL now plays here,
-          // after the existing escape chain and before RESULT — never any
-          // additional story movie after it.
-          playEndingRoll(() => {
-            storyEndingState.active = false;
-            enterResultScreen(); // P-3: straight to RESULT — triggerGameClear()'s 2.5s overlay is never inserted here
-          });
+          // DARK OUT ENDING & RESULT REDESIGN item 72: MOVIE1 (main_escape/
+          // main_bad_ending) is fully preserved above, unchanged — only what
+          // used to happen AFTER it (the external ending_darkout.MOV wait +
+          // playback) is replaced. enterEndingReveal() IS the RESULT screen
+          // for MAIN now — storyEndingState.active is cleared inside it. A
+          // FRESH performance.now() is passed (never the outer `now`, which
+          // is stale from before both movies finished playing — the reveal
+          // timeline's own elapsed-time math needs the real start instant).
+          enterEndingReveal(performance.now());
         });
       });
     }
@@ -10350,14 +10163,12 @@
       // exact same escape-unlock and stop, never touching adamSphereState/
       // stageOverrideId at all.
       if (storyScenarioState.scenario === 'main') {
-        // P0 STREAMING ARCHITECTURE HOTFIX Part L: MAIN's own ADAM SPHERE
-        // stage is the last stop before the escape/ending chain
-        // (main_escape -> main_bad_ending -> ending_darkout.MOV) — give the
-        // large external ENDING ROLL file a head start downloading now,
-        // during this combat encounter, rather than only starting once the
-        // player is already standing at the ending chain. See
-        // prewarmEndingRoll()'s own comment for why this is purely additive.
-        prewarmEndingRoll();
+        // DARK OUT ENDING & RESULT REDESIGN Part O item 78: MAIN's own ADAM
+        // SPHERE stage is the last stop before the STATIC ENDING/RESULT
+        // screen — this is the latest point the ending image/song preload
+        // must have started by (see beginEndingRevealPreload(), idempotent
+        // — a no-op if it already started earlier, e.g. at module load).
+        beginEndingRevealPreload();
         // HOTFIX 4 SECTIONS 22-32: MAIN now routes into a real ADAM SPHERE
         // combat encounter here — explicitly overriding the old POST-v1.0
         // SECTION 27 "MAIN never proceeds to ADAM combat" rule per that
@@ -12832,6 +12643,12 @@
       // right scenario when deciding whether to enter b1 (SECRET) or STORY
       // STAGE 1 (MAIN, or no scenario at all — legacy/debug behavior).
       storyScenarioState.scenario = scenario || null;
+      // DARK OUT ENDING & RESULT REDESIGN item 75/78: the earliest point
+      // "during gameplay" a genuine MAIN run exists — starts the (idempotent,
+      // session-persistent) ending image/song preload here, well ahead of
+      // the defensive 2nd call at ADAM SPHERE stage entry. SECRET/no-scenario
+      // runs never call this at all, so they never fetch either asset.
+      if (scenario === 'main') beginEndingRevealPreload();
       storyScenarioState.pendingReward = null;
       storyScenarioState.awaitingRewardPickup = false;
       storyScenarioState.bloodSamplesSubmitted = false;
@@ -13340,6 +13157,12 @@
     // generic and needs zero RESULT-specific code — this one entry is the
     // whole fix.
     result: 'result-screen',
+    // DARK OUT ENDING & RESULT REDESIGN items 46/47/97: STATIC ENDING/RESULT
+    // screen's own nav row — same generic engine, only ARTIST PAGE/BACK TO
+    // TOP (both real .mode-btn elements, hidden/unhidden by
+    // enterEndingReveal()/onEndingRevealSongEnded() — getGamepadMenuNavItems()
+    // already skips [hidden] elements for free) are ever selectable here.
+    endingReveal: 'ending-reveal-nav',
   };
   let gamepadMenuNavFocusIndex = 0;
   let gamepadMenuNavStickWasUp = false;
@@ -14807,9 +14630,6 @@
     menuBgmAudio, startMenuBgmOnce, startGameplayBgm, stopMenuBgm,
     SYSTEM_MOVIES, EVENT_MOVIES, storyCinematicState, eventMovieState,
     storyEndingState, beginStoryEscapeEnding, // DARK OUT PART 10 — debug/verification only
-    playEndingRoll, ENDING_ROLL_VIDEO_URL, ENDING_ROLL_CORS_SAFE, // debug/verification only — HOTFIX SECTION 1/27
-    ENDING_ROLL_FULL_COVERAGE_FRAC, ENDING_ROLL_DOWNLOAD_STALL_MS, ENDING_ROLL_STREAM_HARD_MAX_WAIT_MS, // HOTFIX 4.3 ADDENDUM 2 SECTIONS 23-29 — debug/verification only
-    endingRollDiagnostics,
     get eventMovieVideoElReadyState() { return eventMovieVideoEl.readyState; }, // debug/verification only
     get eventMovieVideoElCurrentTime() { return eventMovieVideoEl.currentTime; },
     get eventMovieVideoElPaused() { return eventMovieVideoEl.paused; },
@@ -14947,9 +14767,14 @@
     get nextContentWaitState() { return nextContentWaitState; },
     get EXIT_ZONE_W() { return EXIT_ZONE_W; },
     get EXIT_ZONE_H() { return EXIT_ZONE_H; },
-    prewarmEndingRoll,
-    get endingRollPrewarmStarted() { return endingRollPrewarmStarted; },
-    get endingRollPrewarmPromise() { return endingRollPrewarmPromise; },
+    // DARK OUT ENDING & RESULT REDESIGN — debug/verification only:
+    beginEndingRevealPreload, enterEndingReveal, exitEndingReveal, updateEndingReveal,
+    get endingRevealState() { return endingRevealState; },
+    get endingRevealPreloadStarted() { return endingRevealPreloadStarted; },
+    get endingRevealImg() { return endingRevealImg; },
+    get endingRevealAudio() { return endingRevealAudio; },
+    ENDING_REVEAL_IMAGE_URL, ENDING_REVEAL_AUDIO_URL,
+    ENDING_REVEAL_CLEAR_TIME_FRAC, ENDING_REVEAL_CONTINUE_FRAC, ENDING_REVEAL_RANK_FRAC,
     runStartupLoadingPhase, showLoadingErrorState, hideLoadingErrorState, // debug/verification only
     flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only
     get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
@@ -17651,6 +17476,8 @@
     if (gameState.screen === 'gameplay') {
       update(dt, now);
       draw(now);
+    } else if (gameState.screen === 'endingReveal') {
+      updateEndingReveal(now);
     }
     requestAnimationFrame(loop);
   }
