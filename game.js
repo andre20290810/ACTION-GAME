@@ -885,6 +885,20 @@
   // exitBossBattle()'s own menu-return sites, playEndingRoll()) — never
   // derived from gameState.mode again.
   let musicContext = 'silent'; // 'menu' | 'normal' | 'boss' | 'ending' | 'silent'
+  // P0 REAL-DEVICE REGRESSION (Issue 2 -- audio double-play hard single-owner
+  // guard): a generation-tracked claim of "which element is the CURRENT
+  // real (non-priming) audible BGM owner", layered ON TOP of musicContext/
+  // syncMusicContext() below (never a replacement). syncMusicContext()'s own
+  // ~500ms polling watchdog cannot prevent a stale play()-promise or
+  // priming-teardown resolving AFTER a newer real claim already took over
+  // the same or a different track -- claimAudibleBgm() (defined further
+  // down, after every BGM Audio element exists) closes that specific async-
+  // race window. Every real (non-priming) BGM play() call in this file goes
+  // through claimAudibleBgm() instead of calling audioEl.play() directly.
+  let audibleBgmGeneration = 0;
+  let audibleBgmKey = null; // 'menu' | 'normal' | 'boss' | 'ending' | null
+  let audibleBgmElement = null;
+  let audibleBgmViolation = null; // {message, at} -- debug overlay only, never gameplay-affecting
   // Idempotent — makes actual play/pause state match musicContext and
   // nothing else (never touches currentTime; a context change that also
   // needs a restart-from-0 does that explicitly at its own call site, same
@@ -895,9 +909,9 @@
     const wantNormal = musicContext === 'normal';
     const wantBoss = musicContext === 'boss';
     const wantEnding = musicContext === 'ending';
-    if (!wantMenu && !menuBgmAudio.paused) menuBgmAudio.pause();
-    if (!wantNormal && !bgmAudio.paused) bgmAudio.pause();
-    if (!wantBoss && !bossBgmAudio.paused) bossBgmAudio.pause();
+    if (!wantMenu && !menuBgmAudio.paused) { menuBgmAudio.pause(); if (audibleBgmElement === menuBgmAudio) { audibleBgmGeneration++; audibleBgmKey = null; audibleBgmElement = null; } }
+    if (!wantNormal && !bgmAudio.paused) { bgmAudio.pause(); if (audibleBgmElement === bgmAudio) { audibleBgmGeneration++; audibleBgmKey = null; audibleBgmElement = null; } }
+    if (!wantBoss && !bossBgmAudio.paused) { bossBgmAudio.pause(); if (audibleBgmElement === bossBgmAudio) { audibleBgmGeneration++; audibleBgmKey = null; audibleBgmElement = null; } }
     // P0 FULL GAMEPAD E2E HOTFIX (Part E, audio single-owner hardening):
     // endingRevealAudio (Shining Grace) was previously excluded from this
     // watchdog entirely — enterEndingReveal()/exitEndingReveal() were its
@@ -911,13 +925,10 @@
     // enterEndingReveal()/exitEndingReveal()'s own direct control, never a
     // replacement for it (this never itself STARTS the song — only 'ending'
     // entry does that — it only ever silences it when it shouldn't be on).
-    if (!wantEnding && typeof endingRevealAudio !== 'undefined' && !endingRevealAudio.paused) endingRevealAudio.pause();
-    if (wantMenu && menuBgmStarted && menuBgmAudio.paused) menuBgmAudio.play().catch(() => {});
-    if (wantNormal && bgmAudio.paused) {
-      const p = bgmAudio.play();
-      if (p && typeof p.catch === 'function') p.catch(() => {});
-    }
-    if (wantBoss && bossBgmAudio.paused) bossBgmAudio.play().catch(() => {});
+    if (!wantEnding && typeof endingRevealAudio !== 'undefined' && !endingRevealAudio.paused) { endingRevealAudio.pause(); if (audibleBgmElement === endingRevealAudio) { audibleBgmGeneration++; audibleBgmKey = null; audibleBgmElement = null; } }
+    if (wantMenu && menuBgmStarted && menuBgmAudio.paused) claimAudibleBgm('menu', menuBgmAudio);
+    if (wantNormal && bgmAudio.paused) claimAudibleBgm('normal', bgmAudio);
+    if (wantBoss && bossBgmAudio.paused) claimAudibleBgm('boss', bossBgmAudio);
   }
   function setMusicContext(ctx) {
     musicContext = ctx;
@@ -928,6 +939,7 @@
   // stays unchanged; the fix is entirely inside what this now delegates to.
   function reassertGameplayBgmIfExpected() {
     syncMusicContext();
+    if (typeof auditAudibleBgm === 'function') auditAudibleBgm(); // 2E/2F/2G hard-guard audit — defined further down, safe by call time
   }
   // Fires ~4x/sec for as long as ANY movie is actually playing (registered
   // once below rather than per-playEventMovie() call, covering every movie
@@ -3125,52 +3137,93 @@
   // that pickup unreachable — re-verified by Playwright, distance from the
   // rect's own inflated bottom edge to the pickup point stays clearly
   // positive at this game's own portrait aspect ratios).
-  const PROJECT_ADAM_TANK_POS_FRAC = { x: 0.5, y: 0.50 }; // kept for reference/back-compat — projectAdamTankWorldPos() below returns the RECT's own center now
-  const PROJECT_ADAM_TANK_RADIUS_FRAC = 0.06; // superseded by the rect half-width/y-bounds below — kept only so this constant's old meaning stays documented, not read anywhere
-  // WORK ORDER H / PART D: real-device testing found the LID/CAP portion
-  // (the flat ribbed disc sitting ABOVE the glass tendril-capsule) still
-  // walk-through-able, and the PEDESTAL/control-panel's own true bottom
-  // edge extended past the old BOTTOM_FRAC too — re-cropped and re-measured
-  // b1.jpg directly (event_b1_project_adam's own file) rather than
-  // eyeballing: the disc's own top edge sits at ~y=0.317 (not 0.32 — close,
-  // but the old value clipped its very top rim), and the full lid+capsule+
-  // pedestal footprint together extends down to ~y=0.585 (well past the old
-  // 0.55, which stopped partway up the pedestal). Both edges widened a
-  // further ~1-1.5% past those measured edges for safety margin, while
-  // BOTTOM_FRAC is still kept comfortably short of the y=0.60 SECRET FILE
-  // pickup point (PROJECT_ADAM_POS_FRAC.y) so that pickup never becomes
-  // unreachable — re-verified below.
-  const PROJECT_ADAM_TANK_RECT_HALFWIDTH_FRAC = 0.095; // half the pod's real visible width, including the lid's own slightly-wider rim (measured ~0.08-0.10 at the rim's widest; kept slightly inside that footprint)
-  const PROJECT_ADAM_TANK_RECT_TOP_FRAC = 0.305; // now covers the lid/cap disc's own top edge, not just the capsule below it
-  const PROJECT_ADAM_TANK_RECT_BOTTOM_FRAC = 0.575; // now covers the full pedestal/control-panel base, still clear of the y=0.60 pickup
-  function projectAdamTankWorldPos() {
-    // Center of the rect — kept as a named export/helper since window.__game
-    // and the old comment block above both referenced "the tank's world
-    // position" as a single point; still meaningful for debug/verification.
-    return { x: W * PROJECT_ADAM_TANK_POS_FRAC.x, y: H * (PROJECT_ADAM_TANK_RECT_TOP_FRAC + PROJECT_ADAM_TANK_RECT_BOTTOM_FRAC) / 2 };
+  const PROJECT_ADAM_TANK_POS_FRAC = { x: 0.5, y: 0.50 }; // kept for reference/back-compat only — no longer read by the rects below
+  const PROJECT_ADAM_TANK_RADIUS_FRAC = 0.06; // superseded by the rects below — kept only so this constant's old meaning stays documented, not read anywhere
+  // P0 REAL-DEVICE REGRESSION (Issue 3): the OLD single rect above was built
+  // from `W * frac` / `H * frac` directly — i.e. it silently assumed the
+  // background image is drawn filling the WHOLE canvas with zero horizontal
+  // crop and zero vertical letterbox offset. draw()'s own getStageDrawMetrics()
+  // instead "cover"-fits the image (scale = max(W/iw, H/ih)) and centers it
+  // with dx=(W-dw)/2 / baseDy=(H-dh)/2 — on any real device aspect ratio
+  // other than the image's own native 1008x1792, the actual on-screen tank
+  // position drifts away from what W*frac/H*frac computes, which is exactly
+  // why the lid stayed walk-through on real devices despite passing in this
+  // sandbox's own default viewport. Fixed the same way WORK ORDER H's own
+  // VOID_BRIDGE geometry was fixed: every fraction below is an IMAGE-NATIVE
+  // pixel fraction (measured directly from assets/stages/event/b1.jpg,
+  // 1008x1792, via programmatic per-row brightness scanning — not eyeballed),
+  // converted through the SAME dx/dw/baseDy/dh transform draw() itself uses
+  // (projectAdamImageToWorld() below), so the collision shape can never
+  // drift from the real rendered art on any aspect ratio.
+  //
+  // Two stacked rects (the pod is not a single uniform width — the lid disc
+  // and the wider chamber/pedestal section below it measure differently):
+  //   LID:      the ribbed cap disc + the narrow feed shaft above it.
+  //              x:[0.4435,0.6052]  y:[0.3164,0.3906]
+  //   CHAMBER:  the glass tendril-capsule (incl. its side support flanges)
+  //              through the pedestal/control-panel base.
+  //              x:[0.4236,0.6270]  y:[0.3906,0.5848]
+  // Both stay comfortably short of the y=0.60 SECRET FILE pickup point
+  // (PROJECT_ADAM_POS_FRAC.y) so that pickup never becomes unreachable —
+  // re-verified below (3E).
+  const PROJECT_ADAM_TANK_RECTS_FRAC = [
+    { x0: 0.4435, x1: 0.6052, y0: 0.3164, y1: 0.3906 }, // LID/CAP + feed shaft
+    { x0: 0.4236, x1: 0.6270, y0: 0.3906, y1: 0.5848 }, // CHAMBER + PEDESTAL
+  ];
+  // The ONE image-fraction -> WORLD conversion every consumer below shares —
+  // same pattern as WORK ORDER H's own voidBridgeImageToWorld(): reuses
+  // currentStage() (resolves the PROJECT ADAM SITE background, the same
+  // object draw() itself renders) and getStageDrawMetrics()'s own
+  // dx/dw/baseDy/dh, so this can never drift from what's actually on screen
+  // on any device aspect ratio. Recomputed fresh on every call (never
+  // cached) since W/H can change under resize/orientation. Fails safe
+  // (returns the raw W/H-fraction fallback) only if the background image
+  // genuinely hasn't loaded yet.
+  function projectAdamImageToWorld(fracX, fracY) {
+    const stage = currentStage();
+    if (!stage || !stage.img || !stage.img.naturalWidth) return { x: W * fracX, y: H * fracY };
+    const m = getStageDrawMetrics(stage);
+    return { x: m.dx + fracX * m.dw, y: m.baseDy + fracY * m.dh };
   }
+  function projectAdamTankRectsWorld() {
+    return PROJECT_ADAM_TANK_RECTS_FRAC.map((r) => {
+      const p0 = projectAdamImageToWorld(r.x0, r.y0);
+      const p1 = projectAdamImageToWorld(r.x1, r.y1);
+      return { x0: p0.x, y0: p0.y, x1: p1.x, y1: p1.y };
+    });
+  }
+  // Back-compat single-rect view — the bounding box of every sub-rect
+  // combined. window.__game debug exports and projectAdamTankWorldPos()
+  // below use this; the real collision check (clampPlayerAwayFromProjectAdamTank())
+  // uses projectAdamTankRectsWorld()'s full per-rect list instead.
   function projectAdamTankRectWorld() {
-    const halfW = W * PROJECT_ADAM_TANK_RECT_HALFWIDTH_FRAC;
+    const rects = projectAdamTankRectsWorld();
     return {
-      x0: W * PROJECT_ADAM_TANK_POS_FRAC.x - halfW,
-      x1: W * PROJECT_ADAM_TANK_POS_FRAC.x + halfW,
-      y0: H * PROJECT_ADAM_TANK_RECT_TOP_FRAC,
-      y1: H * PROJECT_ADAM_TANK_RECT_BOTTOM_FRAC,
+      x0: Math.min(...rects.map((r) => r.x0)),
+      x1: Math.max(...rects.map((r) => r.x1)),
+      y0: Math.min(...rects.map((r) => r.y0)),
+      y1: Math.max(...rects.map((r) => r.y1)),
     };
   }
-  function projectAdamTankSolidMinDist() {
-    return PLAYER_BODY_RADIUS; // the rect itself already IS the tank's footprint; only the player's own body radius needs adding, unlike the old circle which had to add both radii to a single center point
-  }
-  // Closest point ON the rect to an arbitrary world point — the standard
-  // AABB-vs-circle primitive (clamp the point into the rect's own bounds on
-  // each axis independently); distance from that closest point to the
-  // player's position, compared against PLAYER_BODY_RADIUS, is exactly
-  // equivalent to "does a circle of that radius overlap this rect", which
-  // is what both the resting push-back and the swept tunneling check below
-  // need.
-  function closestPointOnProjectAdamTankRect(px, py) {
+  function projectAdamTankWorldPos() {
     const r = projectAdamTankRectWorld();
-    return { x: Math.max(r.x0, Math.min(r.x1, px)), y: Math.max(r.y0, Math.min(r.y1, py)) };
+    return { x: (r.x0 + r.x1) / 2, y: (r.y0 + r.y1) / 2 };
+  }
+  function projectAdamTankSolidMinDist() {
+    return PLAYER_BODY_RADIUS; // the rects themselves already ARE the tank's footprint; only the player's own body radius needs adding
+  }
+  // Closest point on the NEAREST of the tank's rects to an arbitrary world
+  // point — same AABB-vs-circle primitive as before, just maxed over
+  // however many rects PROJECT_ADAM_TANK_RECTS_FRAC now declares.
+  function closestPointOnProjectAdamTankRect(px, py) {
+    let best = null, bestDist = Infinity;
+    for (const r of projectAdamTankRectsWorld()) {
+      const cx = Math.max(r.x0, Math.min(r.x1, px));
+      const cy = Math.max(r.y0, Math.min(r.y1, py));
+      const d = Math.hypot(px - cx, py - cy);
+      if (d < bestDist) { bestDist = d; best = { x: cx, y: cy }; }
+    }
+    return best;
   }
   // Called every frame from clampPlayerToScreen() alongside clampPlayerAway
   // FromDrones() (same "after DASH's own movement" timing), gated to the
@@ -3215,11 +3268,14 @@
     let dist = Math.hypot(dx, dy);
     if (dist < minDist) {
       if (dist === 0) {
-        // Player's own position is already inside the rect (e.g. right
-        // after a resize moved the rect's fraction-based bounds under a
+        // Player's own position is already inside a rect (e.g. right after
+        // a resize moved the rects' fraction-based bounds under a
         // stationary player) — push out along whichever axis needs the
-        // least correction, toward the nearer edge.
-        const r = projectAdamTankRectWorld();
+        // least correction, toward the nearer edge of the SPECIFIC rect the
+        // player is actually inside (never the multi-rect bounding box,
+        // which could pick a direction that still lands inside a different
+        // sub-rect when the tank is modeled as more than one).
+        const r = projectAdamTankRectsWorld().find((rr) => player.x >= rr.x0 && player.x <= rr.x1 && player.y >= rr.y0 && player.y <= rr.y1) || projectAdamTankRectWorld();
         const distLeft = player.x - r.x0, distRight = r.x1 - player.x;
         const distTop = player.y - r.y0, distBottom = r.y1 - player.y;
         const minEdge = Math.min(distLeft, distRight, distTop, distBottom);
@@ -9312,10 +9368,7 @@
     // TAP TO START's own screen transition to fail — audio outcome and
     // screen-transition outcome must stay fully decoupled.
     try {
-      const p = menuBgmAudio.play();
-      if (p && typeof p.catch === 'function') {
-        p.catch(() => { menuBgmStarted = false; }); // same one-more-attempt-on-next-tap defensiveness as startBgmOnce() above
-      }
+      claimAudibleBgm('menu', menuBgmAudio, { onRejected: () => { menuBgmStarted = false; } }); // same one-more-attempt-on-next-tap defensiveness as startBgmOnce() above
     } catch (err) {
       menuBgmStarted = false;
     }
@@ -9346,10 +9399,7 @@
     // still synchronously reachable from the SAME originating user gesture —
     // covers that case; bgmTimeupdateWatchdog's continuous reassertion
     // during the movie is the second, independent line of defense.
-    const p = bgmAudio.play();
-    if (p && typeof p.catch === 'function') {
-      p.catch(() => { bgmAudio.play().catch(() => {}); });
-    }
+    claimAudibleBgm('normal', bgmAudio, { onRejected: () => { claimAudibleBgm('normal', bgmAudio); } });
   }
 
   // ---------- BOSS BGM addendum: Outbreak 2 (GABRIEL/ADAM/ROID1/ROID2 only) ----------
@@ -9500,10 +9550,26 @@
     // startGameplayBgm()/enterEndingReveal() is unaffected.
     for (const audioEl of [bgmAudio, bossBgmAudio, endingRevealAudio]) {
       try {
+        // P0 REAL-DEVICE REGRESSION (Issue 2, 2C/2D/2H): per-element priming
+        // token so TWO overlapping unlockBackgroundBgmForIOS() calls on the
+        // SAME element (possible since backgroundBgmUnlocked only latches on
+        // a TRUSTED gesture — an untrusted/gamepad-driven call can re-run
+        // this whole loop while an earlier call's own promise is still
+        // pending) can never stomp each other's wasMuted snapshot, and a
+        // teardown that's been superseded by either a newer prime call OR a
+        // REAL claimAudibleBgm() ownership change on this same element
+        // becomes a safe no-op instead of pausing/re-muting a track that
+        // legitimately started playing in the meantime (the exact async
+        // race identified as the likely remaining real-device double/silent
+        // BGM cause).
+        if (audibleBgmElement === audioEl) continue; // a real claim already owns this element — priming has nothing to do here
+        const token = (audioEl._primeToken = (audioEl._primeToken || 0) + 1);
         const wasMuted = audioEl.muted;
         audioEl.muted = true;
         const p = audioEl.play();
         const teardown = () => {
+          if (audioEl._primeToken !== token) return; // superseded by a newer prime call on this element
+          if (audibleBgmElement === audioEl) return; // superseded by a real claim
           audioEl.pause();
           audioEl.currentTime = 0;
           audioEl.muted = wasMuted;
@@ -9515,13 +9581,79 @@
       }
     }
   }
+  // Hard single-owner claim for every REAL (non-priming) BGM play() call in
+  // this file (2C/2D/2H): immediately pauses every OTHER tracked BGM/song
+  // element, force-unmutes the claimed element (a priming cycle may have
+  // left it muted), and — if the browser's play() Promise is still pending
+  // when a NEWER claim supersedes this one — pauses itself on resolution
+  // instead of leaving a stale, no-longer-wanted track audible on top of
+  // whatever legitimately took over after it.
+  function claimAudibleBgm(key, element, opts) {
+    audibleBgmGeneration++;
+    const myGen = audibleBgmGeneration;
+    audibleBgmKey = key;
+    audibleBgmElement = element;
+    for (const other of [menuBgmAudio, bgmAudio, bossBgmAudio, endingRevealAudio]) {
+      if (other !== element && !other.paused) other.pause();
+    }
+    element.muted = false;
+    try {
+      const p = element.play();
+      if (p && typeof p.then === 'function') {
+        p.then(() => {
+          if (audibleBgmGeneration !== myGen) { try { element.pause(); } catch (e2) {} }
+        }).catch((err) => { if (opts && opts.onRejected) opts.onRejected(err); });
+      }
+    } catch (e) {
+      if (opts && opts.onRejected) opts.onRejected(e);
+    }
+    return myGen;
+  }
+  // P0 REAL-DEVICE REGRESSION (Issue 2, 2E/2F/2G): periodic hard-guard audit,
+  // independent of claimAudibleBgm()'s own bookkeeping so it also catches
+  // any track a future regression leaves audible outside this file's known
+  // owner-tracking paths. Stricter than "not paused": !paused && !muted &&
+  // volume>0 && readyState>=2 (HAVE_CURRENT_DATA — genuinely has decoded
+  // audio to play right now).
+  function isBgmTrackAudible(el) {
+    return !!el && !el.paused && !el.muted && el.volume > 0 && el.readyState >= 2;
+  }
+  const MENU_FAMILY_SCREENS_FOR_AUDIO_GUARD = ['opening', 'loading', 'mainMenu', 'scenarioSelect', 'mainScenarioSub', 'secretScenarioSub', 'trainingSelect', 'bossSelect'];
+  function auditAudibleBgm() {
+    const tracks = [['menu', menuBgmAudio], ['normal', bgmAudio], ['boss', bossBgmAudio], ['ending', endingRevealAudio]];
+    const audible = tracks.filter(([, el]) => isBgmTrackAudible(el));
+    // 2E: Shining Grace hard guard — audible only on the real endingReveal screen, musicContext genuinely 'ending'.
+    if (isBgmTrackAudible(endingRevealAudio) && !(gameState.screen === 'endingReveal' && musicContext === 'ending' && endingRevealState.active)) {
+      console.error('[AUDIO] VIOLATION: Shining Grace audible outside endingReveal screen/context — force-pausing.');
+      endingRevealAudio.pause();
+      audibleBgmViolation = { message: 'Shining Grace audible outside endingReveal', at: performance.now() };
+    }
+    // 2F: menu hard guard — only the menu track may be audible on startup/menu-family screens.
+    if (MENU_FAMILY_SCREENS_FOR_AUDIO_GUARD.indexOf(gameState.screen) !== -1) {
+      for (const [key, el] of tracks) {
+        if (key !== 'menu' && isBgmTrackAudible(el)) {
+          console.error('[AUDIO] VIOLATION: non-menu track audible on menu-family screen:', key, gameState.screen);
+          el.pause();
+          audibleBgmViolation = { message: key + ' audible on ' + gameState.screen, at: performance.now() };
+        }
+      }
+    }
+    // 2G: DOUBLE AUDIO VIOLATION — more than one track genuinely audible at once.
+    if (audible.length > 1) {
+      const names = audible.map(([k]) => k).join('+');
+      console.error('[AUDIO] DOUBLE AUDIO VIOLATION:', names);
+      audibleBgmViolation = { message: 'DOUBLE AUDIO: ' + names, at: performance.now() };
+      for (const [, el] of audible) { if (el !== audibleBgmElement) el.pause(); }
+    }
+    return audible.map(([k]) => k);
+  }
   function startBossBgm() {
     musicContext = 'boss'; // HOTFIX 2 SECTION 5: boss BGM only — menu/normal both stopped below/by this context
     stopMenuBgm();
     bgmAudio.pause();
     bgmAudio.currentTime = 0;
     bossBgmAudio.currentTime = 0;
-    bossBgmAudio.play().catch(() => {});
+    claimAudibleBgm('boss', bossBgmAudio);
   }
   function endBossBgmToNormalStage() {
     if (musicContext !== 'boss') return; // already in normal-BGM territory — never touch bgmAudio's own continuous playback between two normal stages
@@ -9529,7 +9661,7 @@
     bossBgmAudio.pause();
     bossBgmAudio.currentTime = 0;
     bgmAudio.currentTime = 0;
-    bgmAudio.play().catch(() => {});
+    claimAudibleBgm('normal', bgmAudio);
   }
   function endBossBgmSilently() {
     // HOTFIX 2 SECTION 7: BOSS BATTLE MODE end — stop+reset Outbreak 2 only;
@@ -9560,7 +9692,7 @@
     bossBgmAudio.currentTime = 0;
     if (menuBgmStarted) {
       menuBgmAudio.currentTime = 0;
-      menuBgmAudio.play().catch(() => {});
+      claimAudibleBgm('menu', menuBgmAudio);
     }
   }
 
@@ -10344,13 +10476,10 @@
   function startEndingRevealSong(now) {
     endingRevealAudio.currentTime = 0; // item 18: always from 0, every single entry
     endingRevealState.songStartedAt = now;
-    const p = endingRevealAudio.play();
-    if (p && typeof p.catch === 'function') {
-      p.catch((err) => {
-        console.error('[ENDING REVEAL] song play() rejected:', err && err.name, err && err.message);
-        armEndingRevealAudioFailureFallback();
-      });
-    }
+    claimAudibleBgm('ending', endingRevealAudio, { onRejected: (err) => {
+      console.error('[ENDING REVEAL] song play() rejected:', err && err.name, err && err.message);
+      armEndingRevealAudioFailureFallback();
+    } });
     if (endingRevealAudio.error) {
       console.error('[ENDING REVEAL] song already in error state:', endingRevealAudio.error);
       armEndingRevealAudioFailureFallback();
@@ -10486,6 +10615,7 @@
     endingRevealState.active = false;
     endingRevealAudio.pause();
     endingRevealAudio.currentTime = 0;
+    if (audibleBgmElement === endingRevealAudio) { audibleBgmGeneration++; audibleBgmKey = null; audibleBgmElement = null; }
     // P0 INTEGRATED REGRESSION HOTFIX (Part K): pause + rewind only — unlike
     // the old Image()'s src, this is a small already-loaded local asset, so
     // there is no reason to tear its src down and force a re-fetch on the
@@ -15731,6 +15861,7 @@
     clampPlayerAwayFromBarrels, clampPlayerAwayFromAdamSphereCombat, sweepAndClampPlayerAwayFromCircle, // WORK ORDER H / WORK ORDER H CONTINUATION — debug/verification only
     isProjectAdamSiteStage, projectAdamTankWorldPos, projectAdamTankSolidMinDist, clampPlayerAwayFromProjectAdamTank, PROJECT_ADAM_TANK_POS_FRAC, // P0 GAME COMPLETION HOTFIX — debug/verification only
     projectAdamTankRectWorld, closestPointOnProjectAdamTankRect, // P0 INTEGRATED REGRESSION HOTFIX (Part G) — debug/verification only
+    projectAdamTankRectsWorld, projectAdamImageToWorld, PROJECT_ADAM_TANK_RECTS_FRAC, // P0 REAL-DEVICE REGRESSION (Issue 3) — debug/verification only
     get eventMovieGainNode() { return eventMovieGainNode; }, GABRIEL_DEFEATED_GAIN, // P0 INTEGRATED REGRESSION HOTFIX (Part H) — debug/verification only
     beginScenarioOpening, // debug/verification only — HOTFIX SECTION 12-2: FULL PLAY's UI entry is LOCKED, but its underlying 'secret' scenario route must stay directly launchable for internal verification
     // Debug/verification only — DARK OUT PART 9: CINEMATIC INTEGRATION.
@@ -16891,6 +17022,36 @@
     drawHealPickupTexts(now);
     drawWorldItemPickupTexts(now);
     drawReloadingText(now); // PART7 SECTION P: drawn in this same world-translated block so it follows the player through camera scroll
+
+    // P0 REAL-DEVICE REGRESSION (Issue 3F): ?debugCollision=1 overlay — draws
+    // every registered solid-collision shape as a simple outline directly
+    // over the rendered art (still world-space, same translated block every
+    // other world-anchored debug/gameplay draw call above uses), plus the
+    // player's own collision point (player.x/player.y — the SAME point
+    // clampPlayerAwayFromProjectAdamTank()/clampPlayerAwayFromBoss()/
+    // clampPlayerAwayFromDrones() all test, not the sprite's separate foot-
+    // anchor) and its PLAYER_BODY_RADIUS, so a real device can visually
+    // confirm the drawn outline actually matches the visible geometry.
+    if (DEBUG_COLLISION_OVERLAY) {
+      ctx.save();
+      if (isProjectAdamSiteStage()) {
+        ctx.strokeStyle = '#ff2d55';
+        ctx.lineWidth = 2;
+        for (const r of projectAdamTankRectsWorld()) {
+          ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+        }
+      }
+      ctx.strokeStyle = '#2dff55';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, PLAYER_BODY_RADIUS, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#2dff55';
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
 
     // PART 2: laser beams draw crossing over the player/boss layer, so the
     // shot itself is never hidden behind either — still world-space (before
@@ -18204,6 +18365,22 @@
     }
     DEBUG_INPUT_OVERLAY = localStorage.getItem('debugInput') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  // P0 REAL-DEVICE REGRESSION (Issue 3F): same persistence pattern as
+  // DEBUG_INPUT_OVERLAY above (?debugCollision=1/0 in the URL, then sticks
+  // via localStorage) — draws every registered solid-collision shape
+  // (currently: the PROJECT ADAM tank's rects) as a simple outline directly
+  // over the rendered art, plus the player's own foot point/radius, so a
+  // real device can visually confirm the drawn outline actually matches the
+  // visible geometry rather than trusting a fraction number in source.
+  let DEBUG_COLLISION_OVERLAY = false;
+  try {
+    if (new URLSearchParams(window.location.search).get('debugCollision') === '1') {
+      localStorage.setItem('debugCollision', '1');
+    } else if (new URLSearchParams(window.location.search).get('debugCollision') === '0') {
+      localStorage.removeItem('debugCollision');
+    }
+    DEBUG_COLLISION_OVERLAY = localStorage.getItem('debugCollision') === '1';
+  } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
   const GAMEPAD_FIRE_THRESHOLD = 0.25; // RT analog value >= this counts as FIRE held
@@ -18247,6 +18424,21 @@
   // non-standard controller ever needs different indices.
   const FALLBACK_GAMEPAD_BUTTONS = Object.assign({}, STANDARD_GAMEPAD_BUTTONS);
 
+  // P0 REAL-DEVICE REGRESSION SESSION (Issue 1 / Part 1A/1B): RAF liveness +
+  // exception tracking, read by the expanded ?debugInput=1 overlay below.
+  // rafFrameCount incrementing on screen (even if slowly) is direct, human-
+  // readable proof the requestAnimationFrame chain is alive; if the overlay
+  // itself visibly stops updating on a real device, that alone proves RAF
+  // died (case A in the spec) — nothing else could still be painting it.
+  let rafFrameCount = 0;
+  let rafLastDeltaMs = 0;
+  let debugLastLoopException = null; // {message, at} — set in loop()'s own catch, never cleared automatically
+  // Set at each decision point inside updateGamepadInput() — the exact
+  // "which branch did this frame take" / "why was a press not consumed"
+  // trace the spec calls for (case C/D): a real device can show these two
+  // strings directly without needing console access.
+  let debugLastInputBranch = '(none yet)';
+  let debugLastRejectedBranch = '(none)';
   let gamepadIndex = null; // navigator.getGamepads() index of the controller in use; null = none
   let gamepadMappingSource = 'none'; // 'standard' | 'fallback' | 'none' — debug/report only
   const gamepadMoveVec = { x: 0, y: 0 }; // post-deadzone LEFT STICK, debug/verification only
@@ -18270,13 +18462,32 @@
   // would see the new screen and the same still-true pressedNow value).
   let gamepadInputArmed = true;
   let gamepadLastAnyButtonPressed = false;
+  let gamepadDisarmedAt = 0; // Part 1E timeout safety-net — see its own comment at the re-arm check
+  const GAMEPAD_ARM_TIMEOUT_MS = 3000;
   // PAUSE MENU gamepad navigation state — see GAMEPAD_PAUSE_MENU_STICK_THRESHOLD.
   let gamepadPauseMenuStickWasUp = false;
   let gamepadPauseMenuStickWasDown = false;
   let pauseMenuFocusIndex = 0;
 
+  // P0 REAL-DEVICE REGRESSION SESSION (Issue 1 / Part 1D): whenever
+  // gamepadIndex is (re)assigned to a genuinely NEW pad — a fresh
+  // connection, or pollForGamepadConnection() below switching to a
+  // different index — the previous-frame button snapshots MUST be
+  // explicitly wiped rather than left at whatever stale values happened to
+  // be sitting there. Without this, a snapshot captured for the OLD pad (or
+  // never reset since page load) could in principle suppress the very
+  // first real rising edge on the NEW pad. adoptGamepadIndex() is the ONE
+  // place that ever writes gamepadIndex, so this reset can never be
+  // forgotten at a call site.
+  function adoptGamepadIndex(newIndex) {
+    if (newIndex === gamepadIndex) return;
+    gamepadIndex = newIndex;
+    gamepadLastButtons = {};
+    gamepadLastAnyButtonPressed = false;
+    debugLastInputBranch = 'pad-adopted:index=' + newIndex;
+  }
   window.addEventListener('gamepadconnected', (e) => {
-    if (gamepadIndex === null) gamepadIndex = e.gamepad.index;
+    if (gamepadIndex === null) adoptGamepadIndex(e.gamepad.index);
   });
   window.addEventListener('gamepaddisconnected', (e) => {
     if (e.gamepad.index === gamepadIndex) gamepadIndex = null;
@@ -18303,16 +18514,38 @@
     return (gp && gp.connected) ? gp : null;
   }
 
-  // Safari's gamepadconnected event is known to be unreliable — this
-  // catches a controller that's already reporting through
-  // navigator.getGamepads() (which only populates once the user has
-  // actually pressed a button on it, a privacy measure every browser
-  // applies) even if the event itself never fired.
+  // P0 REAL-DEVICE REGRESSION SESSION (Issue 1 / Part 1C): re-scans ALL
+  // pad slots on EVERY call now, not just while gamepadIndex is still
+  // null — Safari's gamepadconnected event is known to be unreliable, and
+  // relying on it (or on a one-time "first null wins" scan) means a stale
+  // gamepadIndex can keep pointing at a slot navigator.getGamepads() has
+  // silently stopped updating while a DIFFERENT slot is the one actually
+  // reporting live button presses. Rule, per spec: if the current index no
+  // longer resolves to a connected pad, adopt the first connected one; if
+  // some OTHER connected slot has a button actively pressed while the
+  // current slot does not, prefer that other (actively-used) slot instead
+  // — this is what lets a controller that reconnects at a new index (a
+  // real, observed Bluetooth/iOS behavior) keep working without requiring
+  // a page reload.
   function pollForGamepadConnection() {
-    if (gamepadIndex !== null) return;
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let currentStillConnected = false;
+    let firstConnected = null;
+    let otherActivePad = null;
     for (const gp of pads) {
-      if (gp && gp.connected) { gamepadIndex = gp.index; return; }
+      if (!gp || !gp.connected) continue;
+      if (firstConnected === null) firstConnected = gp;
+      if (gp.index === gamepadIndex) { currentStillConnected = true; continue; }
+      if (gp.buttons.some((b) => b && b.pressed)) otherActivePad = gp;
+    }
+    if (!currentStillConnected && firstConnected) { adoptGamepadIndex(firstConnected.index); return; }
+    if (otherActivePad && (!currentStillConnected || gamepadIndex === null)) { adoptGamepadIndex(otherActivePad.index); return; }
+    // Current slot IS connected: only steal focus to a differently-active
+    // slot if the CURRENT slot itself has nothing pressed right now — never
+    // interrupt an in-progress press on the pad already in use.
+    if (otherActivePad && currentStillConnected) {
+      const cur = pads[gamepadIndex];
+      if (cur && !cur.buttons.some((b) => b && b.pressed)) adoptGamepadIndex(otherActivePad.index);
     }
   }
 
@@ -18344,6 +18577,7 @@
       gamepadLastButtons = {};
       gamepadLastAnyButtonPressed = false; // TAP TO START GAMEPAD SUPPORT: no pad connected, so nothing is "pressed"
       gamepadInputArmed = true; // never leave a disconnected pad stuck disarmed
+      gamepadDisarmedAt = 0;
       updateGamepadDebugOverlay(null);
       return;
     }
@@ -18374,6 +18608,25 @@
     // TAP TO START GAMEPAD SUPPORT: the "wait for full release" gate —
     // re-arms the instant every gamepad button is up again, never before.
     if (!gamepadInputArmed && !anyButtonPressedNow) gamepadInputArmed = true;
+    // P0 REAL-DEVICE REGRESSION SESSION (Issue 1 / Part 1E): safety-net
+    // timeout on top of the instant per-frame re-arm above — if a real
+    // device ever reports anyButtonPressedNow as continuously (and
+    // incorrectly) true for an extended stretch, a "wait for a real
+    // release" gate alone would stay disarmed forever, permanently killing
+    // START MENU input. Track how long the gate has been continuously
+    // disarmed and force it back open past a generous timeout regardless
+    // of what the (possibly wrong) pressed-state currently reads — a false
+    // re-arm risks at most one spurious repeat input; staying disarmed
+    // forever risks the whole menu going dead, which is strictly worse.
+    if (!gamepadInputArmed) {
+      if (!gamepadDisarmedAt) gamepadDisarmedAt = now;
+      else if (now - gamepadDisarmedAt > GAMEPAD_ARM_TIMEOUT_MS) {
+        gamepadInputArmed = true;
+        debugLastInputBranch = 'force-armed-by-timeout';
+      }
+    } else {
+      gamepadDisarmedAt = 0;
+    }
     const prev = gamepadLastButtons;
 
     // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION Part A: track the
@@ -18529,11 +18782,16 @@
       // opened MAIN MENU can never also register as that screen's own
       // D-PAD-nav/A-confirm rising edge.
       let tapToStartFiredThisFrame = false;
-      if (gameState.screen === 'opening' && gamepadInputArmed && anyButtonPressedNow && !gamepadLastAnyButtonPressed) {
-        debugStartHandlerCalledAt = now; // ?debugInput=1 overlay — see updateDebugInputOverlay()
-        onOpeningTap({ preventDefault() {} });
-        gamepadInputArmed = false;
-        tapToStartFiredThisFrame = true;
+      if (gameState.screen === 'opening') {
+        if (gamepadInputArmed && anyButtonPressedNow && !gamepadLastAnyButtonPressed) {
+          debugStartHandlerCalledAt = now; // ?debugInput=1 overlay — see updateDebugInputOverlay()
+          debugLastInputBranch = 'opening:tap-to-start-fired';
+          onOpeningTap({ preventDefault() {} });
+          gamepadInputArmed = false;
+          tapToStartFiredThisFrame = true;
+        } else if (anyButtonPressedNow) {
+          debugLastRejectedBranch = !gamepadInputArmed ? 'opening:disarmed' : 'opening:no-rising-edge(already-was-pressed-last-frame)';
+        }
       }
       // GAMEPAD CONTROL TUNING: PAUSE MENU navigation — D-PAD UP/DOWN
       // (rising edge) or LEFT STICK UP/DOWN (must return to neutral before
@@ -18577,6 +18835,8 @@
           gamepadMenuNavLastContainer = navContainer;
           if (navContainer) updateGamepadMenuNavFocusVisual();
         }
+        debugLastInputBranch = navContainer ? ('menu-nav:' + navContainer.id) : 'menu-nav:no-container-resolved';
+        if (!navContainer && anyButtonPressedNow) debugLastRejectedBranch = 'menu-nav:no-container-for-screen:' + gameState.screen;
         if (navContainer) {
           if (pressedNow.dpadUp && !prev.dpadUp) { moveGamepadMenuNavFocus(-1); debugLastDpadNavAt = now; }
           if (pressedNow.dpadDown && !prev.dpadDown) { moveGamepadMenuNavFocus(1); debugLastDpadNavAt = now; }
@@ -18714,25 +18974,56 @@
     const outbreakPlaying = playingTracks.filter((t) => t.label.startsWith('Outbreak')).map((t) => t.label);
     const shiningGracePlaying = !endingRevealAudio.paused;
 
+    // P0 REAL-DEVICE REGRESSION SESSION (Issue 1 / Part 1A/1B): all pads,
+    // not just the active one — a real device must be able to see EVERY
+    // non-null slot navigator.getGamepads() reports, since "the pad we
+    // picked isn't the one actually receiving presses" is exactly one of
+    // the 4 failure modes this overlay must distinguish.
+    const allPads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const padLines = [];
+    allPads.forEach((p, i) => {
+      if (!p) return;
+      const pressed = p.buttons.map((b, bi) => (b && (b.pressed || b.value > 0.1)) ? `${bi}:${b.value.toFixed(2)}` : null).filter(Boolean);
+      padLines.push(`  [${i}]${i === gamepadIndex ? '*ACTIVE*' : ''} id=${p.id.slice(0, 32)} connected=${p.connected} buttons=${p.buttons.length} axes=${p.axes.length}\n    pressed: ${pressed.length ? pressed.join(' ') : '(none)'}`);
+    });
+    const audibleTracks = audioTracks.filter((t) => !t.el.paused && !t.el.muted && t.el.volume > 0 && t.el.readyState >= 2);
+
     debugInputEl.textContent =
+      `--- LOOP / RAF ---\n` +
+      `RAF FRAME COUNT: ${rafFrameCount}\n` +
+      `LAST RAF DELTA: ${rafLastDeltaMs.toFixed(1)}ms\n` +
+      `LOOP ALIVE: true (if this stops updating on screen, LOOP ALIVE=false)\n` +
+      `LAST LOOP EXCEPTION: ${debugLastLoopException ? debugLastLoopException.message + ' (' + ago(debugLastLoopException.at) + ')' : '(none)'}\n` +
+      `--- SCREEN / STATE ---\n` +
       `SCREEN: ${screen}${gameState.paused ? ' (PAUSED)' : ''}\n` +
-      `GAMEPAD: connected=${!!gp} index=${gamepadIndex}\n` +
-      (gp ? `  id=${gp.id.slice(0, 40)}\n  mapping=${gamepadMappingSource} buttons=${gp.buttons.length} axes=${gp.axes.length}\n` : '') +
+      `gameplayActive: ${screen === 'gameplay' && !gameState.paused}\n` +
+      `eventMovieState.active: ${eventMovieState.active}\n` +
+      `stageTransition.active: ${stageTransition.active}\n` +
+      `--- GAMEPAD (ALL SLOTS) ---\n` +
+      `navigator.getGamepads().length: ${allPads.length}\n` +
+      (padLines.length ? padLines.join('\n') + '\n' : '  (no non-null slots)\n') +
+      `ACTIVE INDEX: ${gamepadIndex}\n` +
       `LAST BUTTON: index=${debugLastButtonIndex} pressed=${debugLastButtonPressed} value=${debugLastButtonValue.toFixed(2)} (${ago(debugLastButtonAt)})\n` +
       `RISING EDGE(any): ${gamepadLastAnyButtonPressed}\n` +
+      `gamepadLastButtons snapshot: ${JSON.stringify(gamepadLastButtons)}\n` +
       `START HANDLER: called ${ago(debugStartHandlerCalledAt)}\n` +
       `BLOCKED REASON: ${computeGamepadBlockedReason(gp)}\n` +
-      `RELEASE GATE(armed): ${gamepadInputArmed}\n` +
+      `RELEASE GATE(armed): ${gamepadInputArmed}  disarmedFor: ${gamepadDisarmedAt ? Math.round(now - gamepadDisarmedAt) + 'ms' : '0ms'}\n` +
+      `LAST INPUT BRANCH: ${debugLastInputBranch}\n` +
+      `LAST REJECTED BRANCH: ${debugLastRejectedBranch}\n` +
       `MENU INPUT ENABLED: ${!!navContainerEl}\n` +
       `--- START MENU ---\n` +
-      `FOCUSED: ${focusedLabel}  ITEMS: ${navItems.length}\n` +
+      `FOCUSED INDEX: ${gamepadMenuNavFocusIndex}  FOCUS TARGET: ${focusedLabel}  ITEMS: ${navItems.length}\n` +
       `LAST DPAD NAV: ${ago(debugLastDpadNavAt)}  LAST STICK NAV: ${ago(debugLastStickNavAt)}\n` +
       `LAST A CONFIRM: ${debugLastAConfirmTarget} (${ago(debugLastAConfirmAt)})\n` +
       `--- AUDIO ---\n` +
-      `ACTIVE BGM: ${playingTracks.length ? playingTracks.map((t) => t.label).join('+') : '(none)'}\n` +
-      `ACTIVE COUNT: ${playingTracks.length}${playingTracks.length > 1 ? '  !! DOUBLE-PLAY !!' : ''}\n` +
+      `PLAYING (not .paused): ${playingTracks.length ? playingTracks.map((t) => t.label).join('+') : '(none)'}\n` +
+      `AUDIBLE COUNT (unpaused+unmuted+vol>0+ready): ${audibleTracks.length}${audibleTracks.length > 1 ? '  !! DOUBLE AUDIO VIOLATION !!' : ''}\n` +
+      `AUDIBLE TRACKS: ${audibleTracks.length ? audibleTracks.map((t) => t.label).join('+') : '(none)'}\n` +
       `SHINING GRACE PLAYING: ${shiningGracePlaying}\n` +
-      `OUTBREAK PLAYING: ${outbreakPlaying.length ? outbreakPlaying.join('+') : '(none)'}`;
+      `OUTBREAK PLAYING: ${outbreakPlaying.length ? outbreakPlaying.join('+') : '(none)'}\n` +
+      `audibleBgmKey: ${typeof audibleBgmKey !== 'undefined' ? audibleBgmKey : '(n/a)'}  generation: ${typeof audibleBgmGeneration !== 'undefined' ? audibleBgmGeneration : '(n/a)'}\n` +
+      `LAST VIOLATION: ${audibleBgmViolation ? audibleBgmViolation.message + ' (' + ago(audibleBgmViolation.at) + ')' : '(none)'}`;
   }
 
   let lastBgmWatchdogAt = 0;
@@ -18754,6 +19045,8 @@
   // swallowed silently — visible in a real Safari remote-inspector console,
   // and any future crash report tooling could hook this same catch.
   function loop(now) {
+    rafFrameCount++;
+    rafLastDeltaMs = now - lastTime;
     try {
       const dt = Math.min((now - lastTime) / 1000, 0.05);
       lastTime = now;
@@ -18786,6 +19079,7 @@
       updateDebugInputOverlay(now);
     } catch (err) {
       console.error('[LOOP] uncaught error this frame, continuing next frame:', err);
+      debugLastLoopException = { message: String(err && err.message || err), at: now };
     }
     requestAnimationFrame(loop);
   }
