@@ -20364,8 +20364,44 @@
     if (gamepadLastAnyButtonPressed) { gamepadInputArmed = false; gamepadDisarmedAt = 0; } else { gamepadInputArmed = true; gamepadDisarmedAt = 0; }
     debugLastInputBranch = 'pad-adopted:index=' + newIndex;
   }
+  // P0 GAMEPAD FIRST-PRESS FIX (root-cause fix, this batch): this listener
+  // used to adopt the newly-connected pad immediately and synchronously,
+  // off the browser's own event dispatch — NOT through updateGamepadInput()'s
+  // per-frame gamepadWasVisibleLastPoll/freshlyAdoptedThisFrame discovery
+  // tracking. Real-device diagnostic (?debugGamepadTap=1) on a GameSir Nova
+  // Lite confirmed the exact mechanism: on WebKit, 'gamepadconnected' is
+  // dispatched AS A DIRECT RESULT of the user's first physical button press
+  // (that press is literally what makes the browser first expose an
+  // already-paired pad) — so by the time this handler ran, adoptGamepadIndex()
+  // would seed gamepadLastAnyButtonPressed=true from that SAME press (its
+  // own, separate "a button may already be held at adoption time" defense,
+  // correct in general) and disarm gamepadInputArmed, all BEFORE
+  // updateGamepadInput()'s own next poll ever got a chance to see this as a
+  // fresh discovery. Because adoption had already happened here,
+  // gamepadIndexBeforePoll was no longer null on that next poll, so
+  // freshlyAdoptedThisFrame could never fire for this press — the genuine
+  // first press was silently swallowed as "already held, wait for release"
+  // (real-device trace: CASE C, previousPressed=true, risingEdge=false,
+  // TAP_REJECTED NOT_ARMED), requiring a full release + second press to
+  // register.
+  // Fix: this listener no longer adopts directly. pollForGamepadConnection()
+  // already re-scans every pad slot on EVERY frame regardless of gamepadIndex
+  // (see its own comment — added specifically because Safari's
+  // gamepadconnected event is known to be unreliable), so it alone is a
+  // complete, correct discovery path — and unlike this event listener, it
+  // runs INSIDE updateGamepadInput(), after gamepadWasVisibleLastPoll/
+  // gamepadNewlyVisibleThisFrame have already been computed for that same
+  // frame, so freshlyAdoptedThisFrame correctly recognizes a genuine
+  // discovery-time press exactly once, real first press included. Routing
+  // ALL adoption through that one path costs at most one extra RAF frame
+  // (~16ms) of latency versus the old event-driven fast path — negligible,
+  // and far inside the existing GAMEPAD_POST_CONNECT_SETTLE_MS (250ms)
+  // readiness window. Scoped to adoption timing only: no edge-detection,
+  // arm/disarm, or readiness logic is touched.
   window.addEventListener('gamepadconnected', (e) => {
-    if (gamepadIndex === null) adoptGamepadIndex(e.gamepad.index);
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      recordGamepadTapEvent('GAMEPAD_CONNECTED_EVENT', { index: e.gamepad.index, id: e.gamepad.id });
+    }
   });
   window.addEventListener('gamepaddisconnected', (e) => {
     if (e.gamepad.index === gamepadIndex) gamepadIndex = null;
@@ -20812,7 +20848,18 @@
           onOpeningTap({ preventDefault() {} });
           gamepadInputArmed = false;
           tapToStartFiredThisFrame = true;
-          if (DEBUG_GAMEPAD_TAP_OVERLAY && gamepadTapFirstPressSummary && !gamepadTapFirstPressSummary.tapAccepted) {
+          // P0 DIAGNOSTIC DISPLAY FIX (this batch): guarded with
+          // screenAfterPress===null (the SAME "still within the first-press
+          // episode" condition the back-half finalize block below uses) so a
+          // LATER, second successful press (e.g. after a genuine
+          // release+re-press) can never retroactively overwrite the FIRST
+          // press's own already-finalized outcome — this is what caused the
+          // real-device report of the live panel showing "tapAccepted: true"
+          // while the frozen FIRST_PRESS_SUMMARY_FINALIZED trace event
+          // (correctly) still showed "tapAccepted: false" for the same
+          // episode: the panel reads this same mutable object live, and a
+          // subsequent accepted tap was updating it after the fact.
+          if (DEBUG_GAMEPAD_TAP_OVERLAY && gamepadTapFirstPressSummary && !gamepadTapFirstPressSummary.tapAccepted && gamepadTapFirstPressSummary.screenAfterPress === null) {
             gamepadTapFirstPressSummary.tapAccepted = true;
           }
         } else if (anyButtonPressedNow) {
