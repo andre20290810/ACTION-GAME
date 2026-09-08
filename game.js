@@ -17612,6 +17612,7 @@
     get DEBUG_BGM_OVERLAY() { return DEBUG_BGM_OVERLAY; }, set DEBUG_BGM_OVERLAY(v) { DEBUG_BGM_OVERLAY = v; },
     get bgmTrace() { return bgmTrace; }, get BGM_TRACE_MAX() { return BGM_TRACE_MAX; },
     buildBgmDebugText, updateDebugBgmOverlay, checkBgmAudibleSetChange, // P0 BGM DOUBLE-PLAY DIAGNOSTIC — debug/verification only
+    snapshotAllMediaElements, checkAllMediaAudibleSetChange, isMediaElementAudible, // P0 BGM REAL-DEVICE RECHECK — debug/verification only
     get debugAudioEl() { return debugAudioEl; },
     get startBgmStutterLog() { return startBgmStutterLog; },
     get resolvePlayerOverlapAfterPhaseChange() { return resolvePlayerOverlapAfterPhaseChange; }, // ADDENDUM 2 (GABRIEL DARK PHASE) — debug/verification only
@@ -20285,6 +20286,90 @@
       bgmLastAudibleSignature = sig;
     }
   }
+  // P0 BGM REAL-DEVICE RECHECK (this batch): the previous batch's diagnostic
+  // only tracked the 4 canonical BGM Audio() instances (menu/normal/boss/
+  // ending) — real-device testing on ?debugBgm=1 still reproduced a genuine
+  // double-audible BGM despite this session's own Playwright stress harness
+  // never catching a violation on any of those 4 tracks. This block widens
+  // the net to EVERY <audio>/<video> element actually in the DOM (via
+  // document.querySelectorAll, so it can never go stale even if a future
+  // change adds a new media element this review didn't know about) —
+  // specifically because #event-movie-video is intentionally UNMUTED for
+  // most movies (the documented "movie audio + BGM co-play" spec) and is
+  // the one real audio source this file has never tracked in a debug
+  // overlay before. Purely observational, same as every other diagnostic in
+  // this batch — never changes play()/pause()/mute/src on anything.
+  function isMediaElementAudible(el) {
+    return !!el && !el.paused && !el.muted && el.volume > 0 && el.readyState >= 2 && !el.ended;
+  }
+  // P0 BGM REAL-DEVICE RECHECK: a first version of this function used only
+  // document.querySelectorAll('audio, video') — direct on-device testing of
+  // that version's own output (via the panel) surfaced two things a static
+  // code read had missed:
+  // 1. The 4 canonical BGM Audio() instances (menuBgmAudio/bgmAudio/
+  //    bossBgmAudio/endingRevealAudio) are intentionally never appended to
+  //    the DOM (a plain background-music pattern) — querySelectorAll simply
+  //    cannot see them, so the "ALL MEDIA" section was silently missing the
+  //    very 4 tracks the rest of this panel already exists to watch. Added
+  //    explicitly here instead.
+  // 2. document.body ALSO contains 12 permanently-hidden <video> elements
+  //    (moviePreloadProbes, created near this file's own MOVIE_PRELOAD_KEYS
+  //    — one per EVENT/SYSTEM movie, purely to let isMovieProbeReady()/
+  //    prioritizeMoviePreload() ask "has the browser already buffered this
+  //    URL" without ever assigning it to the real playback element).
+  //    Confirmed via code read (every call site: .readyState/.buffered/
+  //    .preload/.load()/.networkState only, grepped for every reference to
+  //    moviePreloadProbe* in this file) that .play() is NEVER called on any
+  //    of them and .muted is set true once at creation and never changed —
+  //    they are structurally incapable of ever being a sound source, not
+  //    merely "observed muted right now". Excluded here (via their own
+  //    dataset.movieKey marker, set only on these 12 elements) purely to
+  //    keep a real-device log focused on elements that COULD plausibly be
+  //    the reported double-BGM's second source — still verifiable directly
+  //    via window.__game.moviePreloadProbes if ever needed.
+  function snapshotAllMediaElements() {
+    const domMedia = Array.from(document.querySelectorAll('audio, video')).filter((el) => !(el.dataset && el.dataset.movieKey));
+    const canonicalBgm = [menuBgmAudio, bgmAudio, bossBgmAudio, endingRevealAudio]; // detached from the DOM — querySelectorAll can't see these, so added explicitly
+    return [...domMedia, ...canonicalBgm].map((el) => ({
+      tagName: el.tagName,
+      id: el.id || (BGM_TRACK_NAMES_BY_ELEMENT.has(el) ? 'bgmAudio:' + BGM_TRACK_NAMES_BY_ELEMENT.get(el) + ' (detached, not in DOM)' : '(no id)'),
+      inDom: document.contains(el),
+      src: (el.currentSrc || el.src || '').split('/').pop() || '(none)',
+      paused: el.paused,
+      muted: el.muted,
+      volume: +el.volume.toFixed(2),
+      currentTime: +el.currentTime.toFixed(2),
+      readyState: el.readyState,
+      loop: el.loop,
+      ended: el.ended,
+      audible: isMediaElementAudible(el),
+    }));
+  }
+  let allMediaLastAudibleSignature = ''; // diagnostic-only change-detector across EVERY audio/video element, not just the 4 canonical BGM tracks
+  // Same per-frame-from-loop() pattern as checkBgmAudibleSetChange() above,
+  // but over the FULL DOM media inventory — this is the one check that can
+  // actually catch a video element's own embedded audio track (e.g.
+  // #event-movie-video, unmuted for sneaking/drone_arrival/most boss-
+  // arrival/gabriel_defeated/true_ending) lingering audible at the same
+  // time as a canonical BGM track, which checkBgmAudibleSetChange() cannot
+  // see at all since it only ever reads the 4 Audio() elements.
+  function checkAllMediaAudibleSetChange() {
+    if (!DEBUG_BGM_OVERLAY) return;
+    const snapshot = snapshotAllMediaElements();
+    const audibleIds = snapshot.filter((m) => m.audible).map((m) => m.id);
+    const sig = audibleIds.join('+');
+    if (sig !== allMediaLastAudibleSignature) {
+      recordBgmEvent('ALL_MEDIA_AUDIBLE_SET_CHANGED', {
+        from: allMediaLastAudibleSignature || '(none)',
+        to: sig || '(none)',
+        doubleAudio: audibleIds.length > 1,
+        screen: gameState.screen,
+        musicContext,
+        snapshot: audibleIds.length > 1 ? snapshot : undefined, // full detail only on an actual multi-audible event, to keep normal-transition trace entries small
+      });
+      allMediaLastAudibleSignature = sig;
+    }
+  }
   // ADDENDUM 2 (GABRIEL KNOCKBACK) optional overlay flag — same persistence
   // pattern as every other ?debugX=1/0 flag above. debugGabrielHitState
   // itself is always recorded regardless of this flag (cheap, event-driven,
@@ -21481,15 +21566,29 @@
         `    currentTime=${el.currentTime.toFixed(1)}  playCount=${counts.playCount}  pauseCount=${counts.pauseCount}  AUDIBLE=${isBgmTrackAudible(el)}`;
     });
     const audibleNow = tracks.filter(([, el]) => isBgmTrackAudible(el)).map(([k]) => k);
+    // P0 BGM REAL-DEVICE RECHECK (this batch): live enumeration of EVERY
+    // audio/video element actually in the DOM right now, not just the 4
+    // canonical BGM tracks above — real-device symptom persisted despite 0
+    // violations on those 4 tracks in this session's own testing, so this
+    // section is the direct answer to "現在可聴な全media要素を列挙して監査".
+    const allMedia = snapshotAllMediaElements();
+    const allMediaAudible = allMedia.filter((m) => m.audible);
+    const allMediaLines = allMedia.map((m) =>
+      `  <${m.tagName.toLowerCase()} id="${m.id}">${m.audible ? ' *AUDIBLE*' : ''} src=${m.src} paused=${m.paused} muted=${m.muted} volume=${m.volume} loop=${m.loop} ended=${m.ended}\n` +
+      `    currentTime=${m.currentTime}  readyState=${m.readyState}`
+    );
     return (
       `=== DARK OUT BGM DIAGNOSTIC (?debugBgm=1) ===\n` +
       `timestamp: ${new Date().toISOString()}\n` +
       `--- STATE ---\n` +
       `MUSIC CONTEXT: ${musicContext}  AUDIO OWNER: ${audibleBgmKey || '(none)'}  GENERATION: ${audibleBgmGeneration}\n` +
       `SCREEN: ${gameState.screen}  MODE: ${gameState.mode || '(none)'}  MOVIE ACTIVE: ${eventMovieState.active}\n` +
-      `AUDIBLE NOW: ${audibleNow.length ? audibleNow.join('+') : '(none)'}${audibleNow.length > 1 ? '  *** DOUBLE AUDIO RIGHT NOW ***' : ''}\n` +
+      `AUDIBLE NOW (4 canonical BGM tracks only): ${audibleNow.length ? audibleNow.join('+') : '(none)'}${audibleNow.length > 1 ? '  *** DOUBLE AUDIO RIGHT NOW ***' : ''}\n` +
       `LAST VIOLATION: ${audibleBgmViolation ? audibleBgmViolation.message + ' (' + Math.round(performance.now() - audibleBgmViolation.at) + 'ms ago)' : '(none)'}\n` +
-      `--- TRACKS ---\n${trackLines.join('\n')}\n` +
+      `--- TRACKS (4 canonical BGM Audio() instances) ---\n${trackLines.join('\n')}\n` +
+      `--- ALL MEDIA ELEMENTS (every <audio>/<video> in the DOM right now, ${allMedia.length} total) ---\n` +
+      `AUDIBLE NOW (ALL media, incl. video audio tracks): ${allMediaAudible.length ? allMediaAudible.map((m) => m.id).join('+') : '(none)'}${allMediaAudible.length > 1 ? '  *** DOUBLE AUDIO ACROSS ALL MEDIA RIGHT NOW ***' : ''}\n` +
+      allMediaLines.join('\n') + '\n' +
       `--- EVENT TRACE (most recent ${Math.min(bgmTrace.length, 60)} of ${bgmTrace.length}, max ${BGM_TRACE_MAX}) ---\n` +
       bgmTrace.slice(-60).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n')
     );
@@ -21564,6 +21663,7 @@
       // watchdog's own cadence could step right over. No-op unless
       // DEBUG_BGM_OVERLAY is true.
       checkBgmAudibleSetChange();
+      checkAllMediaAudibleSetChange(); // P0 BGM REAL-DEVICE RECHECK: same per-frame cadence, but across every audio/video DOM element, not just the 4 canonical BGM tracks
       // GAMEPAD SUPPORT: polled every frame regardless of screen/orientation
       // (updateGamepadInput() itself gates gameplay-affecting writes to
       // screen==='gameplay'), so a disconnect/neutral-stick reset is never
