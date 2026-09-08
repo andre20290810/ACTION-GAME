@@ -9994,6 +9994,19 @@
   // unless screen==='gameplay' (see the game loop below), so nothing in
   // the gameplay world ever ticks in the background during OPENING/MAIN
   // MENU/LOADING — SECTION J's own requirement.
+  // P0 RUNTIME STATE/ASYNC RACE STABILIZATION (this batch): ONE coarse
+  // cross-screen ownership token, bumped every time a fresh MAIN MENU
+  // session begins (both TAP TO START's own beginStartupSequence() and
+  // returnToTopMenu()'s QUIT/GAME CLEAR/RESULT-exit path). Deliberately NOT
+  // a full per-screen/per-mode/per-stage generation system (eventMovieState.
+  // token/audibleBgmGeneration/stageTransition.generation already cover
+  // those specific narrow cases correctly) — this is only the one MISSING
+  // layer: a stale async callback that started during a PREVIOUS gameplay/
+  // RESULT session (e.g. a late-resolving movie-prime Promise, a leftover
+  // watchdog tick) can check this against the value it captured at start
+  // and back off if a whole new MAIN MENU session has begun since, without
+  // needing its own bespoke token.
+  let runtimeGeneration = 0;
   const gameState = {
     // DARK OUT PART 3: 'bossBattle' added — STORY MODE's own 'boss' keeps
     // its EXACT existing meaning (never repurposed) and is untouched by the
@@ -10021,6 +10034,7 @@
   let gameOverEnteredAt = 0; // set by triggerGameOver(); used to exclude GAME OVER dwell time from PLAY TIME on RETRY, same pattern as storyPausedAccumMs/PAUSE
 
   function setScreen(next) {
+    if (DEBUG_RUNTIME_OVERLAY && next !== gameState.screen) recordRuntimeEvent('SCREEN_CHANGE', { from: gameState.screen, to: next });
     gameState.screen = next;
     // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: the single choke point every
     // route into MAIN MENU already passes through (TAP TO START, RETRY/QUIT
@@ -10346,6 +10360,15 @@
     el.addEventListener('playing', () => { if (DEBUG_BGM_OVERLAY) recordBgmEvent('MEDIA_PLAYING', { track: label }); });
     el.addEventListener('volumechange', () => { if (DEBUG_BGM_OVERLAY) recordBgmEvent('MEDIA_VOLUMECHANGE', { track: label }); });
   }
+  // P0 RUNTIME STATE/ASYNC RACE STABILIZATION: AUDIO_PLAYING/AUDIO_PAUSE for
+  // ?debugRuntime=1 — covers all 4 canonical BGM elements. DEBUG_RUNTIME_OVERLAY
+  // itself is declared much further down the file, but that's fine here since
+  // these closures only READ it once actually invoked (well after the whole
+  // IIFE has finished its synchronous top-to-bottom initialization pass).
+  for (const [label, el] of [['menu', menuBgmAudio], ['normal', bgmAudio], ['boss', bossBgmAudio], ['ending', endingRevealAudio]]) {
+    el.addEventListener('playing', () => { if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAYING', { track: label }); });
+    el.addEventListener('pause', () => { if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PAUSE', { track: label }); });
+  }
   // P0 ADDENDUM (root-cause fix, this batch): ROID1 ARRIVAL BGM CONTINUITY —
   // the reported "Outbreak2は静か" was root-caused to the EXACT SAME WebKit
   // per-HTMLMediaElement gesture-unlock rule as Part A's own TAP TO PLAY fix
@@ -10469,14 +10492,17 @@
       if (other !== element && !other.paused) other.pause();
     }
     element.muted = false;
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_CALL', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element) });
     try {
       const p = element.play();
       if (p && typeof p.then === 'function') {
         p.then(() => {
           if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_RESOLVED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, stale: audibleBgmGeneration !== myGen });
+          if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_RESOLVE', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), stale: audibleBgmGeneration !== myGen });
           if (audibleBgmGeneration !== myGen) { try { element.pause(); } catch (e2) {} }
         }).catch((err) => {
           if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_REJECTED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, errName: err && err.name });
+          if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_REJECT', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), errName: err && err.name });
           if (opts && opts.onRejected) opts.onRejected(err);
         });
       }
@@ -10617,6 +10643,33 @@
     // special-boss/reward state behind for the next mode to inherit.
     // Idempotent/harmless when no scenario was ever active.
     exitStoryScenarioContext();
+    // P0 RUNTIME STATE/ASYNC RACE STABILIZATION (root-cause fix, this batch):
+    // this is the OTHER real route back to MAIN MENU besides TAP TO START —
+    // QUIT (PAUSE MENU), GAME CLEAR->RESULT->"BACK TO TOP MENU", and RESULT's
+    // own exit all funnel through here. beginStartupSequence()/onOpeningTap()
+    // already reset the whole gamepad edge/arm baseline (gamepadIndex/
+    // gamepadInputArmed/gamepadDisarmedAt/gamepadLastButtons/
+    // gamepadLastAnyButtonPressed) every time MAIN MENU is (re-)entered from
+    // TAP TO START — this function never did the same for the OTHER path
+    // back to MAIN MENU, so whatever edge/arm state was live during the
+    // just-ended gameplay/RESULT session (e.g. a DASH button still reading
+    // "pressed" from the exact frame QUIT/BACK TO TOP was confirmed via
+    // gamepad) carried over into the new MAIN MENU session instead of
+    // starting fresh, the real-device-reported "GAME CLEAR/QUIT後、gamepad
+    //操作がしばらく効かない" root cause. Mirrors onOpeningTap()'s own reset
+    // exactly (gamepadIndex=null forces adoptGamepadIndex() to reseed the
+    // edge baseline from the pad's REAL current state on the very next
+    // poll — same frame, since updateGamepadInput() runs unconditionally
+    // every RAF tick — so a button still physically held from the QUIT/BACK
+    // press itself is correctly treated as "already held, wait for a real
+    // release" rather than misread as a fresh press, exactly like TAP TO
+    // START's own first-press handling).
+    resetGamepadEdgeBaselineForMenuReturn();
+    // P0 RUNTIME STATE/ASYNC RACE STABILIZATION: bumps the one cross-screen
+    // ownership token every stale-callback guard added this batch checks —
+    // see runtimeGeneration's own declaration for the full design writeup.
+    runtimeGeneration++;
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('RETURN_TO_MENU', { runtimeGeneration });
     setScreen('mainMenu');
   }
 
@@ -11149,17 +11202,16 @@
     startupGeneration++;
     const myGeneration = startupGeneration;
     startupState = STARTUP_STATE.BOOT;
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('STARTUP_START', { generation: myGeneration });
     hardResetAllBgmForFreshBoot();
     // Forces adoptGamepadIndex() to reseed the rising-edge baseline from the
     // pad's REAL current button state on the very next poll (same fix as
     // the false-rising-edge root cause from the previous batch) — a fresh
     // boot/restore must never inherit a stale gamepadLastButtons snapshot
-    // from before it.
-    gamepadIndex = null;
-    gamepadLastButtons = {};
-    gamepadLastAnyButtonPressed = false;
-    gamepadInputArmed = true;
-    gamepadDisarmedAt = 0;
+    // from before it. P0 RUNTIME STATE/ASYNC RACE STABILIZATION: now the
+    // same shared helper returnToTopMenu() also uses — see its own comment.
+    resetGamepadEdgeBaselineForMenuReturn();
+    runtimeGeneration++;
     lastTapRejectReason = '(none)';
     startupState = STARTUP_STATE.LOADING;
     setScreen('loading');
@@ -11208,6 +11260,7 @@
         gamepadIndex = null;
         gamepadInputArmed = true;
         gamepadDisarmedAt = 0;
+        if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('STARTUP_READY', { generation: myGeneration });
         startupState = STARTUP_STATE.WAITING_FOR_TAP; // TAP handler (onOpeningTap) is already always-installed; screen becomes 'opening' in this same synchronous step below
         tapReadyGeneration = myGeneration;
         lastTapRejectReason = '(none)';
@@ -11277,6 +11330,83 @@
   // ---------- SECTION H: OPENING (tap-to-start) ----------
   const openingOverlayEl = document.getElementById('opening-overlay');
 
+  // P0 RUNTIME STATE/ASYNC RACE STABILIZATION (root-cause fix, this batch):
+  // real-device report "START画面のループ動画が再生されず、背景が真っ黒のまま
+  // になることがある" root-caused to a genuine structural gap — every one of
+  // this element's 3 play() call sites (beginAttractOpening()/
+  // endAttractOpening()/onOpeningTap()) used a bare `.play().catch(() => {})`
+  // with NO retry path and no 'error' listener at all. openingVideoEl is
+  // always muted at every one of those call sites, so autoplay POLICY itself
+  // essentially never rejects it — the realistic rejection causes are
+  // instead (a) the tab/page was backgrounded at the exact instant play()
+  // was called (WebKit/Chromium can reject or silently never resolve a
+  // play() issued while not visible), or (b) a fast-following .src
+  // reassignment (attract -> loading, or a rapid double-call) aborted the
+  // previous in-flight play() with an AbortError before it ever reached
+  // 'playing'. Both are exactly the kind of stale-callback-vs-new-state race
+  // this batch's audit was asked to close. Fixed with a bounded retry (never
+  // an infinite loop) PLUS a visibilitychange-driven recovery for the
+  // specific "backgrounded at call time" case — never a fixed-time band-aid
+  // substituting for the real cause, since a successful play() on any retry
+  // still stops immediately (no further attempts once genuinely playing).
+  let openingVideoPlayToken = 0;
+  let openingVideoLastPlayError = null; // ?debugRuntime=1 visibility only
+  const OPENING_VIDEO_RETRY_DELAYS_MS = [150, 500, 1500];
+  function playOpeningVideoWithRetry() {
+    const myToken = ++openingVideoPlayToken;
+    const mySrc = openingVideoEl.src;
+    function attempt(retriesLeft) {
+      if (myToken !== openingVideoPlayToken) return; // superseded by a newer play request (attract/loading/start_display swap) — never fight over the element
+      if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('MOVIE_PLAY_CALL', { movie: 'opening', retriesLeft });
+      const p = openingVideoEl.play();
+      if (p && typeof p.then === 'function') {
+        // P0 self-caught fix: .then() and .catch() must be chained on the
+        // SAME derived promise, never attached as two independent calls on
+        // `p` — two separate p.then(...)/p.catch(...) calls each create
+        // their own downstream promise; the .then()-only one has no
+        // rejection handler of its own, so a real rejection of `p` (routine
+        // in this sandbox, and a real possibility on-device too) surfaced
+        // as an genuine unhandled promise rejection / page error.
+        p.then(() => { if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('MOVIE_PLAY_RESOLVE', { movie: 'opening' }); }).catch((err) => {
+          if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('MOVIE_PLAY_REJECT', { movie: 'opening', errName: err && err.name, retriesLeft });
+          if (myToken !== openingVideoPlayToken) return;
+          openingVideoLastPlayError = { name: err && err.name, message: err && err.message, at: Date.now(), retriesLeft };
+          if (retriesLeft <= 0) return;
+          const delay = OPENING_VIDEO_RETRY_DELAYS_MS[OPENING_VIDEO_RETRY_DELAYS_MS.length - retriesLeft] || OPENING_VIDEO_RETRY_DELAYS_MS[OPENING_VIDEO_RETRY_DELAYS_MS.length - 1];
+          setTimeout(() => {
+            // Re-check token AND that .src is still the one this call chain
+            // started for — a later legitimate .src swap must never be
+            // fought over by a stale retry from an earlier attempt.
+            if (myToken !== openingVideoPlayToken || openingVideoEl.src !== mySrc) return;
+            if (!openingVideoEl.paused) return; // a later attempt (or the browser itself) already got it playing
+            attempt(retriesLeft - 1);
+          }, delay);
+        });
+      }
+    }
+    attempt(OPENING_VIDEO_RETRY_DELAYS_MS.length);
+  }
+  openingVideoEl.addEventListener('error', () => {
+    openingVideoLastPlayError = { name: 'MediaError', message: openingVideoEl.error ? String(openingVideoEl.error.code) : '(unknown)', at: Date.now(), retriesLeft: 0 };
+  });
+  for (const evt of ['playing', 'waiting', 'stalled', 'pause', 'ended']) {
+    openingVideoEl.addEventListener(evt, () => { if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('MOVIE_' + evt.toUpperCase(), { movie: 'opening' }); });
+  }
+  // Safety net for the "backgrounded at the exact instant play() was called"
+  // case: the instant the tab becomes visible again, if this element is
+  // supposed to be looping (screen is loading/opening/a MAIN MENU-family
+  // screen — i.e. showOpeningContainer's own condition in setScreen(), or
+  // still pre-MAIN-MENU) but is sitting paused with a real src loaded, retry
+  // once. Harmless no-op the overwhelming majority of the time (already
+  // playing).
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    if (!openingVideoEl.paused || !openingVideoEl.hasAttribute('src')) return;
+    const screen = gameState.screen;
+    const relevantScreen = screen === 'loading' || screen === 'opening' || screen === 'mainMenu' || screen === 'trainingSelect' || screen === 'bossSelect' || screen === 'scenarioSelect' || screen === 'mainScenarioSub' || screen === 'secretScenarioSub';
+    if (relevantScreen) playOpeningVideoWithRetry();
+  });
+
   // DARK OUT PART 11 SECTION 2: opening.mp4 is now the TAP-TO-START screen's
   // own ATTRACT movie — after ATTRACT_OPENING_IDLE_MS of no interaction on
   // the 'opening' screen (loading.mp4 + TAP TO START), it plays once
@@ -11303,7 +11433,7 @@
     openingVideoEl.src = SYSTEM_MOVIES.opening;
     openingVideoEl.currentTime = 0;
     openingVideoEl.onended = () => { if (attractPlaying) endAttractOpening(); };
-    openingVideoEl.play().catch(() => {}); // muted autoplay is never rejected in practice; no TAP TO PLAY fallback either way (2-4)
+    playOpeningVideoWithRetry(); // P0 RUNTIME STATE/ASYNC RACE STABILIZATION: bounded retry on rejection — see its own comment
   }
   function endAttractOpening() {
     attractPlaying = false;
@@ -11311,7 +11441,7 @@
     openingVideoEl.loop = true;
     openingVideoEl.src = SYSTEM_MOVIES.loading;
     openingVideoEl.currentTime = 0;
-    openingVideoEl.play().catch(() => {});
+    playOpeningVideoWithRetry(); // P0 RUNTIME STATE/ASYNC RACE STABILIZATION: bounded retry on rejection — see its own comment
     resetAttractIdleTimer();
   }
   // P0 INTEGRATED REGRESSION HOTFIX (STARTUP GAMEPAD/AUDIO): single entry
@@ -11395,7 +11525,7 @@
     openingVideoEl.muted = true;
     openingVideoEl.src = SYSTEM_MOVIES.start_display;
     openingVideoEl.currentTime = 0;
-    openingVideoEl.play().catch(() => {});
+    playOpeningVideoWithRetry(); // P0 RUNTIME STATE/ASYNC RACE STABILIZATION: bounded retry on rejection — see its own comment
     setScreen('mainMenu');
     // P0 STARTUP STATE MACHINE REWRITE item 10: a fresh gamepad edge-baseline
     // resync (gamepadIndex=null forces adoptGamepadIndex() to reseed from the
@@ -12344,6 +12474,7 @@
     stageTransition.generation = transitionGeneration;
     logTransitionEvent('TRANSITION ACCEPT', { source, generation: stageTransition.generation });
     if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('STAGE_TRANSITION_START', { source, generation: stageTransition.generation });
+    if (DEBUG_RUNTIME_OVERLAY) { recordRuntimeEvent('STAGE_END', { source }); recordRuntimeEvent('TRANSITION_START', { source, generation: stageTransition.generation }); }
     // P0 INTEGRATED REGRESSION HOTFIX (DASH stage-skip investigation, Part
     // 8): explicitly cancel any DASH still in flight the instant a
     // transition begins, rather than relying on updateDash() simply never
@@ -12383,6 +12514,7 @@
   // roll are never reduced, only recombined per stage.
   function enterSecurityTrainingStage(now) {
     if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('STAGE_START', { source: 'enterSecurityTrainingStage', trainingStageIndex });
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('STAGE_START', { source: 'enterSecurityTrainingStage', trainingStageIndex });
     securityRobots.length = 0;
     whiteShadows.length = 0;
     boss.spawned = false; // clears whatever the PREVIOUS stage's ROID1 left behind the instant a new stage is entered
@@ -12448,6 +12580,7 @@
     // advance is logged inside enterSecurityTrainingStage() below (this
     // function's own call into it), never duplicated here.
     if (DEBUG_TRANSITION_OVERLAY && gameState.mode !== 'securityTraining') recordTransitionEvent('STAGE_START', { source: 'advanceTrainingStage', trainingStageIndex });
+    if (DEBUG_RUNTIME_OVERLAY && gameState.mode !== 'securityTraining') recordRuntimeEvent('STAGE_START', { source: 'advanceTrainingStage', trainingStageIndex });
     // SECTION M: a fresh random background, excluding the one just used
     // when the pool has more than one candidate (M-3) — AREA1/AREA2 within
     // the new STAGE then both read this same index via currentStage(), so
@@ -12532,6 +12665,7 @@
   // one implementation of "what does entering STORY STAGE N actually do".
   function enterStoryStage(now) {
     if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('STAGE_START', { source: 'enterStoryStage', currentStageIndex });
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('STAGE_START', { source: 'enterStoryStage', currentStageIndex });
     const plan = activeStagePlanArray()[currentStageIndex];
     // BOSS BGM ADDENDUM Section F/G: this is the ONE funnel every STORY
     // stage-advance passes through (updateStageTransition() above), so it's
@@ -12947,6 +13081,7 @@
       stageTransition.active = false;
       stageTransition.phase = null;
       if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('STAGE_TRANSITION_END', { generation: stageTransition.generation });
+      if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('TRANSITION_END', { generation: stageTransition.generation });
     }
   }
   function getStageTransitionOverlayAlpha(now) {
@@ -15737,6 +15872,7 @@
 
   function startMode(mode, scenario) {
     if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('MODE_START', { mode, scenario: scenario || '(none)' });
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('MODE_START', { mode, scenario: scenario || '(none)' });
     gameState.mode = mode;
     // DARK OUT PART 3 SECTION 19: BOSS BATTLE MODE must never reset (or, via
     // RESTART re-entering here with mode==='bossBattle', ever touch) STORY's
@@ -16112,6 +16248,7 @@
   function triggerPauseNow() {
     gameState.paused = true;
     if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('PAUSE_ON', { source: 'triggerPauseNow' });
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('PAUSE_ON', { source: 'triggerPauseNow' });
     pauseStartedAt = performance.now(); // SECTION Q-1: PLAY TIME excludes real time spent paused
     releaseAllHeldInputs();
     showModeMenu();
@@ -16145,6 +16282,7 @@
     if (gameClearRemainingMs > 0) return;
     gameState.paused = true;
     if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('PAUSE_ON', { source: 'autoPauseOnInterruption' });
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('PAUSE_ON', { source: 'autoPauseOnInterruption' });
     pauseStartedAt = performance.now(); // SECTION Q-1, same as pausePress()
     showModeMenu();
   }
@@ -16201,6 +16339,7 @@
   function resumeFromPauseMenu() {
     gameState.paused = false;
     if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('PAUSE_OFF', { source: 'resumeFromPauseMenu' });
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('PAUSE_OFF', { source: 'resumeFromPauseMenu' });
     storyPausedAccumMs += performance.now() - pauseStartedAt; // SECTION Q-1
     lastPlayerInputAt = performance.now(); // SECTION B/L: fresh grace period — real wall-clock time spent paused must never count toward the watchdog's idle timer
     hideModeMenu();
@@ -16216,6 +16355,7 @@
   // reset fresh there, so no STORY progress/encounter/stage/area/boss
   // state ever survives into the next run.
   document.getElementById('mode-quit-btn').addEventListener('click', () => {
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('QUIT', {});
     gameState.paused = false;
     hideModeMenu();
     // DARK OUT PART 3 SECTION 20: QUITting out of an active BOSS BATTLE
@@ -16302,6 +16442,7 @@
     return `${m}:${String(s).padStart(2, '0')}`;
   }
   function enterResultScreen() {
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('RESULT_ENTER', {});
     // HOTFIX 4.3 ADDENDUM 2 SECTIONS 1-3: ACCURACY/DAMAGE TAKEN are no
     // longer part of the RESULT display at all (their DOM rows are gone —
     // see index.html) — shotsHit/shotsFired/totalDamageTaken themselves
@@ -18074,6 +18215,14 @@
     computeInputLockReason, snapshotTransitionDiagnosticContext, recordTransitionEvent, checkInputLockStateChange,
     buildTransitionDebugText, updateDebugTransitionOverlay,
     prewarmEventMoviePlaybackElement, resolveMovieUrl, // P0 GAMEPLAY STARTUP/TRANSITION STABILITY (10s-wait root-cause fix) — debug/verification only
+    // P0 RUNTIME STATE/ASYNC RACE STABILIZATION (?debugRuntime=1) — debug/
+    // verification only:
+    get DEBUG_RUNTIME_OVERLAY() { return DEBUG_RUNTIME_OVERLAY; }, set DEBUG_RUNTIME_OVERLAY(v) { DEBUG_RUNTIME_OVERLAY = v; },
+    get runtimeTrace() { return runtimeTrace; }, get RUNTIME_TRACE_MAX() { return RUNTIME_TRACE_MAX; },
+    get runtimeGeneration() { return runtimeGeneration; },
+    recordRuntimeEvent, buildRuntimeDebugText, updateDebugRuntimeOverlay,
+    resetGamepadEdgeBaselineForMenuReturn, playOpeningVideoWithRetry,
+    get openingVideoLastPlayError() { return openingVideoLastPlayError; },
   };
 
   // ---------- Main loop ----------
@@ -20737,8 +20886,38 @@
       const type = reason === null ? 'INPUT_LOCK_OFF' : (lastInputLockSignature === null ? 'INPUT_LOCK_ON' : 'INPUT_LOCK_REASON_CHANGE');
       recordTransitionEvent(type, { from: lastInputLockSignature, to: reason });
       lastInputLockSignature = reason;
+      if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent(reason === null ? 'INPUT_LOCK_OFF' : 'INPUT_LOCK_ON', { reason });
     }
   }
+
+  // ==========================================================================
+  // P0 RUNTIME STATE/ASYNC RACE STABILIZATION (?debugRuntime=1): a unified
+  // diagnostic covering PAGE LOAD -> SCREEN CHANGE -> MODE/STAGE/TRANSITION ->
+  // GAMEPAD arm/disarm -> AUDIO/MOVIE play()-Promise lifecycle -> QUIT/RESULT/
+  // RETURN TO MENU, one event timeline. Deliberately its OWN separate flag/
+  // trace (same "never touches any other overlay's own fields" pattern as
+  // ?debugTransition=1/?debugBgm=1/?debugGamepadTap=1 above/below it) — reuses
+  // computeInputLockReason()/snapshotTransitionDiagnosticContext() by calling
+  // them directly (pure, read-only, always safe) rather than duplicating that
+  // logic. Pure location.search flag, no localStorage persistence, matching
+  // this session's established debug-flag convention.
+  // ==========================================================================
+  let DEBUG_RUNTIME_OVERLAY = false;
+  try {
+    DEBUG_RUNTIME_OVERLAY = new URLSearchParams(window.location.search).get('debugRuntime') === '1';
+  } catch (err) { /* stay OFF */ }
+  const RUNTIME_TRACE_MAX = 300;
+  const runtimeTrace = [];
+  let lastRuntimeEventType = '(none)';
+  let lastRuntimeEventAt = 0;
+  function recordRuntimeEvent(type, fields) {
+    if (!DEBUG_RUNTIME_OVERLAY) return;
+    lastRuntimeEventType = type;
+    lastRuntimeEventAt = Date.now();
+    runtimeTrace.push(Object.assign({ t: Date.now(), pt: +performance.now().toFixed(3), type }, fields || {}));
+    if (runtimeTrace.length > RUNTIME_TRACE_MAX) runtimeTrace.shift();
+  }
+  if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('PAGE_LOAD', {});
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
   const GAMEPAD_FIRE_THRESHOLD = 0.25; // RT analog value >= this counts as FIRE held
@@ -20947,6 +21126,7 @@
     if (DEBUG_GAMEPAD_TAP_OVERLAY) {
       recordGamepadTapEvent('GAMEPAD_ADOPTED', { index: newIndex, id: gp ? gp.id : null, mapping: gp ? gp.mapping : null, buttonsLength: gp && gp.buttons ? gp.buttons.length : 0, axesLength: gp && gp.axes ? gp.axes.length : 0 });
     }
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_ADOPTED', { index: newIndex, id: gp ? gp.id : null });
     if (gp && gp.mapping !== undefined) {
       const idx = (gp.mapping === 'standard') ? STANDARD_GAMEPAD_BUTTONS : FALLBACK_GAMEPAD_BUTTONS;
       const btn = (i) => gp.buttons[i];
@@ -20977,6 +21157,29 @@
     // disarm already goes through, rather than a second mechanism.
     if (gamepadLastAnyButtonPressed) { gamepadInputArmed = false; gamepadDisarmedAt = 0; } else { gamepadInputArmed = true; gamepadDisarmedAt = 0; }
     debugLastInputBranch = 'pad-adopted:index=' + newIndex;
+  }
+  // P0 RUNTIME STATE/ASYNC RACE STABILIZATION (root-cause fix, this batch):
+  // the ONE shared gamepad edge/arm-baseline reset every screen transition
+  // back to a menu context must perform — factored out of
+  // beginStartupSequence()/the WAITING_FOR_TAP-entry code/onOpeningTap()
+  // (which already did this inline, each slightly differently) so
+  // returnToTopMenu() (QUIT / GAME CLEAR->RESULT->BACK TO TOP MENU / RESULT's
+  // own exit — the one OTHER real route back to MAIN MENU besides TAP TO
+  // START) can share the exact same behavior instead of the asymmetric gap
+  // that let a still-physically-held button's edge/arm state leak from the
+  // just-ended gameplay/RESULT session into the new MAIN MENU session.
+  // gamepadIndex=null forces adoptGamepadIndex() to reseed the rising-edge
+  // baseline from the pad's REAL current button state on the very next poll
+  // (same frame, since updateGamepadInput() runs unconditionally every RAF
+  // tick) — so a button still physically held from the very gesture that
+  // triggered this screen change is correctly treated as "already held,
+  // wait for a real release," never misread as a fresh press.
+  function resetGamepadEdgeBaselineForMenuReturn() {
+    gamepadIndex = null;
+    gamepadLastButtons = {};
+    gamepadLastAnyButtonPressed = false;
+    gamepadInputArmed = true;
+    gamepadDisarmedAt = 0;
   }
   // P0 GAMEPAD FIRST-PRESS FIX (root-cause fix, this batch): this listener
   // used to adopt the newly-connected pad immediately and synchronously,
@@ -21017,6 +21220,7 @@
       gamepadTapConnectedEventCount++;
       recordGamepadTapEvent('GAMEPAD_CONNECTED_EVENT', { index: e.gamepad.index, id: e.gamepad.id, count: gamepadTapConnectedEventCount });
     }
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_CONNECTED', { index: e.gamepad.index, id: e.gamepad.id });
   });
   window.addEventListener('gamepaddisconnected', (e) => {
     if (DEBUG_GAMEPAD_TAP_OVERLAY) {
@@ -21262,6 +21466,10 @@
     // (AXIS movement alone, e.g. a stick pushed without clicking it, never
     // counts — only gp.buttons entries do).
     const anyButtonPressedNow = gp.buttons.some((b) => b && b.pressed);
+    if (DEBUG_RUNTIME_OVERLAY && anyButtonPressedNow && !gamepadLastAnyButtonPressed) {
+      recordRuntimeEvent('GAMEPAD_RAW_PRESS', { index: gamepadIndex });
+      recordRuntimeEvent('GAMEPAD_EDGE', { index: gamepadIndex });
+    }
     // P0 DIAGNOSTIC PHASE 1: pure observation — this is the EXACT same
     // rising-edge expression the real TAP-check block below already
     // evaluates independently; re-reading it here changes nothing, it only
@@ -21277,7 +21485,10 @@
     }
     // TAP TO START GAMEPAD SUPPORT: the "wait for full release" gate —
     // re-arms the instant every gamepad button is up again, never before.
-    if (!gamepadInputArmed && !anyButtonPressedNow) gamepadInputArmed = true;
+    if (!gamepadInputArmed && !anyButtonPressedNow) {
+      gamepadInputArmed = true;
+      if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_ARMED', { reason: 'neutral-detected' });
+    }
     // P0 REAL-DEVICE REGRESSION SESSION (Issue 1 / Part 1E): safety-net
     // timeout on top of the instant per-frame re-arm above — if a real
     // device ever reports anyButtonPressedNow as continuously (and
@@ -21293,6 +21504,7 @@
       else if (now - gamepadDisarmedAt > GAMEPAD_ARM_TIMEOUT_MS) {
         gamepadInputArmed = true;
         debugLastInputBranch = 'force-armed-by-timeout';
+        if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_ARMED', { reason: 'timeout-forced', disarmedForMs: Math.round(now - gamepadDisarmedAt) });
       }
     } else {
       gamepadDisarmedAt = 0;
@@ -21360,6 +21572,7 @@
       if (gamepadInputArmed && anyButtonPressedNow && !gamepadLastAnyButtonPressed && !eventMovieTapFallbackEl.hidden) {
         eventMovieTapFallbackEl.click();
         gamepadInputArmed = false;
+        if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_DISARMED', { reason: 'movie-tap-to-play-confirmed' });
       }
     } else if (gameplayActive) {
       // ---- LEFT STICK -> MOVE ----
@@ -21486,6 +21699,7 @@
           if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('TAP_ACCEPTED', { freshlyAdopted: freshlyAdoptedThisFrame });
           onOpeningTap({ preventDefault() {} });
           gamepadInputArmed = false;
+          if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_DISARMED', { reason: 'tap-to-start-confirmed' });
           tapToStartFiredThisFrame = true;
           // P0 DIAGNOSTIC DISPLAY FIX (this batch): guarded with
           // screenAfterPress===null (the SAME "still within the first-press
@@ -22053,6 +22267,99 @@
     });
   }
 
+  // ==========================================================================
+  // P0 RUNTIME STATE/ASYNC RACE STABILIZATION (?debugRuntime=1): unified
+  // real-device diagnostic panel — read-only rendering of the runtimeTrace
+  // ring buffer + a live snapshot pulled from the SAME state every other
+  // debug panel already reads, never a parallel copy of it.
+  // ==========================================================================
+  const debugRuntimeEl = document.getElementById('debug-runtime-panel');
+  const debugRuntimeCopyBtn = document.getElementById('debug-runtime-copy-btn');
+  const debugRuntimeTextEl = document.getElementById('debug-runtime-text');
+  function buildRuntimeDebugText() {
+    const now = performance.now();
+    const ctx = snapshotTransitionDiagnosticContext(); // reused, not duplicated — see its own declaration
+    let uaIsActive = null, uaHasBeenActive = null;
+    try {
+      if (navigator.userActivation) { uaIsActive = navigator.userActivation.isActive; uaHasBeenActive = navigator.userActivation.hasBeenActive; }
+    } catch (e) { /* not supported */ }
+    const allMedia = snapshotAllMediaElements();
+    const audibleNow = allMedia.filter((m) => m.audible).map((m) => m.id);
+    const header =
+      `=== DARK OUT RUNTIME/ASYNC-RACE DIAGNOSTIC (?debugRuntime=1) ===\n` +
+      `timestamp: ${new Date().toISOString()}\n` +
+      `SCREEN: ${ctx.screen}  MODE: ${ctx.mode}  STAGE: ${ctx.currentStage}  RUNTIME GENERATION: ${runtimeGeneration}\n` +
+      `INPUT: ${ctx.inputLocked ? 'LOCKED' : 'ENABLED'}\n` +
+      `reason: ${ctx.lockReason}\n`;
+    const gamepadBlock =
+      `--- GAMEPAD ---\n` +
+      `index: ${gamepadIndex}  armed: ${gamepadInputArmed}  ` +
+      `disarmReason: ${gamepadInputArmed ? '(armed)' : 'waiting-for-release'}  ` +
+      `disarmedFor: ${gamepadDisarmedAt ? Math.round(now - gamepadDisarmedAt) + 'ms' : '0ms'}\n` +
+      `lastRawButton: ${JSON.stringify(gamepadLastButtons)}\n` +
+      `lastEdge: ${gamepadLastAnyButtonPressed}  pollingAlive: ${lastGamepadPollAt ? Math.round(now - lastGamepadPollAt) + 'ms ago' : '(never polled)'}\n`;
+    const audioBlock =
+      `--- AUDIO ---\n` +
+      `audible elements: ${audibleNow.length ? audibleNow.join('+') : '(none)'}${audibleNow.length > 1 ? '  *** DOUBLE AUDIO RIGHT NOW ***' : ''}\n` +
+      `musicContext: ${musicContext}\n` +
+      `menuBgm: paused=${menuBgmAudio.paused} muted=${menuBgmAudio.muted}\n` +
+      `gameplayBgm(normal): paused=${bgmAudio.paused} muted=${bgmAudio.muted}\n` +
+      `gameplayBgm(boss): paused=${bossBgmAudio.paused} muted=${bossBgmAudio.muted}\n` +
+      `movie audio(eventMovie): paused=${eventMovieVideoEl.paused} muted=${eventMovieVideoEl.muted}\n`;
+    const openingMovieBlock =
+      `--- OPENING MOVIE ---\n` +
+      `paused: ${openingVideoEl.paused}  muted: ${openingVideoEl.muted}  readyState: ${openingVideoEl.readyState}  networkState: ${openingVideoEl.networkState}\n` +
+      `error: ${openingVideoEl.error ? openingVideoEl.error.code : '(none)'}\n` +
+      `lastPlayResult: ${openingVideoLastPlayError ? JSON.stringify(openingVideoLastPlayError) : '(no rejection recorded)'}\n`;
+    const eventMovieBlock =
+      `--- EVENT MOVIE ---\n` +
+      `active: ${ctx.emActive}  key: ${ctx.emKey}  token: ${ctx.emToken}\n`;
+    const transitionBlock =
+      `--- TRANSITION ---\n` +
+      `active: ${ctx.stageTransitionActive}  last transition: ${lastRuntimeEventType}  age: ${lastRuntimeEventAt ? (Date.now() - lastRuntimeEventAt) + 'ms' : '(none)'}\n`;
+    const documentBlock =
+      `--- DOCUMENT ---\n` +
+      `visibility: ${ctx.visibility}  focus: ${ctx.hasFocus}  userActivation: isActive=${uaIsActive} hasBeenActive=${uaHasBeenActive}\n`;
+    const gameLoopBlock =
+      `--- GAME LOOP ---\n` +
+      `alive: ${lastGameLoopTickAt !== 0}  last frame age: ${ctx.gameLoopAliveMs}ms\n`;
+    const traceLines = runtimeTrace.slice(-100).map((e) => {
+      const extra = Object.keys(e).filter((k) => k !== 't' && k !== 'pt' && k !== 'type').map((k) => `${k}=${JSON.stringify(e[k])}`).join(' ');
+      return `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${extra}`;
+    });
+    return header + gamepadBlock + audioBlock + openingMovieBlock + eventMovieBlock + transitionBlock + documentBlock + gameLoopBlock +
+      `--- EVENT TIMELINE (most recent ${Math.min(runtimeTrace.length, 100)} of ${runtimeTrace.length}, max ${RUNTIME_TRACE_MAX}) ---\n` +
+      traceLines.join('\n') + '\n';
+  }
+  function updateDebugRuntimeOverlay(now) {
+    if (!DEBUG_RUNTIME_OVERLAY || !debugRuntimeEl) return;
+    debugRuntimeEl.hidden = false;
+    if (debugRuntimeTextEl) debugRuntimeTextEl.textContent = buildRuntimeDebugText();
+  }
+  if (debugRuntimeCopyBtn) {
+    debugRuntimeCopyBtn.addEventListener('click', () => {
+      const text = buildRuntimeDebugText();
+      const fallback = () => {
+        const ta = document.getElementById('debug-runtime-fallback-textarea');
+        if (ta) {
+          ta.hidden = false;
+          ta.value = text;
+          ta.focus();
+          ta.select();
+        }
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(fallback);
+        } else {
+          fallback();
+        }
+      } catch (err) {
+        fallback();
+      }
+    });
+  }
+
   let lastBgmWatchdogAt = 0;
   // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION (Part D/K root-
   // cause candidate): before this batch, an uncaught exception ANYWHERE in
@@ -22131,6 +22438,7 @@
       updateDebugGamepadTapOverlay(now); // P0 DIAGNOSTIC PHASE 1: separate overlay/flag, read-only observation, never touches any other overlay's own fields
       updateDebugBgmOverlay(now); // P0 BGM DOUBLE-PLAY DIAGNOSTIC: separate overlay/flag, read-only observation, never touches any other overlay's own fields
       updateDebugTransitionOverlay(now); // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: separate overlay/flag, read-only observation, never touches any other overlay's own fields
+      updateDebugRuntimeOverlay(now); // P0 RUNTIME STATE/ASYNC RACE STABILIZATION: separate overlay/flag, read-only observation, never touches any other overlay's own fields
     } catch (err) {
       console.error('[LOOP] uncaught error this frame, continuing next frame:', err);
       debugLastLoopException = { message: String(err && err.message || err), at: now };

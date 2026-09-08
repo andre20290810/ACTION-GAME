@@ -1094,6 +1094,75 @@ body {
 }
 #debug-transition-fallback-textarea[hidden] { display: none; }
 
+/* P0 RUNTIME STATE/ASYNC RACE STABILIZATION (?debugRuntime=1): same shape/
+   pattern as #debug-transition-panel above, but docked to the LEFT edge
+   instead of the right — the most likely diagnostic to be run alongside
+   ?debugTransition=1 or ?debugBgm=1 during this same real-device symptom
+   hunt, so a distinct axis (this is the 3rd of 3 "full log panel" style
+   diagnostics: top/right/left) keeps all three simultaneously readable.
+   Lime accent for visual distinction. [hidden] keeps it fully absent from a
+   normal session — DEBUG_RUNTIME_OVERLAY in game.js is the single source of
+   truth. */
+#debug-runtime-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 62;
+  width: min(48vw, 460px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.85);
+  border-right: 1px solid rgba(170, 255, 90, 0.6);
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(235, 235, 238, 0.95);
+}
+#debug-runtime-panel[hidden] { display: none; }
+#debug-runtime-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(170, 255, 90, 0.3);
+  flex-shrink: 0;
+}
+#debug-runtime-header span {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(170, 255, 90, 0.95);
+}
+#debug-runtime-copy-btn {
+  font-family: monospace;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: rgba(170, 255, 90, 0.15);
+  color: rgba(170, 255, 90, 0.95);
+  border: 1px solid rgba(170, 255, 90, 0.6);
+  border-radius: 4px;
+}
+#debug-runtime-text {
+  margin: 0;
+  padding: 8px 10px 12px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  flex: 1 1 auto;
+}
+#debug-runtime-fallback-textarea {
+  width: 100%;
+  height: 30vh;
+  box-sizing: border-box;
+  font-family: monospace;
+  font-size: 12px;
+  background: #111;
+  color: #eee;
+  border: 1px solid rgba(170, 255, 90, 0.6);
+}
+#debug-runtime-fallback-textarea[hidden] { display: none; }
+
 /* ---------- SECTION G/H/I/J: LOADING / OPENING / MAIN MENU ----------
    Each is position:fixed/inset:0, shown one at a time via [hidden]
    (game.js's screen state machine — see setScreen()) — stacked below the
