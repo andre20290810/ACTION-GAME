@@ -1014,6 +1014,7 @@
   // as every existing BGM function already did). Safe to call from
   // anywhere, any number of times, regardless of gameState.screen/mode.
   function syncMusicContext() {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'syncMusicContext' });
     const wantMenu = musicContext === 'menu';
     const wantNormal = musicContext === 'normal';
     const wantBoss = musicContext === 'boss';
@@ -1047,6 +1048,7 @@
   // finish()/skipEventMovie(), and loop()'s own throttled watchdog below)
   // stays unchanged; the fix is entirely inside what this now delegates to.
   function reassertGameplayBgmIfExpected() {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'reassertGameplayBgmIfExpected' });
     syncMusicContext();
     if (typeof auditAudibleBgm === 'function') auditAudibleBgm(); // 2E/2F/2G hard-guard audit — defined further down, safe by call time
   }
@@ -1189,6 +1191,7 @@
   // (see the document-level touchstart/mousedown safety-net listener below)
   // to complete the unlock.
   function unlockEventMovieElementForIOS(isTrustedGesture) {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'unlockEventMovieElementForIOS', isTrustedGesture, alreadyUnlocked: eventMovieElementUnlocked });
     if (eventMovieElementUnlocked) return; // already unlocked by a genuine gesture — nothing left to do
     if (isTrustedGesture) eventMovieElementUnlocked = true;
     ensureEventMovieGainNode(); // P0 INTEGRATED REGRESSION HOTFIX (Part H): best chance of an un-suspended AudioContext is inside this same real STARTUP gesture
@@ -1209,7 +1212,8 @@
       eventMovieVideoEl.src = primeSrc;
       const p = eventMovieVideoEl.play();
       if (p && typeof p.then === 'function') {
-        const teardown = () => {
+        const teardown = (settledAs) => {
+          if (DEBUG_BGM_OVERLAY) recordBgmEvent(settledAs === 'resolved' ? 'EM_PRIME_PROMISE_RESOLVED' : 'EM_PRIME_PROMISE_REJECTED', { primeOwnerToken, currentToken: eventMovieState.token, stale: eventMovieState.token !== primeOwnerToken });
           // Even a rejected promise here still counts, on WebKit, as a
           // play() attempt made synchronously within the gesture — the
           // unlock is about the CALL happening in-gesture, not about the
@@ -1222,7 +1226,7 @@
           eventMovieVideoEl.removeAttribute('src');
           eventMovieVideoEl.load();
         };
-        p.then(teardown).catch(teardown);
+        p.then(() => teardown('resolved')).catch(() => teardown('rejected'));
       }
     } catch (e) {
       // Never let a priming failure block TAP TO START itself.
@@ -1237,6 +1241,7 @@
   // this function only owns the movie's own playback/audio-ducking/fallback
   // lifecycle, never touches boss/player/stage state directly.
   function playEventMovie(key, onComplete) {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'playEventMovie', key });
     const src = SYSTEM_MOVIES[key] || EVENT_MOVIES[key];
     if (!src) {
       // Defensive only — an unregistered/null key (e.g. a still-unwired
@@ -1327,6 +1332,7 @@
     eventMovieOverlayEl.hidden = false;
 
     function finish() {
+      if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'finish', key, token, currentToken: eventMovieState.token, stale: eventMovieState.token !== token });
       if (eventMovieState.token !== token) return; // stale — superseded by a cancel/newer play
       eventMovieState.active = false;
       eventMovieState.key = null;
@@ -1510,6 +1516,7 @@
   // "skip" means "let the movie's own consequence happen right now",
   // exactly as if it had played to the end, just faster.
   function skipEventMovie() {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'skipEventMovie', active: eventMovieState.active, key: eventMovieState.key });
     if (!eventMovieState.active) return;
     const onComplete = eventMovieState.onComplete;
     const resumeBgm = eventMovieState.resumeBgm;
@@ -10062,6 +10069,7 @@
   // NOT get its gameplay BGM incorrectly restarted from 0 — RESTART keeps
   // its existing pre-PART9 "BGM reset to 0 only on return to TOP" behavior.
   function startGameplayBgm() {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'startGameplayBgm' });
     musicContext = 'normal'; // HOTFIX 2 SECTION 4: normal stage BGM only — menu/boss tracks both stopped below/by this context
     if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_SWITCH', { to: 'normal', caller: 'startGameplayBgm' });
     stopMenuBgm();
@@ -10161,6 +10169,16 @@
     // code) can label events without a chain of === comparisons.
     BGM_TRACK_NAMES_BY_ELEMENT.set(el, el === menuBgmAudio ? 'menu' : el === bgmAudio ? 'normal' : el === bossBgmAudio ? 'boss' : 'ending');
   }
+  // P0 BGM WORK ORDER D (real-device timing-race re-audit): eventMovieVideoEl
+  // now shares the SAME play()/pause() choke-point instrumentation as the 4
+  // canonical BGM tracks — previously invisible to this Map entirely (its
+  // .play()/.pause() calls still worked, just weren't logged), so a
+  // sneaking/experiment_lab-adjacent play()/pause() call on the movie
+  // element itself never showed up in the same timeline as bgmAudio's own
+  // events. Added here (not a separate Map) so BOTH elements' play/pause
+  // calls interleave in one single, chronologically-ordered trace.
+  bgmPlayPauseCounts.set(eventMovieVideoEl, { playCount: 0, pauseCount: 0 });
+  BGM_TRACK_NAMES_BY_ELEMENT.set(eventMovieVideoEl, 'event-movie');
   (function instrumentBgmPlayPauseCounts() {
     const origPlay = HTMLMediaElement.prototype.play;
     const origPause = HTMLMediaElement.prototype.pause;
@@ -10213,6 +10231,18 @@
   menuBgmAudio.addEventListener('pause', handleUnexpectedBgmPause);
   bgmAudio.addEventListener('pause', handleUnexpectedBgmPause);
   bossBgmAudio.addEventListener('pause', handleUnexpectedBgmPause);
+  // P0 BGM WORK ORDER D (real-device timing-race re-audit): 'playing' fires
+  // when playback has genuinely started (a later, more meaningful signal
+  // than the play() CALL itself or its promise resolving — WebKit's own
+  // internal audio-session state is what actually decides when this
+  // fires); 'volumechange' also fires for a plain .muted assignment (per
+  // spec), so this doubles as mute-change tracking for both elements
+  // without a separate property-setter wrapper. Purely observational,
+  // gated behind DEBUG_BGM_OVERLAY exactly like every other listener here.
+  for (const [label, el] of [['normal', bgmAudio], ['event-movie', eventMovieVideoEl]]) {
+    el.addEventListener('playing', () => { if (DEBUG_BGM_OVERLAY) recordBgmEvent('MEDIA_PLAYING', { track: label }); });
+    el.addEventListener('volumechange', () => { if (DEBUG_BGM_OVERLAY) recordBgmEvent('MEDIA_VOLUMECHANGE', { track: label }); });
+  }
   // P0 ADDENDUM (root-cause fix, this batch): ROID1 ARRIVAL BGM CONTINUITY —
   // the reported "Outbreak2は静か" was root-caused to the EXACT SAME WebKit
   // per-HTMLMediaElement gesture-unlock rule as Part A's own TAP TO PLAY fix
@@ -10254,6 +10284,7 @@
   // therefore silently un-playable later) for the entire session with no
   // remaining retry path.
   function unlockBackgroundBgmForIOS(isTrustedGesture) {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'unlockBackgroundBgmForIOS', isTrustedGesture, alreadyUnlocked: backgroundBgmUnlocked });
     if (backgroundBgmUnlocked) return;
     if (isTrustedGesture) backgroundBgmUnlocked = true;
     // DARK OUT ENDING & RESULT REDESIGN item 20: endingRevealAudio primed
@@ -10302,15 +10333,17 @@
         const wasMuted = audioEl.muted;
         audioEl.muted = true;
         const p = audioEl.play();
-        const teardown = () => {
+        const trackLabel = BGM_TRACK_NAMES_BY_ELEMENT.get(audioEl);
+        const teardown = (settledAs) => {
+          if (DEBUG_BGM_OVERLAY) recordBgmEvent(settledAs === 'resolved' ? 'BGM_PRIME_PROMISE_RESOLVED' : settledAs === 'rejected' ? 'BGM_PRIME_PROMISE_REJECTED' : 'BGM_PRIME_TEARDOWN_SYNC', { track: trackLabel, primeToken: token, currentPrimeToken: audioEl._primeToken, audibleBgmElementIsThis: audibleBgmElement === audioEl });
           if (audioEl._primeToken !== token) return; // superseded by a newer prime call on this element
           if (audibleBgmElement === audioEl) return; // superseded by a real claim
           audioEl.pause();
           audioEl.currentTime = 0;
           audioEl.muted = wasMuted;
         };
-        if (p && typeof p.then === 'function') p.then(teardown).catch(teardown);
-        else teardown();
+        if (p && typeof p.then === 'function') p.then(() => teardown('resolved')).catch(() => teardown('rejected'));
+        else teardown('sync');
       } catch (e) {
         // Never let a priming failure block TAP TO START itself.
       }
@@ -10324,6 +10357,7 @@
   // instead of leaving a stale, no-longer-wanted track audible on top of
   // whatever legitimately took over after it.
   function claimAudibleBgm(key, element, opts) {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'claimAudibleBgm', key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), priorGeneration: audibleBgmGeneration, priorKey: audibleBgmKey });
     audibleBgmGeneration++;
     const myGen = audibleBgmGeneration;
     audibleBgmKey = key;
@@ -10336,8 +10370,12 @@
       const p = element.play();
       if (p && typeof p.then === 'function') {
         p.then(() => {
+          if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_RESOLVED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, stale: audibleBgmGeneration !== myGen });
           if (audibleBgmGeneration !== myGen) { try { element.pause(); } catch (e2) {} }
-        }).catch((err) => { if (opts && opts.onRejected) opts.onRejected(err); });
+        }).catch((err) => {
+          if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_REJECTED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, errName: err && err.name });
+          if (opts && opts.onRejected) opts.onRejected(err);
+        });
       }
     } catch (e) {
       if (opts && opts.onRejected) opts.onRejected(e);
@@ -10355,6 +10393,7 @@
   }
   const MENU_FAMILY_SCREENS_FOR_AUDIO_GUARD = ['opening', 'loading', 'mainMenu', 'scenarioSelect', 'mainScenarioSub', 'secretScenarioSub', 'trainingSelect', 'bossSelect'];
   function auditAudibleBgm() {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'auditAudibleBgm' });
     const tracks = [['menu', menuBgmAudio], ['normal', bgmAudio], ['boss', bossBgmAudio], ['ending', endingRevealAudio]];
     const audible = tracks.filter(([, el]) => isBgmTrackAudible(el));
     // 2E: Shining Grace hard guard — audible only on the real endingReveal screen, musicContext genuinely 'ending'.
@@ -11202,6 +11241,12 @@
       gamepadTapLastOnOpeningTapAt = Date.now();
       recordGamepadTapEvent('ON_OPENING_TAP_CALLED', { source: gamepadTapLastOnOpeningTapSource, screenAtCall: gameState.screen });
     }
+    // P0 BGM WORK ORDER D (real-device timing-race re-audit): FN_ENTER
+    // breadcrumb — the first of 11 explicitly-requested checkpoints so the
+    // event trace shows exactly which function ran in what order across a
+    // NORMAL vs. DOUBLE_AUDIO vs. SILENT real-device run. No-op unless
+    // ?debugBgm=1 is active; never touches the tap-handling logic itself.
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'onOpeningTap', gestureType: e && e.type ? e.type : '(synthetic/gamepad)', isTrusted: !!e.isTrusted });
     e.preventDefault();
     if (gameState.screen !== 'opening') return; // guards against a stray double-fire (touchstart + mousedown) doing this twice
     // P0 STARTUP STATE MACHINE REWRITE item 10: WAITING_FOR_TAP -> ENTERING_MENU
@@ -11356,6 +11401,10 @@
   // one always firing first). BOSS BATTLE MODE/TRAINING never reach this
   // function.
   function beginScenarioOpening(scenario) {
+    // P0 BGM WORK ORDER D: one "episode" per STORY-start attempt — see
+    // startBgmEpisode()'s own comment. No-op (and zero cost) unless
+    // ?debugBgm=1 is active.
+    if (DEBUG_BGM_OVERLAY) startBgmEpisode('story-start:' + scenario);
     // P0 LOADING ARCHITECTURE HOTFIX: under FAST mode, MAIN STORY's own
     // asset inventory (sneaking.mp4 included) may not be ready yet — gate
     // here with a plain LOADING (no TAP TO START/PLAY re-prompt); under
@@ -11367,6 +11416,11 @@
       playEventMovie('sneaking', () => {
         startMode('boss', scenario);
         storyCinematicState.sneakingPlayed = true;
+        // Settle ~1s after gameplay mode actually starts — long enough for
+        // claimAudibleBgm()'s own play()-promise resolution and the
+        // per-frame audible-set watchdogs to reach their real steady state
+        // before this episode's NORMAL/DOUBLE_AUDIO/SILENT verdict is fixed.
+        if (DEBUG_BGM_OVERLAY) setTimeout(settleBgmEpisode, 1000);
       });
     });
   }
@@ -17637,6 +17691,11 @@
     get gamepadTapFirstUserActivationAt() { return gamepadTapFirstUserActivationAt; }, // P0 DIAGNOSTIC PHASE 2 — debug/verification only
     get DEBUG_BGM_OVERLAY() { return DEBUG_BGM_OVERLAY; }, set DEBUG_BGM_OVERLAY(v) { DEBUG_BGM_OVERLAY = v; },
     get bgmTrace() { return bgmTrace; }, get BGM_TRACE_MAX() { return BGM_TRACE_MAX; },
+    // P0 BGM WORK ORDER D (real-device timing-race re-audit): episode
+    // system exports — debug/verification only, lets a Playwright test (or
+    // manual console use) inspect/force episode boundaries and read the
+    // exact diffable text this batch's panel now renders.
+    get bgmEpisodes() { return bgmEpisodes; }, startBgmEpisode, settleBgmEpisode, classifyBgmEpisode, buildBgmEpisodesText, snapshotBgmDiagnosticContext,
     buildBgmDebugText, updateDebugBgmOverlay, checkBgmAudibleSetChange, // P0 BGM DOUBLE-PLAY DIAGNOSTIC — debug/verification only
     snapshotAllMediaElements, checkAllMediaAudibleSetChange, isMediaElementAudible, // P0 BGM REAL-DEVICE RECHECK — debug/verification only
     get debugAudioEl() { return debugAudioEl; },
@@ -20264,6 +20323,47 @@
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   const BGM_TRACE_MAX = 200; // ring buffer cap — a full play session's worth of transitions, not just one screen
   const bgmTrace = [];
+  // P0 BGM WORK ORDER D (real-device timing-race re-audit): per-STORY-start
+  // "episode" bundling. The user's own real-device retest found the exact
+  // same operation (TAP TO START -> STORY MODE) yielding 3 different
+  // outcomes (NORMAL / DOUBLE_AUDIO / a first-time SILENT that then plays
+  // fine on retry) — the signature of a genuine async race, not a fixed
+  // logic bug. Each episode holds every recordBgmEvent() made during one
+  // beginScenarioOpening() attempt plus a final classification, so a "good"
+  // run and a "bad" run of the SAME operation can be pulled out and diffed
+  // directly (see buildBgmDebugText()'s own EPISODES section) instead of
+  // hunting through one continuous ring buffer for where they diverge.
+  const BGM_EPISODE_MAX = 12; // enough real STORY-start attempts for a same-session A/B/C comparison
+  const bgmEpisodes = [];
+  let currentBgmEpisode = null;
+  let bgmEpisodeCounter = 0;
+  function startBgmEpisode(label) {
+    if (!DEBUG_BGM_OVERLAY) return;
+    if (currentBgmEpisode) settleBgmEpisode(); // a previous episode never explicitly settled (e.g. QUIT mid-movie) — close it out now rather than silently losing it
+    bgmEpisodeCounter++;
+    currentBgmEpisode = { id: bgmEpisodeCounter, label: label || 'story-start', startedAt: Date.now(), startedAtPt: +performance.now().toFixed(3), result: null, events: [] };
+    bgmEpisodes.push(currentBgmEpisode);
+    if (bgmEpisodes.length > BGM_EPISODE_MAX) bgmEpisodes.shift();
+  }
+  // Classified from the episode's OWN recorded events, not a fresh live
+  // sample: DOUBLE_AUDIO if any BGM_AUDIBLE_SET_CHANGED/ALL_MEDIA_AUDIBLE_SET_CHANGED
+  // event during the episode ever reported 2+ simultaneously audible
+  // elements; otherwise SILENT if gameplay BGM was expected (musicContext
+  // genuinely 'normal') but never reached an audible state by settle time;
+  // otherwise NORMAL.
+  function classifyBgmEpisode(ep) {
+    const everDouble = ep.events.some((e) => (e.type === 'BGM_AUDIBLE_SET_CHANGED' || e.type === 'ALL_MEDIA_AUDIBLE_SET_CHANGED') && e.doubleAudio);
+    if (everDouble) return 'DOUBLE_AUDIO';
+    if (musicContext === 'normal' && !isBgmTrackAudible(bgmAudio)) return 'SILENT';
+    return 'NORMAL';
+  }
+  function settleBgmEpisode() {
+    if (!currentBgmEpisode) return;
+    currentBgmEpisode.result = classifyBgmEpisode(currentBgmEpisode);
+    currentBgmEpisode.settledAt = Date.now();
+    currentBgmEpisode.settledAtPt = +performance.now().toFixed(3);
+    currentBgmEpisode = null;
+  }
   // Caller identification via a real stack trace (this file is served
   // unminified, so function names in the stack are genuine and readable) —
   // chosen over threading an explicit `caller` string through every one of
@@ -20281,10 +20381,39 @@
       return (lines[idx] || '(unknown)').replace(/^at\s+/, '').slice(0, 100);
     } catch (e) { return '(unknown)'; }
   }
+  // P0 BGM WORK ORDER D (real-device timing-race re-audit): the user's own
+  // real-device retest found 3 outcomes from the exact same STORY-start
+  // operation (NORMAL / DOUBLE_AUDIO / SILENT-then-normal-on-retry) — the
+  // signature of a genuine async race rather than a fixed logic bug (a
+  // fixed bug would reproduce the SAME way every time). Comparing a
+  // "good" run's event order against a "bad" run's is only possible if
+  // EVERY event already carries the full context that could distinguish
+  // them, instead of requiring a second lookup — so every recordBgmEvent()
+  // call now auto-attaches this snapshot, on top of whatever fields the
+  // call site itself passes.
+  function snapshotBgmDiagnosticContext() {
+    let uaIsActive = null, uaHasBeenActive = null;
+    try {
+      if (navigator.userActivation) { uaIsActive = navigator.userActivation.isActive; uaHasBeenActive = navigator.userActivation.hasBeenActive; }
+    } catch (e) { /* not supported on this browser — stays null, never throws */ }
+    return {
+      screen: gameState.screen,
+      musicContext,
+      emActive: eventMovieState.active,
+      emKey: eventMovieState.key,
+      emToken: eventMovieState.token,
+      bgmPaused: bgmAudio.paused, bgmMuted: bgmAudio.muted, bgmVolume: bgmAudio.volume, bgmCurrentTime: +bgmAudio.currentTime.toFixed(2),
+      emPaused: eventMovieVideoEl.paused, emMuted: eventMovieVideoEl.muted, emVolume: eventMovieVideoEl.volume, emCurrentTime: +eventMovieVideoEl.currentTime.toFixed(2), emReadyState: eventMovieVideoEl.readyState,
+      visibility: document.visibilityState,
+      hasFocus: document.hasFocus(),
+      uaIsActive, uaHasBeenActive,
+    };
+  }
   function recordBgmEvent(type, fields) {
     if (!DEBUG_BGM_OVERLAY) return;
-    bgmTrace.push(Object.assign({ t: Date.now(), type }, fields || {}));
+    bgmTrace.push(Object.assign({ t: Date.now(), pt: +performance.now().toFixed(3), type }, snapshotBgmDiagnosticContext(), fields || {}));
     if (bgmTrace.length > BGM_TRACE_MAX) bgmTrace.shift();
+    if (currentBgmEpisode) currentBgmEpisode.events.push(bgmTrace[bgmTrace.length - 1]);
   }
   let bgmLastAudibleSignature = ''; // diagnostic-only change-detector, independent of any single call site
   function bgmAudibleSetSignature() {
@@ -21616,8 +21745,26 @@
       `AUDIBLE NOW (ALL media, incl. video audio tracks): ${allMediaAudible.length ? allMediaAudible.map((m) => m.id).join('+') : '(none)'}${allMediaAudible.length > 1 ? '  *** DOUBLE AUDIO ACROSS ALL MEDIA RIGHT NOW ***' : ''}\n` +
       allMediaLines.join('\n') + '\n' +
       `--- EVENT TRACE (most recent ${Math.min(bgmTrace.length, 60)} of ${bgmTrace.length}, max ${BGM_TRACE_MAX}) ---\n` +
-      bgmTrace.slice(-60).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n')
+      bgmTrace.slice(-60).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n') + '\n' +
+      buildBgmEpisodesText()
     );
+  }
+  // P0 BGM WORK ORDER D (real-device timing-race re-audit): one block per
+  // STORY-start episode (see startBgmEpisode()'s own comment) — a "good"
+  // run and a "bad" run of the exact same real-device operation can be
+  // copy-pasted from here and diffed line-by-line directly, since every
+  // event already carries its own full context (pt = performance.now(),
+  // screen/musicContext/eventMovieState/bgmAudio+eventMovieVideoEl state/
+  // visibility/focus/userActivation — see snapshotBgmDiagnosticContext()).
+  function buildBgmEpisodesText() {
+    if (!bgmEpisodes.length) return `--- EPISODES (0 STORY-start attempts recorded yet) ---\n`;
+    const blocks = bgmEpisodes.map((ep) => {
+      const header = `[EPISODE ${ep.id}] label=${ep.label} result=${ep.result || '(in progress)'} events=${ep.events.length} ` +
+        `duration=${ep.settledAtPt ? (ep.settledAtPt - ep.startedAtPt).toFixed(1) + 'ms' : '(not settled)'} startedAt=${new Date(ep.startedAt).toISOString().slice(11, 23)}`;
+      const lines = ep.events.map((e) => `    pt=${e.pt.toFixed(1)} ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined, pt: undefined, type: undefined }))}`);
+      return header + '\n' + lines.join('\n');
+    });
+    return `--- EPISODES (${bgmEpisodes.length} STORY-start attempts, most recent last; copy this whole section to compare a NORMAL run against a DOUBLE_AUDIO/SILENT run) ---\n` + blocks.join('\n\n');
   }
   function updateDebugBgmOverlay(now) {
     if (!DEBUG_BGM_OVERLAY || !debugBgmEl) return;
