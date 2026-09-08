@@ -1233,6 +1233,72 @@
     }
   }
 
+  // P0 GAMEPLAY STARTUP/TRANSITION STABILITY (real-device "sneaking.mp4
+  // takes 10+ seconds to start" root-cause fix): resolves a relative movie
+  // path the exact same way the browser resolves `.src`/`.currentSrc`, so a
+  // prewarm/real-play call can tell "is eventMovieVideoEl ALREADY buffered
+  // for this exact file" from a plain string comparison instead of guessing.
+  function resolveMovieUrl(relPath) {
+    try { return new URL(relPath, document.baseURI).href; } catch (e) { return relPath; }
+  }
+  // Root cause (confirmed via code trace + in-sandbox timing measurement,
+  // not guessed): eventMovieVideoEl — the ONE shared <video> element every
+  // real playEventMovie() call actually plays through — never began
+  // buffering sneaking.mp4 until the exact instant DEMO PLAY was pressed.
+  // The existing CRITICAL_MOVIE_KEYS/moviePreloadProbes system DOES start
+  // fetching sneaking.mp4 from page load — but only into a SEPARATE,
+  // throwaway <video> element (dataset.movieKey='sneaking', created purely
+  // to answer "has this URL's bytes started arriving", never played) whose
+  // buffered/readyState state is NOT shared with eventMovieVideoEl at all.
+  // So no matter how early or well that probe prefetches, the REAL playback
+  // element still starts from readyState=0 every single time — and
+  // playEventMovie()'s own pollReady() (below) then has to wait for it from
+  // scratch, up to its own EVENT_MOVIE_LOAD_MAX_WAIT_MS ceiling.
+  //
+  // Fix: give the REAL element a head start by pointing it at sneaking.mp4
+  // (muted, load() only — never play(), so no gesture is required and
+  // nothing is ever audible/visible from this call) the moment MAIN MENU is
+  // reached — see setScreen()'s own call to this — which is always well
+  // before STORY MODE can even be selected. playEventMovie() itself (further
+  // below) now also skips re-assigning `.src` when the element is ALREADY
+  // sitting on this exact buffered file, since re-assigning `.src` (even to
+  // an identical URL) makes the browser restart the whole resource-selection
+  // algorithm from readyState=0 per spec — silently throwing away this
+  // entire head start if left unconditional, which is exactly what the
+  // previous code did.
+  //
+  // Ownership: bumps the SAME eventMovieState.token generation counter every
+  // real playEventMovie() claim already uses, so unlockEventMovieElementForIOS()'s
+  // own iOS-unlock priming (which also briefly borrows this exact element/
+  // key right at TAP TO START, just before MAIN MENU is reached) correctly
+  // recognizes itself as superseded via its EXISTING staleness guard and
+  // backs off instead of clearing what this just buffered — no new guard
+  // logic needed there, this only reuses the one that guard already checks.
+  function prewarmEventMoviePlaybackElement(key) {
+    if (eventMovieState.active) return; // a real movie owns the element right now — prewarming must never interfere with it
+    const src = SYSTEM_MOVIES[key] || EVENT_MOVIES[key];
+    if (!src) return;
+    const url = resolveMovieUrl(src);
+    // NOTE: compared against .src (a synchronous content-attribute
+    // reflection), never .currentSrc (only updated once the browser's own
+    // async resource-selection algorithm actually runs — reading it too
+    // soon after an assignment can still see the PREVIOUS value, making
+    // this comparison spuriously false and defeating the whole prewarm).
+    // Skips whenever a load for this exact movie is already buffered OR
+    // still genuinely in flight (readyState 0/1 with no error yet) — only
+    // a real error re-triggers a fresh attempt. Avoids a redundant
+    // load()-restart if setScreen('mainMenu') happens to fire more than
+    // once in a row (e.g. a duplicate touchstart+mousedown at TAP TO
+    // START) before the first load has had a chance to progress.
+    if (eventMovieVideoEl.src === url && !eventMovieVideoEl.error) return;
+    eventMovieTokenCounter += 1;
+    eventMovieState.token = eventMovieTokenCounter;
+    eventMovieVideoEl.muted = true;
+    eventMovieVideoEl.loop = false;
+    eventMovieVideoEl.src = src;
+    eventMovieVideoEl.load();
+  }
+
   // SECTION G/H/I/J: plays either a SYSTEM or an EVENT movie key through the
   // one shared overlay/video element. `onComplete` fires exactly once, after
   // the movie genuinely finishes (natural 'ended') — never on a cancelled/
@@ -1267,6 +1333,7 @@
     eventMovieState.token = token;
     eventMovieState.onComplete = onComplete || null;
     eventMovieState.resumeBgm = false;
+    if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('MOVIE_START', { key, token });
 
     eventMovieTapFallbackEl.hidden = true;
     eventMovieTapFallbackEl.onclick = null;
@@ -1327,7 +1394,19 @@
     if (eventMovieGainNode) {
       eventMovieGainNode.gain.value = (key === 'gabriel_defeated') ? GABRIEL_DEFEATED_GAIN : 1.0;
     }
-    eventMovieVideoEl.src = src;
+    // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: only reassign `.src` if this
+    // element ISN'T already sitting on this exact file — see
+    // prewarmEventMoviePlaybackElement()'s own comment for why an
+    // unconditional reassignment here (even to an identical URL) silently
+    // discards any prewarm head start by restarting the whole resource-
+    // selection algorithm from readyState=0. Compared against `.src` (a
+    // synchronous content-attribute reflection), never `.currentSrc` (only
+    // updated once the browser's own async resource-selection algorithm
+    // actually runs — a fast follow-up call here could still read the
+    // PREVIOUS value and wrongly conclude "not buffered yet").
+    if (eventMovieVideoEl.src !== resolveMovieUrl(src) || eventMovieVideoEl.error) {
+      eventMovieVideoEl.src = src;
+    }
     eventMovieVideoEl.currentTime = 0;
     eventMovieOverlayEl.hidden = false;
 
@@ -1335,6 +1414,7 @@
       if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'finish', key, token, currentToken: eventMovieState.token, stale: eventMovieState.token !== token });
       if (eventMovieState.token !== token) return; // stale — superseded by a cancel/newer play
       eventMovieState.active = false;
+      if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('MOVIE_END', { key, token, reason: 'finish' });
       eventMovieState.key = null;
       eventMovieState.onComplete = null;
       eventMovieOverlayEl.hidden = true;
@@ -1438,7 +1518,21 @@
     // window before LOADING even shows is short, so an already-cached movie
     // (the common case — every one of these plays at least once per run)
     // starts exactly as instantly as before.
-    const EVENT_MOVIE_READY_GRACE_MS = 200;
+    // P0 GAMEPLAY STARTUP/TRANSITION STABILITY (real-device "blackout while
+    // waiting" fix): lowered from 200ms to 50ms. With
+    // prewarmEventMoviePlaybackElement() now giving sneaking.mp4 a head
+    // start (see that function's own comment), the common case still shows
+    // nothing extra — pollReady()'s very first check already finds
+    // readyState>=3 and returns before this grace window is ever consulted.
+    // This value only matters for the genuinely-not-ready case (a slow
+    // network, or any OTHER movie this shared player still doesn't
+    // prewarm) — there, the player was previously staring at a plain black
+    // overlay (eventMovieOverlayEl has no content of its own until either
+    // the real movie or this bridge starts rendering) for up to 200ms
+    // before the already-preloaded LOADING loop even appeared. 50ms keeps
+    // that "nothing visible yet" window imperceptibly short without
+    // reintroducing needless flicker on an already-fast device.
+    const EVENT_MOVIE_READY_GRACE_MS = 50;
     const EVENT_MOVIE_LOAD_MAX_WAIT_MS = 8000; // local assets — never worth ENDING ROLL's own 45s ceiling
     const pollStartedAt = performance.now();
     let loadingBridgeShown = false;
@@ -1490,6 +1584,7 @@
   // function). A no-op when no movie is active.
   function cancelEventMovie() {
     if (!eventMovieState.active && eventMovieState.key === null && eventMovieVideoEl.hasAttribute('src') === false) return;
+    if (DEBUG_TRANSITION_OVERLAY && eventMovieState.active) recordTransitionEvent('MOVIE_END', { key: eventMovieState.key, token: eventMovieState.token, reason: 'cancelled' });
     eventMovieTokenCounter += 1;
     eventMovieState.token = eventMovieTokenCounter;
     eventMovieState.active = false;
@@ -1520,6 +1615,7 @@
     if (!eventMovieState.active) return;
     const onComplete = eventMovieState.onComplete;
     const resumeBgm = eventMovieState.resumeBgm;
+    if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('MOVIE_END', { key: eventMovieState.key, token: eventMovieState.token, reason: 'skipped' });
     eventMovieTokenCounter += 1;
     eventMovieState.token = eventMovieTokenCounter;
     eventMovieState.active = false;
@@ -9926,6 +10022,13 @@
 
   function setScreen(next) {
     gameState.screen = next;
+    // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: the single choke point every
+    // route into MAIN MENU already passes through (TAP TO START, RETRY/QUIT
+    // via returnToTopMenu(), etc.) — always well before STORY MODE can even
+    // be selected, so this gives sneaking.mp4's REAL playback element the
+    // maximum possible head start. See prewarmEventMoviePlaybackElement()'s
+    // own comment for the full root-cause writeup.
+    if (next === 'mainMenu') prewarmEventMoviePlaybackElement('sneaking');
     // P0 GAME COMPLETION HOTFIX (STARTUP PRELOAD UI REBUILD): 'loading'
     // (real %+bar) and 'opening' (TAP TO START) are now two overlays
     // sharing the SAME plain-black #loading-screen container — no video is
@@ -12240,6 +12343,7 @@
     stageTransition.startedAt = now;
     stageTransition.generation = transitionGeneration;
     logTransitionEvent('TRANSITION ACCEPT', { source, generation: stageTransition.generation });
+    if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('STAGE_TRANSITION_START', { source, generation: stageTransition.generation });
     // P0 INTEGRATED REGRESSION HOTFIX (DASH stage-skip investigation, Part
     // 8): explicitly cancel any DASH still in flight the instant a
     // transition begins, rather than relying on updateDash() simply never
@@ -12278,6 +12382,7 @@
   // WHITE_SHADOW_INITIAL_COUNT/spawnSecurityRobots()'s own {3,5,7}-per-AREA
   // roll are never reduced, only recombined per stage.
   function enterSecurityTrainingStage(now) {
+    if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('STAGE_START', { source: 'enterSecurityTrainingStage', trainingStageIndex });
     securityRobots.length = 0;
     whiteShadows.length = 0;
     boss.spawned = false; // clears whatever the PREVIOUS stage's ROID1 left behind the instant a new stage is entered
@@ -12339,6 +12444,10 @@
   }
 
   function advanceTrainingStage(now) {
+    // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: securityTraining's own
+    // advance is logged inside enterSecurityTrainingStage() below (this
+    // function's own call into it), never duplicated here.
+    if (DEBUG_TRANSITION_OVERLAY && gameState.mode !== 'securityTraining') recordTransitionEvent('STAGE_START', { source: 'advanceTrainingStage', trainingStageIndex });
     // SECTION M: a fresh random background, excluding the one just used
     // when the pool has more than one candidate (M-3) — AREA1/AREA2 within
     // the new STAGE then both read this same index via currentStage(), so
@@ -12422,6 +12531,7 @@
   // transition advance (updateStageTransition() above), so there is exactly
   // one implementation of "what does entering STORY STAGE N actually do".
   function enterStoryStage(now) {
+    if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('STAGE_START', { source: 'enterStoryStage', currentStageIndex });
     const plan = activeStagePlanArray()[currentStageIndex];
     // BOSS BGM ADDENDUM Section F/G: this is the ONE funnel every STORY
     // stage-advance passes through (updateStageTransition() above), so it's
@@ -12836,6 +12946,7 @@
       if (elapsed < STAGE_FADE_MS) return;
       stageTransition.active = false;
       stageTransition.phase = null;
+      if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('STAGE_TRANSITION_END', { generation: stageTransition.generation });
     }
   }
   function getStageTransitionOverlayAlpha(now) {
@@ -15541,6 +15652,7 @@
       securityAttackSlotsInUse = 0;
       enterBossBattleStage();
     } else {
+      if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('STAGE_START', { source: 'resetModeState:training-initial', trainingStageIndex });
       spawnBarrels(BARREL_COUNT);
       securityRobots.length = 0;
       whiteShadows.length = 0; // POST-v1.0 SECTION 4: WHITE SHADOW resets alongside DRONE everywhere the latter already does
@@ -15624,6 +15736,7 @@
   }
 
   function startMode(mode, scenario) {
+    if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('MODE_START', { mode, scenario: scenario || '(none)' });
     gameState.mode = mode;
     // DARK OUT PART 3 SECTION 19: BOSS BATTLE MODE must never reset (or, via
     // RESTART re-entering here with mode==='bossBattle', ever touch) STORY's
@@ -15998,6 +16111,7 @@
   // same path.
   function triggerPauseNow() {
     gameState.paused = true;
+    if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('PAUSE_ON', { source: 'triggerPauseNow' });
     pauseStartedAt = performance.now(); // SECTION Q-1: PLAY TIME excludes real time spent paused
     releaseAllHeldInputs();
     showModeMenu();
@@ -16030,6 +16144,7 @@
     if (gameState.paused) return;
     if (gameClearRemainingMs > 0) return;
     gameState.paused = true;
+    if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('PAUSE_ON', { source: 'autoPauseOnInterruption' });
     pauseStartedAt = performance.now(); // SECTION Q-1, same as pausePress()
     showModeMenu();
   }
@@ -16085,6 +16200,7 @@
   // rising edge can call the exact same resume path while already paused.
   function resumeFromPauseMenu() {
     gameState.paused = false;
+    if (DEBUG_TRANSITION_OVERLAY) recordTransitionEvent('PAUSE_OFF', { source: 'resumeFromPauseMenu' });
     storyPausedAccumMs += performance.now() - pauseStartedAt; // SECTION Q-1
     lastPlayerInputAt = performance.now(); // SECTION B/L: fresh grace period — real wall-clock time spent paused must never count toward the watchdog's idle timer
     hideModeMenu();
@@ -17951,6 +18067,13 @@
     MANUAL_RELOAD_MS, EMPTY_RELOAD_MS, COUNTER_CLAW_SPEED_MULTIPLIER, GABRIEL_COUNTER_STRAIGHT_CLAW_SLOWDOWN, segmentCrossesAreaWall,
     // Debug/verification only — PART7: FINAL-STAGE DRONE drop-in.
     FINAL_DRONE_DROP_MS,
+    // P0 GAMEPLAY STARTUP/TRANSITION STABILITY (?debugTransition=1) — debug/
+    // verification only:
+    get DEBUG_TRANSITION_OVERLAY() { return DEBUG_TRANSITION_OVERLAY; }, set DEBUG_TRANSITION_OVERLAY(v) { DEBUG_TRANSITION_OVERLAY = v; },
+    get transitionTrace() { return transitionTrace; }, get TRANSITION_TRACE_MAX() { return TRANSITION_TRACE_MAX; },
+    computeInputLockReason, snapshotTransitionDiagnosticContext, recordTransitionEvent, checkInputLockStateChange,
+    buildTransitionDebugText, updateDebugTransitionOverlay,
+    prewarmEventMoviePlaybackElement, resolveMovieUrl, // P0 GAMEPLAY STARTUP/TRANSITION STABILITY (10s-wait root-cause fix) — debug/verification only
   };
 
   // ---------- Main loop ----------
@@ -20503,6 +20626,119 @@
   try {
     DEBUG_PERF_OVERLAY = new URLSearchParams(window.location.search).get('debugPerf') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  // ==========================================================================
+  // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: ?debugTransition=1 diagnostic.
+  // Purely observational (never changes any lock/transition/input-gating
+  // logic itself) — records what update()'s own EXISTING early-return chain
+  // (gameState.paused / eventMovieState.active / stageTransition.active /
+  // boss.state==='intro' / isBossIntroLocked() / player.stunned / knockback)
+  // already decides, every time it decides it, plus a mode/stage/transition/
+  // movie event timeline — so a real-device "operation impossible" moment
+  // can be captured and copy-pasted rather than guessed at. Same pure-
+  // location.search flag pattern as every other ?debugX=1 overlay in this
+  // file (no localStorage persistence).
+  // ==========================================================================
+  let DEBUG_TRANSITION_OVERLAY = false;
+  try {
+    DEBUG_TRANSITION_OVERLAY = new URLSearchParams(window.location.search).get('debugTransition') === '1';
+  } catch (err) { /* stay OFF */ }
+  const TRANSITION_TRACE_MAX = 200;
+  const transitionTrace = [];
+  let lastTransitionEventType = '(none)';
+  let lastTransitionEventAt = 0;
+  // Updated every real loop()/updateGamepadInput() frame and on every real
+  // touch/pointer event reaching the page — cheap, no-op unless
+  // DEBUG_TRANSITION_OVERLAY is true. "how long since the last tick" is the
+  // direct, verifiable answer to "is the game loop / gamepad polling / touch
+  // input actually still alive right now", never a guess.
+  let lastGameLoopTickAt = 0;
+  let lastGamepadPollAt = 0;
+  let lastGamepadPollHeartbeatAt = 0; // throttles GAMEPAD_POLL_ALIVE to at most once/2s so the trace isn't flooded every frame
+  let lastTouchInputAt = 0;
+  let lastTouchInputHeartbeatAt = 0; // throttles TOUCH_INPUT_RECEIVED the same way, in case of a held/dragged touch generating a burst of events
+  if (DEBUG_TRANSITION_OVERLAY) {
+    const onTouchLike = () => {
+      lastTouchInputAt = Date.now();
+      if (lastTouchInputAt - lastTouchInputHeartbeatAt > 300) { lastTouchInputHeartbeatAt = lastTouchInputAt; recordTransitionEvent('TOUCH_INPUT_RECEIVED', {}); }
+    };
+    window.addEventListener('pointerdown', onTouchLike, { passive: true, capture: true });
+    window.addEventListener('touchstart', onTouchLike, { passive: true, capture: true });
+  }
+  // The ONE function that decides "why is gameplay input currently locked" —
+  // mirrors update()'s own real early-return chain and the introLocked/
+  // knockbackLocked gate further down it, in the SAME order, read-only
+  // (never itself gates anything — update() keeps deciding for real; this
+  // only explains the same decision in words). Returns null when nothing is
+  // locking input.
+  function computeInputLockReason() {
+    if (gameState.screen !== 'gameplay') return 'not-gameplay-screen (screen=' + gameState.screen + ')';
+    if (gameState.paused) return 'gameState.paused';
+    if (eventMovieState.active) return 'eventMovieState.active (key=' + eventMovieState.key + ')';
+    if (stageTransition.active) return 'stageTransition.active (phase=' + stageTransition.phase + ')';
+    if (boss.state === 'intro') return "boss.state==='intro'";
+    if (isBossIntroLocked()) return 'isBossIntroLocked()';
+    if (player.stunned) return 'player.stunned';
+    if (performance.now() < player.knockbackUntil) return 'knockback (player.knockbackUntil)';
+    return null;
+  }
+  function snapshotTransitionDiagnosticContext() {
+    let uaIsActive = null, uaHasBeenActive = null;
+    try {
+      if (navigator.userActivation) { uaIsActive = navigator.userActivation.isActive; uaHasBeenActive = navigator.userActivation.hasBeenActive; }
+    } catch (e) { /* not supported — stays null */ }
+    const now = performance.now();
+    const lockReason = computeInputLockReason();
+    return {
+      screen: gameState.screen,
+      mode: gameState.mode || '(none)',
+      currentStage: gameState.mode === 'training' ? trainingStageIndex : (gameState.mode === 'securityTraining' ? trainingStageIndex : currentStageIndex),
+      scenario: storyScenarioState.scenario || '(none)',
+      paused: gameState.paused,
+      emActive: eventMovieState.active, emKey: eventMovieState.key, emToken: eventMovieState.token,
+      stageTransitionActive: stageTransition.active, stageTransitionPhase: stageTransition.phase,
+      isBossIntroLocked: (typeof boss !== 'undefined' && gameState.screen === 'gameplay') ? isBossIntroLocked() : null,
+      inputLocked: lockReason !== null,
+      lockReason: lockReason || '(input enabled)',
+      gameLoopAliveMs: lastGameLoopTickAt ? +(now - lastGameLoopTickAt).toFixed(1) : null,
+      gamepadPollAliveMs: lastGamepadPollAt ? +(now - lastGamepadPollAt).toFixed(1) : null,
+      touchInputAliveMs: lastTouchInputAt ? +(Date.now() - lastTouchInputAt).toFixed(1) : null,
+      lastTransition: lastTransitionEventType,
+      lastTransitionAgeMs: lastTransitionEventAt ? Date.now() - lastTransitionEventAt : null,
+      activeRafRequests: debugPerfCounters.activeRafRequests,
+      activeTimers: debugPerfCounters.activeTimers,
+      activeMediaPlayPromises: debugPerfCounters.activeMediaPlayPromises,
+      visibility: document.visibilityState,
+      hasFocus: document.hasFocus(),
+      uaIsActive, uaHasBeenActive,
+    };
+  }
+  function recordTransitionEvent(type, fields) {
+    if (!DEBUG_TRANSITION_OVERLAY) return;
+    lastTransitionEventType = type;
+    lastTransitionEventAt = Date.now();
+    transitionTrace.push(Object.assign({ t: Date.now(), pt: +performance.now().toFixed(3), type }, snapshotTransitionDiagnosticContext(), fields || {}));
+    if (transitionTrace.length > TRANSITION_TRACE_MAX) transitionTrace.shift();
+  }
+  // Per-frame change-detector (same pattern as checkBgmAudibleSetChange()) —
+  // the one signal fine-grained enough to catch a real-device "input just
+  // got locked and never came back" moment, logged the instant the REASON
+  // itself changes (including "no longer locked").
+  let lastInputLockSignature = null;
+  function checkInputLockStateChange() {
+    if (!DEBUG_TRANSITION_OVERLAY) return;
+    const reason = computeInputLockReason();
+    if (reason !== lastInputLockSignature) {
+      // A null<->non-null transition is a genuine LOCK/UNLOCK edge; a
+      // non-null->non-null transition just means the reason TEXT changed
+      // while input stayed locked the whole time (e.g. screen advancing
+      // loading->opening->mainMenu, still all "not gameplay yet") — logged
+      // as its own event type so the timeline never implies a spurious
+      // unlock/re-lock cycle that didn't actually happen.
+      const type = reason === null ? 'INPUT_LOCK_OFF' : (lastInputLockSignature === null ? 'INPUT_LOCK_ON' : 'INPUT_LOCK_REASON_CHANGE');
+      recordTransitionEvent(type, { from: lastInputLockSignature, to: reason });
+      lastInputLockSignature = reason;
+    }
+  }
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
   const GAMEPAD_FIRE_THRESHOLD = 0.25; // RT analog value >= this counts as FIRE held
@@ -21745,6 +21981,78 @@
     });
   }
 
+  // ==========================================================================
+  // P0 GAMEPLAY STARTUP/TRANSITION STABILITY (?debugTransition=1): real-device
+  // diagnostic panel for input-lock/stage-transition/movie/pause state. Read-
+  // only rendering of the trace recorded above — never writes to any of the
+  // real gating state (gameState.paused/eventMovieState/stageTransition/
+  // isBossIntroLocked()'s own boss state) itself.
+  // ==========================================================================
+  const debugTransitionEl = document.getElementById('debug-transition-panel');
+  const debugTransitionCopyBtn = document.getElementById('debug-transition-copy-btn');
+  const debugTransitionTextEl = document.getElementById('debug-transition-text');
+  function buildTransitionDebugText() {
+    const ctx = snapshotTransitionDiagnosticContext();
+    const header =
+      `=== DARK OUT TRANSITION/INPUT-LOCK DIAGNOSTIC (?debugTransition=1) ===\n` +
+      `timestamp: ${new Date().toISOString()}\n` +
+      `INPUT: ${ctx.inputLocked ? 'LOCKED' : 'ENABLED'}\n` +
+      `reason: ${ctx.lockReason}\n`;
+    const stateBlock =
+      `--- STATE ---\n` +
+      `screen=${ctx.screen}  mode=${ctx.mode}  currentStage=${ctx.currentStage}  scenario=${ctx.scenario}\n` +
+      `paused=${ctx.paused}\n` +
+      `eventMovieState: active=${ctx.emActive} key=${ctx.emKey} token=${ctx.emToken}\n` +
+      `stageTransition: active=${ctx.stageTransitionActive} phase=${ctx.stageTransitionPhase}\n` +
+      `isBossIntroLocked()=${ctx.isBossIntroLocked}\n` +
+      `gameLoopAliveMs=${ctx.gameLoopAliveMs}  gamepadPollAliveMs=${ctx.gamepadPollAliveMs}  touchInputAliveMs=${ctx.touchInputAliveMs}\n` +
+      `lastTransition=${ctx.lastTransition}  lastTransitionAgeMs=${ctx.lastTransitionAgeMs}\n` +
+      `activeRafRequests=${ctx.activeRafRequests}  activeTimers=${ctx.activeTimers}  activeMediaPlayPromises=${ctx.activeMediaPlayPromises}\n` +
+      `visibilityState=${ctx.visibility}  hasFocus=${ctx.hasFocus}\n` +
+      `navigator.userActivation: isActive=${ctx.uaIsActive}  hasBeenActive=${ctx.uaHasBeenActive}\n`;
+    const traceLines = transitionTrace.slice(-80).map((e) =>
+      `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type}` +
+      ` screen=${e.screen} mode=${e.mode} stage=${e.currentStage} inputLocked=${e.inputLocked} reason="${e.lockReason}"` +
+      (e.from !== undefined || e.to !== undefined ? ` from="${e.from}" to="${e.to}"` : '') +
+      (e.key !== undefined ? ` key=${e.key}` : '') +
+      (e.token !== undefined ? ` token=${e.token}` : '') +
+      (e.reason !== undefined && e.type === 'MOVIE_END' ? ` movieEndReason=${e.reason}` : '') +
+      (e.source !== undefined ? ` source=${e.source}` : '') +
+      (e.generation !== undefined ? ` generation=${e.generation}` : '')
+    );
+    return header + stateBlock +
+      `--- EVENT TIMELINE (most recent ${Math.min(transitionTrace.length, 80)} of ${transitionTrace.length}, max ${TRANSITION_TRACE_MAX}) ---\n` +
+      traceLines.join('\n') + '\n';
+  }
+  function updateDebugTransitionOverlay(now) {
+    if (!DEBUG_TRANSITION_OVERLAY || !debugTransitionEl) return;
+    debugTransitionEl.hidden = false;
+    if (debugTransitionTextEl) debugTransitionTextEl.textContent = buildTransitionDebugText();
+  }
+  if (debugTransitionCopyBtn) {
+    debugTransitionCopyBtn.addEventListener('click', () => {
+      const text = buildTransitionDebugText();
+      const fallback = () => {
+        const ta = document.getElementById('debug-transition-fallback-textarea');
+        if (ta) {
+          ta.hidden = false;
+          ta.value = text;
+          ta.focus();
+          ta.select();
+        }
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(fallback);
+        } else {
+          fallback();
+        }
+      } catch (err) {
+        fallback();
+      }
+    });
+  }
+
   let lastBgmWatchdogAt = 0;
   // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION (Part D/K root-
   // cause candidate): before this batch, an uncaught exception ANYWHERE in
@@ -21787,11 +22095,25 @@
       // DEBUG_BGM_OVERLAY is true.
       checkBgmAudibleSetChange();
       checkAllMediaAudibleSetChange(); // P0 BGM REAL-DEVICE RECHECK: same per-frame cadence, but across every audio/video DOM element, not just the 4 canonical BGM tracks
+      // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: "is the game loop actually
+      // still alive" is answered directly by this timestamp, never guessed —
+      // updated unconditionally, every real frame, from OUTSIDE any gamepad/
+      // BGM code this batch was told not to touch.
+      if (DEBUG_TRANSITION_OVERLAY) lastGameLoopTickAt = now;
+      checkInputLockStateChange();
       // GAMEPAD SUPPORT: polled every frame regardless of screen/orientation
       // (updateGamepadInput() itself gates gameplay-affecting writes to
       // screen==='gameplay'), so a disconnect/neutral-stick reset is never
       // more than one frame late even while paused or in a menu.
       updateGamepadInput(now);
+      // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: recorded HERE, right after
+      // the real call above, never inside updateGamepadInput() itself — this
+      // batch does not touch gamepad code, so "is gamepad polling alive" is
+      // answered purely by observing that this call site keeps executing.
+      if (DEBUG_TRANSITION_OVERLAY) {
+        lastGamepadPollAt = now;
+        if (now - lastGamepadPollHeartbeatAt > 2000) { lastGamepadPollHeartbeatAt = now; recordTransitionEvent('GAMEPAD_POLL_ALIVE', {}); }
+      }
       // LANDSCAPE MODE: update()/draw() now run in both orientations — the
       // previous isLandscapeBlocked() freeze + full-screen "縦画面でプレイして
       // ください" overlay are retired; see style.css for the LEFT PANEL/
@@ -21808,6 +22130,7 @@
       updateDebugPerfOverlay(now); // P0 INTEGRATED REGRESSION FIX (H): separate overlay/flag, never touches any other overlay's own fields
       updateDebugGamepadTapOverlay(now); // P0 DIAGNOSTIC PHASE 1: separate overlay/flag, read-only observation, never touches any other overlay's own fields
       updateDebugBgmOverlay(now); // P0 BGM DOUBLE-PLAY DIAGNOSTIC: separate overlay/flag, read-only observation, never touches any other overlay's own fields
+      updateDebugTransitionOverlay(now); // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: separate overlay/flag, read-only observation, never touches any other overlay's own fields
     } catch (err) {
       console.error('[LOOP] uncaught error this frame, continuing next frame:', err);
       debugLastLoopException = { message: String(err && err.message || err), at: now };
