@@ -1194,24 +1194,35 @@
     ensureEventMovieGainNode(); // P0 INTEGRATED REGRESSION HOTFIX (Part H): best chance of an un-suspended AudioContext is inside this same real STARTUP gesture
     try {
       const primeSrc = EVENT_MOVIES.sneaking; // any always-registered, already-preloaded movie works — this one is simply the first ever played
+      // P0 BGM WORK ORDER C (real-device double-audible re-audit): snapshot
+      // eventMovieState.token here, BEFORE the priming play() promise is even
+      // created. If a REAL playEventMovie() call takes ownership of
+      // eventMovieVideoEl (bumping the token) while this promise is still in
+      // flight — e.g. a late-resolving prime racing a fast STORY MODE
+      // start — the teardown below must never pause/reset/clear the real
+      // movie out from under it. Mirrors unlockBackgroundBgmForIOS()'s own
+      // audibleBgmElement ownership guard just below, which already
+      // protects its 3 BGM tracks the same way; this element had no
+      // equivalent guard at all until now.
+      const primeOwnerToken = eventMovieState.token;
       eventMovieVideoEl.muted = true;
       eventMovieVideoEl.src = primeSrc;
       const p = eventMovieVideoEl.play();
       if (p && typeof p.then === 'function') {
-        p.then(() => {
-          eventMovieVideoEl.pause();
-          eventMovieVideoEl.currentTime = 0;
-          eventMovieVideoEl.removeAttribute('src');
-          eventMovieVideoEl.load();
-        }).catch(() => {
+        const teardown = () => {
           // Even a rejected promise here still counts, on WebKit, as a
           // play() attempt made synchronously within the gesture — the
           // unlock is about the CALL happening in-gesture, not about the
           // prime clip actually audibly playing. Tear the src back down
-          // regardless so nothing lingers loaded.
+          // regardless so nothing lingers loaded — but only while nothing
+          // real has claimed the element in the meantime.
+          if (eventMovieState.token !== primeOwnerToken) return; // superseded by a real playEventMovie() call — never touch its element
+          eventMovieVideoEl.pause();
+          eventMovieVideoEl.currentTime = 0;
           eventMovieVideoEl.removeAttribute('src');
           eventMovieVideoEl.load();
-        });
+        };
+        p.then(teardown).catch(teardown);
       }
     } catch (e) {
       // Never let a priming failure block TAP TO START itself.
