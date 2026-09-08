@@ -1575,10 +1575,44 @@
   // narrow floor. Shared by clampPlayerToScreen() (movement) and
   // segmentCrossesAreaWall() (LOS/projectiles/CLAW/AUTO AIM) so the two can
   // never disagree about where the real opening is.
+  // P0 REAL-DEVICE HOTFIX (root-cause fix, this batch): EXIT_ZONE_W=150 was
+  // a FIXED absolute door width regardless of floor size -- fine on the
+  // narrowest background (163.8px world floor, ~92% stayed door), but on
+  // the widest ones (up to ~335px) it left a wall margin of up to ~90px
+  // PER SIDE. Direct re-inspection of the actual rendered art (every
+  // TRAINING_BACKGROUNDS/STAGES entry sharing this corridor style) confirms
+  // there is no distinct doorway/partition graphic anywhere along the
+  // corridor's length -- the floor is one uniform, visually walkable
+  // surface between its two side walls (already exactly what
+  // floorLeftFrac/floorRightFrac measure). Standing 90px inside that
+  // visually-uniform floor and hitting an invisible wall (this batch's own
+  // real-device report) is a direct, mechanical consequence of that FIXED
+  // width on wider floors -- not a separate bug. Fixed by using a small,
+  // CONSTANT per-side margin instead of a constant total door width: the
+  // wall is now only ever a thin, near-the-true-edge band (just enough to
+  // remain a real, LOS-blockable wall near the true corridor edge for the
+  // DRONE-through-wall fix this same door exists for) rather than a large
+  // fraction of an apparently open corridor, on every floor size.
+  const AREA_DOOR_WALL_MARGIN_PX = 30;
   function getAreaDoorXRangeWorld(floor) {
     const doorCenterX = (floor.left + floor.right) / 2;
-    const doorHalfW = Math.min(EXIT_ZONE_W / 2, (floor.right - floor.left) / 2);
+    const doorHalfW = Math.max(0, (floor.right - floor.left) / 2 - AREA_DOOR_WALL_MARGIN_PX);
     return { left: doorCenterX - doorHalfW, right: doorCenterX + doorHalfW };
+  }
+  // P0 REAL-DEVICE HOTFIX item 25: an explicit "here is the real SOLID WALL,
+  // as two segments" view over the same floor/door numbers
+  // getAreaDoorXRangeWorld() already returns — never a second, independently-
+  // tuned geometry (that would risk drifting out of sync with the door
+  // movement/LOS/projectiles all already share) — purely so callers that
+  // want "the wall" rather than "the door" (the ?debugAreaLos=1 overlay,
+  // this work order's own test matrix) never have to re-derive
+  // floor-minus-door arithmetic themselves.
+  function getAreaWallSegmentsWorld(floor) {
+    const door = getAreaDoorXRangeWorld(floor);
+    return [
+      { x0: floor.left, x1: door.left },
+      { x0: door.right, x1: floor.right },
+    ];
   }
   // PART2-turn SECTION A: every world Y where a background tile boundary —
   // and therefore a "door" opening — actually occurs. Since dh (the drawn
@@ -7069,8 +7103,46 @@
       }
     }
   }
+  // P0 REAL-DEVICE HOTFIX (real-device report: TRAINING ROID1 stops taking
+  // damage around 50% HP): extensive state-machine audit (every
+  // 'sniper'/'missile'/'antiBurstCounter' exit condition is real-time-based
+  // and self-terminating) plus long synthetic Playwright runs (steady fire,
+  // burst-then-pause fire, 500+ real state transitions over simulated
+  // 8-minute sessions) never reproduced a permanent stall in this sandbox —
+  // never treated as "therefore already fine" per this work order's own
+  // explicit source-of-truth rule. applyBodyHitToRoidBoss() blocks damage
+  // ONLY while boss.state is one of these three, and every one of them is
+  // designed to resolve in well under 8 seconds even in the slowest real
+  // case (4-shot SNIPER, 3-missile MISSILE, ~2000ms ANTI-BURST) — so this
+  // watchdog is a genuine correctness backstop, not a mask: if ROID1 is
+  // EVER still in one of these blocking states 8 real seconds after
+  // entering it (a stuck sub-state field, an exception silently interrupting
+  // a single frame's update elsewhere, or any other yet-unidentified cause),
+  // it is forced back to a normal damageable 'search' state outright, rather
+  // than leaving the player permanently unable to damage ROID1 for the rest
+  // of the fight.
+  const ROID_DAMAGE_BLOCK_STATES = ['sniper', 'missile', 'antiBurstCounter'];
+  const ROID_DAMAGE_BLOCK_WATCHDOG_MS = 8000;
+  let roidDamageBlockLastState = null;
+  let roidDamageBlockStateEnteredAt = -Infinity;
   function updateRoidBoss(dt, now) {
     if (boss.state === 'roidDying') { updateRoidDeath(now); return; }
+    if (ROID_DAMAGE_BLOCK_STATES.indexOf(boss.state) !== -1) {
+      if (boss.state !== roidDamageBlockLastState) {
+        roidDamageBlockLastState = boss.state;
+        roidDamageBlockStateEnteredAt = now;
+      } else if (now - roidDamageBlockStateEnteredAt > ROID_DAMAGE_BLOCK_WATCHDOG_MS) {
+        console.error('[ROID1 WATCHDOG] force-recovered from stuck state:', boss.state, '-- REAL DEVICE RECHECK: report exact repro steps if seen live.');
+        roidState.antiBurstCounter = null;
+        roidState.missile.missiles = [];
+        roidState.missile.index = ROID2_MISSILE_COUNT;
+        boss.state = 'search';
+        boss.stateEnteredAt = now;
+        roidDamageBlockLastState = null;
+      }
+    } else {
+      roidDamageBlockLastState = null;
+    }
     updateRoidTargetTracking(now);
     maintainRoidEscortDrones(now);
     updateRoidCoverCounter(now); // HOTFIX 2 SECTION 34-35: independent of boss.state, so it resolves even while SNIPER/BURST/etc. runs
@@ -10110,7 +10182,7 @@
       // them even in a pathological case (e.g. a caught per-frame exception
       // suppressing progress), and so ?debugStartup=1 has a real signal to show.
       { name: 'game loop alive', ready: () => rafFrameCount > 0 },
-      { name: 'gamepad subsystem ready', ready: () => gamepadSubsystemInitialized },
+      { name: 'gamepad subsystem ready', ready: () => isGamepadSubsystemSettled() },
     ];
   }
   // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD) item 19: the single
@@ -10183,12 +10255,14 @@
     }
     const allPads = navigator.getGamepads ? navigator.getGamepads() : [];
     const connectedPadCount = allPads.filter((p) => p && p.connected).length;
+    const activeGp = getActiveGamepad();
     const audioTracksForDebug = [['menu', menuBgmAudio], ['normal', bgmAudio], ['boss', bossBgmAudio], ['ending', endingRevealAudio]];
     const audibleCount = audioTracksForDebug.filter(([, el]) => isBgmTrackAudible(el)).length;
     const ready = assertStartupReady();
     let blockedReason = '(none — ready)';
     if (erroredNames.length > 0) blockedReason = 'ERROR: ' + erroredNames.join(', ');
     else if (!ready) blockedReason = 'WAITING: ' + pendingNames.join(', ');
+    const menuNavContainer = (gameState.screen !== 'gameplay' && !eventMovieState.active) ? getGamepadMenuNavContainer() : null;
     debugStartupEl.textContent =
       `--- STARTUP (?debugStartup=1) ---\n` +
       `LOAD PROGRESS: ${pct.toFixed(1)}%  (${loaded}/${total})\n` +
@@ -10197,13 +10271,17 @@
       `FAILED TASK: ${erroredNames.length ? erroredNames.join(', ') : '(none)'}\n` +
       `ETA: ${eta}\n` +
       `RAF COUNT: ${rafFrameCount}  RAF DELTA: ${rafLastDeltaMs.toFixed(1)}ms\n` +
-      `GAMEPAD SUBSYSTEM READY: ${gamepadSubsystemInitialized}\n` +
-      `CONNECTED PADS: ${connectedPadCount}  ACTIVE PAD: ${gamepadIndex === null ? '(none)' : gamepadIndex}\n` +
+      `GAMEPAD ENUMERATED: ${connectedPadCount > 0}  CONNECTED PADS: ${connectedPadCount}\n` +
+      `ACTIVE PAD INDEX: ${gamepadIndex === null ? '(none)' : gamepadIndex}  PAD ID: ${activeGp ? activeGp.id.slice(0, 28) : '(none)'}\n` +
+      `BUTTON COUNT: ${activeGp ? activeGp.buttons.length : 0}  AXIS COUNT: ${activeGp ? activeGp.axes.length : 0}\n` +
+      `PREV SNAPSHOT READY: ${Object.keys(gamepadLastButtons).length > 0}  CURRENT SNAPSHOT READY: ${!!activeGp}\n` +
+      `GAMEPAD POLL FRAMES: ${gamepadPollFrameCount}  SETTLED: ${isGamepadSubsystemSettled()}\n` +
       `INPUT ARMED: ${gamepadInputArmed}  RELEASE GATE: ${gamepadInputArmed ? 'open' : 'waiting-for-release'}\n` +
+      `TAP HANDLER READY: ${gameState.screen === 'opening'}  MENU NAV READY: ${!!menuNavContainer}  MENU CONFIRM READY: ${!!menuNavContainer}\n` +
       `MENU READY: ${!!document.getElementById('main-menu-overlay') && !!document.getElementById('main-menu-story-btn')}\n` +
       `AUDIO OWNER: ${audibleBgmKey || '(none)'}  AUDIBLE BGM COUNT: ${audibleCount}\n` +
       `STARTUP READY: ${ready}\n` +
-      `BLOCKED REASON: ${blockedReason}`;
+      `STARTUP READY BLOCKER: ${blockedReason}`;
   }
   // P0 STARTUP LOADING HOTFIX (RETRY LOOP ROOT FIX): every RETRY bumps this
   // generation token. The tick() loop closes over the generation it was
@@ -10787,6 +10865,15 @@
   const endingRevealClearTimeValueEl = document.getElementById('ending-reveal-clear-time');
   const endingRevealContinueValueEl = document.getElementById('ending-reveal-continue');
   const endingRevealRankValueEl = document.getElementById('ending-reveal-rank');
+  // P0 REAL-DEVICE HOTFIX (root-cause fix, this batch): "THANK YOU FOR
+  // PLAYING!!" used to be plain always-visible text (see its own now-stale
+  // CSS comment) — appearing the INSTANT this screen is entered, well
+  // before RANK reveals at ENDING_REVEAL_RANK_FRAC. Real-device feedback
+  // wants it to appear in the SAME instant as the RANK letter, not before
+  // or after — so it now joins the exact same fade timeline/reveal flag as
+  // RANK (see updateEndingReveal()'s revealedRank branch below) rather than
+  // getting a new, separately-tracked reveal step.
+  const endingRevealThankYouEl = document.getElementById('ending-reveal-thankyou');
   const endingRevealArtistBtnEl = document.getElementById('ending-reveal-artist-btn');
   const endingRevealBackToTopBtnEl = document.getElementById('ending-reveal-backtotop-btn');
 
@@ -10885,6 +10972,10 @@
     if (!endingRevealState.revealedRank && frac >= ENDING_REVEAL_RANK_FRAC) {
       endingRevealState.revealedRank = true;
       endingRevealRankValueEl.classList.add('ending-reveal-visible');
+      // P0 REAL-DEVICE HOTFIX: THANK YOU FOR PLAYING!! reveals in this SAME
+      // instant as RANK — never earlier, never later — per the real-device
+      // report that it used to appear immediately on screen-entry instead.
+      endingRevealThankYouEl.classList.add('ending-reveal-visible');
     }
   }
   // The ONE entry point — called from beginStoryEscapeEnding()'s MAIN
@@ -10924,6 +11015,7 @@
     endingRevealClearTimeValueEl.classList.remove('ending-reveal-visible');
     endingRevealContinueValueEl.classList.remove('ending-reveal-visible');
     endingRevealRankValueEl.classList.remove('ending-reveal-visible');
+    endingRevealThankYouEl.classList.remove('ending-reveal-visible'); // P0 REAL-DEVICE HOTFIX: REPLAY must never leave a stale-visible THANK YOU from a previous run showing before its own reveal fires again
     endingRevealArtistBtnEl.hidden = true;
     endingRevealArtistBtnEl.classList.remove('ending-reveal-visible');
     endingRevealBackToTopBtnEl.hidden = true;
@@ -12342,7 +12434,7 @@
     secretFileTimerState.remainingMs = Math.max(0, secretFileTimerState.remainingMs - dt * 1000);
     if (secretFileTimerState.remainingMs <= 0) {
       secretFileTimerState.active = false;
-      triggerGameOver(now); // SECTION 54: the exact same existing TIME UP/GAME OVER flow a LIFE-depletion death already uses — no new movie/screen
+      triggerGameOver(now, true); // SECTION 54: the exact same existing TIME UP/GAME OVER flow a LIFE-depletion death already uses — no new movie/screen. `true` marks this GAME OVER as TIME-LIMIT-caused so retryCurrentRun() restarts the countdown instead of leaving it permanently expired/hidden (P0 REAL-DEVICE HOTFIX root-cause fix, this batch)
     }
   }
   function drawSecretFileTimerHud(now) {
@@ -14783,6 +14875,33 @@
   // existing RESUME button, never automatically.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) autoPauseOnInterruption();
+    // P0 REAL-DEVICE HOTFIX (root-cause fix, this batch): real-device
+    // reports of an EVENT MOVIE's own embedded audio (opening infiltration
+    // movie, GABRIEL defeated) sometimes not being audible. ensureEventMovieGainNode()
+    // already resumes eventMovieAudioContext if it's 'suspended' at the
+    // moment a movie STARTS playing, but a background/foreground cycle
+    // (app switch, screen lock, real device backgrounding) can suspend it
+    // again at any point BETWEEN movies too -- and since that resume() call
+    // is async and fired right before .play() with no guarantee it settles
+    // before the movie's own audio would otherwise start, a movie that
+    // begins playing very soon after the tab becomes visible again could
+    // run its whole length with a still-suspended context. Proactively
+    // resuming here, the instant the tab is foregrounded again (rather than
+    // only reactively inside playEventMovie()), gives it the most possible
+    // lead time to actually be 'running' before the next movie ever starts.
+    if (!document.hidden && typeof eventMovieAudioContext !== 'undefined' && eventMovieAudioContext && eventMovieAudioContext.state === 'suspended') {
+      eventMovieAudioContext.resume().catch(() => {});
+    }
+  });
+  // Same reasoning as the visibilitychange branch above, for the bfcache-
+  // restore/app-reopen case specifically (pageshow's own persisted flag is
+  // true only on a back-forward-cache restore, but resuming unconditionally
+  // here is harmless even on a normal fresh navigation where the context
+  // does not exist yet).
+  window.addEventListener('pageshow', () => {
+    if (typeof eventMovieAudioContext !== 'undefined' && eventMovieAudioContext && eventMovieAudioContext.state === 'suspended') {
+      eventMovieAudioContext.resume().catch(() => {});
+    }
   });
   window.addEventListener('blur', autoPauseOnInterruption);
 
@@ -16114,8 +16233,24 @@
   // that overlay approach specifically so the last moment of victory stays
   // visible; GAME OVER has no such requirement and the spec calls for an
   // immediate, complete stop instead.
-  function triggerGameOver(now) {
+  // P0 REAL-DEVICE HOTFIX (root-cause fix, this batch): `causedByTimeLimitExpiry`
+  // records WHY this GAME OVER happened -- root cause of the reported
+  // "REPLAY after TIME LIMIT hits 0 leaves the TIME LIMIT HUD gone": when the
+  // countdown itself reaches 0, updateSecretFileTimer() already sets
+  // secretFileTimerState.active=false (the timer is genuinely over) BEFORE
+  // calling this function -- so retryCurrentRun()'s own snapshot/restore
+  // (added in an earlier batch specifically to protect this HUD across
+  // RETRY) faithfully restores that exact "false" state, which is correct
+  // for a LIFE-depletion GAME OVER that happened while the timer was still
+  // separately ticking, but wrong for THIS cause: the player is retrying
+  // the exact same timed challenge and expects a fresh countdown, not a
+  // permanently-expired, invisible one. gameOverCausedByTimeLimitExpiry lets
+  // retryCurrentRun() tell the two cases apart and restart the timer only
+  // for the one that actually needs it.
+  let gameOverCausedByTimeLimitExpiry = false;
+  function triggerGameOver(now, causedByTimeLimitExpiry) {
     gameOverEnteredAt = now; // HOTFIX 4.1 ADDENDUM: dwell time on this screen is excluded from PLAY TIME via retryCurrentRun()'s own storyPausedAccumMs add, same pattern as PAUSE
+    gameOverCausedByTimeLimitExpiry = !!causedByTimeLimitExpiry;
     setScreen('gameover');
   }
 
@@ -16139,8 +16274,22 @@
     // this out (see its own comment there) — this wrap adds an unconditional
     // guarantee on top, so the TIME LIMIT HUD can never be silently lost to
     // any future code path here, only a genuinely NEW run may ever reset it.
-    const savedTimerActive = secretFileTimerState.active;
-    const savedTimerRemainingMs = secretFileTimerState.remainingMs;
+    // P0 REAL-DEVICE HOTFIX (root-cause fix, this batch): if THIS GAME OVER
+    // was caused by the TIME LIMIT itself expiring, the snapshot below would
+    // faithfully restore "active=false" (the timer having just legitimately
+    // finished) — leaving the HUD permanently gone on every future RETRY of
+    // this run. Restart the countdown from its full duration instead, same
+    // as picking up the SECRET FILE fresh; any OTHER GAME OVER (e.g. LIFE
+    // depletion while the timer was still separately ticking) keeps the
+    // existing exact-state preservation below unchanged.
+    let savedTimerActive, savedTimerRemainingMs;
+    if (gameOverCausedByTimeLimitExpiry) {
+      savedTimerActive = true;
+      savedTimerRemainingMs = SECRET_FILE_TIMER_MS;
+    } else {
+      savedTimerActive = secretFileTimerState.active;
+      savedTimerRemainingMs = secretFileTimerState.remainingMs;
+    }
     resetModeState(true);
     secretFileTimerState.active = savedTimerActive;
     secretFileTimerState.remainingMs = savedTimerRemainingMs;
@@ -16397,7 +16546,7 @@
     get screenShakeMag() { return screenShakeMag; },
     get pauseZoneBottomY() { return pauseZoneBottomY; }, resize, // debug/verification only — HOTFIX 3 SECTION 4
     get aimStickActive() { return aimStickActive; }, // debug/verification only — HOTFIX 3 SECTION 7-10
-    secretFileTimerState, startSecretFileTimer, SECRET_FILE_TIMER_MS, // debug/verification only — HOTFIX 2 SECTIONS 49-54
+    secretFileTimerState, startSecretFileTimer, SECRET_FILE_TIMER_MS, updateSecretFileTimer, get gameOverCausedByTimeLimitExpiry() { return gameOverCausedByTimeLimitExpiry; }, // debug/verification only — HOTFIX 2 SECTIONS 49-54, P0 REAL-DEVICE HOTFIX
     get screenShakeUntil() { return screenShakeUntil; },
     // Debug/verification only — unified muzzle/aim (PART 9-14).
     getMuzzleWorldPosition, MUZZLE_OFFSETS,
@@ -16534,9 +16683,10 @@
     // (STRAIGHT_CLAW_TRIGGER_GUARDS is already exposed above).
     spawnStraightClaw, isPlayerInvulnerable,
     // Debug/verification only — AREA1<->AREA2 (and bonus-band) door-collision fix.
-    getFloorXRangeWorld, getStageDrawMetrics, AREA_BOUNDARY_DOOR_BAND, getAreaBoundaryYs, getAreaDoorXRangeWorld, // P0 WORK ORDER I CORRECTION — debug/verification only
+    getFloorXRangeWorld, getStageDrawMetrics, AREA_BOUNDARY_DOOR_BAND, getAreaBoundaryYs, getAreaDoorXRangeWorld, getAreaWallSegmentsWorld, // P0 WORK ORDER I CORRECTION — debug/verification only
     get DEBUG_AREA_LOS_OVERLAY() { return DEBUG_AREA_LOS_OVERLAY; }, // P0 WORK ORDER I CORRECTION — debug/verification only
     get DEBUG_STARTUP_OVERLAY() { return DEBUG_STARTUP_OVERLAY; }, assertStartupReady, computeStartupRequiredProgress, get gamepadSubsystemInitialized() { return gamepadSubsystemInitialized; }, // P0 INTEGRATED WORK ORDER — debug/verification only
+    get gamepadPollFrameCount() { return gamepadPollFrameCount; }, isGamepadSubsystemSettled, // P0 REAL-DEVICE HOTFIX — debug/verification only
     getDronePlacementRangeX, clampPlayerToScreen,
     get W() { return W; }, get H() { return H; },
     // P0 LANDSCAPE HOTFIX — debug/verification only:
@@ -17387,20 +17537,39 @@
         const losDoor = getAreaDoorXRangeWorld(losFloor);
         ctx.save();
         ctx.lineWidth = 3;
+        const losWallSegs = getAreaWallSegmentsWorld(losFloor);
         for (const boundaryY of getAreaBoundaryYs()) {
           ctx.strokeStyle = '#ffcc00';
-          ctx.beginPath();
-          ctx.moveTo(losFloor.left, boundaryY);
-          ctx.lineTo(losDoor.left, boundaryY);
-          ctx.moveTo(losDoor.right, boundaryY);
-          ctx.lineTo(losFloor.right, boundaryY);
-          ctx.stroke();
+          for (const seg of losWallSegs) {
+            ctx.beginPath();
+            ctx.moveTo(seg.x0, boundaryY);
+            ctx.lineTo(seg.x1, boundaryY);
+            ctx.stroke();
+          }
           ctx.strokeStyle = '#33ff66';
           ctx.beginPath();
           ctx.moveTo(losDoor.left, boundaryY);
           ctx.lineTo(losDoor.right, boundaryY);
           ctx.stroke();
+          // P0 REAL-DEVICE HOTFIX item 27: playable FLOOR edge (magenta tick
+          // marks) drawn separately from the solid WALL segment (yellow)
+          // above -- on a real device this makes it visually obvious that
+          // the wall is only the thin near-the-true-edge margin, never the
+          // whole floor, so "why did I stop here" is answerable at a glance.
+          ctx.strokeStyle = '#ff33ff';
+          ctx.beginPath();
+          ctx.moveTo(losFloor.left, boundaryY - 10);
+          ctx.lineTo(losFloor.left, boundaryY + 10);
+          ctx.moveTo(losFloor.right, boundaryY - 10);
+          ctx.lineTo(losFloor.right, boundaryY + 10);
+          ctx.stroke();
         }
+        // Player's own collision point/radius -- same point/radius clampPlayerToScreen()'s door check and the tank/DRONE/boss clamp functions all test.
+        ctx.strokeStyle = '#33ffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, PLAYER_HIT_RADIUS, 0, Math.PI * 2);
+        ctx.stroke();
         for (const robot of securityRobots) {
           const blocked = segmentCrossesAreaWall(robot.x, robot.y, player.x, player.y);
           ctx.strokeStyle = blocked ? '#ff3344' : '#33ff66';
@@ -18847,6 +19016,25 @@
   // Loading's own tick() polls it (the RAF loop starts before Loading's own
   // screen even renders).
   let gamepadSubsystemInitialized = false;
+  // P0 REAL-DEVICE HOTFIX (root-cause fix, this batch): "ran at least once"
+  // (gamepadSubsystemInitialized above) turned out to be too weak a
+  // readiness bar — real-device reports (Loading 100% but the controller
+  // still not usable, needing a wait even on a screen with no button
+  // press) point at Gamepad API ENUMERATION latency itself: WebKit in
+  // particular can take a handful of animation frames after a page
+  // load/reload/reopen before an already-connected pad's own entry in
+  // navigator.getGamepads() is actually populated/stable, even though the
+  // polling loop itself has been running since frame 1. Counting real
+  // polled frames (not calendar time, so it naturally scales with actual
+  // frame rate) and requiring a small minimum before the subsystem counts
+  // as "settled" gives that enumeration real room to resolve BEFORE
+  // Loading can ever reach 100% -- still never waits on a physical button
+  // press, and still never blocks when no pad is connected at all (a
+  // disconnected slot settles on this same frame-count basis exactly like
+  // a connected one).
+  let gamepadPollFrameCount = 0;
+  const GAMEPAD_SETTLE_MIN_FRAMES = 15; // ~250ms at 60fps
+  function isGamepadSubsystemSettled() { return gamepadPollFrameCount >= GAMEPAD_SETTLE_MIN_FRAMES; }
   const gamepadMoveVec = { x: 0, y: 0 }; // post-deadzone LEFT STICK, debug/verification only
   let gamepadAimVec = null; // post-deadzone RIGHT STICK {x,y}, or null while neutral — debug/verification only
   let gamepadFireHeld = false; // RT >= GAMEPAD_FIRE_THRESHOLD
@@ -18885,11 +19073,60 @@
   // first real rising edge on the NEW pad. adoptGamepadIndex() is the ONE
   // place that ever writes gamepadIndex, so this reset can never be
   // forgotten at a call site.
+  // P0 REAL-DEVICE HOTFIX (root-cause fix, this batch): this used to reset
+  // gamepadLastButtons/gamepadLastAnyButtonPressed to a blank "nothing was
+  // pressed" baseline on every adoption — but a REAL device's pad is very
+  // often NOT actually at rest the instant it's first (re)detected: a
+  // button still physically held from opening the app, a cheap Bluetooth
+  // pad's own connection-handshake garbage frame, or pollForGamepadConnection()'s
+  // own "steal to the other ACTIVELY-PRESSED slot" branch just above (which
+  // by definition only ever fires while that slot already reads a button
+  // pressed) all land here with a real button genuinely down at adoption
+  // time. Comparing that against a blank "nothing pressed" baseline on the
+  // very next poll produced a SPURIOUS rising edge — exactly the
+  // "TAP TO START fires/consumes on its own, then the user's real press a
+  // moment later needs a full release+re-press first" real-device report
+  // (items 2-4 of this work order), never reproducible by intentionally
+  // pressing a fresh button in a test since that's a genuine edge either
+  // way. Fixed by seeding the baseline from the pad's OWN actual current
+  // button state instead of a blind blank — a still-held button is then
+  // correctly read as "already pressed, no edge yet" (must release first,
+  // exactly the existing release-gate contract), while a genuinely fresh
+  // press immediately after adoption still fires normally.
   function adoptGamepadIndex(newIndex) {
     if (newIndex === gamepadIndex) return;
     gamepadIndex = newIndex;
-    gamepadLastButtons = {};
-    gamepadLastAnyButtonPressed = false;
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const gp = pads[newIndex];
+    if (gp && gp.mapping !== undefined) {
+      const idx = (gp.mapping === 'standard') ? STANDARD_GAMEPAD_BUTTONS : FALLBACK_GAMEPAD_BUTTONS;
+      const btn = (i) => gp.buttons[i];
+      gamepadLastButtons = {
+        lb: !!(btn(idx.LB) && btn(idx.LB).pressed),
+        rb: !!(btn(idx.RB) && btn(idx.RB).pressed),
+        lt: (btn(idx.LT) ? btn(idx.LT).value : 0) >= GAMEPAD_FLASH_LT_THRESHOLD,
+        x: !!(btn(idx.X) && btn(idx.X).pressed),
+        y: !!(btn(idx.Y) && btn(idx.Y).pressed),
+        a: !!(btn(idx.A) && btn(idx.A).pressed),
+        b: !!(btn(idx.B) && btn(idx.B).pressed),
+        menu: !!(btn(idx.MENU) && btn(idx.MENU).pressed),
+        dpadUp: !!(btn(idx.DPAD_UP) && btn(idx.DPAD_UP).pressed),
+        dpadDown: !!(btn(idx.DPAD_DOWN) && btn(idx.DPAD_DOWN).pressed),
+        dpadLeft: !!(btn(idx.DPAD_LEFT) && btn(idx.DPAD_LEFT).pressed),
+        dpadRight: !!(btn(idx.DPAD_RIGHT) && btn(idx.DPAD_RIGHT).pressed),
+      };
+      gamepadLastAnyButtonPressed = gp.buttons.some((b) => b && b.pressed);
+      debugPrevButtonsPressedSnapshot = gp.buttons.map((b) => !!(b && b.pressed));
+    } else {
+      gamepadLastButtons = {};
+      gamepadLastAnyButtonPressed = false;
+      debugPrevButtonsPressedSnapshot = [];
+    }
+    // A still-held button at adoption time must behave exactly like any
+    // other "already pressed" state: block until a real release is seen,
+    // never permanently — reuses the SAME timeout-backed gate every other
+    // disarm already goes through, rather than a second mechanism.
+    if (gamepadLastAnyButtonPressed) { gamepadInputArmed = false; gamepadDisarmedAt = 0; } else { gamepadInputArmed = true; gamepadDisarmedAt = 0; }
     debugLastInputBranch = 'pad-adopted:index=' + newIndex;
   }
   window.addEventListener('gamepadconnected', (e) => {
@@ -18957,6 +19194,7 @@
 
   function updateGamepadInput(now) {
     gamepadSubsystemInitialized = true; // P0 INTEGRATED WORK ORDER: subsystem-alive, independent of whether any pad is actually connected
+    gamepadPollFrameCount++; // P0 REAL-DEVICE HOTFIX: real polled-frame count backing isGamepadSubsystemSettled()'s enumeration-latency settle window
     pollForGamepadConnection();
     const gp = getActiveGamepad();
     if (!gp) {
@@ -19430,7 +19668,18 @@
       `SHINING GRACE PLAYING: ${shiningGracePlaying}\n` +
       `OUTBREAK PLAYING: ${outbreakPlaying.length ? outbreakPlaying.join('+') : '(none)'}\n` +
       `audibleBgmKey: ${typeof audibleBgmKey !== 'undefined' ? audibleBgmKey : '(n/a)'}  generation: ${typeof audibleBgmGeneration !== 'undefined' ? audibleBgmGeneration : '(n/a)'}\n` +
-      `LAST VIOLATION: ${audibleBgmViolation ? audibleBgmViolation.message + ' (' + ago(audibleBgmViolation.at) + ')' : '(none)'}`;
+      `LAST VIOLATION: ${audibleBgmViolation ? audibleBgmViolation.message + ' (' + ago(audibleBgmViolation.at) + ')' : '(none)'}` +
+      // P0 REAL-DEVICE HOTFIX item 33: ROID1/ROID2 damage-block visibility —
+      // only rendered while a ROID boss is actually spawned, so this section
+      // is silently absent for every other screen/fight.
+      (boss.spawned && isRoidBossType(boss.type)
+        ? `\n--- ROID (${boss.type}) ---\n` +
+          `HP: ${boss.hp}/${ROID_MAX_HP}  STATE: ${boss.state}\n` +
+          `DAMAGE BLOCKED: ${ROID_DAMAGE_BLOCK_STATES.indexOf(boss.state) !== -1}  REASON: ${boss.state === 'sniper' ? 'SNIPER cycle active' : boss.state === 'missile' ? 'MISSILE cycle active' : boss.state === 'antiBurstCounter' ? 'ANTI-BURST invincibility' : boss.state === 'roidDying' || boss.state === 'dead' ? 'already dead/dying' : '(none — damageable)'}\n` +
+          `ANTI-BURST ACTIVE: ${!!roidState.antiBurstCounter}  END: ${roidState.antiBurstCounter ? Math.max(0, Math.round(ROID1_ANTI_BURST_COUNTER_DURATION_MS - (now - roidState.antiBurstCounter.startedAt))) + 'ms left' : 'n/a'}\n` +
+          `BARREL PURGE ACTIVE: ${boss.state === 'barrelPurge'}\n` +
+          `WATCHDOG: blockedSince=${roidDamageBlockLastState ? Math.round(now - roidDamageBlockStateEnteredAt) + 'ms' : 'n/a'} (force-recovers at ${ROID_DAMAGE_BLOCK_WATCHDOG_MS}ms)`
+        : '');
   }
 
   let lastBgmWatchdogAt = 0;

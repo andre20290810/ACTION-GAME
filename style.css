@@ -1446,8 +1446,9 @@ body {
 .ending-reveal-rank-other { color: #e0483e; }
 /* P0 FULL GAMEPAD E2E HOTFIX (Part I): quiet, subdued — never competes
    with the loop-video background or the RANK/PLAY TIME/CONTINUE block
-   above it. Not part of the value fade timeline (visible from screen-
-   entry, same as the row labels/heading). */
+   above it. P0 REAL-DEVICE HOTFIX (this batch): now DOES join the value
+   fade timeline (via the shared .ending-reveal-fade class in index.html),
+   revealing in the same instant as RANK rather than from screen-entry. */
 #ending-reveal-thankyou {
   margin-top: 6px;
   font-family: sans-serif;

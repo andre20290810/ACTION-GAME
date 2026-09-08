@@ -238,8 +238,12 @@
          details, still part of the same vertically-centered block — this
          is what naturally keeps it "below RESULT details, above
          navigation" at every screen size without a second fragile
-         absolute-position calc. -->
-    <div id="ending-reveal-thankyou">THANK YOU FOR PLAYING!!</div>
+         absolute-position calc.
+         P0 REAL-DEVICE HOTFIX (this batch): now joins the SAME
+         ending-reveal-fade timeline as the RANK value — reveals in the
+         exact same instant as RANK (see updateEndingReveal()'s
+         revealedRank branch in game.js), never before or after it. -->
+    <div id="ending-reveal-thankyou" class="ending-reveal-fade">THANK YOU FOR PLAYING!!</div>
   </div>
   <div id="ending-reveal-nav">
     <a class="mode-btn ending-reveal-nav-btn" id="ending-reveal-artist-btn" href="https://www.tunecore.co.jp/artists?id=1140292&amp;utm_source=ig&amp;utm_medium=social&amp;utm_content=link_in_bio&amp;fbclid=PAdGRleAUBDaFwZG9mAmZkaWQWUNfnDNp7K4OsR1rDORVcLG0AXA4O12V4dG4DYWVtAjExAHNydGMGYXBwX2lkDzEyNDAyNDU3NDI4NzQxNAABpwXbm4sakBiMJ9ZlYKC8rJYDSVbb6nyHcFcsnqaYmSRyGKJCnX_N71DFNmgD_aem_YS0e_NpMoesX0DHRet6cWQ" target="_blank" rel="noopener noreferrer" hidden>ARTIST PAGE</a>
