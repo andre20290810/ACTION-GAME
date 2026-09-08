@@ -508,7 +508,23 @@
     // the previous turn's un-measured guesses — several of those (cargo_lift_e12_a/b,
     // fortress_a01 especially) were significantly too wide, which is the
     // root cause SECTION A's real-device wall-clipping traced back to.
-    { key: 'cargo_lift_e12_a', file: 'assets/stages/training/cargo_lift_e12_a.jpg', floorLeftFrac: 0.28, floorRightFrac: 0.70 },
+    // AUDIT PHASE 2 + PART B (B1): that same-turn correction overshot for
+    // THIS one background specifically — direct pixel measurement this
+    // batch (vertical guide lines rendered onto the actual 1008x1792
+    // cargo_lift_e12_a.jpg and visually compared against the true floor
+    // panel edge, the raised diagonal support beam where the lit floor
+    // meets the dark wall machinery) puts the real edges at ~0.20/~0.80,
+    // matching its own near-identical sibling cargo_lift_e12_b.jpg
+    // (0.20/0.78) — 0.28/0.70 was measurably ~8% too narrow on each side,
+    // which is the confirmed root cause of this one background's own
+    // "visibly open floor treated as an invisible wall" real-device
+    // reports (both the general per-row X clamp AND the AREA1/AREA2 door
+    // read floor.left/floor.right from this same field — see
+    // getFloorXRangeWorld()/getAreaDoorXRangeWorld()). Every other
+    // TRAINING_BACKGROUNDS entry below was re-checked the same way this
+    // batch and found already accurate — this is a single per-background
+    // data correction, never a global constant change.
+    { key: 'cargo_lift_e12_a', file: 'assets/stages/training/cargo_lift_e12_a.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.80 },
     { key: 'experiment_lab_c09', file: 'assets/stages/training/experiment_lab_c09.jpg', floorLeftFrac: 0.15, floorRightFrac: 0.86 },
     { key: 'cargo_lift_e12_b', file: 'assets/stages/training/cargo_lift_e12_b.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.78 },
     { key: 'shelter_b07', file: 'assets/stages/training/shelter_b07.jpg', floorLeftFrac: 0.17, floorRightFrac: 0.83 },
@@ -744,7 +760,12 @@
     experiment_lab: 'assets/video/events/experiment_lab.mp4',
     roid1_arrival: 'assets/video/events/roid1_arrival.mp4',
     roid2_arrival: 'assets/video/events/roid2_arrival.mp4',
-    gabriel_arrival: 'assets/video/events/gabriel_arrival.mp4',
+    // AUDIT PHASE 2 + PART B (B5): swapped to the user-supplied replacement
+    // footage. Same key, same trigger site (playEventMovie('gabriel_arrival', ...)
+    // in enterBossFight()-adjacent code + the boss-select debug path), same
+    // muted-audio/Outbreak2-continues behavior below — only this path changed.
+    // Old asset kept on disk at gabriel_arrival.mp4 (unreferenced, not deleted).
+    gabriel_arrival: 'assets/video/events/gabriel_arrival_v2.mp4',
     gabriel_down: 'assets/video/events/gabriel_down.mp4',
     gabriel_defeated: 'assets/video/events/gabriel_defeated.mp4',
     adam_arrival: 'assets/video/events/adam_arrival.mp4',
@@ -759,7 +780,12 @@
     // placeholder ending_main/ending_secret/ending_true above, which those
     // named originally reserved but are superseded by these):
     main_escape: 'assets/video/endings/main_escape.mp4',
-    main_bad_ending: 'assets/video/endings/main_bad_ending.mp4',
+    // AUDIT PHASE 2 + PART B (B6): swapped to the user-supplied replacement
+    // footage. Same key, same playback order (main_bad_ending plays AFTER
+    // main_escape — see the escape-chain comment above), same muted-audio
+    // behavior below — only this path changed. Old asset kept on disk at
+    // main_bad_ending.mp4 (unreferenced, not deleted).
+    main_bad_ending: 'assets/video/endings/main_bad_ending_v2.mp4',
     true_ending: 'assets/video/endings/true_ending.mp4',
   };
   // HOTFIX 2 SECTION 13 (overrides POST-v1.0 SECTION 20): the 4 BOSS ARRIVAL
@@ -4121,6 +4147,18 @@
   // correctly across ROID1's real HP range instead of clipping at 100% for
   // the first half of the fight.
   const ROID1_HP_MULTIPLIER = 2;
+  // AUDIT PHASE 2 + PART B (B2): TRAINING MODE's ROID1 (SECURITY TRAINING
+  // Stage5, gameState.mode==='securityTraining') gets HALF of the multiplier
+  // above — MAIN SCENARIO (gameState.mode==='boss') keeps the exact
+  // ROID1_HP_MULTIPLIER value untouched. Only the max-HP multiplier differs;
+  // every other constant ROID1 reads (damage per bullet, attack pattern,
+  // sniper/missile/rapid-fire timing, anti-burst counter, barrel logic,
+  // invincibility, movement/speed, sprite, collision) is untouched by mode
+  // and stays fully shared between MAIN and TRAINING.
+  const ROID1_HP_MULTIPLIER_TRAINING = ROID1_HP_MULTIPLIER / 2;
+  function getRoid1HpMultiplier() {
+    return gameState.mode === 'securityTraining' ? ROID1_HP_MULTIPLIER_TRAINING : ROID1_HP_MULTIPLIER;
+  }
   // ROID_BULLET_DAMAGE: reuses BULLET_DAMAGE — the SAME constant DRONE's own
   // laser already reuses for its enemy-fire damage (see
   // resolveSecurityLaserHit()), rather than inventing a new number.
@@ -6557,7 +6595,7 @@
     boss.name = profile.name;
     boss.spawned = true;
     roidState.dark = !!dark; // POST-v1.0 SECTION 15: late-STORY darkened variant — same AI, tint only (see drawRoidBoss())
-    boss.hp = type === 'roid1' ? ROID_MAX_HP * ROID1_HP_MULTIPLIER : ROID_MAX_HP; // P0 FULL GAMEPAD E2E HOTFIX (Part K): ROID1 only, ROID2 untouched
+    boss.hp = type === 'roid1' ? ROID_MAX_HP * getRoid1HpMultiplier() : ROID_MAX_HP; // P0 FULL GAMEPAD E2E HOTFIX (Part K): ROID1 only, ROID2 untouched. AUDIT PHASE 2 + PART B (B2): multiplier is now mode-aware (TRAINING gets half) — see getRoid1HpMultiplier().
     boss.state = 'search'; // no INTRO cinematic for ROID (spec section 32) — combat starts immediately
     boss.stateEnteredAt = performance.now();
     const areaTop = areaTopY(currentArea); // same fixed-composition reference spawnBoss() itself uses
@@ -9798,6 +9836,30 @@
     document.getElementById('loading-screen').hidden = next !== 'loading' && next !== 'opening';
     document.getElementById('loading-progress-overlay').hidden = next !== 'loading';
     document.getElementById('opening-overlay').hidden = next !== 'opening';
+    // AUDIT PHASE 2 + PART B (B4): loading-bg-video is scoped to 'loading'
+    // ONLY (not 'opening'/TAP TO START, per spec — "WAITING_FOR_TAPへ入っ
+    // たら停止"). Driven purely off this same setScreen() call so every
+    // re-entry into 'loading' (including a RETRY, which re-invokes
+    // setScreen('loading') after bumping startupGeneration) naturally
+    // restarts it from currentTime 0 with no separate generation-tracking
+    // needed, and every exit (including bfcache/visibilitychange landing on
+    // a non-loading screen) pauses+resets it — no stale instance can keep
+    // playing off-screen. Never added to getStartupRequiredAssetTargets():
+    // a play() rejection (autoplay policy, decode failure, slow network) is
+    // caught and silently leaves the video hidden — LOADING's own progress
+    // gate is completely unaffected either way.
+    const loadingBgVideoEl = document.getElementById('loading-bg-video');
+    if (loadingBgVideoEl) {
+      if (next === 'loading') {
+        loadingBgVideoEl.hidden = false;
+        if (loadingBgVideoEl.currentTime !== 0) { try { loadingBgVideoEl.currentTime = 0; } catch (e) {} }
+        const playPromise = loadingBgVideoEl.play();
+        if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => { loadingBgVideoEl.hidden = true; });
+      } else {
+        loadingBgVideoEl.hidden = true;
+        try { loadingBgVideoEl.pause(); } catch (e) {}
+      }
+    }
     // SECTION D: MAIN MENU and every submenu below it share the SAME
     // #opening-screen container (and its one persistent <video>) — this
     // container stays hidden throughout 'loading'/'opening' (P0 GAME
@@ -10420,7 +10482,14 @@
       // them even in a pathological case (e.g. a caught per-frame exception
       // suppressing progress), and so ?debugStartup=1 has a real signal to show.
       { name: 'game loop alive', ready: () => rafFrameCount > 0 },
-      { name: 'gamepad subsystem ready', ready: () => isGamepadSubsystemSettled() },
+      // AUDIT PHASE 2 + PART B (B8-1/B8-2): this is now the ONE gate a
+      // connected controller must clear before TAP TO START can show — see
+      // isGamepadReadyForTap()'s own comment for why isGamepadSubsystemSettled()
+      // alone (still used below for its own narrower debug claim) was not a
+      // strong enough guarantee. Still never blocks a touch-only user (no
+      // pad connected = instantly ready) and never blocks indefinitely even
+      // with a pad connected (bounded fail-open ceiling inside the function).
+      { name: 'gamepad ready (if connected)', ready: () => isGamepadReadyForTap() },
     ];
   }
   // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD) item 19: the single
@@ -12610,6 +12679,19 @@
   // inventing a new visual language — nothing large or flashy.
   function drawExitZone(now) {
     if (!(storyScenarioState.scenario && storyScenarioState.escapeReady && runInventory.escapeNavigator)) return;
+    // AUDIT PHASE 2 + PART B (B3): MAIN SCENARIO's own ADAM SPHERE-defeat ->
+    // ENDING window is the ONE path into this function where
+    // scenario==='main' (see isMainAdamSphereStage()'s triggerGameClear()
+    // branch, the only place MAIN sets escapeReady+escapeNavigator together)
+    // — the visible "EXIT" text is removed for that window specifically, per
+    // spec. The actual exit collision/exitWorldPos()/escape trigger/stage
+    // progression/ending sequence below this guard are completely
+    // untouched — physically walking there still works exactly as before.
+    // SECRET scenario's own EXIT text (reached via the separate
+    // escapeNavigator world-item pickup — see onWorldItemPickup(), a
+    // different, still-normally-used display) is NOT affected — this guard
+    // is scenario==='main' only, never a global removal.
+    if (storyScenarioState.scenario === 'main') return;
     const pos = exitWorldPos();
     ctx.save();
     ctx.font = 'bold 14px sans-serif';
@@ -17242,7 +17324,7 @@
     beginRoidAntiBurstCounter, updateRoidAntiBurstCounter, spawnRoid1StandardEscorts, // WORK ORDER I — debug/verification only
     ROID1_ANTI_BURST_HIT_THRESHOLD, ROID1_ANTI_BURST_WINDOW_MS, ROID1_ANTI_BURST_COUNTER_DURATION_MS, ROID1_ANTI_BURST_SHOT_COUNT, ROID1_BARREL_PURGE_HIT_THRESHOLD, // WORK ORDER I — debug/verification only
     isNonBossExterminationGateActive, isArea1KillableEnemiesRemaining, // WORK ORDER I — debug/verification only
-    beginRoidSniper, updateRoidSniper, ROID1_SNIPER_SHOT_COUNT, ROID1_HP_MULTIPLIER, // P0 FULL GAMEPAD E2E HOTFIX (Part K/L) — debug/verification only
+    beginRoidSniper, updateRoidSniper, ROID1_SNIPER_SHOT_COUNT, ROID1_HP_MULTIPLIER, ROID1_HP_MULTIPLIER_TRAINING, getRoid1HpMultiplier, // P0 FULL GAMEPAD E2E HOTFIX (Part K/L) — debug/verification only. AUDIT PHASE 2 + PART B (B2) added the TRAINING-only variant.
     ROID_BOSS_PROFILES, ROID_MAX_HP, ROID_BULLET_DAMAGE, ROID_HURT_RADIUS,
     ROID_BURST_SHOT_COUNT, ROID_BURST_SHOT_INTERVAL_MS, ROID_BURST_COOLDOWN_MS,
     ROID_SEARCH_FRAME_MS, ROID_FIRE_FRAME_MS, ROID_ATTACK_POSE_HOLD_MS, // GAMEPAD/ROID1 FIRE-SPRITE SYNC BATCH — debug/verification only
@@ -17597,6 +17679,7 @@
     get DEBUG_STARTUP_OVERLAY() { return DEBUG_STARTUP_OVERLAY; }, assertStartupReady, computeStartupRequiredProgress, get gamepadSubsystemInitialized() { return gamepadSubsystemInitialized; }, // P0 INTEGRATED WORK ORDER — debug/verification only
     computeStartupEtaSeconds, LOADING_STALL_THRESHOLD_MS, // P0 INTEGRATED REGRESSION FIX (LOADING E/F) — debug/verification only
     get gamepadPollFrameCount() { return gamepadPollFrameCount; }, isGamepadSubsystemSettled, // P0 REAL-DEVICE HOTFIX — debug/verification only
+    isGamepadReadyForTap, get gamepadFirstSeenConnectedAt() { return gamepadFirstSeenConnectedAt; }, // AUDIT PHASE 2 + PART B (B8) — debug/verification only
     getDronePlacementRangeX, clampPlayerToScreen,
     get W() { return W; }, get H() { return H; },
     // P0 LANDSCAPE HOTFIX — debug/verification only:
@@ -19724,7 +19807,7 @@
     // other boss (ROID2/GABRIEL/ADAM/ADAM SPHERE) keeps its exact previous
     // maxHp value, so this gauge is the only other place (besides
     // spawnRoidBoss() itself) that needed to know about the multiplier.
-    const maxHp = usingAdamSphere ? ADAM_SPHERE_COMBAT_MAX_HP : (boss.type === 'roid1' ? BOSS_HP_MAX * ROID1_HP_MULTIPLIER : BOSS_HP_MAX);
+    const maxHp = usingAdamSphere ? ADAM_SPHERE_COMBAT_MAX_HP : (boss.type === 'roid1' ? BOSS_HP_MAX * getRoid1HpMultiplier() : BOSS_HP_MAX);
     ctx.save();
     ctx.textAlign = 'right';
     ctx.font = 'bold 11px sans-serif';
@@ -20024,6 +20107,50 @@
   let gamepadPollFrameCount = 0;
   const GAMEPAD_SETTLE_MIN_FRAMES = 15; // ~250ms at 60fps
   function isGamepadSubsystemSettled() { return gamepadPollFrameCount >= GAMEPAD_SETTLE_MIN_FRAMES; }
+  // AUDIT PHASE 2 + PART B (B8-1, root-cause fix): isGamepadSubsystemSettled()
+  // above is a BLIND "has the poll loop run >=15 times since page load"
+  // timer — it settles identically whether a controller is connected or
+  // not, and says nothing about whether a controller that IS connected has
+  // actually been genuinely adopted (gamepadIndex resolved to it) with a
+  // real, populated buttons/axes array and an initialized previous-button
+  // snapshot (debugPrevButtonsPressedSnapshot). In practice adoption
+  // happens the same frame a pad is first seen connected (pollForGamepad
+  // Connection() runs every frame), so this rarely differed from a
+  // genuine check UNLESS the controller connects late (mid-Loading, or a
+  // slow real Bluetooth pairing/OS enumeration after the poll loop has
+  // already logged 15+ frames from page load alone) — in that exact case
+  // the old check reports "settled" on the very same frame the pad is
+  // detected, with zero real settle window, which is the direct mechanism
+  // behind the recurring "TAP TO START shows before the controller is
+  // genuinely usable" real-device report this batch re-investigates.
+  // Replaced (for the actual TAP-readiness gate only — isGamepadSubsystemSettled()
+  // itself is left in place, still accurate for its own narrower claim and
+  // still read by the debug overlays below) with a predicate anchored to
+  // REAL ELAPSED TIME SINCE THE PAD WAS ACTUALLY FIRST SEEN CONNECTED, not
+  // since page load, with a genuine snapshot/adoption check — and a bounded
+  // fail-open ceiling so a phantom "connected" entry that never actually
+  // stabilizes can never turn into a permanent Loading stall (B8-3/B8-4's
+  // own explicit "must never block indefinitely" requirement).
+  let gamepadFirstSeenConnectedAt = 0; // performance.now() a pad was first observed connected; 0 = none currently connected
+  const GAMEPAD_POST_CONNECT_SETTLE_MS = 250; // real time since CONNECTION (not page load) given to WebKit's own enumeration to stabilize buttons/axes
+  const GAMEPAD_READY_MAX_WAIT_MS = 3000; // hard ceiling — never wait longer than this on a connected-but-not-yet-adopted pad before failing open
+  function isGamepadReadyForTap() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const anyConnected = pads.some((gp) => gp && gp.connected);
+    if (!anyConnected) {
+      // No controller present at all — never wait on one that doesn't
+      // exist (B8-3). Subsystem-alive is the only bar for a touch-only user.
+      gamepadFirstSeenConnectedAt = 0;
+      return gamepadSubsystemInitialized;
+    }
+    if (!gamepadFirstSeenConnectedAt) gamepadFirstSeenConnectedAt = performance.now();
+    const elapsedSinceConnect = performance.now() - gamepadFirstSeenConnectedAt;
+    const active = getActiveGamepad();
+    const snapshotValid = !!active && Array.isArray(active.buttons) && Array.isArray(active.axes) &&
+      debugPrevButtonsPressedSnapshot.length === active.buttons.length;
+    if (snapshotValid && elapsedSinceConnect >= GAMEPAD_POST_CONNECT_SETTLE_MS) return true;
+    return elapsedSinceConnect >= GAMEPAD_READY_MAX_WAIT_MS; // bounded safety net, never an infinite wait
+  }
   const gamepadMoveVec = { x: 0, y: 0 }; // post-deadzone LEFT STICK, debug/verification only
   let gamepadAimVec = null; // post-deadzone RIGHT STICK {x,y}, or null while neutral — debug/verification only
   let gamepadFireHeld = false; // RT >= GAMEPAD_FIRE_THRESHOLD
