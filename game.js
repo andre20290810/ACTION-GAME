@@ -524,11 +524,35 @@
     // TRAINING_BACKGROUNDS entry below was re-checked the same way this
     // batch and found already accurate — this is a single per-background
     // data correction, never a global constant change.
-    { key: 'cargo_lift_e12_a', file: 'assets/stages/training/cargo_lift_e12_a.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.80 },
-    { key: 'experiment_lab_c09', file: 'assets/stages/training/experiment_lab_c09.jpg', floorLeftFrac: 0.15, floorRightFrac: 0.86 },
-    { key: 'cargo_lift_e12_b', file: 'assets/stages/training/cargo_lift_e12_b.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.78 },
-    { key: 'shelter_b07', file: 'assets/stages/training/shelter_b07.jpg', floorLeftFrac: 0.17, floorRightFrac: 0.83 },
-    { key: 'fortress_a01', file: 'assets/stages/training/fortress_a01.jpg', floorLeftFrac: 0.19, floorRightFrac: 0.81 },
+    // P0 FIRST-SESSION STABILITY + AREA1 EXIT WALL GEOMETRY ROOT FIX (this
+    // batch): doorLeftFrac/doorRightFrac added — the actual measured X
+    // extent of the visible EXIT DOOR graphic at the top of each asset
+    // (cropped to the top ~22% of each file, gridlined at 10% intervals,
+    // visually compared frame-by-frame), NOT a formula-derived margin.
+    // Direct inspection found two genuinely different door styles across
+    // this pool — never assumed uniform, never copied between siblings:
+    // cargo_lift_e12_a/b, shelter_b07, and fortress_a01 all show a single
+    // large CLOSED cargo-lift/blast-gate panel occupying the full walkable
+    // floor width (no narrower sub-opening exists in the art at all) — so
+    // their door bounds equal their own floor bounds exactly, unchanged
+    // from those. experiment_lab_c09 is the one clear outlier: a distinctly
+    // NARROW door frame (~42%-58% of the image width, well inside its own
+    // 15%-86% floor) — under the OLD margin-based formula
+    // (floorCenter +/- (floorWidth/2 - 30px)), this background's implied
+    // "door" was roughly 65% of the image wide, far wider than the real
+    // ~16%-wide doorway graphic — meaning LOCK-ON/SNIPER/projectiles could
+    // pass through what the actual art shows as solid door-frame paneling
+    // on either side. This is the single most concrete, measured root
+    // cause behind the "AREA2 enemy locks on through the wall"/"DRONE-ROID
+    // sniper fire penetrates the boundary" reports. See
+    // getAreaDoorXRangeWorld() for how these are consumed (falls back to
+    // the existing floor-margin formula only when a background declares
+    // neither field, which none in this pool do any more).
+    { key: 'cargo_lift_e12_a', file: 'assets/stages/training/cargo_lift_e12_a.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.80, doorLeftFrac: 0.20, doorRightFrac: 0.80 },
+    { key: 'experiment_lab_c09', file: 'assets/stages/training/experiment_lab_c09.jpg', floorLeftFrac: 0.15, floorRightFrac: 0.86, doorLeftFrac: 0.42, doorRightFrac: 0.58 },
+    { key: 'cargo_lift_e12_b', file: 'assets/stages/training/cargo_lift_e12_b.jpg', floorLeftFrac: 0.20, floorRightFrac: 0.78, doorLeftFrac: 0.20, doorRightFrac: 0.78 },
+    { key: 'shelter_b07', file: 'assets/stages/training/shelter_b07.jpg', floorLeftFrac: 0.17, floorRightFrac: 0.83, doorLeftFrac: 0.17, doorRightFrac: 0.83 },
+    { key: 'fortress_a01', file: 'assets/stages/training/fortress_a01.jpg', floorLeftFrac: 0.19, floorRightFrac: 0.81, doorLeftFrac: 0.19, doorRightFrac: 0.81 },
   ];
   TRAINING_BACKGROUNDS.forEach((s) => {
     s.img = new Image();
@@ -1690,7 +1714,21 @@
   // DRONE-through-wall fix this same door exists for) rather than a large
   // fraction of an apparently open corridor, on every floor size.
   const AREA_DOOR_WALL_MARGIN_PX = 30;
+  // P0 FIRST-SESSION STABILITY + AREA1 EXIT WALL GEOMETRY ROOT FIX (this
+  // batch): prefers the CURRENT background's own explicitly measured
+  // doorLeftFrac/doorRightFrac (see TRAINING_BACKGROUNDS' own comment on
+  // how these were measured — real per-background image inspection, never
+  // a guessed/copied constant) over the generic floor-margin formula below.
+  // Falls back to the margin formula only for a background that declares
+  // neither field (STAGE_REGISTRY boss/event backgrounds not yet
+  // individually re-measured this batch — see the completion report's own
+  // disclosure) — never a silent behavior change for those.
   function getAreaDoorXRangeWorld(floor) {
+    const stage = currentStage();
+    if (stage && stage.doorLeftFrac !== undefined && stage.doorRightFrac !== undefined && stage.img && stage.img.naturalWidth) {
+      const m = getStageDrawMetrics(stage);
+      return { left: m.dx + stage.doorLeftFrac * m.dw, right: m.dx + stage.doorRightFrac * m.dw };
+    }
     const doorCenterX = (floor.left + floor.right) / 2;
     const doorHalfW = Math.max(0, (floor.right - floor.left) / 2 - AREA_DOOR_WALL_MARGIN_PX);
     return { left: doorCenterX - doorHalfW, right: doorCenterX + doorHalfW };
@@ -9836,30 +9874,22 @@
     document.getElementById('loading-screen').hidden = next !== 'loading' && next !== 'opening';
     document.getElementById('loading-progress-overlay').hidden = next !== 'loading';
     document.getElementById('opening-overlay').hidden = next !== 'opening';
-    // AUDIT PHASE 2 + PART B (B4): loading-bg-video is scoped to 'loading'
-    // ONLY (not 'opening'/TAP TO START, per spec — "WAITING_FOR_TAPへ入っ
-    // たら停止"). Driven purely off this same setScreen() call so every
-    // re-entry into 'loading' (including a RETRY, which re-invokes
-    // setScreen('loading') after bumping startupGeneration) naturally
-    // restarts it from currentTime 0 with no separate generation-tracking
-    // needed, and every exit (including bfcache/visibilitychange landing on
-    // a non-loading screen) pauses+resets it — no stale instance can keep
-    // playing off-screen. Never added to getStartupRequiredAssetTargets():
-    // a play() rejection (autoplay policy, decode failure, slow network) is
-    // caught and silently leaves the video hidden — LOADING's own progress
-    // gate is completely unaffected either way.
-    const loadingBgVideoEl = document.getElementById('loading-bg-video');
-    if (loadingBgVideoEl) {
-      if (next === 'loading') {
-        loadingBgVideoEl.hidden = false;
-        if (loadingBgVideoEl.currentTime !== 0) { try { loadingBgVideoEl.currentTime = 0; } catch (e) {} }
-        const playPromise = loadingBgVideoEl.play();
-        if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => { loadingBgVideoEl.hidden = true; });
-      } else {
-        loadingBgVideoEl.hidden = true;
-        try { loadingBgVideoEl.pause(); } catch (e) {}
-      }
-    }
+    // P0 FIRST-SESSION STABILITY (this batch): the previous batch's
+    // AUDIT PHASE 2 + PART B (B4) auto-played #loading-bg-video as the
+    // INITIAL STARTUP LOADING background — real-device testing found this
+    // was NOT the intended first-load experience (the loop video appeared
+    // on the very first Loading screen instead of the existing static
+    // loading_bg.jpg image). Per this batch's explicit spec, INITIAL
+    // STARTUP LOADING is STATIC IMAGE ONLY — #loading-bg-video is never
+    // triggered from setScreen() any more. The element itself, and the
+    // underlying assets/video/system/loading_bg_loop.mp4 asset, are left
+    // in place unused (no other screen repurposes it) rather than deleted,
+    // per spec ("勝手に削除する必要はない...勝手に別画面へ転用しない").
+    // #loading-screen's own CSS background (loading_bg.jpg, unchanged)
+    // continues to render on every 'loading'/'opening' visit exactly as it
+    // did before B4 — this is a pure revert of B4's setScreen() wiring,
+    // nothing else in the Loading pipeline (progress %, CURRENT TASK, task
+    // count, ETA, stalled indicator, Loading->TAP progression) is touched.
     // SECTION D: MAIN MENU and every submenu below it share the SAME
     // #opening-screen container (and its one persistent <video>) — this
     // container stays hidden throughout 'loading'/'opening' (P0 GAME
@@ -11161,11 +11191,34 @@
   // every BGM track here closes that window as early as the platform allows,
   // with zero effect on the normal in-session pause/resume/watchdog logic
   // above (this only ever runs while the page itself is being torn down).
-  window.addEventListener('pagehide', () => {
+  // P0 FIRST-SESSION STABILITY (this batch): empirical same-page testing
+  // (397 samples at 10ms resolution across a fresh load -> TAP -> MAIN MENU
+  // transition, isBgmTrackAudible() checked every tick, 0 violations) found
+  // no same-document race that could make bgmAudio/bossBgmAudio audible at
+  // START MENU — claimAudibleBgm()'s synchronous "pause every other track
+  // before playing the new one" already prevents that within one page. The
+  // reported CASE B ("START MENU BGM + a different BGM both audible right
+  // after TAP") is therefore most consistent with a genuinely cross-document
+  // gap: the OUTGOING page's own Audio elements not fully torn down by the
+  // OS audio session before the INCOMING (reloaded) page's menu BGM starts
+  // — hardResetAllBgmForFreshBoot() (called at the very top of every
+  // beginStartupSequence(), fresh load and bfcache restore alike) already
+  // silences the NEW page's own tracks as early as possible, but cannot
+  // reach into a still-tearing-down PREVIOUS document. pagehide already
+  // pauses this page's own tracks on the way out; beforeunload is added
+  // here as a redundant, earlier-in-some-engines signal for the same
+  // teardown (a handful of navigation paths fire beforeunload but not a
+  // timely pagehide) — cheap and idempotent, never conflicts with pagehide.
+  // muted=true (not just pause()) is set too, since a muted track produces
+  // no audible tail even if the pause() call itself has any latency before
+  // the OS session actually stops.
+  function pauseAllBgmForPageTeardown() {
     for (const audioEl of [menuBgmAudio, bgmAudio, bossBgmAudio, endingRevealAudio]) {
-      try { audioEl.pause(); } catch (e) {}
+      try { audioEl.pause(); audioEl.muted = true; } catch (e) {}
     }
-  });
+  }
+  window.addEventListener('pagehide', pauseAllBgmForPageTeardown);
+  window.addEventListener('beforeunload', pauseAllBgmForPageTeardown);
 
   // ---------- SECTION I: MAIN MENU ----------
   // STORY MODE / TRAINING MODE route through the EXACT SAME startMode()
@@ -17380,6 +17433,7 @@
     set fireHeld(v) { fireHeld = v; },
     get lastDashTriggerAt() { return lastDashTriggerAt; },
     get gamepadIndex() { return gamepadIndex; },
+    get debugLastInputBranch() { return debugLastInputBranch; }, // P0 FIRST-SESSION STABILITY — debug/verification only
     get gamepadMappingSource() { return gamepadMappingSource; },
     get gamepadMoveVec() { return gamepadMoveVec; },
     get gamepadAimVec() { return gamepadAimVec; },
@@ -20074,6 +20128,12 @@
   let debugLastInputBranch = '(none yet)';
   let debugLastRejectedBranch = '(none)';
   let gamepadIndex = null; // navigator.getGamepads() index of the controller in use; null = none
+  // P0 FIRST-SESSION STABILITY (this batch): tracks whether ANY gamepad was
+  // visible in navigator.getGamepads() as of the LAST poll — independent of
+  // gamepadIndex, which our own code deliberately resets to null at several
+  // points (fresh boot, entering WAITING_FOR_TAP) for unrelated reasons.
+  // See updateGamepadInput()'s own comment for why this distinction matters.
+  let gamepadWasVisibleLastPoll = false;
   let gamepadMappingSource = 'none'; // 'standard' | 'fallback' | 'none' — debug/report only
   // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD): true the instant
   // updateGamepadInput() has run at least once — this is a subsystem-ALIVE
@@ -20311,7 +20371,50 @@
   function updateGamepadInput(now) {
     gamepadSubsystemInitialized = true; // P0 INTEGRATED WORK ORDER: subsystem-alive, independent of whether any pad is actually connected
     gamepadPollFrameCount++; // P0 REAL-DEVICE HOTFIX: real polled-frame count backing isGamepadSubsystemSettled()'s enumeration-latency settle window
+    // P0 FIRST-SESSION STABILITY (this batch, root-cause fix for "reload,
+    // TAP shown, physical press does nothing, works on the NEXT reload"):
+    // Chromium/WebKit do not expose an already-connected (from before this
+    // page loaded) gamepad via navigator.getGamepads() at all until the
+    // user physically presses a button on it — the press itself is what
+    // makes the browser populate the slot. That means the user's very
+    // FIRST press on TAP TO START can simultaneously be (a) the moment
+    // adoptGamepadIndex() first sees this pad AND (b) the intended TAP
+    // input — but adoptGamepadIndex()'s existing "seed the baseline from
+    // the pad's real current state" defense (correct in general: a button
+    // already held before adoption must never be misread as a fresh
+    // press) then seeds gamepadLastAnyButtonPressed=true from that exact
+    // press, so the normal rising-edge check on the very next frame sees
+    // "was pressed, still pressed" — no edge — and silently swallows the
+    // user's genuine first press. The user then has to notice nothing
+    // happened, release, and press again; if they instead reload, some
+    // browsers already have the pad exposed from the previous page's own
+    // getGamepads() call this tab session, so the SECOND reload's first
+    // press correctly starts from a real "not pressed" baseline — matching
+    // the exact "fails once, works after a reload" real-device report.
+    // Tracked here (before pollForGamepadConnection() may adopt a pad this
+    // frame) so the TAP TO START check below can treat that exact
+    // discovery-time press as a genuine trigger — equivalent to a real
+    // touchstart, never requiring a release+re-press the user has no way
+    // to know is needed.
+    // CRITICAL REFINEMENT: gamepadIndex alone cannot distinguish "the
+    // browser just now exposed a previously-invisible pad" from "OUR OWN
+    // bookkeeping deliberately reset gamepadIndex to null" — the latter
+    // already happens on purpose right at the LOADING->WAITING_FOR_TAP
+    // transition (see beginStartupSequence()/the WAITING_FOR_TAP-entry
+    // code, both explicitly reset gamepadIndex=null so a button ALREADY
+    // held at that instant is correctly re-seeded as "already pressed,
+    // ignore" — the exact opposite of this fix's intent). Tracking real
+    // navigator.getGamepads() visibility independently of our own
+    // gamepadIndex resets is what tells the two apart: only a genuine
+    // browser-level "this pad was NOT in the array last poll, IS now" edge
+    // counts as a real discovery event.
+    const padsNowRaw = navigator.getGamepads ? navigator.getGamepads() : [];
+    const anyGamepadVisibleNow = padsNowRaw.some((gp2) => gp2 && gp2.connected);
+    const gamepadNewlyVisibleThisFrame = anyGamepadVisibleNow && !gamepadWasVisibleLastPoll;
+    gamepadWasVisibleLastPoll = anyGamepadVisibleNow;
+    const gamepadIndexBeforePoll = gamepadIndex;
     pollForGamepadConnection();
+    const freshlyAdoptedThisFrame = gamepadIndexBeforePoll === null && gamepadIndex !== null && gamepadNewlyVisibleThisFrame;
     const gp = getActiveGamepad();
     if (!gp) {
       // The index we had is no longer a real connected pad (it vanished
@@ -20555,9 +20658,17 @@
         } else if (tapReadyGeneration !== startupGeneration) {
           if (anyButtonPressedNow) lastTapRejectReason = TAP_REJECT_REASON.STALE_GENERATION;
           debugLastRejectedBranch = 'opening:stale-generation';
-        } else if (gamepadInputArmed && anyButtonPressedNow && !gamepadLastAnyButtonPressed) {
+        } else if ((gamepadInputArmed && anyButtonPressedNow && !gamepadLastAnyButtonPressed) || (freshlyAdoptedThisFrame && anyButtonPressedNow)) {
+          // freshlyAdoptedThisFrame branch: see updateGamepadInput()'s own
+          // top-of-function comment — this pad was JUST discovered this
+          // exact frame (gamepadIndex null -> non-null), and a button is
+          // already down at that moment. Whether gamepadInputArmed/
+          // gamepadLastAnyButtonPressed say "already held, wait for
+          // release" is irrelevant here: this discovery-time press IS the
+          // user's real first press, and is honored directly, exactly like
+          // a genuine touchstart on the overlay would be.
           debugStartHandlerCalledAt = now; // ?debugInput=1 overlay — see updateDebugInputOverlay()
-          debugLastInputBranch = 'opening:tap-to-start-fired';
+          debugLastInputBranch = freshlyAdoptedThisFrame ? 'opening:tap-to-start-fired(freshly-adopted-with-button-held)' : 'opening:tap-to-start-fired';
           lastTapRejectReason = '(none)';
           onOpeningTap({ preventDefault() {} });
           gamepadInputArmed = false;
