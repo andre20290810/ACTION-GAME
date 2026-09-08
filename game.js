@@ -1207,7 +1207,21 @@
       eventMovieVideoEl.load();
       eventMovieTapFallbackEl.hidden = true;
       eventMovieTapFallbackEl.onclick = null;
-      if (eventMovieState.resumeBgm) bgmAudio.play().catch(() => {});
+      // AUDIO ROOT REWRITE (PART B): this used to call bgmAudio.play()
+      // directly, which flips .paused to false SYNCHRONOUSLY -- by the time
+      // reassertGameplayBgmIfExpected()/syncMusicContext() ran on the very
+      // next line, bgmAudio.paused was already false, so its own
+      // `if (wantNormal && bgmAudio.paused) claimAudibleBgm(...)` guard
+      // never fired and audibleBgmKey/audibleBgmElement/audibleBgmGeneration
+      // were NEVER updated for this resume. A stale claimAudibleBgm() promise
+      // from BEFORE the movie (still in flight) could then resolve, see its
+      // own generation no longer matches audibleBgmGeneration, and pause
+      // THIS legitimately-resumed bgmAudio right back out from under the
+      // player -- a real root cause matching the reported stutter/owner-churn
+      // class. Routing through claimAudibleBgm() here (the ONE place every
+      // other real BGM start in this file already goes through) keeps
+      // ownership bookkeeping consistent for every resume, not just fresh starts.
+      if (eventMovieState.resumeBgm) claimAudibleBgm('normal', bgmAudio);
       reassertGameplayBgmIfExpected();
       if (onComplete) onComplete();
     }
@@ -1359,7 +1373,9 @@
     // Same LOADING-footage bridge cleanup as cancelEventMovie() above, for a
     // debug-only skip mid-preload.
     if (!endingLoadingVideoEl.hidden) { endingLoadingVideoEl.hidden = true; endingLoadingVideoEl.pause(); }
-    if (resumeBgm) bgmAudio.play().catch(() => {});
+    // AUDIO ROOT REWRITE (PART B): same claimAudibleBgm() fix as finish()
+    // above, for the exact same reason — see its comment.
+    if (resumeBgm) claimAudibleBgm('normal', bgmAudio);
     reassertGameplayBgmIfExpected();
     if (onComplete) onComplete();
   }
@@ -3482,6 +3498,59 @@
       if (!b.alive) continue;
       sweepAndClampPlayerAwayFromCircle(b.x, b.y, PLAYER_BODY_RADIUS + BARREL_LOS_BLOCK_RADIUS);
     }
+  }
+  // ADDENDUM 2 (GABRIEL DARK PHASE stuck-after-collision-reactivation
+  // root-cause fix): a one-time depenetration pass, called ONLY at the
+  // exact instant GABRIEL's own solid-body collision reactivates (see
+  // updateBossDarkPhase()'s hidden->telegraph transition, its one call
+  // site) — never every frame. Unlike the ordinary per-frame clamp chain
+  // (clampPlayerAwayFromBoss() then clampPlayerAwayFromBarrels(), always in
+  // that fixed order, each a single resting-position push), this iterates
+  // a handful of times so a genuine two-collider squeeze (player caught
+  // between GABRIEL's reactivating circle and a nearby BARREL's always-on
+  // one) converges to one real free point instead of oscillating between
+  // two mutually-exclusive boundary positions frame after frame. Each pass
+  // only pushes the player exactly far enough to clear whichever single
+  // collider it is still overlapping (never a teleport, never further than
+  // the minimum needed), and the loop exits the instant a full pass finds
+  // no remaining overlap at all — a no-op, by construction, for the normal
+  // "far from any barrel" case. Deliberately scoped to boss+barrels only —
+  // the two colliders that can actually coexist with a live GABRIEL DARK
+  // PHASE fight (ADAM SPHERE combat/ROID1/ROID2 solid bodies never do).
+  function resolvePlayerOverlapAfterPhaseChange() {
+    for (let pass = 0; pass < 6; pass++) {
+      let anyPush = false;
+      if (boss.spawned && isSolidCollisionBossType(boss.type) && !bossHasNoPhysicalPresence()) {
+        let dx = player.x - boss.x, dy = player.y - boss.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < BOSS_SOLID_MIN_DIST) {
+          if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+          const scale = BOSS_SOLID_MIN_DIST / dist;
+          player.x = boss.x + dx * scale;
+          player.y = boss.y + dy * scale;
+          anyPush = true;
+        }
+      }
+      for (const b of barrels) {
+        if (!b.alive) continue;
+        const minDist = PLAYER_BODY_RADIUS + BARREL_LOS_BLOCK_RADIUS;
+        let dx = player.x - b.x, dy = player.y - b.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < minDist) {
+          if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+          const scale = minDist / dist;
+          player.x = b.x + dx * scale;
+          player.y = b.y + dy * scale;
+          anyPush = true;
+        }
+      }
+      if (!anyPush) break;
+    }
+    // A resolved position must also stay a genuinely valid resting
+    // position for every OTHER per-frame clamp (screen bounds, Area
+    // wall/door where applicable) — same guarantee the ordinary per-frame
+    // clampPlayerToScreen() call right after this one already provides on
+    // the very next frame, so no separate re-check is needed here.
   }
 
   // WORK ORDER H / PART C: ADAM SPHERE (the separate ATTACKING entity,
@@ -7801,6 +7870,26 @@
       if (boss.darkPhaseAttackTimer >= DARK_PHASE_HIDDEN_MS) {
         boss.darkPhaseAttackTimer = 0;
         boss.darkPhaseSubState = 'telegraph';
+        // ADDENDUM 2 (GABRIEL DARK PHASE) root-cause fix: this is the EXACT
+        // instant bossHasNoPhysicalPresence() flips from true (isDarkPhaseHidden()
+        // — GABRIEL has no sprite/hitbox/solid-body at all) to false — the
+        // only place GABRIEL's own solid-body collision (clampPlayerAwayFromBoss())
+        // ever toggles ON during a fight. The 'hidden' window is exactly the
+        // natural stealth window the BARREL shadow-cover mechanic exists
+        // for (isPlayerUnderBarrelShadowCover()), so a player using it as
+        // intended — standing in cover near GABRIEL's relocated (but
+        // currently harmless) position — can end up squeezed between
+        // GABRIEL's own solid circle (reactivating here) and a BARREL's
+        // always-on solid circle close enough that the two circles don't
+        // leave room for a single unambiguous free point. The ordinary
+        // per-frame clamp chain (clampPlayerAwayFromBoss() then
+        // clampPlayerAwayFromBarrels(), in that fixed order) can then
+        // oscillate the player between the two colliders' boundary points
+        // frame after frame, reading as "permanently stuck" on a real
+        // device. This one-time depenetration call resolves that squeeze
+        // properly the instant it can first occur, rather than leaving it
+        // to the ordinary per-frame order-dependent clamp.
+        resolvePlayerOverlapAfterPhaseChange();
       }
       return;
     }
@@ -8285,6 +8374,14 @@
   function triggerCloseRangeCounter(now) {
     boss.closeRangeInvulnUntil = now + CLOSE_RANGE_COUNTER_INVULN_MS;
     applyPlayerKnockback(now);
+    debugGabrielHitState = {
+      attackType: 'pointBlankCounter', gabrielX: boss.x, gabrielY: boss.y,
+      playerX: player.x, playerY: player.y,
+      distance: Math.hypot(player.x - boss.x, player.y - boss.y),
+      hit: true, knockbackApplied: true,
+      knockbackReason: 'POINT-BLANK counter: genuine bullet-vs-boss hit within CLOSE_RANGE_SHOT_THRESHOLD (' + CLOSE_RANGE_SHOT_THRESHOLD + 'px)',
+      at: now,
+    };
   }
 
   // 5 consecutive valid weak-point hits (any aim mode) force DEFENSE open:
@@ -9399,7 +9496,29 @@
         const localX = relX * c - relY * sn;
         const localY = relX * sn + relY * c;
         const halfLenFwd = isStraightClaw ? STRAIGHT_CLAW_HIT_HALF_LEN_FWD : ARC_CLAW_HIT_HALF_LEN_FWD;
-        const halfLenBack = isStraightClaw ? STRAIGHT_CLAW_HIT_HALF_LEN_BACK : ARC_CLAW_HIT_HALF_LEN_BACK;
+        // ADDENDUM 2 (GABRIEL KNOCKBACK) root-cause fix: STRAIGHT_CLAW_HIT_HALF_LEN_BACK
+        // (620px) is a FIXED constant meant to "cover the whole travel back
+        // to GABRIEL's own position" (its own comment) — but checked as-is
+        // against localX (relative to the claw's CURRENT, still-moving tip
+        // position s.x/s.y), it stays a fixed 620px reach EVEN EARLY IN THE
+        // ATTACK, before the tip has travelled anywhere near that far — so
+        // for the first stretch of a straightClaw's flight, the hitbox's
+        // own back edge reaches far PAST GABRIEL's real spawn point (s.p0),
+        // into the space BEHIND it. A real device could reproduce this as a
+        // knockback landing on a player standing well behind GABRIEL,
+        // matching the exact "false knockback far from GABRIEL" report this
+        // fixes. Capping the effective back-reach at however far the tip has
+        // ACTUALLY travelled from s.p0 makes the hitbox grow with the real
+        // thrust (0 at spawn, up to the full 620px once the claw has
+        // genuinely covered that much ground) — exactly "the whole travel
+        // back to GABRIEL's own position" the original comment intended,
+        // never further. isStraightLine only (straightClaw/sting travel a
+        // literal straight line from p0, so Euclidean distance IS the exact
+        // distance already covered); the curved 'slash'/counterArc kinds
+        // already use the much smaller ARC_CLAW_HIT_HALF_LEN_BACK and are
+        // unaffected.
+        const traveledFromOrigin = isStraightLine ? Math.hypot(s.x - s.p0.x, s.y - s.p0.y) : Infinity;
+        const halfLenBack = isStraightClaw ? Math.min(STRAIGHT_CLAW_HIT_HALF_LEN_BACK, traveledFromOrigin) : ARC_CLAW_HIT_HALF_LEN_BACK;
         const halfWidth = isStraightClaw ? STRAIGHT_CLAW_HIT_HALF_WIDTH : ARC_CLAW_HIT_HALF_WIDTH;
         if (localX >= -halfLenBack && localX <= halfLenFwd &&
             Math.abs(localY) <= halfWidth + PLAYER_HIT_RADIUS) {
@@ -9429,6 +9548,18 @@
           } else {
             applyPlayerKnockbackAlongAngle(tangentAngle, ARC_CLAW_KNOCKBACK_DISTANCE, ARC_CLAW_KNOCKBACK_SUPPRESS_MS, now);
           }
+          // ADDENDUM 2 (GABRIEL KNOCKBACK) optional ?debugGabrielHit=1 field
+          // — records the REAL hit-test inputs/outputs for the claw hit that
+          // just fired, never a separate/guessed value.
+          debugGabrielHitState = {
+            attackType: s.kind, gabrielX: boss.x, gabrielY: boss.y,
+            playerX: player.x, playerY: player.y,
+            attackOrigin: { x: s.p0.x, y: s.p0.y }, attackEnd: { x: s.p2.x, y: s.p2.y },
+            hitbox: { halfLenFwd, halfLenBack, halfWidth },
+            hit: true, knockbackApplied: true,
+            knockbackReason: isStraightClaw ? 'STRAIGHT_CLAW hitbox overlap' : (isCounterArc ? 'COUNTER_ARC hitbox overlap' : 'ARC/STING hitbox overlap'),
+            at: now,
+          };
         }
       }
     }
@@ -9793,6 +9924,34 @@
   endingRevealAudio.loop = false;
   endingRevealAudio.preload = 'none';
   endingRevealAudio.volume = BGM_VOLUME;
+  // AUDIO ROOT REWRITE (PART B) items 12/27: real measured play()/pause()
+  // call counts per canonical BGM element, for the ?debugAudio=1 audible-
+  // source inventory below. Wrapping the prototype methods (rather than
+  // trying to intercept every call SITE in this file individually) is what
+  // makes this a genuine measurement of every path that ever touches these
+  // 4 elements -- including any this file's own review might miss, any
+  // future regression, and the small number of direct .play()/.pause()
+  // calls already in this file (e.g. claimAudibleBgm()'s own "pause every
+  // other track" loop) -- rather than a hand-maintained (and easily stale)
+  // list of known call sites.
+  const bgmPlayPauseCounts = new WeakMap();
+  for (const el of [menuBgmAudio, bgmAudio, bossBgmAudio, endingRevealAudio]) {
+    bgmPlayPauseCounts.set(el, { playCount: 0, pauseCount: 0 });
+  }
+  (function instrumentBgmPlayPauseCounts() {
+    const origPlay = HTMLMediaElement.prototype.play;
+    const origPause = HTMLMediaElement.prototype.pause;
+    HTMLMediaElement.prototype.play = function () {
+      const counts = bgmPlayPauseCounts.get(this);
+      if (counts) counts.playCount++;
+      return origPlay.apply(this, arguments);
+    };
+    HTMLMediaElement.prototype.pause = function () {
+      const counts = bgmPlayPauseCounts.get(this);
+      if (counts) counts.pauseCount++;
+      return origPause.apply(this, arguments);
+    };
+  })();
   // HOTFIX 4 ADDENDUM SECTIONS A-E: real-device (iOS Safari) reports of BGM
   // audibly cutting out every time an EVENT MOVIE's own <video> starts —
   // starting a new media element competes with this page's already-playing
@@ -10241,6 +10400,7 @@
   // frame from loop() same as updateDebugInputOverlay() already is.
   let startupLoadStartedAt = -Infinity;
   const debugStartupEl = document.getElementById('debug-startup-overlay');
+  const debugAudioEl = document.getElementById('debug-audio-overlay'); // AUDIO ROOT REWRITE (PART B) — see updateDebugAudioOverlay() below
   function updateDebugStartupOverlay(now) {
     if (!DEBUG_STARTUP_OVERLAY || !debugStartupEl) return;
     const { loaded, total, pendingNames, erroredNames } = computeStartupRequiredProgress();
@@ -10281,7 +10441,128 @@
       `MENU READY: ${!!document.getElementById('main-menu-overlay') && !!document.getElementById('main-menu-story-btn')}\n` +
       `AUDIO OWNER: ${audibleBgmKey || '(none)'}  AUDIBLE BGM COUNT: ${audibleCount}\n` +
       `STARTUP READY: ${ready}\n` +
-      `STARTUP READY BLOCKER: ${blockedReason}`;
+      `STARTUP READY BLOCKER: ${blockedReason}\n` +
+      `--- P0 STARTUP STATE MACHINE ---\n` +
+      `STARTUP STATE: ${startupState}  STARTUP GENERATION: ${startupGeneration}  TAP-READY GENERATION: ${tapReadyGeneration === null ? '(none)' : tapReadyGeneration}\n` +
+      `TAP VISIBLE: ${gameState.screen === 'opening' && !openingOverlayEl.hidden}  TAP INPUT ENABLED: ${startupState === STARTUP_STATE.WAITING_FOR_TAP && tapReadyGeneration === startupGeneration}\n` +
+      `GAMEPAD POLL FRAME: ${gamepadPollFrameCount}  ACTIVE PAD INDEX: ${gamepadIndex === null ? '(none)' : gamepadIndex}  PAD ID: ${activeGp ? activeGp.id.slice(0, 28) : '(none)'}\n` +
+      `CURRENT ANY PRESSED: ${activeGp ? activeGp.buttons.some((b) => b && b.pressed) : false}  PREVIOUS ANY PRESSED: ${gamepadLastAnyButtonPressed}\n` +
+      `INPUT ARMED: ${gamepadInputArmed}  RELEASE OBSERVED: ${gamepadInputArmed}  RISING EDGE: ${!!(activeGp && activeGp.buttons.some((b) => b && b.pressed) && !gamepadLastAnyButtonPressed && gamepadInputArmed)}\n` +
+      `LAST TAP REJECT REASON: ${lastTapRejectReason}`;
+  }
+  // AUDIO ROOT REWRITE (PART B) items 27/13: full audible-source inventory
+  // for the 4 canonical BGM elements -- a real-device-verifiable way to
+  // confirm "1 track = 1 canonical source" actually holds (this file has
+  // exactly one `new Audio()` per logical track, never a duplicate
+  // HTMLAudioElement/WebAudio-buffer pair for the same track -- see the
+  // grep-confirmed inventory in this session's own completion report), and
+  // that at most one track is ever genuinely audible. DUPLICATE SRC would
+  // only ever fire if a future regression introduced a second element
+  // pointing at the same file — the check runs for real every frame rather
+  // than trusting that invariant to stay true forever.
+  function updateDebugAudioOverlay(now) {
+    if (!DEBUG_AUDIO_OVERLAY || !debugAudioEl) return;
+    const tracks = [
+      ['menu', menuBgmAudio],
+      ['normal', bgmAudio],
+      ['boss', bossBgmAudio],
+      ['ending', endingRevealAudio],
+    ];
+    const srcCounts = {};
+    for (const [, el] of tracks) { srcCounts[el.src] = (srcCounts[el.src] || 0) + 1; }
+    const lines = [`--- AUDIO (?debugAudio=1) ---`, `MUSIC CONTEXT: ${musicContext}  AUDIO OWNER: ${audibleBgmKey || '(none)'}  GENERATION: ${audibleBgmGeneration}`];
+    for (const [name, el] of tracks) {
+      const counts = bgmPlayPauseCounts.get(el) || { playCount: 0, pauseCount: 0 };
+      const dup = srcCounts[el.src] > 1 ? ' [DUPLICATE SRC]' : '';
+      lines.push(
+        `[${name}]${dup} el=${el === bgmAudio ? 'bgmAudio' : el === menuBgmAudio ? 'menuBgmAudio' : el === bossBgmAudio ? 'bossBgmAudio' : 'endingRevealAudio'}\n` +
+        `  src=${el.src.split('/').pop()}  paused=${el.paused}  muted=${el.muted}  volume=${el.volume.toFixed(2)}\n` +
+        `  currentTime=${el.currentTime.toFixed(1)}  readyState=${el.readyState}\n` +
+        `  playCount=${counts.playCount}  pauseCount=${counts.pauseCount}  owner=${audibleBgmKey === name}  webAudioConnected=false\n` +
+        `  AUDIBLE=${isBgmTrackAudible(el)}`
+      );
+    }
+    const audibleNow = tracks.filter(([, el]) => isBgmTrackAudible(el));
+    lines.push(`AUDIBLE COUNT: ${audibleNow.length}${audibleNow.length > 1 ? '  *** DOUBLE AUDIO ***' : ''}`);
+    if (audibleBgmViolation) lines.push(`LAST VIOLATION: ${audibleBgmViolation.message} (${Math.round(now - audibleBgmViolation.at)}ms ago)`);
+    debugAudioEl.textContent = lines.join('\n');
+  }
+  // AUDIO ROOT REWRITE (PART B) item 22/23: real, measured event-level
+  // logging of one BGM track over a real time window (default 30s), for
+  // diagnosing the reported Outbreak1.1 stutter on an actual device where
+  // this session's own sandboxed Chromium cannot reproduce OS-level audio-
+  // session contention (see the existing pageshow/visibilitychange
+  // AudioContext-resume comments elsewhere in this file for the documented
+  // "iOS can pause our track out from under us without our own code ever
+  // calling .pause()" mechanism this is built to catch red-handed). Logs
+  // every one of the spec's named events plus currentTime/readyState/
+  // networkState/musicContext/audibleBgmKey/audibleBgmGeneration at each
+  // one, then classifies into causes A-H — never closes as "healthy/
+  // unclassified" the way a plain healthy log with zero interesting events
+  // legitimately can (that IS a valid, reportable outcome: "logged N events,
+  // no stutter symptoms observed in this window").
+  const BGM_STUTTER_LOG_EVENTS = ['play', 'playing', 'pause', 'waiting', 'stalled', 'suspend', 'emptied', 'seeking', 'seeked', 'timeupdate', 'ended', 'error'];
+  function startBgmStutterLog(trackKey, durationMs) {
+    durationMs = durationMs || 30000;
+    const tracks = { menu: menuBgmAudio, normal: bgmAudio, boss: bossBgmAudio, ending: endingRevealAudio };
+    const el = tracks[trackKey];
+    if (!el) return Promise.reject(new Error('unknown BGM track key: ' + trackKey));
+    const events = [];
+    const visEvents = [];
+    const onVis = () => visEvents.push({ type: document.hidden ? 'hidden' : 'visible', at: performance.now() });
+    document.addEventListener('visibilitychange', onVis);
+    const startedAt = performance.now();
+    let lastCurrentTime = el.currentTime;
+    const handlers = {};
+    for (const type of BGM_STUTTER_LOG_EVENTS) {
+      const handler = () => {
+        const at = performance.now();
+        const currentTimeJump = (type === 'timeupdate' && el.currentTime < lastCurrentTime - 0.25);
+        if (type === 'timeupdate') lastCurrentTime = el.currentTime;
+        events.push({
+          type, at: Math.round(at - startedAt),
+          currentTime: Math.round(el.currentTime * 100) / 100,
+          readyState: el.readyState, networkState: el.networkState,
+          musicContext, audibleBgmKey, audibleBgmGeneration,
+          currentTimeJumpedBack: currentTimeJump,
+        });
+      };
+      handlers[type] = handler;
+      el.addEventListener(type, handler);
+    }
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        for (const type of BGM_STUTTER_LOG_EVENTS) el.removeEventListener(type, handlers[type]);
+        document.removeEventListener('visibilitychange', onVis);
+        // Classification A-H — heuristic over the REAL captured event
+        // sequence, not a guess made in advance of running it.
+        const causes = [];
+        const playCount = events.filter((e) => e.type === 'play').length;
+        const pauseCount = events.filter((e) => e.type === 'pause').length;
+        if (playCount >= 3 && pauseCount >= 3) causes.push('A: repeated pause/play');
+        if (events.some((e) => e.currentTimeJumpedBack)) causes.push('B: currentTime reset');
+        const ownerChanges = new Set(events.map((e) => e.audibleBgmKey)).size;
+        if (ownerChanges > 1) causes.push('C: owner churn (audibleBgmKey changed during window)');
+        // D: AudioContext suspend/resume — N/A for these 4 canonical BGM
+        // elements (plain HTMLAudioElement, never routed through WebAudio;
+        // only eventMovieVideoEl's own audio uses eventMovieAudioContext —
+        // see playEventMovie()'s own comment), included as an explicit
+        // non-finding rather than silently omitted.
+        if (events.some((e) => e.type === 'waiting' || e.type === 'stalled')) causes.push('E: buffer starvation (waiting/stalled fired)');
+        // F: source recreation — never happens for these 4 elements (their
+        // .src is set exactly once, at construction, and never reassigned
+        // anywhere in this file — confirmed by grep, see this session's own
+        // completion report); included as an explicit non-finding.
+        const generationChanges = new Set(events.map((e) => e.audibleBgmGeneration)).size;
+        if (generationChanges > 2) causes.push('G: duplicate media path interference (audibleBgmGeneration churned repeatedly)');
+        if (visEvents.length > 0) causes.push('H: visibility/pageshow interference (' + visEvents.length + ' visibilitychange event(s) during window)');
+        resolve({
+          trackKey, durationMs, eventCount: events.length, events,
+          visibilityEvents: visEvents,
+          classification: causes.length > 0 ? causes : ['(none — no stutter symptoms observed in this window)'],
+        });
+      }, durationMs);
+    });
   }
   // P0 STARTUP LOADING HOTFIX (RETRY LOOP ROOT FIX): every RETRY bumps this
   // generation token. The tick() loop closes over the generation it was
@@ -10295,7 +10576,87 @@
   // interval poll), but the SAME class of bug (an old async callback
   // writing into new state) was structurally possible via the setTimeout
   // chain without this guard.
-  let startupPreloadGeneration = 0;
+  // P0 STARTUP STATE MACHINE REWRITE: a single explicit source of truth for
+  // "where is startup right now" -- screen transitions (loading/opening/
+  // mainMenu) below are DRIVEN BY this, never inferred after the fact from
+  // a combination of separate booleans (fullPreloadReady, gamepadInputArmed,
+  // menuBgmStarted, etc. all still exist as their own internal detail, but
+  // none of them alone decides which screen is showing any more).
+  const STARTUP_STATE = { BOOT: 'BOOT', LOADING: 'LOADING', STARTUP_READY: 'STARTUP_READY', WAITING_FOR_TAP: 'WAITING_FOR_TAP', ENTERING_MENU: 'ENTERING_MENU', MAIN_MENU: 'MAIN_MENU' };
+  let startupState = STARTUP_STATE.BOOT;
+  // The ONE generation token for the entire startup pipeline (replaces the
+  // old startupPreloadGeneration, which only ever covered the RETRY button —
+  // this same token now also covers a fresh boot and a bfcache/pageshow
+  // restore, so a stale async callback from ANY of those three origins is
+  // rejected identically, never just the RETRY case).
+  let startupGeneration = 0;
+  let lastTapRejectReason = '(none)'; // ?debugStartup=1 visibility — see rejectTap()/onOpeningTap()
+  // The startupGeneration snapshot captured at the exact instant
+  // WAITING_FOR_TAP begins (see runStartupLoadingPhase()'s assertStartupReady
+  // branch). updateGamepadInput()'s TAP-to-start check compares against this
+  // (not just startupState) so a stray poll tick that somehow runs between a
+  // NEW beginStartupSequence() bumping startupGeneration and startupState
+  // actually flipping back out of WAITING_FOR_TAP can never be accepted as
+  // input for a TAP TO START screen that no longer belongs to this boot.
+  let tapReadyGeneration = null;
+  const TAP_REJECT_REASON = {
+    NOT_ARMED: 'REJECT: NOT ARMED',
+    STALE_GENERATION: 'REJECT: STALE GENERATION',
+    WAITING_FOR_RELEASE: 'REJECT: WAITING FOR RELEASE',
+    NO_ACTIVE_PAD: 'REJECT: NO ACTIVE PAD',
+    WRONG_STARTUP_STATE: 'REJECT: WRONG STARTUP STATE',
+  };
+  // P0 STARTUP STATE MACHINE REWRITE (root-cause fix): real-device report
+  // "reload/update makes Loading not appear, A immediately reaches MAIN
+  // MENU, Outbreak0+Outbreak1.1 play together" -- root cause is a bfcache
+  // restore (window pageshow with event.persisted===true). A bfcache
+  // restore does NOT re-run this file's boot sequence at all: the ENTIRE
+  // JS heap and DOM are resurrected frozen exactly as they were the instant
+  // the tab was suspended (backgrounded, app-switched, or the browser's own
+  // "reload" implementation choosing a cached snapshot) -- if that snapshot
+  // was frozen mid-run (already at MAIN MENU, or worse mid-transition
+  // between menu/gameplay BGM with one track's play() promise still
+  // in-flight), the resumed page shows that exact frozen state with zero
+  // Loading screen, and whatever native media-element playback state each
+  // BGM element was in at freeze time can resume simultaneously with
+  // whatever the NEW session's own BGM logic starts next -- exactly the
+  // reported double-Outbreak symptom. Fixed by wiring pageshow (see its own
+  // listener below) to treat a persisted restore EXACTLY like a fresh boot:
+  // this one function is now the single path both a first-ever page load
+  // and a bfcache restore both go through, so there is only ever one real
+  // "start over" behavior, never two slightly-different ones.
+  function hardResetAllBgmForFreshBoot() {
+    for (const el of [menuBgmAudio, bgmAudio, bossBgmAudio, endingRevealAudio]) {
+      try { el.pause(); el.currentTime = 0; el.muted = false; } catch (e) {}
+    }
+    audibleBgmGeneration++;
+    audibleBgmKey = null;
+    audibleBgmElement = null;
+    audibleBgmViolation = null;
+    musicContext = 'silent';
+    menuBgmStarted = false; // so startMenuBgmOnce() on the NEXT TAP TO START genuinely restarts Outbreak0, never resumes a stale in-flight attempt
+  }
+  function beginStartupSequence() {
+    startupGeneration++;
+    const myGeneration = startupGeneration;
+    startupState = STARTUP_STATE.BOOT;
+    hardResetAllBgmForFreshBoot();
+    // Forces adoptGamepadIndex() to reseed the rising-edge baseline from the
+    // pad's REAL current button state on the very next poll (same fix as
+    // the false-rising-edge root cause from the previous batch) — a fresh
+    // boot/restore must never inherit a stale gamepadLastButtons snapshot
+    // from before it.
+    gamepadIndex = null;
+    gamepadLastButtons = {};
+    gamepadLastAnyButtonPressed = false;
+    gamepadInputArmed = true;
+    gamepadDisarmedAt = 0;
+    lastTapRejectReason = '(none)';
+    startupState = STARTUP_STATE.LOADING;
+    setScreen('loading');
+    runStartupLoadingPhase(myGeneration);
+    return myGeneration;
+  }
   // Root cause of the reported "RETRY -> 93% -> RETRY -> 93%" loop: the
   // OLD retry handler just re-ran the polling loop against the SAME <video>
   // elements without ever re-triggering their network load — an element
@@ -10310,13 +10671,13 @@
   // failure); exceeding the 3-minute hard ceiling on mere pending (no error
   // at all — the actual resource-contention 93%-stall shape) also shows a
   // real error+RETRY state instead of ever proceeding.
-  function runStartupLoadingPhase() {
+  function runStartupLoadingPhase(myGeneration) {
     hideLoadingErrorState();
-    const myGeneration = startupPreloadGeneration;
+    if (myGeneration === undefined) myGeneration = startupGeneration; // RETRY's own call still passes no arg — reads the CURRENT token itself, same as before
     const startedAt = performance.now();
     startupLoadStartedAt = startedAt; // ?debugStartup=1 overlay ETA computation only
     function tick() {
-      if (myGeneration !== startupPreloadGeneration) return; // superseded by a newer RETRY — this stale tick does nothing
+      if (myGeneration !== startupGeneration) return; // superseded by a newer RETRY/boot/pageshow-restore — this stale tick does nothing
       const { loaded, total, pendingNames, erroredNames } = computeStartupRequiredProgress();
       const pct = total > 0 ? (loaded / total) * 100 : 100;
       updateLoadingProgressUI(pct);
@@ -10326,6 +10687,21 @@
       }
       if (assertStartupReady()) {
         fullPreloadReady = true;
+        startupState = STARTUP_STATE.STARTUP_READY;
+        // P0 STARTUP STATE MACHINE REWRITE item 7: TAP display and input-accept
+        // must become true atomically, in this exact order, all within the
+        // SAME generation-guarded transition — never TAP shown first with
+        // input catching up later. gamepadIndex=null forces adoptGamepadIndex()
+        // to reseed the edge baseline from the pad's REAL current state on
+        // the very next poll (same frame, since updateGamepadInput() runs
+        // unconditionally every RAF tick) — so a button already held at
+        // this exact instant is never misread as a fresh press.
+        gamepadIndex = null;
+        gamepadInputArmed = true;
+        gamepadDisarmedAt = 0;
+        startupState = STARTUP_STATE.WAITING_FOR_TAP; // TAP handler (onOpeningTap) is already always-installed; screen becomes 'opening' in this same synchronous step below
+        tapReadyGeneration = myGeneration;
+        lastTapRejectReason = '(none)';
         setScreen('opening'); // TAP TO START, same black screen — never a separate video-backed screen
         return;
       }
@@ -10338,9 +10714,29 @@
     tick();
   }
   function initLoadingSequence() {
-    setScreen('loading');
-    runStartupLoadingPhase();
+    beginStartupSequence();
   }
+  // P0 STARTUP STATE MACHINE REWRITE (root-cause fix): a bfcache restore
+  // (window pageshow with persisted===true — see beginStartupSequence()'s
+  // own comment for the full real-device root-cause writeup) now goes
+  // through the EXACT SAME single boot path a fresh page load already uses,
+  // rather than silently resuming whatever frozen screen/audio state the
+  // suspended tab had. A normal (non-bfcache) pageshow — the far more common
+  // case, firing on every ordinary load too — does nothing extra here,
+  // since beginStartupSequence() already ran once via initLoadingSequence().
+  // Reconciliation note (P0 STARTUP STATE MACHINE REWRITE): this file also
+  // has a SECOND 'pageshow' listener further down (see the one right after
+  // the visibilitychange listener, near eventMovieAudioContext.resume()).
+  // The two do not conflict: that one is unconditional (persisted or not)
+  // and only ever resumes a suspended WebAudio context for the NEXT event
+  // movie — it never touches startupState/startupGeneration/BGM. THIS
+  // listener is the only one that ever re-runs boot logic, and only on a
+  // genuine persisted===true bfcache restore. Multiple listeners on the
+  // same event are fine; both simply run every pageshow, one narrow
+  // (audio-context-resume-only) and one broad (full reboot, persisted-only).
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted) beginStartupSequence();
+  });
   loadingRetryBtnEl.addEventListener('click', () => {
     // RETRY: bump the generation (invalidates any in-flight stale tick()),
     // reset the visible progress to reflect reality immediately (never a
@@ -10349,10 +10745,10 @@
     // now 100% video-free (see getStartupRequiredAssetTargets()'s own
     // comment), so a STARTUP RETRY only ever concerns images/audio, which
     // settle (or don't) on their own without needing a forced .load().
-    startupPreloadGeneration++;
+    startupGeneration++;
     const { loaded, total } = computeStartupRequiredProgress();
     updateLoadingProgressUI(total > 0 ? (loaded / total) * 100 : 100);
-    runStartupLoadingPhase();
+    runStartupLoadingPhase(startupGeneration);
   });
   // STAGE-ENTRY-TIME gate: DEMO PLAY/TRAINING selection calls this before
   // actually starting. Since non-critical assets are NEVER a startup
@@ -10424,6 +10820,12 @@
   function onOpeningTap(e) {
     e.preventDefault();
     if (gameState.screen !== 'opening') return; // guards against a stray double-fire (touchstart + mousedown) doing this twice
+    // P0 STARTUP STATE MACHINE REWRITE item 10: WAITING_FOR_TAP -> ENTERING_MENU
+    // -> MAIN_MENU happens synchronously in THIS function, never via a later
+    // separate timeout/async callback -- "MAIN_MENU visible = controller nav
+    // ready" must hold unconditionally the instant setScreen('mainMenu') runs
+    // below.
+    startupState = STARTUP_STATE.ENTERING_MENU;
     // SECTION 2-3: a tap during ATTRACT playback cancels it (never lets a
     // stale onended fire afterward) and proceeds exactly like a normal
     // tap-to-start.
@@ -10463,6 +10865,19 @@
     openingVideoEl.currentTime = 0;
     openingVideoEl.play().catch(() => {});
     setScreen('mainMenu');
+    // P0 STARTUP STATE MACHINE REWRITE item 10: a fresh gamepad edge-baseline
+    // resync (gamepadIndex=null forces adoptGamepadIndex() to reseed from the
+    // pad's REAL current button state on the very next poll, same frame)
+    // happens synchronously right here, BEFORE startupState flips to
+    // MAIN_MENU -- so a button still physically held from the TAP press just
+    // above can never be misread as a fresh MAIN MENU nav press, while nav
+    // itself is genuinely ready (menuNavContainer is computed live from
+    // gameState.screen, already 'mainMenu' as of the line above) the instant
+    // MAIN_MENU is reached.
+    gamepadIndex = null;
+    gamepadInputArmed = true;
+    gamepadDisarmedAt = 0;
+    startupState = STARTUP_STATE.MAIN_MENU;
     // P0 STARTUP LOADING HOTFIX Part L: every NON-CRITICAL movie (GABRIEL/
     // ROID/ADAM arrivals, GABRIEL defeated, the 3 ending-chain movies) only
     // ever starts fetching from THIS point on — well after TAP TO START,
@@ -12778,7 +13193,22 @@
     // overlap, not preserve the same generous spacing sampling prefers.
     const rangeW = range.hi - range.lo;
     const rangeH = usableBottom - usableTop;
-    const GRID = 3;
+    // ADDENDUM 2 (DRONE SPAWN SAFETY) root-cause fix: a hard-capped 3x3 grid
+    // (9 candidate cells max) was silently smaller than SECURITY_DRONE_COUNT_CHOICES'
+    // own max real count (7) once cols/rows individually shrank below 3 on a
+    // narrow floor (e.g. a genuinely tight cols=2/rows=2 grid has only 4
+    // cells for up to 7 drones) — every drone beyond the candidate pool's
+    // own size was then forced to land on an EXACT duplicate of an already-
+    // placed one (distance 0, a real, confirmed overlap via direct
+    // measurement), not just a tight-but-distinct fallback position. GRID
+    // now scales up with how many drones this Area still needs placed
+    // (never below 3, the original minimum), so the candidate pool stays
+    // large enough to offer a genuinely distinct cell to every drone
+    // whenever the floor's own real width/height (via SECURITY_ROBOT_GRID_MIN_SPACING's
+    // own division below) can geometrically support it — and degrades
+    // gracefully (fewer cells than requested) only on a floor that
+    // genuinely cannot fit more, exactly like before.
+    const GRID = Math.max(3, Math.ceil(Math.sqrt(existingRobots.length + 1)));
     const cols = Math.max(1, Math.min(GRID, Math.floor(rangeW / SECURITY_ROBOT_GRID_MIN_SPACING) + 1));
     const rows = Math.max(1, Math.min(GRID, Math.floor(rangeH / SECURITY_ROBOT_GRID_MIN_SPACING) + 1));
     // HOTFIX 4.2 SECTIONS 18-21 (root-cause fix, part 2): indexing the grid
@@ -12801,9 +13231,21 @@
         candidates.push({ x: range.lo + xFrac * rangeW, y: usableTop + yFrac * rangeH });
       }
     }
-    if (existingRobots.length === 0) return candidates[0];
-    let best = candidates[0], bestMinDist = -Infinity;
-    for (const cand of candidates) {
+    // ADDENDUM 2 (DRONE SPAWN SAFETY): the random-sampling path above
+    // (attempts 1-40) already rejects any candidate within
+    // SECURITY_ROBOT_MIN_SPACING*1.2 of the player — this fallback grid
+    // never did, since it only ever compared candidates against OTHER
+    // ROBOTS. Prefer a candidate that ALSO respects the player's own
+    // exclusion radius when at least one such candidate exists; only fall
+    // through to ignoring it (as before) on a floor genuinely too small to
+    // offer any such candidate at all, rather than silently allowing every
+    // fallback-placed robot to land right on the player.
+    const playerClearRadius = SECURITY_ROBOT_MIN_SPACING * 1.2;
+    const playerClearCandidates = candidates.filter((cand) => Math.hypot(cand.x - player.x, cand.y - player.y) >= playerClearRadius);
+    const pool = playerClearCandidates.length > 0 ? playerClearCandidates : candidates;
+    if (existingRobots.length === 0) return pool[0];
+    let best = pool[0], bestMinDist = -Infinity;
+    for (const cand of pool) {
       let minDist = Infinity;
       for (const r of existingRobots) {
         const d = Math.hypot(cand.x - r.patrolCenterX, cand.y - r.y);
@@ -12978,6 +13420,84 @@
   // than inventing a separate "fast" concept. Only enterStoryStage()'s own
   // DRONE-type branch (STAGE 1/2/3/5/6/8/9) passes true; SECURITY TRAINING's
   // spawnSecurityRobots() omits it and keeps its existing fully-random mix.
+  // ADDENDUM 2 (DRONE SPAWN SAFETY): pickSecurityDroneSpot()/pickSecurityDroneCenterX()
+  // above already reject any single candidate within SECURITY_ROBOT_MIN_SPACING*1.2
+  // of the player -- a real, working exclusion radius -- but that check is
+  // purely PER-CANDIDATE: nothing after placement ever asks "now that every
+  // DRONE in this batch has landed, is the player's own spawn point still
+  // able to move at all?". At a high DRONE count (up to 7 per Area,
+  // SECURITY_DRONE_COUNT_CHOICES) on a narrow floor, several independently-
+  // valid placements (each individually >=252px from the player, each
+  // >=210px from every other DRONE) can still collectively surround the
+  // player, since none of them individually violates either rule. This is
+  // the real mechanism behind the "multiple DRONEs trap the player at stage
+  // start" report -- fixed here with a genuine post-placement escape-
+  // direction check (8-compass-direction sample around the player's actual
+  // spawn point) rather than widening the exclusion radius further (which
+  // wouldn't help a collective-surround the same way).
+  const DRONE_ESCAPE_CHECK_DIST = 90; // how far a candidate escape direction must stay clear
+  const DRONE_ESCAPE_DIRECTIONS = 8; // compass-8 sampling around the player
+  const DRONE_ESCAPE_BLOCK_RADIUS = SECURITY_ROBOT_MIN_SPACING * 0.6; // a DRONE within this distance of a candidate escape point counts as blocking it
+  function playerHasEscapeDirection(robots, px, py) {
+    for (let i = 0; i < DRONE_ESCAPE_DIRECTIONS; i++) {
+      const angle = (i / DRONE_ESCAPE_DIRECTIONS) * Math.PI * 2;
+      const tx = px + Math.cos(angle) * DRONE_ESCAPE_CHECK_DIST;
+      const ty = py + Math.sin(angle) * DRONE_ESCAPE_CHECK_DIST;
+      let blocked = false;
+      for (const r of robots) {
+        if (Math.hypot(tx - r.x, ty - r.y) < DRONE_ESCAPE_BLOCK_RADIUS) { blocked = true; break; }
+      }
+      if (!blocked) return true;
+    }
+    return false;
+  }
+  // Relocates whichever placed DRONE is currently closest to the player,
+  // capped retries, falling back to simply removing it from consideration
+  // (never forcing an unsafe placement back in) if repeated relocation
+  // still can't open an escape direction on a genuinely tiny floor.
+  function ensurePlayerEscapeDirection(into, area, marginX, speedMult, type) {
+    for (let guard = 0; guard < 6 && !playerHasEscapeDirection(into, player.x, player.y); guard++) {
+      let closestIdx = -1, closestDist = Infinity;
+      for (let i = 0; i < into.length; i++) {
+        const d = Math.hypot(into[i].x - player.x, into[i].y - player.y);
+        if (d < closestDist) { closestDist = d; closestIdx = i; }
+      }
+      if (closestIdx === -1) break;
+      const others = into.filter((_, i) => i !== closestIdx);
+      const spot = pickSecurityDroneSpot(others, area, marginX);
+      const old = into[closestIdx];
+      into[closestIdx] = buildSecurityDrone(spot.x, spot.y, old.behaviorType, speedMult);
+    }
+  }
+  // ADDENDUM 2 (DRONE SPAWN SAFETY): pickSecurityDroneSpot()'s own fallback
+  // grid already offers enough DISTINCT candidate cells for a real batch
+  // (guaranteed >= the count still being placed, see the GRID sizing fix
+  // above) -- but buildSecurityDrone() can independently re-clamp a spot's
+  // OWN x afterward (its "pull back onto the floor by the minimum swing
+  // distance" safety net, needed so patrolRange is never silently 0 on a
+  // narrow floor) -- and on a genuinely narrow floor at max real DRONE
+  // count, that post-clamp step can collapse two DIFFERENT candidate
+  // cells down to the exact SAME final x, undoing the diversity guarantee
+  // pickSecurityDroneSpot worked to create (confirmed via direct position
+  // measurement: exact-duplicate patrolCenterX/y pairs). This is a genuine
+  // post-build safety pass — checked on the ACTUAL final built positions,
+  // not the pre-clamp candidates, so it can never be fooled by that same
+  // collapse a second time.
+  function ensureNoDroneOverlap(into, area, marginX, speedMult) {
+    for (let guard = 0; guard < 20; guard++) {
+      let dupIdx = -1;
+      outer: for (let a = 0; a < into.length; a++) {
+        for (let b = a + 1; b < into.length; b++) {
+          if (Math.hypot(into[a].x - into[b].x, into[a].y - into[b].y) < SECURITY_ROBOT_GRID_MIN_SPACING * 0.5) { dupIdx = b; break outer; }
+        }
+      }
+      if (dupIdx === -1) break;
+      const others = into.filter((_, i) => i !== dupIdx);
+      const spot = pickSecurityDroneSpot(others, area, marginX);
+      const old = into[dupIdx];
+      into[dupIdx] = buildSecurityDrone(spot.x, spot.y, old.behaviorType, speedMult);
+    }
+  }
   function populateSecurityDroneAreas(into, speedMult, fixedCount, ensureFastDrone) {
     into.length = 0;
     const marginX = DRONE_PLACEMENT_BODY_MARGIN;
@@ -12988,6 +13508,14 @@
         const spot = pickSecurityDroneSpot(into, area, marginX); // PART8 SECTION E: true 2D scatter, not fixed rows
         into.push(buildSecurityDrone(spot.x, spot.y, types[i], speedMult));
       }
+      // The player only ever occupies ONE Area at STAGE entry (world Y near
+      // 0, i.e. AREA1) -- the escape check is a cheap no-op for the OTHER
+      // Area's own drones (their world Y is far from the player's, so
+      // playerHasEscapeDirection() trivially finds a clear direction there
+      // already), so it's safe to just always run it once per Area rather
+      // than trying to detect which Area the player is "in" up front.
+      ensurePlayerEscapeDirection(into, area, marginX, speedMult);
+      ensureNoDroneOverlap(into, area, marginX, speedMult);
     }
     if (ensureFastDrone && !into.some((r) => r.behaviorType === 'FAST_PATROL')) {
       const r0 = into[0];
@@ -16487,7 +17015,41 @@
     get CRITICAL_MOVIE_KEYS() { return CRITICAL_MOVIE_KEYS; },
     get NONCRITICAL_MOVIE_KEYS() { return NONCRITICAL_MOVIE_KEYS; },
     get STARTUP_LOAD_HARD_CEILING_MS() { return STARTUP_LOAD_HARD_CEILING_MS; },
-    get startupPreloadGeneration() { return startupPreloadGeneration; },
+    // P0 STARTUP STATE MACHINE REWRITE — debug/verification only:
+    get startupState() { return startupState; },
+    get STARTUP_STATE() { return STARTUP_STATE; },
+    get startupGeneration() { return startupGeneration; },
+    get tapReadyGeneration() { return tapReadyGeneration; },
+    get lastTapRejectReason() { return lastTapRejectReason; },
+    get TAP_REJECT_REASON() { return TAP_REJECT_REASON; },
+    get beginStartupSequence() { return beginStartupSequence; },
+    get hardResetAllBgmForFreshBoot() { return hardResetAllBgmForFreshBoot; },
+    // AUDIO ROOT REWRITE (PART B) — debug/verification only:
+    get claimAudibleBgm() { return claimAudibleBgm; },
+    get bgmPlayPauseCounts() { return bgmPlayPauseCounts; },
+    get audibleBgmKey() { return audibleBgmKey; },
+    get audibleBgmElement() { return audibleBgmElement; },
+    get audibleBgmGeneration() { return audibleBgmGeneration; },
+    get audibleBgmViolation() { return audibleBgmViolation; },
+    get musicContext() { return musicContext; },
+    get isBgmTrackAudible() { return isBgmTrackAudible; },
+    get auditAudibleBgm() { return auditAudibleBgm; },
+    get DEBUG_AUDIO_OVERLAY() { return DEBUG_AUDIO_OVERLAY; }, set DEBUG_AUDIO_OVERLAY(v) { DEBUG_AUDIO_OVERLAY = v; },
+    get debugAudioEl() { return debugAudioEl; },
+    get startBgmStutterLog() { return startBgmStutterLog; },
+    get resolvePlayerOverlapAfterPhaseChange() { return resolvePlayerOverlapAfterPhaseChange; }, // ADDENDUM 2 (GABRIEL DARK PHASE) — debug/verification only
+    get isSolidCollisionBossType() { return isSolidCollisionBossType; },
+    get bossHasNoPhysicalPresence() { return bossHasNoPhysicalPresence; },
+    get BOSS_SOLID_MIN_DIST() { return BOSS_SOLID_MIN_DIST; },
+    get BARREL_LOS_BLOCK_RADIUS() { return BARREL_LOS_BLOCK_RADIUS; },
+    get debugGabrielHitState() { return debugGabrielHitState; }, // ADDENDUM 2 (GABRIEL KNOCKBACK) — debug/verification only
+    get DEBUG_GABRIEL_HIT_OVERLAY() { return DEBUG_GABRIEL_HIT_OVERLAY; }, set DEBUG_GABRIEL_HIT_OVERLAY(v) { DEBUG_GABRIEL_HIT_OVERLAY = v; },
+    get triggerCloseRangeCounter() { return triggerCloseRangeCounter; },
+    // ADDENDUM 2 (DRONE SPAWN SAFETY) — debug/verification only:
+    get playerHasEscapeDirection() { return playerHasEscapeDirection; },
+    get DRONE_ESCAPE_CHECK_DIST() { return DRONE_ESCAPE_CHECK_DIST; },
+    get DRONE_ESCAPE_BLOCK_RADIUS() { return DRONE_ESCAPE_BLOCK_RADIUS; },
+    get ensureNoDroneOverlap() { return ensureNoDroneOverlap; },
     get backgroundMoviePreloadStarted() { return backgroundMoviePreloadStarted; },
     beginBackgroundNonCriticalMoviePreload, formatDataLoadingText, // debug/verification only
     // P0 STREAMING ARCHITECTURE HOTFIX — debug/verification only:
@@ -16684,6 +17246,8 @@
     spawnStraightClaw, isPlayerInvulnerable,
     // Debug/verification only — AREA1<->AREA2 (and bonus-band) door-collision fix.
     getFloorXRangeWorld, getStageDrawMetrics, AREA_BOUNDARY_DOOR_BAND, getAreaBoundaryYs, getAreaDoorXRangeWorld, getAreaWallSegmentsWorld, // P0 WORK ORDER I CORRECTION — debug/verification only
+    get debugAreaLosState() { return debugAreaLosState; }, // ADDENDUM 1 (MAIN AREA WALL) — debug/verification only
+    activeStagePlanArray, // ADDENDUM 1 — debug/verification only
     get DEBUG_AREA_LOS_OVERLAY() { return DEBUG_AREA_LOS_OVERLAY; }, // P0 WORK ORDER I CORRECTION — debug/verification only
     get DEBUG_STARTUP_OVERLAY() { return DEBUG_STARTUP_OVERLAY; }, assertStartupReady, computeStartupRequiredProgress, get gamepadSubsystemInitialized() { return gamepadSubsystemInitialized; }, // P0 INTEGRATED WORK ORDER — debug/verification only
     get gamepadPollFrameCount() { return gamepadPollFrameCount; }, isGamepadSubsystemSettled, // P0 REAL-DEVICE HOTFIX — debug/verification only
@@ -17584,6 +18148,38 @@
         }
         ctx.restore();
       }
+      // ADDENDUM 1 (MAIN AREA WALL) item I: the mandated STAGE KEY/MODE/AREA
+      // WALL SOURCE/FLOOR/WALL/OPENING/PLAYER-DRONE-position/LOS/PROJECTILE-
+      // WALL-HIT/PLAYER-MOVEMENT-BLOCK-REASON fields, as a plain queryable
+      // object (window.__game.debugAreaLosState) rather than a 2nd on-canvas
+      // text block competing with the visual overlay above — real-device
+      // testing can read this directly, and it works identically whether
+      // the current stage is MAIN, SECRET, or TRAINING (no mode branch —
+      // same computation this whole function already runs unconditionally).
+      const dbgFloor = getFloorXRangeWorld();
+      const dbgDoor = dbgFloor ? getAreaDoorXRangeWorld(dbgFloor) : null;
+      let dbgMode = 'OTHER';
+      if (gameState.mode === 'training') dbgMode = 'TRAINING_BASIC';
+      else if (gameState.mode === 'securityTraining') dbgMode = 'TRAINING_SECURITY';
+      else if (gameState.mode === 'boss' && storyScenarioState.scenario === 'main') dbgMode = 'MAIN';
+      else if (gameState.mode === 'boss' && storyScenarioState.scenario === 'secret') dbgMode = 'SECRET';
+      else if (gameState.mode === 'boss') dbgMode = 'BOSS_BATTLE';
+      const dbgPlan = activeStagePlanArray()[currentStageIndex];
+      debugAreaLosState = {
+        stageKey: (dbgPlan && dbgPlan.type) || (gameState.mode === 'training' ? TRAINING_BACKGROUNDS[basicTrainingBgIndex].key : gameState.mode === 'securityTraining' ? TRAINING_BACKGROUNDS[securityTrainingBgIndex].key : '(boss/event)'),
+        mode: dbgMode,
+        areaWallSource: 'getAreaWallSegmentsWorld() [single shared helper — no mode-specific branch]',
+        floorLeft: dbgFloor ? Math.round(dbgFloor.left) : null,
+        floorRight: dbgFloor ? Math.round(dbgFloor.right) : null,
+        wallLeftSeg: dbgFloor ? [Math.round(dbgFloor.left), Math.round(dbgDoor.left)] : null,
+        wallRightSeg: dbgFloor ? [Math.round(dbgDoor.right), Math.round(dbgFloor.right)] : null,
+        openingLeft: dbgDoor ? Math.round(dbgDoor.left) : null,
+        openingRight: dbgDoor ? Math.round(dbgDoor.right) : null,
+        playerX: Math.round(player.x), playerY: Math.round(player.y),
+        droneX: securityRobots[0] ? Math.round(securityRobots[0].x) : null,
+        droneY: securityRobots[0] ? Math.round(securityRobots[0].y) : null,
+        los: securityRobots[0] ? (segmentCrossesAreaWall(securityRobots[0].x, securityRobots[0].y, player.x, player.y) ? 'BLOCKED' : 'CLEAR') : null,
+      };
     }
 
     // PART 2: laser beams draw crossing over the player/boss layer, so the
@@ -18922,6 +19518,13 @@
   // projectile code paths use, so a real device can visually confirm the
   // drawn wall/door actually matches what is (and isn't) attackable/walkable.
   let DEBUG_AREA_LOS_OVERLAY = false;
+  // ADDENDUM 1 (MAIN AREA WALL) item I — see the draw()-time assignment
+  // near updateDebugAreaLosOverlay's own canvas block, further up this file.
+  let debugAreaLosState = null;
+  // ADDENDUM 2 (GABRIEL KNOCKBACK) optional ?debugGabrielHit=1 field — see
+  // its write sites in updateArcClawSlashes()'s claw-hit branch and
+  // triggerCloseRangeCounter().
+  let debugGabrielHitState = null;
   try {
     if (new URLSearchParams(window.location.search).get('debugAreaLos') === '1') {
       localStorage.setItem('debugAreaLos', '1');
@@ -18942,6 +19545,32 @@
       localStorage.removeItem('debugStartup');
     }
     DEBUG_STARTUP_OVERLAY = localStorage.getItem('debugStartup') === '1';
+  } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  // AUDIO ROOT REWRITE (PART B): same ?debugAudio=1/0 -> localStorage
+  // persistence pattern as the other debug overlays above — see
+  // updateDebugAudioOverlay().
+  let DEBUG_AUDIO_OVERLAY = false;
+  try {
+    if (new URLSearchParams(window.location.search).get('debugAudio') === '1') {
+      localStorage.setItem('debugAudio', '1');
+    } else if (new URLSearchParams(window.location.search).get('debugAudio') === '0') {
+      localStorage.removeItem('debugAudio');
+    }
+    DEBUG_AUDIO_OVERLAY = localStorage.getItem('debugAudio') === '1';
+  } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  // ADDENDUM 2 (GABRIEL KNOCKBACK) optional overlay flag — same persistence
+  // pattern as every other ?debugX=1/0 flag above. debugGabrielHitState
+  // itself is always recorded regardless of this flag (cheap, event-driven,
+  // never per-frame) — this flag only gates whether anything reads it into
+  // a visible on-screen overlay.
+  let DEBUG_GABRIEL_HIT_OVERLAY = false;
+  try {
+    if (new URLSearchParams(window.location.search).get('debugGabrielHit') === '1') {
+      localStorage.setItem('debugGabrielHit', '1');
+    } else if (new URLSearchParams(window.location.search).get('debugGabrielHit') === '0') {
+      localStorage.removeItem('debugGabrielHit');
+    }
+    DEBUG_GABRIEL_HIT_OVERLAY = localStorage.getItem('debugGabrielHit') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
@@ -19223,6 +19852,7 @@
       gamepadLastAnyButtonPressed = false; // TAP TO START GAMEPAD SUPPORT: no pad connected, so nothing is "pressed"
       gamepadInputArmed = true; // never leave a disconnected pad stuck disarmed
       gamepadDisarmedAt = 0;
+      if (gameState.screen === 'opening') lastTapRejectReason = TAP_REJECT_REASON.NO_ACTIVE_PAD;
       updateGamepadDebugOverlay(null);
       return;
     }
@@ -19428,14 +20058,31 @@
       // D-PAD-nav/A-confirm rising edge.
       let tapToStartFiredThisFrame = false;
       if (gameState.screen === 'opening') {
-        if (gamepadInputArmed && anyButtonPressedNow && !gamepadLastAnyButtonPressed) {
+        // P0 STARTUP STATE MACHINE REWRITE item 13/14: startupState (and its
+        // generation snapshot) must ALSO agree before a rising edge is ever
+        // accepted -- screen==='opening' alone is not proof the current
+        // WAITING_FOR_TAP is the one this exact frame belongs to.
+        if (startupState !== STARTUP_STATE.WAITING_FOR_TAP) {
+          if (anyButtonPressedNow) lastTapRejectReason = TAP_REJECT_REASON.WRONG_STARTUP_STATE;
+          debugLastRejectedBranch = 'opening:wrong-startup-state:' + startupState;
+        } else if (tapReadyGeneration !== startupGeneration) {
+          if (anyButtonPressedNow) lastTapRejectReason = TAP_REJECT_REASON.STALE_GENERATION;
+          debugLastRejectedBranch = 'opening:stale-generation';
+        } else if (gamepadInputArmed && anyButtonPressedNow && !gamepadLastAnyButtonPressed) {
           debugStartHandlerCalledAt = now; // ?debugInput=1 overlay — see updateDebugInputOverlay()
           debugLastInputBranch = 'opening:tap-to-start-fired';
+          lastTapRejectReason = '(none)';
           onOpeningTap({ preventDefault() {} });
           gamepadInputArmed = false;
           tapToStartFiredThisFrame = true;
         } else if (anyButtonPressedNow) {
-          debugLastRejectedBranch = !gamepadInputArmed ? 'opening:disarmed' : 'opening:no-rising-edge(already-was-pressed-last-frame)';
+          if (!gamepadInputArmed) {
+            lastTapRejectReason = TAP_REJECT_REASON.NOT_ARMED;
+            debugLastRejectedBranch = 'opening:disarmed';
+          } else {
+            lastTapRejectReason = TAP_REJECT_REASON.WAITING_FOR_RELEASE;
+            debugLastRejectedBranch = 'opening:no-rising-edge(already-was-pressed-last-frame)';
+          }
         }
       }
       // GAMEPAD CONTROL TUNING: PAUSE MENU navigation — D-PAD UP/DOWN
@@ -19734,6 +20381,7 @@
       }
       updateDebugInputOverlay(now);
       updateDebugStartupOverlay(now); // P0 INTEGRATED WORK ORDER: separate overlay/flag, never touches updateDebugInputOverlay()'s own fields
+      updateDebugAudioOverlay(now); // AUDIO ROOT REWRITE (PART B): separate overlay/flag, never touches the other two overlays' own fields
     } catch (err) {
       console.error('[LOOP] uncaught error this frame, continuing next frame:', err);
       debugLastLoopException = { message: String(err && err.message || err), at: now };

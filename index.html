@@ -455,6 +455,15 @@
      replacement for #debug-input-overlay's own detailed gamepad/audio trace. -->
 <div id="debug-startup-overlay"></div>
 
+<!-- AUDIO ROOT REWRITE (PART B): a SEPARATE overlay from the two above
+     (?debugAudio=1/0 in the URL, same localStorage-persistence pattern) --
+     bottom-right, the one unused corner. Shows the full audible-BGM-source
+     inventory (logical name/element id/src/paused/muted/volume/currentTime/
+     readyState/playCount/pauseCount/owner/generation/DUPLICATE SRC flag)
+     for real-device verification that "1 track = 1 canonical source" holds
+     and exactly one BGM is ever audible at a time. -->
+<div id="debug-audio-overlay"></div>
+
 <!-- PART 9 SECTION G: shared EVENT MOVIE PLAYER — one DOM overlay reused
      by every SYSTEM/EVENT movie (opening/sneaking/drone_arrival/
      gabriel_arrival/gabriel_down/gabriel_defeated/experiment_lab/
