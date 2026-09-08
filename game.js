@@ -14227,21 +14227,17 @@
   // SCANNER's own centerScan sweep (SECTION G — never a separate color for
   // that TYPE).
   function drawSecurityShadow(robot) {
-    // POST-v1.0 SECTION 4: this searchlight visual is now SECURITY TRAINING's
-    // own DRONE only — everywhere else it's the independent WHITE SHADOW
-    // entity instead (drawWhiteShadows()), never tied to a DRONE's position.
-    if (gameState.mode !== 'securityTraining') return;
-    if (robot.hp <= 0) return; // E-4: dead DRONEs cast no shadow
-    if (robot.dropState === 'dropping') return; // PART7 SECTION H: no searchlight while still falling — matches no AI running yet
-    const c = getSecurityShadowCenter(robot);
-    ctx.save();
-    ctx.filter = 'blur(3px)';
-    ctx.globalAlpha = (robot.state === 'detected' || robot.state === 'telegraph' || robot.state === 'attack') ? 0.75 : 0.6;
-    ctx.fillStyle = 'rgba(255,255,255,1)'; // PART 6 SECTION E-3/E-4: white base tone, translucency via globalAlpha (~0.6-0.75, within the suggested 0.55-0.70 band at rest)
-    ctx.beginPath();
-    ctx.ellipse(c.x, c.y, SECURITY_SHADOW_RADIUS_X, SECURITY_SHADOW_RADIUS_Y, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
+    // P0 INTEGRATED REGRESSION FIX (M): this white "searchlight" ellipse was
+    // TRAINING's (securityTraining's) own DRONE-only visual (POST-v1.0
+    // SECTION 4 — never drawn in MAIN, which uses the independent WHITE
+    // SHADOW entity instead, drawWhiteShadows(), completely untouched here).
+    // Real-device report: this rendering itself is the residual "shadow
+    // under DRONE in TRAINING MODE" the user asked removed — so this
+    // function now never draws anything, in any mode. Deliberately scoped
+    // to the VISUAL only: isPlayerInSecurityShadow()'s own detection-radius
+    // math (the 'watching'->'detected' trigger) is untouched — no gameplay/
+    // difficulty change was requested, only the rendering.
+    return;
   }
 
   // HOTFIX 4.2 ADDENDUM SECTIONS 26-30: is this DRONE within its own final
