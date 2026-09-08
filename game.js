@@ -3082,6 +3082,16 @@
   // attempt-then-deterministic-fallback logic there is untouched and still
   // guarantees a valid placement even on the narrowest floors.
   const SECURITY_ROBOT_MIN_SPACING = 210; // px between any two robots' patrol CENTERS
+  // P0 INTEGRATED REGRESSION FIX (N): SECURITY_ROBOT_MIN_SPACING alone is a
+  // EUCLIDEAN distance floor — two DRONEs can each individually satisfy it
+  // while sharing the exact same (or near-identical) Y, since a large X
+  // separation alone is enough to clear 210px. That is the real mechanism
+  // behind the reported "multiple DRONEs on one Y, reading as a horizontal
+  // row" bug: nothing before this ever rejected a candidate for being
+  // Y-aligned with an existing DRONE specifically. This is a SEPARATE,
+  // additional floor applied only to |y - y| in pickSecurityDroneSpot()
+  // below, independent of X — see its own comment for how it's used.
+  const MIN_DRONE_Y_GAP_PX = 40;
   // SECTION C (this turn): DRONE LASER attack tempo doubled — halves both
   // the TELEGRAPH windup and the post-fire impact-resolution delay, so the
   // full detected->telegraph->laser sequence takes about half as long
@@ -13211,11 +13221,29 @@
   // never placing any part of a DRONE (or its patrol swing, via marginX)
   // inside wall texture. `avoidPoints` (optional) is used by the FINAL
   // STAGE's own placement to additionally clear GABRIEL's body.
-  function pickSecurityDroneSpot(existingRobots, area, marginX, avoidPoints) {
+  // P0 INTEGRATED REGRESSION FIX (N): `yRange` (optional 5th param, {lo,hi})
+  // restricts Y-sampling (both the attempts loop below AND the fallback
+  // grid) to one caller-assigned vertical slice of the usable band instead
+  // of the whole thing. This is what actually GUARANTEES (by construction,
+  // not by probabilistic rejection sampling) that no two DRONEs in the same
+  // batch ever land on the same or near-identical Y: populateSecurityDroneAreas()/
+  // spawnFinalStageDronesForArea() below each divide their own usable band
+  // into exactly `count` non-overlapping slices (computeDroneYBands()) and
+  // hand each DRONE its own slice before ever calling this function — see
+  // that helper's own comment for why a rejection-sampling-only approach
+  // (the MIN_DRONE_Y_GAP_PX check further down, which stays as a defense-
+  // in-depth backstop) could not reliably guarantee this alone once the
+  // fallback grid below was involved: a square grid sized for avoiding
+  // Euclidean overlap only ever has a handful of distinct ROW values (e.g.
+  // 3 for a 3x3 grid), nowhere near enough for 7 real per-Area DRONEs, so
+  // multiple DRONEs ended up sharing a fallback grid row's exact Y anyway.
+  // A caller that omits yRange (any pre-existing call site not yet updated)
+  // keeps the exact old whole-band behavior, unchanged.
+  function pickSecurityDroneSpot(existingRobots, area, marginX, avoidPoints, yRange) {
     const range = getDronePlacementRangeX(marginX);
     const areaTop = areaTopY(area);
-    const usableTop = areaTop + H * 0.22;
-    const usableBottom = areaTop + H - H * 0.22;
+    const usableTop = yRange ? yRange.lo : areaTop + H * 0.22;
+    const usableBottom = yRange ? yRange.hi : areaTop + H - H * 0.22;
     for (let attempt = 0; attempt < 40; attempt++) {
       const x = range.lo + Math.random() * (range.hi - range.lo);
       const y = usableTop + Math.random() * (usableBottom - usableTop);
@@ -13224,6 +13252,13 @@
       let tooClose = false;
       for (const r of existingRobots) {
         if (Math.hypot(x - r.patrolCenterX, y - r.y) < SECURITY_ROBOT_MIN_SPACING) { tooClose = true; break; }
+        // P0 INTEGRATED REGRESSION FIX (N): reject a Y-aligned (or
+        // near-Y-aligned) candidate outright, regardless of how far apart X
+        // is — see MIN_DRONE_Y_GAP_PX's own comment. This is what actually
+        // prevents the "identical/near-identical Y" and "3+ in one visual
+        // row" real-device symptoms; the existing Euclidean check above
+        // alone cannot.
+        if (Math.abs(y - r.y) < MIN_DRONE_Y_GAP_PX) { tooClose = true; break; }
       }
       if (tooClose) continue;
       if (avoidPoints) {
@@ -13285,7 +13320,18 @@
     // genuinely cannot fit more, exactly like before.
     const GRID = Math.max(3, Math.ceil(Math.sqrt(existingRobots.length + 1)));
     const cols = Math.max(1, Math.min(GRID, Math.floor(rangeW / SECURITY_ROBOT_GRID_MIN_SPACING) + 1));
-    const rows = Math.max(1, Math.min(GRID, Math.floor(rangeH / SECURITY_ROBOT_GRID_MIN_SPACING) + 1));
+    // P0 INTEGRATED REGRESSION FIX (N): rows are sized against
+    // MIN_DRONE_Y_GAP_PX (not the GRID cap the cols above still use, and
+    // not the smaller SECURITY_ROBOT_GRID_MIN_SPACING) — a real regression
+    // found via 150-trial stress testing: every candidate in the SAME grid
+    // row shares the EXACT same y (see the loop just below), so a GRID cap
+    // of ~3-4 rows meant any batch overflowing this fallback (e.g. several
+    // DRONEs in a row all landing here on a tight floor) could only ever
+    // choose among 3-4 distinct Y values — reintroducing identical/near-Y
+    // collisions this whole fallback exists to prevent. Never capped by
+    // GRID: Y-diversity is the actual scarce resource here, not candidate-
+    // pool size (rows*cols staying in the tens is still cheap).
+    const rows = Math.max(1, Math.floor(rangeH / MIN_DRONE_Y_GAP_PX) + 1);
     // HOTFIX 4.2 SECTIONS 18-21 (root-cause fix, part 2): indexing the grid
     // purely by `existingRobots.length` (as before) picks a cell spaced from
     // its OTHER GRID CELLS, but never checks it against where robots placed
@@ -13319,14 +13365,34 @@
     const playerClearCandidates = candidates.filter((cand) => Math.hypot(cand.x - player.x, cand.y - player.y) >= playerClearRadius);
     const pool = playerClearCandidates.length > 0 ? playerClearCandidates : candidates;
     if (existingRobots.length === 0) return pool[0];
-    let best = pool[0], bestMinDist = -Infinity;
+    // P0 INTEGRATED REGRESSION FIX (N): root-cause fix for a real repro
+    // found via 150-trial stress testing — the OLD objective here picked
+    // whichever candidate maximized EUCLIDEAN distance to the nearest
+    // existing robot. That silently allowed an exact Y-duplicate at a
+    // different X to win outright whenever it happened to be the single
+    // farthest-by-Euclidean-distance option (a real, reproduced case: two
+    // DRONEs landing on the exact same row, ~174px apart in X only). A
+    // pure "reject any Y-close candidate" filter isn't enough either — once
+    // every candidate is Y-close to SOME existing robot (plausible with
+    // several already-placed DRONEs), that filter empties out and there
+    // was nothing left to fall back on but the same broken objective.
+    // Fixed by making minimum |dy| to any existing robot the PRIMARY sort
+    // key (Euclidean distance only breaks ties) — this can never prefer an
+    // exact Y-duplicate over a candidate with ANY nonzero Y-separation, so
+    // it degrades gracefully toward "smallest violation, never a tie the
+    // old metric could paper over" instead of an outright duplicate.
+    let best = pool[0], bestMinYGap = -Infinity, bestMinDist = -Infinity;
     for (const cand of pool) {
-      let minDist = Infinity;
+      let minYGap = Infinity, minDist = Infinity;
       for (const r of existingRobots) {
+        const dy = Math.abs(cand.y - r.y);
+        if (dy < minYGap) minYGap = dy;
         const d = Math.hypot(cand.x - r.patrolCenterX, cand.y - r.y);
         if (d < minDist) minDist = d;
       }
-      if (minDist > bestMinDist) { bestMinDist = minDist; best = cand; }
+      if (minYGap > bestMinYGap || (minYGap === bestMinYGap && minDist > bestMinDist)) {
+        bestMinYGap = minYGap; bestMinDist = minDist; best = cand;
+      }
     }
     return best;
   }
@@ -13361,7 +13427,13 @@
   // (SECTION B) derives its speed from this same field at read-time
   // (× CENTER_SCAN_SLOW_FACTOR), so the STAGE multiplier is automatically
   // folded into its slow speed too (J-4/L-4) without being stored twice.
-  function buildSecurityDrone(x, y, behaviorType, speedMult) {
+  // `yBand` (optional, {lo,hi}): stored verbatim, never read by AI/gameplay
+  // — placement bookkeeping only, so ensurePlayerEscapeDirection()/
+  // ensureNoDroneOverlap() below can re-pick a relocated DRONE's spot
+  // within the SAME Y-slice it was originally assigned (see
+  // computeDroneYBands()), rather than losing the Y-stratification
+  // guarantee the instant a post-placement safety pass relocates one.
+  function buildSecurityDrone(x, y, behaviorType, speedMult, yBand) {
     const mult = SECURITY_BEHAVIOR_MULTIPLIERS[behaviorType];
     const patrolDir = Math.random() < 0.5 ? 1 : -1;
     const basePatrolSpeed = SECURITY_PATROL_SPEED_MIN + Math.random() * (SECURITY_PATROL_SPEED_MAX - SECURITY_PATROL_SPEED_MIN);
@@ -13408,6 +13480,7 @@
     }
     return {
       x, y, // y is this robot's fixed row — only x ever changes (F: left/right only)
+      yBand: yBand || null, // P0 INTEGRATED REGRESSION FIX (N) — see this param's own comment above
       patrolCenterX: x,
       patrolRange,
       patrolSpeed: basePatrolSpeed * mult.patrol * speedMult,
@@ -13470,6 +13543,94 @@
       dropState: 'active',
       dropStartAt: -Infinity,
     };
+  }
+
+  // Splits [lo,hi] into `count` equal, non-overlapping slices, each padded
+  // inward by half of MIN_DRONE_Y_GAP_PX so that even the most extreme
+  // possible jitter in two ADJACENT slices (one DRONE at the very bottom of
+  // slice i, the next at the very top of slice i+1) still clears
+  // MIN_DRONE_Y_GAP_PX apart — a geometric guarantee, not a probabilistic
+  // one. `pad` shrinks gracefully toward 0 (never negative) on a genuinely
+  // tiny range/large count instead of producing an inverted (hi<lo) range.
+  function sliceIntoYBands(lo, hi, count) {
+    const bandHeight = (hi - lo) / count;
+    const pad = Math.max(0, Math.min(MIN_DRONE_Y_GAP_PX / 2, bandHeight / 2 - 0.5));
+    const bands = [];
+    for (let i = 0; i < count; i++) {
+      const bandTop = lo + i * bandHeight;
+      const bandBottom = bandTop + bandHeight;
+      const bandLo = bandTop + pad, bandHi = bandBottom - pad;
+      bands.push(bandHi >= bandLo ? { lo: bandLo, hi: bandHi } : { lo: (bandTop + bandBottom) / 2, hi: (bandTop + bandBottom) / 2 });
+    }
+    return bands;
+  }
+  // P0 INTEGRATED REGRESSION FIX (N): divides ONE Area's usable Y band into
+  // up to `count` non-overlapping slices (never a fixed grid ROW — see the
+  // work order's own explicit "固定grid rowへ複数配置するfallbackは禁止"), one
+  // per DRONE. First carves the player's own safety keepout window (the
+  // same SECURITY_ROBOT_MIN_SPACING*1.2 radius pickSecurityDroneSpot()
+  // already enforces per-candidate) OUT of the usable band before slicing —
+  // a real regression found via 150-trial stress testing: without this, a
+  // band could land squarely on the player's own Y with no X-based escape
+  // (Y alone already inside the exclusion radius), forcing every candidate
+  // in that band to violate player safety.
+  //
+  // A second real regression, found by the SAME stress test right after
+  // fixing the first one: when the player sits near an edge of the usable
+  // band (a real measured case: player.y past usableBottom, leaving only a
+  // ~140px sliver for a 7-DRONE Area), cramming all `count` bands into
+  // whatever sliver remains made each band far narrower than
+  // MIN_DRONE_Y_GAP_PX, reintroducing near-Y/3+-row violations. Fixed by
+  // only band-stratifying as many DRONEs as the carved space can ACTUALLY
+  // hold at full MIN_DRONE_Y_GAP_PX separation (`capacity`, apportioned
+  // across however many carved segments exist via a largest-remainder
+  // greedy so a bigger segment earns more bands than a smaller one) — any
+  // genuine overflow beyond that real capacity returns `null` for that
+  // slot, meaning "no restricted band": populateSecurityDroneAreas()/
+  // spawnFinalStageDronesForArea() pass `null` straight through to
+  // pickSecurityDroneSpot() as yRange, which then falls back to sampling
+  // the WHOLE usable band — still hard-gated by that same function's own
+  // per-candidate MIN_DRONE_Y_GAP_PX-vs-existing-robots and player-distance
+  // checks (unchanged, already verified correct on their own before bands
+  // existed), so an overflow DRONE can never land Y-aligned with a banded
+  // one or inside the player's keepout — it just isn't geometrically
+  // GUARANTEED up front the way a banded slot is.
+  function computeDroneYBands(area, count) {
+    const areaTop = areaTopY(area);
+    const usableTop = areaTop + H * 0.22;
+    const usableBottom = areaTop + H - H * 0.22;
+    const keepoutRadius = SECURITY_ROBOT_MIN_SPACING * 1.2;
+    const keepoutLo = player.y - keepoutRadius, keepoutHi = player.y + keepoutRadius;
+    const segments = [];
+    const seg1Hi = Math.min(usableBottom, keepoutLo);
+    if (seg1Hi > usableTop) segments.push({ lo: usableTop, hi: seg1Hi });
+    const seg2Lo = Math.max(usableTop, keepoutHi);
+    if (usableBottom > seg2Lo) segments.push({ lo: seg2Lo, hi: usableBottom });
+    if (segments.length === 0) segments.push({ lo: usableTop, hi: usableBottom });
+    const capacities = segments.map((seg) => Math.max(0, Math.floor((seg.hi - seg.lo) / MIN_DRONE_Y_GAP_PX)));
+    const totalCapacity = capacities.reduce((a, b) => a + b, 0);
+    const bandedCount = Math.min(count, totalCapacity);
+    // Largest-remainder-style greedy: each pick goes to whichever segment
+    // currently has the most room per already-assigned band, naturally
+    // respecting each segment's own real capacity without hard-coding a
+    // proportional split that could overload a small segment.
+    const assigned = segments.map(() => 0);
+    for (let n = 0; n < bandedCount; n++) {
+      let bestIdx = -1, bestRatio = -Infinity;
+      for (let i = 0; i < segments.length; i++) {
+        if (assigned[i] >= capacities[i]) continue;
+        const ratio = (segments[i].hi - segments[i].lo) / (assigned[i] + 1);
+        if (ratio > bestRatio) { bestRatio = ratio; bestIdx = i; }
+      }
+      if (bestIdx === -1) break; // no segment has remaining real capacity
+      assigned[bestIdx]++;
+    }
+    const bands = [];
+    for (let i = 0; i < segments.length; i++) {
+      if (assigned[i] > 0) bands.push(...sliceIntoYBands(segments[i].lo, segments[i].hi, assigned[i]));
+    }
+    while (bands.length < count) bands.push(null); // genuine overflow — see this function's own comment above
+    return bands;
   }
 
   // PART 5 SECTION C: each AREA independently rolls its own DRONE count from
@@ -13539,9 +13700,13 @@
       }
       if (closestIdx === -1) break;
       const others = into.filter((_, i) => i !== closestIdx);
-      const spot = pickSecurityDroneSpot(others, area, marginX);
       const old = into[closestIdx];
-      into[closestIdx] = buildSecurityDrone(spot.x, spot.y, old.behaviorType, speedMult);
+      // P0 INTEGRATED REGRESSION FIX (N): reuse the relocated DRONE's own
+      // original Y-band (when it has one) so a post-placement safety
+      // relocation can never reintroduce a Y-alignment the initial
+      // band-stratified placement had already ruled out.
+      const spot = pickSecurityDroneSpot(others, area, marginX, undefined, old.yBand);
+      into[closestIdx] = buildSecurityDrone(spot.x, spot.y, old.behaviorType, speedMult, old.yBand);
     }
   }
   // ADDENDUM 2 (DRONE SPAWN SAFETY): pickSecurityDroneSpot()'s own fallback
@@ -13568,9 +13733,11 @@
       }
       if (dupIdx === -1) break;
       const others = into.filter((_, i) => i !== dupIdx);
-      const spot = pickSecurityDroneSpot(others, area, marginX);
       const old = into[dupIdx];
-      into[dupIdx] = buildSecurityDrone(spot.x, spot.y, old.behaviorType, speedMult);
+      // P0 INTEGRATED REGRESSION FIX (N): same yBand-reuse rationale as
+      // ensurePlayerEscapeDirection() above.
+      const spot = pickSecurityDroneSpot(others, area, marginX, undefined, old.yBand);
+      into[dupIdx] = buildSecurityDrone(spot.x, spot.y, old.behaviorType, speedMult, old.yBand);
     }
   }
   function populateSecurityDroneAreas(into, speedMult, fixedCount, ensureFastDrone) {
@@ -13579,9 +13746,14 @@
     for (const area of [1, 2]) {
       const count = fixedCount || pickSecurityDroneCount();
       const types = pickSecurityBehaviorTypes(count);
+      // P0 INTEGRATED REGRESSION FIX (N): one non-overlapping Y-band per
+      // DRONE in this Area — see computeDroneYBands()'s own comment for why
+      // this (not rejection sampling alone) is what actually guarantees 0
+      // identical/near-Y pairs and 0 3+-in-a-row configurations.
+      const yBands = computeDroneYBands(area, count);
       for (let i = 0; i < count; i++) {
-        const spot = pickSecurityDroneSpot(into, area, marginX); // PART8 SECTION E: true 2D scatter, not fixed rows
-        into.push(buildSecurityDrone(spot.x, spot.y, types[i], speedMult));
+        const spot = pickSecurityDroneSpot(into, area, marginX, undefined, yBands[i]);
+        into.push(buildSecurityDrone(spot.x, spot.y, types[i], speedMult, yBands[i]));
       }
       // The player only ever occupies ONE Area at STAGE entry (world Y near
       // 0, i.e. AREA1) -- the escape check is a cheap no-op for the OTHER
@@ -13594,7 +13766,7 @@
     }
     if (ensureFastDrone && !into.some((r) => r.behaviorType === 'FAST_PATROL')) {
       const r0 = into[0];
-      into[0] = buildSecurityDrone(r0.x, r0.y, 'FAST_PATROL', speedMult);
+      into[0] = buildSecurityDrone(r0.x, r0.y, 'FAST_PATROL', speedMult, r0.yBand);
     }
   }
 
@@ -13651,13 +13823,18 @@
     const avoidPoints = area === 1 // GABRIEL and the player only ever occupy AREA1 in the FINAL STAGE
       ? [{ x: player.x, y: player.y }, { x: boss.x, y: boss.y }]
       : null;
+    // P0 INTEGRATED REGRESSION FIX (N): same Y-band stratification as
+    // populateSecurityDroneAreas() above — the FINAL STAGE's own 3-DRONE-
+    // per-Area placement is a separate code path and was equally exposed to
+    // the identical-Y bug.
+    const yBands = computeDroneYBands(area, FINAL_DRONES_PER_AREA);
     for (let i = 0; i < FINAL_DRONES_PER_AREA; i++) {
-      const spot = pickSecurityDroneSpot(securityRobots, area, marginX, avoidPoints);
+      const spot = pickSecurityDroneSpot(securityRobots, area, marginX, avoidPoints, yBands[i]);
       // New-turn SECTION 2 / PART8 SECTION G: every FINAL-STAGE DRONE is
       // FAST_PATROL — FAST_PATROL only scales `patrol` (movement speed),
       // leaving `scan` at its neutral 1.0x, so SEARCH/LASER/targeting
       // behavior is untouched exactly as required.
-      const drone = buildSecurityDrone(spot.x, spot.y, 'FAST_PATROL', FINAL_STAGE_DRONE_SPEED_MULTIPLIER);
+      const drone = buildSecurityDrone(spot.x, spot.y, 'FAST_PATROL', FINAL_STAGE_DRONE_SPEED_MULTIPLIER, yBands[i]);
       if (dropIn) {
         drone.dropState = 'dropping';
         drone.dropStartAt = now;
@@ -17269,6 +17446,7 @@
     SECURITY_LASER_COOLDOWN_MIN_MS, SECURITY_LASER_COOLDOWN_MAX_MS,
     SECURITY_MAX_SIMULTANEOUS_ATTACKS, SECURITY_SHADOW_RADIUS_X, SECURITY_SHADOW_RADIUS_Y,
     SECURITY_ROBOT_DRAW_D, SECURITY_ROBOT_METRICS, SECURITY_ROBOT_MIN_SPACING, DRONE_PLACEMENT_BODY_MARGIN, // debug/verification only — HOTFIX 2 SECTION 39-41
+    MIN_DRONE_Y_GAP_PX, computeDroneYBands, // P0 INTEGRATED REGRESSION FIX (N) — debug/verification only
     SECURITY_ROBOT_GRID_MIN_SPACING, // debug/verification only — HOTFIX 4.2 SECTIONS 18-21
     SECURITY_PATROL_RANGE_MIN, SECURITY_PATROL_RANGE_MAX, SECURITY_PATROL_SPEED_MIN, SECURITY_PATROL_SPEED_MAX,
     SECURITY_SCAN_RANGE_MIN, SECURITY_SCAN_RANGE_MAX, SECURITY_SCAN_SPEED_MIN, SECURITY_SCAN_SPEED_MAX,
