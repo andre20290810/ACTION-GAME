@@ -1326,8 +1326,34 @@
       // other real BGM start in this file already goes through) keeps
       // ownership bookkeeping consistent for every resume, not just fresh starts.
       if (eventMovieState.resumeBgm) claimAudibleBgm('normal', bgmAudio);
-      reassertGameplayBgmIfExpected();
+      // P0 BGM DOUBLE-PLAY DIAGNOSTIC (root-cause fix, this batch): reordered
+      // to run AFTER onComplete() rather than before it. auditAudibleBgm()
+      // (called inside reassertGameplayBgmIfExpected()) classifies "is a
+      // non-menu track allowed to be audible" using gameState.screen — but
+      // for a movie played DURING a menu-family screen (e.g. 'sneaking',
+      // which beginScenarioOpening() starts while gameState.screen is still
+      // 'mainScenarioSub' — that screen only changes once onComplete() below
+      // calls startMode()->setScreen('gameplay')), calling this BEFORE
+      // onComplete() meant eventMovieState.active had JUST gone false two
+      // lines up while gameState.screen was STILL the stale menu-family
+      // value — a real, always-reproducing false positive: the guard read
+      // "non-menu BGM audible on a menu-family screen" and force-paused
+      // bgmAudio, which the very next 'pause' event
+      // (handleUnexpectedBgmPause()) then immediately resumed via
+      // syncMusicContext() (musicContext was still 'normal') — a genuine
+      // pause+instant-resume glitch on the SAME track at the exact moment
+      // every STORY run begins, confirmed via a real event-level trace
+      // (?debugBgm=1) rather than guessed. Running this audit AFTER
+      // onComplete() instead means gameState.screen is already whatever
+      // onComplete() (startMode()/next-stage advance/etc.) transitioned it
+      // to, so the guard's own screen-based classification is accurate
+      // again — matching what it already assumes everywhere else in this
+      // file. The watchdog still runs unconditionally every ~500ms
+      // regardless (loop()'s own reassertGameplayBgmIfExpected() call), so
+      // this reorder only removes the ONE guaranteed-stale, guaranteed-false
+      // reading at this exact call site — it does not weaken the guard.
       if (onComplete) onComplete();
+      reassertGameplayBgmIfExpected();
     }
     eventMovieVideoEl.onended = () => { if (eventMovieState.token === token) finish(); };
 
@@ -1480,8 +1506,10 @@
     // AUDIO ROOT REWRITE (PART B): same claimAudibleBgm() fix as finish()
     // above, for the exact same reason — see its comment.
     if (resumeBgm) claimAudibleBgm('normal', bgmAudio);
-    reassertGameplayBgmIfExpected();
+    // P0 BGM DOUBLE-PLAY DIAGNOSTIC (root-cause fix, this batch): same
+    // reorder-past-onComplete() fix as finish()'s own — see its comment.
     if (onComplete) onComplete();
+    reassertGameplayBgmIfExpected();
   }
 
   // DARK OUT PART 3: BOSS BATTLE MODE — an independent battle/dev-test
@@ -9979,6 +10007,7 @@
     if (menuBgmStarted) return;
     menuBgmStarted = true;
     musicContext = 'menu'; // HOTFIX 2 SECTION 3: TAP TO START -> MENU context, menuBgmAudio only
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_SWITCH', { to: 'menu', caller: 'startMenuBgmOnce' });
     // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION: wrapped in
     // try/catch, not just a promise .catch() — a .catch() only handles a
     // REJECTED Promise, never a synchronous throw from the play() call
@@ -10008,6 +10037,7 @@
   // its existing pre-PART9 "BGM reset to 0 only on return to TOP" behavior.
   function startGameplayBgm() {
     musicContext = 'normal'; // HOTFIX 2 SECTION 4: normal stage BGM only — menu/boss tracks both stopped below/by this context
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_SWITCH', { to: 'normal', caller: 'startGameplayBgm' });
     stopMenuBgm();
     bossBgmAudio.pause();
     bossBgmAudio.currentTime = 0;
@@ -10091,20 +10121,48 @@
   // other track" loop) -- rather than a hand-maintained (and easily stale)
   // list of known call sites.
   const bgmPlayPauseCounts = new WeakMap();
+  // P0 BGM DOUBLE-PLAY DIAGNOSTIC (this batch): element -> human name.
+  // Declared here (rather than alongside DEBUG_BGM_OVERLAY/recordBgmEvent()
+  // further down) because it is populated by the plain top-level `for` loop
+  // right below, which runs immediately as this script executes — unlike
+  // DEBUG_BGM_OVERLAY/recordBgmEvent(), which are only ever READ from inside
+  // function bodies that don't run until much later (a real user gesture),
+  // by which time the whole file has finished executing once top-to-bottom.
+  const BGM_TRACK_NAMES_BY_ELEMENT = new WeakMap();
   for (const el of [menuBgmAudio, bgmAudio, bossBgmAudio, endingRevealAudio]) {
     bgmPlayPauseCounts.set(el, { playCount: 0, pauseCount: 0 });
+    // the play()/pause() monkey-patch just below (and any other diagnostic
+    // code) can label events without a chain of === comparisons.
+    BGM_TRACK_NAMES_BY_ELEMENT.set(el, el === menuBgmAudio ? 'menu' : el === bgmAudio ? 'normal' : el === bossBgmAudio ? 'boss' : 'ending');
   }
   (function instrumentBgmPlayPauseCounts() {
     const origPlay = HTMLMediaElement.prototype.play;
     const origPause = HTMLMediaElement.prototype.pause;
     HTMLMediaElement.prototype.play = function () {
       const counts = bgmPlayPauseCounts.get(this);
-      if (counts) counts.playCount++;
+      if (counts) {
+        counts.playCount++;
+        // P0 BGM DOUBLE-PLAY DIAGNOSTIC: this ONE wrapper is the single
+        // choke-point every play() call on these 4 elements already passes
+        // through (see the comment above bgmPlayPauseCounts — deliberately
+        // wrapping the prototype rather than each call site), so it is also
+        // the single most complete place to log "which track, when, from
+        // which function" — genuinely exhaustive, including any call site a
+        // manual review might miss or a future change adds.
+        if (DEBUG_BGM_OVERLAY) {
+          recordBgmEvent('BGM_PLAY', { track: BGM_TRACK_NAMES_BY_ELEMENT.get(this), src: this.src.split('/').pop(), currentTime: +this.currentTime.toFixed(2), loop: this.loop, muted: this.muted, musicContext, caller: bgmCallerLabel(1) });
+        }
+      }
       return origPlay.apply(this, arguments);
     };
     HTMLMediaElement.prototype.pause = function () {
       const counts = bgmPlayPauseCounts.get(this);
-      if (counts) counts.pauseCount++;
+      if (counts) {
+        counts.pauseCount++;
+        if (DEBUG_BGM_OVERLAY) {
+          recordBgmEvent('BGM_PAUSE', { track: BGM_TRACK_NAMES_BY_ELEMENT.get(this), src: this.src.split('/').pop(), currentTime: +this.currentTime.toFixed(2), musicContext, caller: bgmCallerLabel(1) });
+        }
+      }
       return origPause.apply(this, arguments);
     };
   })();
@@ -10276,6 +10334,7 @@
     // 2E: Shining Grace hard guard — audible only on the real endingReveal screen, musicContext genuinely 'ending'.
     if (isBgmTrackAudible(endingRevealAudio) && !(gameState.screen === 'endingReveal' && musicContext === 'ending' && endingRevealState.active)) {
       console.error('[AUDIO] VIOLATION: Shining Grace audible outside endingReveal screen/context — force-pausing.');
+      if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_VIOLATION', { message: 'Shining Grace audible outside endingReveal', screen: gameState.screen, musicContext });
       endingRevealAudio.pause();
       audibleBgmViolation = { message: 'Shining Grace audible outside endingReveal', at: performance.now() };
     }
@@ -10299,6 +10358,7 @@
       for (const [key, el] of tracks) {
         if (key !== 'menu' && isBgmTrackAudible(el)) {
           console.error('[AUDIO] VIOLATION: non-menu track audible on menu-family screen:', key, gameState.screen);
+          if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_VIOLATION', { message: key + ' audible on menu-family screen', screen: gameState.screen, musicContext });
           el.pause();
           audibleBgmViolation = { message: key + ' audible on ' + gameState.screen, at: performance.now() };
         }
@@ -10308,6 +10368,7 @@
     if (audible.length > 1) {
       const names = audible.map(([k]) => k).join('+');
       console.error('[AUDIO] DOUBLE AUDIO VIOLATION:', names);
+      if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_VIOLATION', { message: 'DOUBLE AUDIO: ' + names, screen: gameState.screen, musicContext, audibleBgmKey });
       audibleBgmViolation = { message: 'DOUBLE AUDIO: ' + names, at: performance.now() };
       for (const [, el] of audible) { if (el !== audibleBgmElement) el.pause(); }
     }
@@ -10315,6 +10376,7 @@
   }
   function startBossBgm() {
     musicContext = 'boss'; // HOTFIX 2 SECTION 5: boss BGM only — menu/normal both stopped below/by this context
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_SWITCH', { to: 'boss', caller: 'startBossBgm' });
     stopMenuBgm();
     bgmAudio.pause();
     bgmAudio.currentTime = 0;
@@ -10324,6 +10386,7 @@
   function endBossBgmToNormalStage() {
     if (musicContext !== 'boss') return; // already in normal-BGM territory — never touch bgmAudio's own continuous playback between two normal stages
     musicContext = 'normal'; // HOTFIX 2 SECTION 6: BOSS stage EXIT -> normal, always restarted from 0:00 below, never resumed mid-track
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_SWITCH', { to: 'normal', caller: 'endBossBgmToNormalStage' });
     bossBgmAudio.pause();
     bossBgmAudio.currentTime = 0;
     bgmAudio.currentTime = 0;
@@ -10347,6 +10410,7 @@
   // mid-run, well after TAP TO START already fired.
   function startMenuBgmForTopMenu() {
     musicContext = 'menu'; // HOTFIX 2 SECTION 2/9: watchdog-safe — every track's play/pause state is now driven by this
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_SWITCH', { to: 'menu', caller: 'startMenuBgmForTopMenu' });
     bgmAudio.pause(); // gameplay BGM is combat-only — must not keep playing once back at MENU
     // BOSS BGM ADDENDUM Section 10/J: this is the ONE shared "return to TOP"
     // path (returnToTopMenu()'s own comment) — covers STORY-mode QUIT out of
@@ -10905,6 +10969,7 @@
     for (const el of [menuBgmAudio, bgmAudio, bossBgmAudio, endingRevealAudio]) {
       try { el.pause(); el.currentTime = 0; el.muted = false; } catch (e) {}
     }
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_SWITCH', { to: 'silent', caller: 'hardResetAllBgmForFreshBoot' });
     audibleBgmGeneration++;
     audibleBgmKey = null;
     audibleBgmElement = null;
@@ -11716,6 +11781,7 @@
     storyEndingState.active = false; // the escape/movie chain that led here is now fully complete — this screen IS the RESULT screen for MAIN
     // item 16: every other BGM track stops — ending music only.
     musicContext = 'ending';
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_SWITCH', { to: 'ending', caller: 'enterEndingReveal' });
     bgmAudio.pause(); bgmAudio.currentTime = 0;
     bossBgmAudio.pause(); bossBgmAudio.currentTime = 0;
     menuBgmAudio.pause();
@@ -11824,6 +11890,7 @@
       // stop-at-start behavior here is unchanged from prior batches (this
       // batch's re-specification only concerns MAIN's own chain below).
       musicContext = 'ending';
+      if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_SWITCH', { to: 'ending', caller: 'beginStoryEscapeEnding(secret/true_ending)' });
       bgmAudio.pause(); bgmAudio.currentTime = 0;
       bossBgmAudio.pause(); bossBgmAudio.currentTime = 0;
       playEventMovie('true_ending', () => {
@@ -17542,6 +17609,9 @@
     get gamepadTapFirstTouchStartAt() { return gamepadTapFirstTouchStartAt; },
     get gamepadTapFirstKeyDownAt() { return gamepadTapFirstKeyDownAt; },
     get gamepadTapFirstUserActivationAt() { return gamepadTapFirstUserActivationAt; }, // P0 DIAGNOSTIC PHASE 2 — debug/verification only
+    get DEBUG_BGM_OVERLAY() { return DEBUG_BGM_OVERLAY; }, set DEBUG_BGM_OVERLAY(v) { DEBUG_BGM_OVERLAY = v; },
+    get bgmTrace() { return bgmTrace; }, get BGM_TRACE_MAX() { return BGM_TRACE_MAX; },
+    buildBgmDebugText, updateDebugBgmOverlay, checkBgmAudibleSetChange, // P0 BGM DOUBLE-PLAY DIAGNOSTIC — debug/verification only
     get debugAudioEl() { return debugAudioEl; },
     get startBgmStutterLog() { return startBgmStutterLog; },
     get resolvePlayerOverlapAfterPhaseChange() { return resolvePlayerOverlapAfterPhaseChange; }, // ADDENDUM 2 (GABRIEL DARK PHASE) — debug/verification only
@@ -20144,6 +20214,77 @@
     }
     DEBUG_AUDIO_OVERLAY = localStorage.getItem('debugAudio') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  // P0 BGM DOUBLE-PLAY DIAGNOSTIC (this batch): same ?debugBgm=1/0 ->
+  // localStorage persistence pattern as every other overlay above — a
+  // SEPARATE flag/trace from ?debugAudio=1's own periodic-snapshot overlay
+  // (never replaces it). Purely observational: records what the EXISTING
+  // musicContext/claimAudibleBgm()/syncMusicContext()/auditAudibleBgm()
+  // system (unmodified anywhere in this batch except for these additive
+  // recordBgmEvent() calls) already decides, every time it decides it — a
+  // real-device-verifiable event-level trace of exactly which BGM track
+  // played/paused, when, why, and from which calling function, for
+  // diagnosing a reported "2 BGM tracks audible at once" without guessing.
+  // recordBgmEvent() is a no-op (zero allocation) whenever DEBUG_BGM_OVERLAY
+  // is false, so a normal player's session is completely unaffected.
+  let DEBUG_BGM_OVERLAY = false;
+  try {
+    if (new URLSearchParams(window.location.search).get('debugBgm') === '1') {
+      localStorage.setItem('debugBgm', '1');
+    } else if (new URLSearchParams(window.location.search).get('debugBgm') === '0') {
+      localStorage.removeItem('debugBgm');
+    }
+    DEBUG_BGM_OVERLAY = localStorage.getItem('debugBgm') === '1';
+  } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  const BGM_TRACE_MAX = 200; // ring buffer cap — a full play session's worth of transitions, not just one screen
+  const bgmTrace = [];
+  // Caller identification via a real stack trace (this file is served
+  // unminified, so function names in the stack are genuine and readable) —
+  // chosen over threading an explicit `caller` string through every one of
+  // the ~15 call sites this instruments, so a FUTURE call site (or a call
+  // this review missed) is automatically covered too, never silently
+  // unlabeled. Only ever computed when DEBUG_BGM_OVERLAY is true.
+  function bgmCallerLabel(skipFrames) {
+    try {
+      const stack = (new Error()).stack || '';
+      const lines = stack.split('\n').map((l) => l.trim()).filter(Boolean);
+      // lines[0] is literally "Error"; lines[1] is this function's own frame;
+      // skipFrames lets a wrapper (e.g. the play()/pause() monkey-patch
+      // below) skip its own extra frame(s) to reach the REAL caller.
+      const idx = 2 + (skipFrames || 0);
+      return (lines[idx] || '(unknown)').replace(/^at\s+/, '').slice(0, 100);
+    } catch (e) { return '(unknown)'; }
+  }
+  function recordBgmEvent(type, fields) {
+    if (!DEBUG_BGM_OVERLAY) return;
+    bgmTrace.push(Object.assign({ t: Date.now(), type }, fields || {}));
+    if (bgmTrace.length > BGM_TRACE_MAX) bgmTrace.shift();
+  }
+  let bgmLastAudibleSignature = ''; // diagnostic-only change-detector, independent of any single call site
+  function bgmAudibleSetSignature() {
+    return [['menu', menuBgmAudio], ['normal', bgmAudio], ['boss', bossBgmAudio], ['ending', endingRevealAudio]]
+      .filter(([, el]) => isBgmTrackAudible(el)).map(([k]) => k).join('+');
+  }
+  // Called every real frame (from loop(), guarded by DEBUG_BGM_OVERLAY) —
+  // catches ANY transition into/out of a genuinely-audible state, from ANY
+  // code path (including ones the call-site instrumentation below might
+  // miss), at up to 60fps resolution — far finer than the ~500ms watchdog,
+  // and specifically the one signal that can catch a real but brief
+  // same-page double-audible window that a lower-frequency check would step
+  // right over.
+  function checkBgmAudibleSetChange() {
+    if (!DEBUG_BGM_OVERLAY) return;
+    const sig = bgmAudibleSetSignature();
+    if (sig !== bgmLastAudibleSignature) {
+      recordBgmEvent('BGM_AUDIBLE_SET_CHANGED', {
+        from: bgmLastAudibleSignature || '(none)',
+        to: sig || '(none)',
+        doubleAudio: sig.indexOf('+') !== -1,
+        musicContext,
+        screen: gameState.screen,
+      });
+      bgmLastAudibleSignature = sig;
+    }
+  }
   // ADDENDUM 2 (GABRIEL KNOCKBACK) optional overlay flag — same persistence
   // pattern as every other ?debugX=1/0 flag above. debugGabrielHitState
   // itself is always recorded regardless of this flag (cheap, event-driven,
@@ -21324,6 +21465,64 @@
     });
   }
 
+  // ==========================================================================
+  // P0 BGM DOUBLE-PLAY DIAGNOSTIC (this batch): real-device diagnostic panel.
+  // Read-only rendering of the pure-observation state recorded above — never
+  // writes to musicContext/claimAudibleBgm/syncMusicContext/auditAudibleBgm.
+  // ==========================================================================
+  const debugBgmEl = document.getElementById('debug-bgm-panel');
+  const debugBgmCopyBtn = document.getElementById('debug-bgm-copy-btn');
+  const debugBgmTextEl = document.getElementById('debug-bgm-text');
+  function buildBgmDebugText() {
+    const tracks = [['menu', menuBgmAudio], ['normal', bgmAudio], ['boss', bossBgmAudio], ['ending', endingRevealAudio]];
+    const trackLines = tracks.map(([name, el]) => {
+      const counts = bgmPlayPauseCounts.get(el) || { playCount: 0, pauseCount: 0 };
+      return `  [${name}]${audibleBgmKey === name ? ' *OWNER*' : ''} src=${el.src.split('/').pop()} paused=${el.paused} muted=${el.muted} loop=${el.loop}\n` +
+        `    currentTime=${el.currentTime.toFixed(1)}  playCount=${counts.playCount}  pauseCount=${counts.pauseCount}  AUDIBLE=${isBgmTrackAudible(el)}`;
+    });
+    const audibleNow = tracks.filter(([, el]) => isBgmTrackAudible(el)).map(([k]) => k);
+    return (
+      `=== DARK OUT BGM DIAGNOSTIC (?debugBgm=1) ===\n` +
+      `timestamp: ${new Date().toISOString()}\n` +
+      `--- STATE ---\n` +
+      `MUSIC CONTEXT: ${musicContext}  AUDIO OWNER: ${audibleBgmKey || '(none)'}  GENERATION: ${audibleBgmGeneration}\n` +
+      `SCREEN: ${gameState.screen}  MODE: ${gameState.mode || '(none)'}  MOVIE ACTIVE: ${eventMovieState.active}\n` +
+      `AUDIBLE NOW: ${audibleNow.length ? audibleNow.join('+') : '(none)'}${audibleNow.length > 1 ? '  *** DOUBLE AUDIO RIGHT NOW ***' : ''}\n` +
+      `LAST VIOLATION: ${audibleBgmViolation ? audibleBgmViolation.message + ' (' + Math.round(performance.now() - audibleBgmViolation.at) + 'ms ago)' : '(none)'}\n` +
+      `--- TRACKS ---\n${trackLines.join('\n')}\n` +
+      `--- EVENT TRACE (most recent ${Math.min(bgmTrace.length, 60)} of ${bgmTrace.length}, max ${BGM_TRACE_MAX}) ---\n` +
+      bgmTrace.slice(-60).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n')
+    );
+  }
+  function updateDebugBgmOverlay(now) {
+    if (!DEBUG_BGM_OVERLAY || !debugBgmEl) return;
+    debugBgmEl.hidden = false;
+    if (debugBgmTextEl) debugBgmTextEl.textContent = buildBgmDebugText();
+  }
+  if (debugBgmCopyBtn) {
+    debugBgmCopyBtn.addEventListener('click', () => {
+      const text = buildBgmDebugText();
+      const fallback = () => {
+        const ta = document.getElementById('debug-bgm-fallback-textarea');
+        if (ta) {
+          ta.hidden = false;
+          ta.value = text;
+          ta.focus();
+          ta.select();
+        }
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(fallback);
+        } else {
+          fallback();
+        }
+      } catch (err) {
+        fallback();
+      }
+    });
+  }
+
   let lastBgmWatchdogAt = 0;
   // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION (Part D/K root-
   // cause candidate): before this batch, an uncaught exception ANYWHERE in
@@ -21359,6 +21558,12 @@
         lastBgmWatchdogAt = now;
         reassertGameplayBgmIfExpected();
       }
+      // P0 BGM DOUBLE-PLAY DIAGNOSTIC (this batch): unlike the ~500ms
+      // watchdog above, this runs every real frame — the one signal fine-
+      // grained enough to catch a brief same-page double-audible window the
+      // watchdog's own cadence could step right over. No-op unless
+      // DEBUG_BGM_OVERLAY is true.
+      checkBgmAudibleSetChange();
       // GAMEPAD SUPPORT: polled every frame regardless of screen/orientation
       // (updateGamepadInput() itself gates gameplay-affecting writes to
       // screen==='gameplay'), so a disconnect/neutral-stick reset is never
@@ -21379,6 +21584,7 @@
       updateDebugAudioOverlay(now); // AUDIO ROOT REWRITE (PART B): separate overlay/flag, never touches the other two overlays' own fields
       updateDebugPerfOverlay(now); // P0 INTEGRATED REGRESSION FIX (H): separate overlay/flag, never touches any other overlay's own fields
       updateDebugGamepadTapOverlay(now); // P0 DIAGNOSTIC PHASE 1: separate overlay/flag, read-only observation, never touches any other overlay's own fields
+      updateDebugBgmOverlay(now); // P0 BGM DOUBLE-PLAY DIAGNOSTIC: separate overlay/flag, read-only observation, never touches any other overlay's own fields
     } catch (err) {
       console.error('[LOOP] uncaught error this frame, continuing next frame:', err);
       debugLastLoopException = { message: String(err && err.message || err), at: now };

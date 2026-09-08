@@ -958,6 +958,73 @@ body {
 }
 #debug-gamepad-tap-fallback-textarea[hidden] { display: none; }
 
+/* P0 BGM DOUBLE-PLAY DIAGNOSTIC: same shape/pattern as
+   #debug-gamepad-tap-panel above, anchored to the TOP instead of the
+   bottom so the two panels never overlap if a real device tester enables
+   both ?debugGamepadTap=1 and ?debugBgm=1 at once — a different accent
+   color (cyan vs pink) makes them visually distinguishable too. [hidden]
+   keeps it fully absent from a normal session — DEBUG_BGM_OVERLAY in
+   game.js is the single source of truth for visibility. */
+#debug-bgm-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 60;
+  max-height: 42vh;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.82);
+  border-bottom: 1px solid rgba(120, 220, 255, 0.6);
+  font-family: monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(235, 235, 238, 0.95);
+}
+#debug-bgm-panel[hidden] { display: none; }
+#debug-bgm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(120, 220, 255, 0.3);
+  flex-shrink: 0;
+}
+#debug-bgm-header span {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(120, 220, 255, 0.95);
+}
+#debug-bgm-copy-btn {
+  font-family: monospace;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: rgba(120, 220, 255, 0.15);
+  color: rgba(120, 220, 255, 0.95);
+  border: 1px solid rgba(120, 220, 255, 0.6);
+  border-radius: 4px;
+}
+#debug-bgm-text {
+  margin: 0;
+  padding: 8px 10px 12px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  flex: 1 1 auto;
+}
+#debug-bgm-fallback-textarea {
+  width: 100%;
+  height: 30vh;
+  box-sizing: border-box;
+  font-family: monospace;
+  font-size: 12px;
+  background: #111;
+  color: #eee;
+  border: 1px solid rgba(120, 220, 255, 0.6);
+}
+#debug-bgm-fallback-textarea[hidden] { display: none; }
+
 /* ---------- SECTION G/H/I/J: LOADING / OPENING / MAIN MENU ----------
    Each is position:fixed/inset:0, shown one at a time via [hidden]
    (game.js's screen state machine — see setScreen()) — stacked below the

@@ -23,7 +23,7 @@
 <meta name="twitter:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_site_v2.jpg">
 <link rel="icon" href="assets/branding/dark_out_site_v2.jpg" type="image/jpeg">
 <link rel="apple-touch-icon" href="assets/branding/dark_out_site_v2.jpg">
-<link rel="stylesheet" href="style.css?v=p0-diag-gamepad-preexposure-2">
+<link rel="stylesheet" href="style.css?v=p0-bgm-doubleplay-diag-fix-1">
 </head>
 <body>
 
@@ -520,6 +520,20 @@
   <textarea id="debug-gamepad-tap-fallback-textarea" readonly hidden></textarea>
 </div>
 
+<!-- P0 BGM DOUBLE-PLAY DIAGNOSTIC: same shape/pattern as
+     #debug-gamepad-tap-panel above — hidden unless DEBUG_BGM_OVERLAY is
+     true (?debugBgm=1), never shown in normal play. See
+     updateDebugBgmOverlay()/buildBgmDebugText() in game.js — read-only,
+     changes nothing about existing BGM logic. -->
+<div id="debug-bgm-panel" hidden>
+  <div id="debug-bgm-header">
+    <span>BGM DIAGNOSTIC</span>
+    <button id="debug-bgm-copy-btn" type="button">COPY DEBUG LOG</button>
+  </div>
+  <pre id="debug-bgm-text"></pre>
+  <textarea id="debug-bgm-fallback-textarea" readonly hidden></textarea>
+</div>
+
 <!-- PART 9 SECTION G: shared EVENT MOVIE PLAYER — one DOM overlay reused
      by every SYSTEM/EVENT movie (opening/sneaking/drone_arrival/
      gabriel_arrival/gabriel_down/gabriel_defeated/experiment_lab/
@@ -551,6 +565,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=p0-diag-gamepad-preexposure-2"></script>
+<script src="game.js?v=p0-bgm-doubleplay-diag-fix-1"></script>
 </body>
 </html>
