@@ -934,6 +934,36 @@ body {
   background: rgba(220, 225, 230, 0.85);
   transition: width 100ms linear;
 }
+/* P0 INTEGRATED REGRESSION FIX (LOADING/STARTUP/AUDIO/THUMBNAIL/DRONE):
+   current-task/count/ETA/stalled-task text — same visual family as
+   #loading-percent-text just above (smaller, slightly dimmer, so the
+   percentage stays the visual focus), always visible on the real
+   production Loading screen, never debug-mode-only. Empty text simply
+   collapses to zero height via the shared :empty rule below. */
+#loading-current-task-text,
+#loading-task-count-text,
+#loading-eta-text {
+  font-family: sans-serif;
+  font-weight: 600;
+  font-size: clamp(10px, 3vw, 12px);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  color: rgba(200, 205, 212, 0.75);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+}
+#loading-current-task-text:empty,
+#loading-task-count-text:empty,
+#loading-eta-text:empty { display: none; }
+#loading-stalled-text {
+  font-family: sans-serif;
+  font-weight: 600;
+  font-size: clamp(10px, 3vw, 12px);
+  letter-spacing: 0.06em;
+  color: rgba(255, 190, 90, 0.9);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  max-width: 84vw;
+}
+#loading-stalled-text[hidden] { display: none; }
 #loading-error-text {
   font-family: sans-serif;
   font-weight: 600;

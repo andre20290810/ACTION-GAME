@@ -10368,15 +10368,78 @@
   const loadingBarFillEl = document.getElementById('loading-bar-fill');
   const loadingErrorTextEl = document.getElementById('loading-error-text');
   const loadingRetryBtnEl = document.getElementById('loading-retry-btn');
+  const loadingCurrentTaskTextEl = document.getElementById('loading-current-task-text');
+  const loadingTaskCountTextEl = document.getElementById('loading-task-count-text');
+  const loadingEtaTextEl = document.getElementById('loading-eta-text');
+  const loadingStalledTextEl = document.getElementById('loading-stalled-text');
+  // P0 INTEGRATED REGRESSION FIX (LOADING/STARTUP/AUDIO/THUMBNAIL/DRONE) items
+  // E/F: ONE real ETA computation, shared by BOTH the real player-facing
+  // Loading screen and the ?debugStartup=1 overlay below — so the two can
+  // never disagree, and neither can ever show a fixed/fake value. Returns a
+  // seconds estimate, or the sentinel 'error'/'done', or null when not yet
+  // computable (nothing loaded yet, or no elapsed time yet) — callers format
+  // each of those for their own audience.
+  function computeStartupEtaSeconds(loaded, total, erroredNames, elapsedMs) {
+    if (erroredNames.length > 0) return 'error';
+    if (loaded >= total) return 'done';
+    if (loaded <= 0 || elapsedMs <= 0) return null;
+    return Math.max(0, Math.round((elapsedMs / loaded) * (total - loaded) / 1000));
+  }
+  function formatStartupEtaForDebug(etaRaw) {
+    if (etaRaw === 'error') return 'N/A (error)';
+    if (etaRaw === 'done') return 'N/A (already ready)';
+    if (etaRaw === null) return 'ESTIMATING...';
+    return etaRaw + 's';
+  }
+  function formatStartupEtaForPlayer(etaRaw) {
+    if (etaRaw === 'error' || etaRaw === 'done') return '';
+    if (etaRaw === null) return 'REMAINING: CALCULATING...';
+    return 'REMAINING: ABOUT ' + etaRaw + ' SEC';
+  }
+  // A pending task counts as "stalled" once its NAME has stayed the same AND
+  // the loaded count hasn't advanced for this long. Deliberately much
+  // shorter than STARTUP_LOAD_HARD_CEILING_MS (180000ms below) — this is a
+  // "still working, here is specifically what's slow" indicator, not the
+  // hard-failure state (that's showLoadingErrorState()'s job).
+  const LOADING_STALL_THRESHOLD_MS = 4000;
+  let loadingStallTaskName = null;
+  let loadingStallLoadedCount = -1;
+  let loadingStallSinceMs = -Infinity;
+  function updateLoadingStalledIndicator(pendingNames, loaded, now) {
+    const currentTask = pendingNames.length ? pendingNames[0] : null;
+    if (currentTask !== loadingStallTaskName || loaded !== loadingStallLoadedCount) {
+      loadingStallTaskName = currentTask;
+      loadingStallLoadedCount = loaded;
+      loadingStallSinceMs = now;
+    }
+    const stalledLongEnough = !!currentTask && (now - loadingStallSinceMs) > LOADING_STALL_THRESHOLD_MS;
+    if (stalledLongEnough) {
+      loadingStalledTextEl.textContent = 'WAITING FOR: ' + currentTask;
+      loadingStalledTextEl.hidden = false;
+    } else {
+      loadingStalledTextEl.hidden = true;
+      loadingStalledTextEl.textContent = '';
+    }
+  }
   // P0 STARTUP LOADING HOTFIX: "Data Loading XX.X%" — one decimal place
   // fixed, never a bare integer percent. Fed from the exact same fractional
   // value as the bar fill so the two can never visually disagree.
   function formatDataLoadingText(pct) {
     return 'Data Loading ' + pct.toFixed(1) + '%';
   }
-  function updateLoadingProgressUI(pct) {
+  // P0 INTEGRATED REGRESSION FIX items E/F: the current-task/count/ETA/stall
+  // fields are ALWAYS visible on the real, non-debug Loading screen now (not
+  // gated behind ?debugStartup=1) — driven by the exact same real
+  // computeStartupRequiredProgress()/computeStartupEtaSeconds() data as
+  // everything else here, never a separate or time-faked value.
+  function updateLoadingProgressUI(pct, loaded, total, pendingNames, erroredNames, elapsedMs) {
     loadingPercentTextEl.textContent = formatDataLoadingText(pct);
     loadingBarFillEl.style.width = pct + '%';
+    loadingCurrentTaskTextEl.textContent = pendingNames.length ? ('LOADING: ' + pendingNames[0]) : '';
+    loadingTaskCountTextEl.textContent = total > 0 ? ('TASKS: ' + loaded + ' / ' + total) : '';
+    const etaRaw = computeStartupEtaSeconds(loaded, total, erroredNames, elapsedMs);
+    loadingEtaTextEl.textContent = formatStartupEtaForPlayer(etaRaw);
+    updateLoadingStalledIndicator(pendingNames, loaded, performance.now());
   }
   function showLoadingErrorState(pendingNames) {
     // A genuine failure gets a clear, visible error + RETRY state — never a
@@ -10406,13 +10469,7 @@
     const { loaded, total, pendingNames, erroredNames } = computeStartupRequiredProgress();
     const pct = total > 0 ? (loaded / total) * 100 : 100;
     const elapsedMs = startupLoadStartedAt > 0 ? now - startupLoadStartedAt : 0;
-    let eta = 'N/A (already ready)';
-    if (erroredNames.length > 0) eta = 'N/A (error)';
-    else if (loaded < total) {
-      eta = (loaded <= 0 || elapsedMs <= 0)
-        ? 'ESTIMATING...'
-        : Math.max(0, Math.round((elapsedMs / loaded) * (total - loaded) / 1000)) + 's';
-    }
+    const eta = formatStartupEtaForDebug(computeStartupEtaSeconds(loaded, total, erroredNames, elapsedMs));
     const allPads = navigator.getGamepads ? navigator.getGamepads() : [];
     const connectedPadCount = allPads.filter((p) => p && p.connected).length;
     const activeGp = getActiveGamepad();
@@ -10680,7 +10737,7 @@
       if (myGeneration !== startupGeneration) return; // superseded by a newer RETRY/boot/pageshow-restore — this stale tick does nothing
       const { loaded, total, pendingNames, erroredNames } = computeStartupRequiredProgress();
       const pct = total > 0 ? (loaded / total) * 100 : 100;
-      updateLoadingProgressUI(pct);
+      updateLoadingProgressUI(pct, loaded, total, pendingNames, erroredNames, performance.now() - startedAt);
       if (erroredNames.length > 0) {
         showLoadingErrorState(erroredNames); // fail fast — a genuine decode/network error never needs the full ceiling to be recognized
         return;
@@ -10746,8 +10803,11 @@
     // comment), so a STARTUP RETRY only ever concerns images/audio, which
     // settle (or don't) on their own without needing a forced .load().
     startupGeneration++;
-    const { loaded, total } = computeStartupRequiredProgress();
-    updateLoadingProgressUI(total > 0 ? (loaded / total) * 100 : 100);
+    const { loaded, total, pendingNames, erroredNames } = computeStartupRequiredProgress();
+    // Fresh attempt — no elapsed time yet for this generation, so the ETA
+    // genuinely IS unknown right now (renders "CALCULATING...", never a
+    // stale value carried over from the failed attempt).
+    updateLoadingProgressUI(total > 0 ? (loaded / total) * 100 : 100, loaded, total, pendingNames, erroredNames, 0);
     runStartupLoadingPhase(startupGeneration);
   });
   // STAGE-ENTRY-TIME gate: DEMO PLAY/TRAINING selection calls this before
@@ -17250,6 +17310,7 @@
     activeStagePlanArray, // ADDENDUM 1 — debug/verification only
     get DEBUG_AREA_LOS_OVERLAY() { return DEBUG_AREA_LOS_OVERLAY; }, // P0 WORK ORDER I CORRECTION — debug/verification only
     get DEBUG_STARTUP_OVERLAY() { return DEBUG_STARTUP_OVERLAY; }, assertStartupReady, computeStartupRequiredProgress, get gamepadSubsystemInitialized() { return gamepadSubsystemInitialized; }, // P0 INTEGRATED WORK ORDER — debug/verification only
+    computeStartupEtaSeconds, LOADING_STALL_THRESHOLD_MS, // P0 INTEGRATED REGRESSION FIX (LOADING E/F) — debug/verification only
     get gamepadPollFrameCount() { return gamepadPollFrameCount; }, isGamepadSubsystemSettled, // P0 REAL-DEVICE HOTFIX — debug/verification only
     getDronePlacementRangeX, clampPlayerToScreen,
     get W() { return W; }, get H() { return H; },

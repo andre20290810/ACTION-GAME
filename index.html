@@ -23,7 +23,7 @@
 <meta name="twitter:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_site_v2.jpg">
 <link rel="icon" href="assets/branding/dark_out_site_v2.jpg" type="image/jpeg">
 <link rel="apple-touch-icon" href="assets/branding/dark_out_site_v2.jpg">
-<link rel="stylesheet" href="style.css?v=full-gamepad-e2e1">
+<link rel="stylesheet" href="style.css?v=p0-loading-audio-drone-thumb-1">
 </head>
 <body>
 
@@ -43,6 +43,22 @@
     <div id="loading-bar-track">
       <div id="loading-bar-fill"></div>
     </div>
+    <!-- P0 INTEGRATED REGRESSION FIX (LOADING/STARTUP/AUDIO/THUMBNAIL/DRONE):
+         the "what is loading right now / how much longer" info was already
+         computed every frame (computeStartupRequiredProgress()'s own
+         current-task name + updateDebugStartupOverlay()'s own ETA math) but
+         was previously wired ONLY into the ?debugStartup=1 debug overlay —
+         never shown on this real, non-debug, user-facing screen, which is
+         the actual reported gap. These 3 lines are driven by that exact
+         same real computation (see updateLoadingProgressUI() in game.js),
+         never a separate/fake value. -->
+    <div id="loading-current-task-text"></div>
+    <div id="loading-task-count-text"></div>
+    <div id="loading-eta-text"></div>
+    <!-- Shown only once progress has genuinely stalled on one specific
+         asset for longer than a real stall threshold — see
+         updateLoadingProgressUI()'s own stall-detection timer. -->
+    <div id="loading-stalled-text" hidden></div>
     <!-- Shown only on a genuine load/playback failure (network error, a
          video that can never reach real readiness, the hard wait ceiling
          exhausted) — never a silent fake-100%, never an infinite
@@ -495,6 +511,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=work-order-i-route-extermination-los-roid1-1"></script>
+<script src="game.js?v=p0-loading-audio-drone-thumb-1"></script>
 </body>
 </html>
