@@ -1,6 +1,60 @@
 (() => {
   'use strict';
 
+  // P0 INTEGRATED REGRESSION FIX (H): live counters for the ?debugPerf=1
+  // overlay (updateDebugPerfOverlay(), further down this file) — placed at
+  // the very top, before anything else in this IIFE runs, so every
+  // requestAnimationFrame/setTimeout/media .play() call this file ever
+  // makes (including ones during STARTUP, before MAIN even begins) is
+  // actually counted, never just the ones that happen to occur after some
+  // later point in the file. Each counter reflects a REAL measurement (a
+  // patched browser API), never a value this file computes/guesses on its
+  // own — see each patch's own comment for exactly what it counts.
+  const debugPerfCounters = {
+    activeRafRequests: 0, // scheduled-but-not-yet-fired requestAnimationFrame callbacks, from ANY caller in this file
+    activeTimers: 0, // outstanding setTimeout callbacks not yet fired or cleared
+    activeMediaPlayPromises: 0, // in-flight HTMLMediaElement.play() promises (covers both <audio> and <video>)
+  };
+  {
+    const origRAF = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = function (cb) {
+      debugPerfCounters.activeRafRequests++;
+      return origRAF((t) => {
+        debugPerfCounters.activeRafRequests--;
+        cb(t);
+      });
+    };
+    const origSetTimeout = window.setTimeout.bind(window);
+    const origClearTimeout = window.clearTimeout.bind(window);
+    window.setTimeout = function (fn, delay, ...args) {
+      debugPerfCounters.activeTimers++;
+      const id = origSetTimeout(() => {
+        debugPerfCounters.activeTimers--;
+        fn(...args);
+      }, delay);
+      return id;
+    };
+    window.clearTimeout = function (id) {
+      // Best-effort only: a timer already fired (or never existed) simply
+      // has clearTimeout() become a no-op here exactly as the native API
+      // already does — this can't double-decrement or go negative because
+      // the wrapped callback above always decrements exactly once, before
+      // clearTimeout() on an already-fired id would ever be reachable.
+      if (id !== undefined && id !== null) debugPerfCounters.activeTimers = Math.max(0, debugPerfCounters.activeTimers - 1);
+      return origClearTimeout(id);
+    };
+    const origMediaPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (...args) {
+      const p = origMediaPlay.apply(this, args);
+      if (p && typeof p.then === 'function') {
+        debugPerfCounters.activeMediaPlayPromises++;
+        const settle = () => { debugPerfCounters.activeMediaPlayPromises--; };
+        p.then(settle, settle);
+      }
+      return p;
+    };
+  }
+
   // ---------- Canvas setup ----------
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
@@ -10569,6 +10623,47 @@
     if (audibleBgmViolation) lines.push(`LAST VIOLATION: ${audibleBgmViolation.message} (${Math.round(now - audibleBgmViolation.at)}ms ago)`);
     debugAudioEl.textContent = lines.join('\n');
   }
+  // P0 INTEGRATED REGRESSION FIX (H): ?debugPerf=1 overlay — same
+  // persistence pattern as the other debug overlays, a SEPARATE flag/element
+  // from all of them. Every field here is a real measurement: frame-time
+  // stats come from a genuine rolling window of this file's own real
+  // rafLastDeltaMs (see loop()'s own rafFrameCount/rafLastDeltaMs), and
+  // active-RAF/timer/media-play-promise counts come from the actual
+  // requestAnimationFrame/setTimeout/HTMLMediaElement.play() patches at the
+  // very top of this file — never a hardcoded "1" or guessed value.
+  const debugPerfEl = document.getElementById('debug-perf-overlay');
+  const debugPerfFrameHistory = []; // {t, dt} samples within DEBUG_PERF_WINDOW_MS of `now`
+  const DEBUG_PERF_WINDOW_MS = 30000; // matches the work order's own "measure 30 real seconds" spec
+  function updateDebugPerfOverlay(now) {
+    if (!DEBUG_PERF_OVERLAY || !debugPerfEl) return;
+    debugPerfFrameHistory.push({ t: now, dt: rafLastDeltaMs });
+    while (debugPerfFrameHistory.length > 0 && now - debugPerfFrameHistory[0].t > DEBUG_PERF_WINDOW_MS) debugPerfFrameHistory.shift();
+    // A frame delta of 0 (the very first frame, lastTime uninitialized) or
+    // an implausibly huge one (tab was backgrounded/RAF throttled, or a
+    // real device woke from sleep) would skew avg/max into meaninglessness
+    // without actually reflecting real in-game jank — excluded from the
+    // stats, exactly like a real perf tool would.
+    const dts = debugPerfFrameHistory.map((f) => f.dt).filter((dt) => dt > 0 && dt < 2000);
+    const avgDt = dts.length ? dts.reduce((a, b) => a + b, 0) / dts.length : 0;
+    const maxDt = dts.length ? Math.max(...dts) : 0;
+    const longFrameCount = dts.filter((dt) => dt > 50).length;
+    const fps = avgDt > 0 ? 1000 / avgDt : 0;
+    const { pendingNames } = computeStartupRequiredProgress();
+    const videoEls = [openingVideoEl, eventMovieVideoEl, endingRevealVideoEl, endingLoadingVideoEl].filter((v) => v && v.hasAttribute('src') && v.readyState < 4);
+    const stageLabel = (gameState.mode === 'training' || gameState.mode === 'securityTraining') ? `trainingStage=${trainingStageIndex}` : `storyStage=${currentStageIndex}`;
+    debugPerfEl.textContent =
+      `--- PERF (?debugPerf=1) ---\n` +
+      `WINDOW: ${(debugPerfFrameHistory.length ? (now - debugPerfFrameHistory[0].t) / 1000 : 0).toFixed(1)}s / ${dts.length} frames\n` +
+      `FPS: ${fps.toFixed(1)}\n` +
+      `AVG FRAME TIME: ${avgDt.toFixed(1)}ms  MAX FRAME TIME: ${maxDt.toFixed(1)}ms\n` +
+      `LONG FRAMES (>50ms): ${longFrameCount}\n` +
+      `ACTIVE RAF REQUESTS: ${debugPerfCounters.activeRafRequests}\n` +
+      `ACTIVE TIMERS: ${debugPerfCounters.activeTimers}\n` +
+      `PENDING PRELOAD: ${pendingNames.length}\n` +
+      `ACTIVE VIDEO LOADS: ${videoEls.length}\n` +
+      `ACTIVE MEDIA PLAY() PROMISES: ${debugPerfCounters.activeMediaPlayPromises}\n` +
+      `MODE: ${gameState.mode || '(none)'}  SCREEN: ${gameState.screen}  ${stageLabel}`;
+  }
   // AUDIO ROOT REWRITE (PART B) item 22/23: real, measured event-level
   // logging of one BGM track over a real time window (default 30s), for
   // diagnosing the reported Outbreak1.1 stutter on an actual device where
@@ -17283,6 +17378,7 @@
     get isBgmTrackAudible() { return isBgmTrackAudible; },
     get auditAudibleBgm() { return auditAudibleBgm; },
     get DEBUG_AUDIO_OVERLAY() { return DEBUG_AUDIO_OVERLAY; }, set DEBUG_AUDIO_OVERLAY(v) { DEBUG_AUDIO_OVERLAY = v; },
+    get DEBUG_PERF_OVERLAY() { return DEBUG_PERF_OVERLAY; }, set DEBUG_PERF_OVERLAY(v) { DEBUG_PERF_OVERLAY = v; }, updateDebugPerfOverlay, debugPerfCounters, // P0 INTEGRATED REGRESSION FIX (H) — debug/verification only
     get debugAudioEl() { return debugAudioEl; },
     get startBgmStutterLog() { return startBgmStutterLog; },
     get resolvePlayerOverlapAfterPhaseChange() { return resolvePlayerOverlapAfterPhaseChange; }, // ADDENDUM 2 (GABRIEL DARK PHASE) — debug/verification only
@@ -19822,6 +19918,20 @@
     }
     DEBUG_GABRIEL_HIT_OVERLAY = localStorage.getItem('debugGabrielHit') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  // P0 INTEGRATED REGRESSION FIX (H): same ?debugPerf=1/0 -> localStorage
+  // persistence pattern as the other debug overlays above — see
+  // updateDebugPerfOverlay() and the requestAnimationFrame/setTimeout/play()
+  // monkey-patches just below it for how each field is actually measured
+  // (never a guessed/hardcoded value).
+  let DEBUG_PERF_OVERLAY = false;
+  try {
+    if (new URLSearchParams(window.location.search).get('debugPerf') === '1') {
+      localStorage.setItem('debugPerf', '1');
+    } else if (new URLSearchParams(window.location.search).get('debugPerf') === '0') {
+      localStorage.removeItem('debugPerf');
+    }
+    DEBUG_PERF_OVERLAY = localStorage.getItem('debugPerf') === '1';
+  } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
   const GAMEPAD_FIRE_THRESHOLD = 0.25; // RT analog value >= this counts as FIRE held
@@ -20632,6 +20742,7 @@
       updateDebugInputOverlay(now);
       updateDebugStartupOverlay(now); // P0 INTEGRATED WORK ORDER: separate overlay/flag, never touches updateDebugInputOverlay()'s own fields
       updateDebugAudioOverlay(now); // AUDIO ROOT REWRITE (PART B): separate overlay/flag, never touches the other two overlays' own fields
+      updateDebugPerfOverlay(now); // P0 INTEGRATED REGRESSION FIX (H): separate overlay/flag, never touches any other overlay's own fields
     } catch (err) {
       console.error('[LOOP] uncaught error this frame, continuing next frame:', err);
       debugLastLoopException = { message: String(err && err.message || err), at: now };

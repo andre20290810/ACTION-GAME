@@ -480,6 +480,16 @@
      and exactly one BGM is ever audible at a time. -->
 <div id="debug-audio-overlay"></div>
 
+<!-- P0 INTEGRATED REGRESSION FIX (H): a SEPARATE overlay from all the ones
+     above (?debugPerf=1/0 in the URL, same localStorage-persistence pattern)
+     — top-center, the one spot not already owned by another corner overlay.
+     Shows real-time-measured FPS/frame-time stats over a rolling 30s window,
+     plus live active-RAF-request/active-timer/active-media-play()-promise
+     counts (from the requestAnimationFrame/setTimeout/HTMLMediaElement.play()
+     patches at the very top of game.js), pending-preload count, active video
+     loads, and current mode/screen/stage. -->
+<div id="debug-perf-overlay"></div>
+
 <!-- PART 9 SECTION G: shared EVENT MOVIE PLAYER — one DOM overlay reused
      by every SYSTEM/EVENT movie (opening/sneaking/drone_arrival/
      gabriel_arrival/gabriel_down/gabriel_defeated/experiment_lab/

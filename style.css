@@ -859,6 +859,34 @@ body {
   display: none;
 }
 
+/* P0 INTEGRATED REGRESSION FIX (H): top-CENTER — all 4 screen corners are
+   already owned (top-right #debug-input-overlay, top-left
+   #gamepad-debug-overlay, bottom-left #debug-startup-overlay, bottom-right
+   #debug-audio-overlay), so this one is centered along the top edge instead;
+   still never overlaps any of the 4 corner overlays. */
+#debug-perf-overlay {
+  position: fixed;
+  top: max(8px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  pointer-events: none;
+  font-family: monospace;
+  font-size: 9px;
+  line-height: 1.4;
+  color: rgba(255, 160, 220, 0.9);
+  background: rgba(0, 0, 0, 0.55);
+  padding: 4px 6px;
+  border-radius: 4px;
+  white-space: pre;
+  max-width: 62vw;
+  overflow: hidden;
+  text-align: left;
+}
+#debug-perf-overlay:empty {
+  display: none;
+}
+
 /* ---------- SECTION G/H/I/J: LOADING / OPENING / MAIN MENU ----------
    Each is position:fixed/inset:0, shown one at a time via [hidden]
    (game.js's screen state machine — see setScreen()) — stacked below the
