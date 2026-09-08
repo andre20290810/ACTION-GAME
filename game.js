@@ -1269,21 +1269,19 @@
     // HOTFIX 2 SECTION 10-13: every EVENT/SYSTEM movie through this shared
     // player now keeps its own embedded audio ON unconditionally, layered
     // together with whichever BGM track the current musicContext says
-    // should be playing (sneaking/drone_arrival + normal BGM; the 4 BOSS
-    // ARRIVAL movies + boss BGM; gabriel_defeated/main_escape/main_bad_ending
-    // + whatever was already playing) — this batch's real-device spec
-    // explicitly overrides both the old "arrival movies play muted" policy
-    // (POST-v1.0 SECTION 20) and last batch's "mute sneaking.mp4" fix
-    // (HOTFIX SECTION 14-3, now reverted). Only the external ENDING ROLL
-    // (playEndingRoll(), a separate code path) ever silences BGM entirely.
+    // should be playing (the 4 BOSS ARRIVAL/DEFEAT movies + boss BGM;
+    // main_escape/main_bad_ending + whatever was already playing) — this
+    // batch's real-device spec explicitly overrides both the old "arrival
+    // movies play muted" policy (POST-v1.0 SECTION 20) and last batch's
+    // "mute sneaking.mp4" fix (HOTFIX SECTION 14-3, now reverted). Only the
+    // external ENDING ROLL (playEndingRoll(), a separate code path) ever
+    // silences BGM entirely.
     // HOTFIX 3 SECTION 2-3: gabriel_arrival is the ONE exception to the
     // "every movie's own audio ON" policy above — real-device spec now
     // wants ONLY Outbreak 2 (already playing under it via startBossBgm(),
     // called before this movie fires — see maybePlayStoryGabrielArrival())
     // audible during GABRIEL's arrival, never layered with the video's own
-    // embedded track. Every other movie (sneaking/drone_arrival/ROID+ADAM
-    // arrivals/gabriel_defeated/ENDING) is completely untouched — scoped to
-    // this exact key only, never a second mute-everything regression.
+    // embedded track.
     // HOTFIX 4.3 SECTIONS 46-50: main_escape ("脱出動画") and main_bad_ending
     // (the ADAM SPHERE MAIN finale's own 2nd/closing movie — together the
     // exact 2 movies MAIN's beginStoryEscapeEnding() plays back-to-back
@@ -1298,7 +1296,24 @@
     // underneath these two movies is likewise untouched (MOVIE muted here
     // is not the same as pausing BGM — beginStoryEscapeEnding()'s own
     // bgmAudio.pause() call, unrelated to this line, still decides that).
-    eventMovieVideoEl.muted = key === 'gabriel_arrival' || key === 'main_escape' || key === 'main_bad_ending';
+    // P0 BGM WORK ORDER C (real-device "2 songs at once" re-audit): the 4
+    // BOSS ARRIVAL/DEFEAT movies (roid1_arrival/roid2_arrival/adam_arrival/
+    // gabriel_defeated) keep their audio ON, layered with boss BGM — that
+    // exact combination was explicitly, deliberately requested via real-
+    // device feedback (HOTFIX 2 SECTION 13 above) and is left untouched
+    // here. sneaking and experiment_lab are different in kind: both are
+    // narrative/story WAYPOINT scenes (not a combat arrival sting) that
+    // play with the FULL gameplay BGM track already running underneath
+    // (beginScenarioOpening() calls startGameplayBgm() before playing
+    // sneaking; the PROJECT ADAM waypoint leaves whatever gameplay BGM was
+    // already playing untouched before playing experiment_lab) — exactly
+    // the "two full songs at once" shape the real-device report describes,
+    // and exactly the flow (MAIN MENU -> STORY MODE start) the report's own
+    // repro steps name. Muted here, same scoped-by-exact-key pattern as
+    // gabriel_arrival/main_escape/main_bad_ending above — every other movie
+    // key (drone_arrival has no live call site; gabriel_down likewise;
+    // true_ending/ENDING ROLL are untouched, see above) is unaffected.
+    eventMovieVideoEl.muted = key === 'gabriel_arrival' || key === 'main_escape' || key === 'main_bad_ending' || key === 'sneaking' || key === 'experiment_lab';
     // P0 INTEGRATED REGRESSION HOTFIX (Part H): gabriel_defeated alone gets
     // GABRIEL_DEFEATED_GAIN; every other key resets to 1.0 (identical to
     // the old, un-amplified behavior) — see ensureEventMovieGainNode()'s
