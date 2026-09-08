@@ -922,6 +922,23 @@ body {
 #loading-screen.loading-fade-out { opacity: 0; }
 #loading-screen[hidden] { display: none; }
 
+/* AUDIT PHASE 2 + PART B (B4): sits behind loading-progress-overlay/
+   opening-overlay (both position:absolute, declared later in DOM order so
+   they stack above this by default) and behind the dark scrim gradient
+   above (that gradient is #loading-screen's own background, painted
+   beneath all children including this video, keeping the % text/bar
+   readable). object-fit:cover matches the existing loading_bg.jpg's own
+   cover+center convention. */
+#loading-bg-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+}
+#loading-bg-video[hidden] { display: none; }
+
 /* P0 GAME COMPLETION HOTFIX (STARTUP PRELOAD UI REBUILD): real numeric %
    plus a visible progress bar — DARK OUT UI tone (plain uppercase
    sans-serif, no emoji, no boxed/paneled menu), directly on the black

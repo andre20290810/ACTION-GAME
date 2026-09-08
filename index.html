@@ -23,7 +23,7 @@
 <meta name="twitter:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_site_v2.jpg">
 <link rel="icon" href="assets/branding/dark_out_site_v2.jpg" type="image/jpeg">
 <link rel="apple-touch-icon" href="assets/branding/dark_out_site_v2.jpg">
-<link rel="stylesheet" href="style.css?v=p0-loading-audio-drone-thumb-1">
+<link rel="stylesheet" href="style.css?v=audit2-wall-gamepad-video-1">
 </head>
 <body>
 
@@ -38,6 +38,16 @@
      loaded/total required-asset count, and 100% is only ever reported once
      that count is genuinely met — see runStartupLoadingPhase() in game.js. -->
 <div id="loading-screen">
+  <!-- AUDIT PHASE 2 + PART B (B4): cosmetic-only background loop, shown ONLY
+       while gameState.screen==='loading' (never during 'opening'/TAP TO
+       START — see setScreen()'s own loading-bg-video toggle in game.js).
+       Deliberately NOT part of getStartupRequiredAssetTargets()/
+       assertStartupReady() — its readyState/play() success or failure can
+       never block or delay LOADING; on any failure to start it simply stays
+       hidden and the existing #loading-screen background:url('assets/ui/
+       loading_bg.jpg') CSS (unchanged) shows through as the safe fallback,
+       exactly as it always has for the whole loading-screen area. -->
+  <video id="loading-bg-video" src="assets/video/system/loading_bg_loop.mp4" muted loop playsinline webkit-playsinline="true" preload="auto" hidden></video>
   <div id="loading-progress-overlay">
     <div id="loading-percent-text">Data Loading 0.0%</div>
     <div id="loading-bar-track">
@@ -521,6 +531,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=p0-loading-audio-drone-thumb-1"></script>
+<script src="game.js?v=audit2-wall-gamepad-video-1"></script>
 </body>
 </html>
