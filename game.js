@@ -10124,7 +10124,22 @@
       audibleBgmViolation = { message: 'Shining Grace audible outside endingReveal', at: performance.now() };
     }
     // 2F: menu hard guard — only the menu track may be audible on startup/menu-family screens.
-    if (MENU_FAMILY_SCREENS_FOR_AUDIO_GUARD.indexOf(gameState.screen) !== -1) {
+    // P0 INTEGRATED REGRESSION FIX (J/K): root cause of the real-device
+    // "Outbreak1.1 cuts in and out entering MAIN SCENARIO" report — a movie
+    // (playEventMovie()) deliberately leaves gameState.screen UNCHANGED for
+    // its whole duration (see reassertGameplayBgmIfExpected()'s own
+    // 'mainScenarioSub' writeup above), so beginScenarioOpening()'s
+    // intentional sneaking.mp4-plus-normal-BGM co-play (the documented
+    // movie-audio+BGM co-play spec) was being read by THIS guard as "normal
+    // BGM audible on a menu-family screen" and force-paused ~4x/sec, while
+    // syncMusicContext() (called just above, same tick) immediately resumed
+    // it — a real, audible play/pause cycle for the movie's whole runtime,
+    // not merely a Playwright artifact. The screen-based classification is
+    // simply unreliable while a movie owns the audio, so this guard must
+    // stand down for that window; it re-arms itself the instant the movie
+    // ends (eventMovieState.active is the same source of truth already used
+    // for gamepad-input/menu-nav gating elsewhere in this file).
+    if (MENU_FAMILY_SCREENS_FOR_AUDIO_GUARD.indexOf(gameState.screen) !== -1 && !eventMovieState.active) {
       for (const [key, el] of tracks) {
         if (key !== 'menu' && isBgmTrackAudible(el)) {
           console.error('[AUDIO] VIOLATION: non-menu track audible on menu-family screen:', key, gameState.screen);
