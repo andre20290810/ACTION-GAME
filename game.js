@@ -20136,12 +20136,7 @@
   // either way.
   let GAMEPAD_DEBUG = false;
   try {
-    if (new URLSearchParams(window.location.search).get('gamepadDebug') === '1') {
-      localStorage.setItem('gamepadDebug', '1');
-    } else if (new URLSearchParams(window.location.search).get('gamepadDebug') === '0') {
-      localStorage.removeItem('gamepadDebug');
-    }
-    GAMEPAD_DEBUG = localStorage.getItem('gamepadDebug') === '1';
+    GAMEPAD_DEBUG = new URLSearchParams(window.location.search).get('gamepadDebug') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF, never crash boot over a diagnostic convenience */ }
   // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION Part A/L: a SEPARATE
   // flag/overlay from GAMEPAD_DEBUG above (same persistence pattern —
@@ -20153,12 +20148,7 @@
   // overlay never showed. See updateDebugInputOverlay() below.
   let DEBUG_INPUT_OVERLAY = false;
   try {
-    if (new URLSearchParams(window.location.search).get('debugInput') === '1') {
-      localStorage.setItem('debugInput', '1');
-    } else if (new URLSearchParams(window.location.search).get('debugInput') === '0') {
-      localStorage.removeItem('debugInput');
-    }
-    DEBUG_INPUT_OVERLAY = localStorage.getItem('debugInput') === '1';
+    DEBUG_INPUT_OVERLAY = new URLSearchParams(window.location.search).get('debugInput') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   // P0 REAL-DEVICE REGRESSION (Issue 3F): same persistence pattern as
   // DEBUG_INPUT_OVERLAY above (?debugCollision=1/0 in the URL, then sticks
@@ -20169,12 +20159,7 @@
   // visible geometry rather than trusting a fraction number in source.
   let DEBUG_COLLISION_OVERLAY = false;
   try {
-    if (new URLSearchParams(window.location.search).get('debugCollision') === '1') {
-      localStorage.setItem('debugCollision', '1');
-    } else if (new URLSearchParams(window.location.search).get('debugCollision') === '0') {
-      localStorage.removeItem('debugCollision');
-    }
-    DEBUG_COLLISION_OVERLAY = localStorage.getItem('debugCollision') === '1';
+    DEBUG_COLLISION_OVERLAY = new URLSearchParams(window.location.search).get('debugCollision') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   // P0 WORK ORDER I CORRECTION: same ?debugAreaLos=1/0 -> localStorage
   // persistence pattern as DEBUG_COLLISION_OVERLAY above — draws the actual
@@ -20192,12 +20177,7 @@
   // triggerCloseRangeCounter().
   let debugGabrielHitState = null;
   try {
-    if (new URLSearchParams(window.location.search).get('debugAreaLos') === '1') {
-      localStorage.setItem('debugAreaLos', '1');
-    } else if (new URLSearchParams(window.location.search).get('debugAreaLos') === '0') {
-      localStorage.removeItem('debugAreaLos');
-    }
-    DEBUG_AREA_LOS_OVERLAY = localStorage.getItem('debugAreaLos') === '1';
+    DEBUG_AREA_LOS_OVERLAY = new URLSearchParams(window.location.search).get('debugAreaLos') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   // ==========================================================================
   // P0 DIAGNOSTIC PHASE 1 (GAMEPAD FIRST-PRESS FAILURE — DIAGNOSE ONLY): same
@@ -20215,12 +20195,7 @@
   // ==========================================================================
   let DEBUG_GAMEPAD_TAP_OVERLAY = false;
   try {
-    if (new URLSearchParams(window.location.search).get('debugGamepadTap') === '1') {
-      localStorage.setItem('debugGamepadTap', '1');
-    } else if (new URLSearchParams(window.location.search).get('debugGamepadTap') === '0') {
-      localStorage.removeItem('debugGamepadTap');
-    }
-    DEBUG_GAMEPAD_TAP_OVERLAY = localStorage.getItem('debugGamepadTap') === '1';
+    DEBUG_GAMEPAD_TAP_OVERLAY = new URLSearchParams(window.location.search).get('debugGamepadTap') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   const GAMEPAD_TAP_TRACE_MAX = 100; // ring buffer cap, per spec section 2
   const gamepadTapTrace = [];
@@ -20281,24 +20256,14 @@
   // showing startup-phase-specific readiness (see updateDebugStartupOverlay()).
   let DEBUG_STARTUP_OVERLAY = false;
   try {
-    if (new URLSearchParams(window.location.search).get('debugStartup') === '1') {
-      localStorage.setItem('debugStartup', '1');
-    } else if (new URLSearchParams(window.location.search).get('debugStartup') === '0') {
-      localStorage.removeItem('debugStartup');
-    }
-    DEBUG_STARTUP_OVERLAY = localStorage.getItem('debugStartup') === '1';
+    DEBUG_STARTUP_OVERLAY = new URLSearchParams(window.location.search).get('debugStartup') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   // AUDIO ROOT REWRITE (PART B): same ?debugAudio=1/0 -> localStorage
   // persistence pattern as the other debug overlays above — see
   // updateDebugAudioOverlay().
   let DEBUG_AUDIO_OVERLAY = false;
   try {
-    if (new URLSearchParams(window.location.search).get('debugAudio') === '1') {
-      localStorage.setItem('debugAudio', '1');
-    } else if (new URLSearchParams(window.location.search).get('debugAudio') === '0') {
-      localStorage.removeItem('debugAudio');
-    }
-    DEBUG_AUDIO_OVERLAY = localStorage.getItem('debugAudio') === '1';
+    DEBUG_AUDIO_OVERLAY = new URLSearchParams(window.location.search).get('debugAudio') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   // P0 BGM DOUBLE-PLAY DIAGNOSTIC (this batch): same ?debugBgm=1/0 ->
   // localStorage persistence pattern as every other overlay above — a
@@ -20314,12 +20279,7 @@
   // is false, so a normal player's session is completely unaffected.
   let DEBUG_BGM_OVERLAY = false;
   try {
-    if (new URLSearchParams(window.location.search).get('debugBgm') === '1') {
-      localStorage.setItem('debugBgm', '1');
-    } else if (new URLSearchParams(window.location.search).get('debugBgm') === '0') {
-      localStorage.removeItem('debugBgm');
-    }
-    DEBUG_BGM_OVERLAY = localStorage.getItem('debugBgm') === '1';
+    DEBUG_BGM_OVERLAY = new URLSearchParams(window.location.search).get('debugBgm') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   const BGM_TRACE_MAX = 200; // ring buffer cap — a full play session's worth of transitions, not just one screen
   const bgmTrace = [];
@@ -20532,12 +20492,7 @@
   // a visible on-screen overlay.
   let DEBUG_GABRIEL_HIT_OVERLAY = false;
   try {
-    if (new URLSearchParams(window.location.search).get('debugGabrielHit') === '1') {
-      localStorage.setItem('debugGabrielHit', '1');
-    } else if (new URLSearchParams(window.location.search).get('debugGabrielHit') === '0') {
-      localStorage.removeItem('debugGabrielHit');
-    }
-    DEBUG_GABRIEL_HIT_OVERLAY = localStorage.getItem('debugGabrielHit') === '1';
+    DEBUG_GABRIEL_HIT_OVERLAY = new URLSearchParams(window.location.search).get('debugGabrielHit') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   // P0 INTEGRATED REGRESSION FIX (H): same ?debugPerf=1/0 -> localStorage
   // persistence pattern as the other debug overlays above — see
@@ -20546,12 +20501,7 @@
   // (never a guessed/hardcoded value).
   let DEBUG_PERF_OVERLAY = false;
   try {
-    if (new URLSearchParams(window.location.search).get('debugPerf') === '1') {
-      localStorage.setItem('debugPerf', '1');
-    } else if (new URLSearchParams(window.location.search).get('debugPerf') === '0') {
-      localStorage.removeItem('debugPerf');
-    }
-    DEBUG_PERF_OVERLAY = localStorage.getItem('debugPerf') === '1';
+    DEBUG_PERF_OVERLAY = new URLSearchParams(window.location.search).get('debugPerf') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
