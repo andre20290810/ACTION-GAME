@@ -17535,6 +17535,13 @@
     get gamepadTapOnOpeningTapCallCount() { return gamepadTapOnOpeningTapCallCount; },
     get gamepadTapLastOnOpeningTapSource() { return gamepadTapLastOnOpeningTapSource; },
     classifyGamepadFirstPress, buildGamepadTapDebugText, updateDebugGamepadTapOverlay, // P0 DIAGNOSTIC PHASE 1 — debug/verification only
+    get gamepadTapConnectedEventCount() { return gamepadTapConnectedEventCount; },
+    get gamepadTapDisconnectedEventCount() { return gamepadTapDisconnectedEventCount; },
+    get gamepadTapFirstNonNullSlotAt() { return gamepadTapFirstNonNullSlotAt; },
+    get gamepadTapFirstPointerDownAt() { return gamepadTapFirstPointerDownAt; },
+    get gamepadTapFirstTouchStartAt() { return gamepadTapFirstTouchStartAt; },
+    get gamepadTapFirstKeyDownAt() { return gamepadTapFirstKeyDownAt; },
+    get gamepadTapFirstUserActivationAt() { return gamepadTapFirstUserActivationAt; }, // P0 DIAGNOSTIC PHASE 2 — debug/verification only
     get debugAudioEl() { return debugAudioEl; },
     get startBgmStutterLog() { return startBgmStutterLog; },
     get resolvePlayerOverlapAfterPhaseChange() { return resolvePlayerOverlapAfterPhaseChange; }, // ADDENDUM 2 (GABRIEL DARK PHASE) — debug/verification only
@@ -20072,6 +20079,46 @@
   let gamepadTapPrevStartupStateForDiag = null; // diagnostic-only shadow copy — never read by any real game-logic branch
   let gamepadTapFirstPressCaptured = false;
   let gamepadTapFirstPressSummary = null;
+  // P0 DIAGNOSTIC PHASE 2 (GAMEPAD NOT YET EXPOSED TO navigator.getGamepads()
+  // — DIAGNOSE ONLY, this batch): the previous batch's real-device recheck
+  // showed a DIFFERENT failure shape than the CASE C this file already
+  // fixes — navigator.getGamepads() reporting all-null slots the whole time
+  // TAP TO START was visible, so the game never even reached the point
+  // where adoption/edge-detection run at all. This block adds PURELY
+  // OBSERVATIONAL instrumentation for that earlier stage of the pipeline —
+  // whether/when 'gamepadconnected' actually fires, how navigator.
+  // getGamepads() itself changes over time, and whether page focus/
+  // visibility/user-activation state correlates with when a pad becomes
+  // visible. Nothing here reads any of these values to change behavior —
+  // only to log it. All of it is a no-op (including the extra listeners
+  // just below) unless DEBUG_GAMEPAD_TAP_OVERLAY is true.
+  let gamepadTapConnectedEventCount = 0;
+  let gamepadTapDisconnectedEventCount = 0;
+  let gamepadTapFirstNonNullSlotAt = 0; // Date.now() the FIRST time navigator.getGamepads() showed any connected slot this page life
+  let gamepadTapLastSlotSignature = ''; // diagnostic-only change-detector for navigator.getGamepads()'s own slot shape
+  let gamepadTapFirstPointerDownAt = 0;
+  let gamepadTapFirstTouchStartAt = 0;
+  let gamepadTapFirstKeyDownAt = 0;
+  let gamepadTapFirstUserActivationAt = 0; // first frame navigator.userActivation.isActive read true, if that API exists
+  if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+    window.addEventListener('pointerdown', () => {
+      if (!gamepadTapFirstPointerDownAt) gamepadTapFirstPointerDownAt = Date.now();
+      recordGamepadTapEvent('POINTER_DOWN', {});
+    }, { passive: true, capture: true });
+    window.addEventListener('touchstart', () => {
+      if (!gamepadTapFirstTouchStartAt) gamepadTapFirstTouchStartAt = Date.now();
+      recordGamepadTapEvent('TOUCH_START', {});
+    }, { passive: true, capture: true });
+    window.addEventListener('keydown', () => {
+      if (!gamepadTapFirstKeyDownAt) gamepadTapFirstKeyDownAt = Date.now();
+      recordGamepadTapEvent('KEY_DOWN', {});
+    }, { capture: true });
+    document.addEventListener('visibilitychange', () => {
+      recordGamepadTapEvent('VISIBILITY_CHANGE', { state: document.visibilityState });
+    });
+    window.addEventListener('focus', () => recordGamepadTapEvent('WINDOW_FOCUS', {}));
+    window.addEventListener('blur', () => recordGamepadTapEvent('WINDOW_BLUR', {}));
+  }
   // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD): same ?debugStartup=1/0
   // -> localStorage persistence pattern as the other debug overlays above —
   // a SEPARATE overlay from ?debugInput=1 (never replaces or alters it),
@@ -20400,10 +20447,15 @@
   // arm/disarm, or readiness logic is touched.
   window.addEventListener('gamepadconnected', (e) => {
     if (DEBUG_GAMEPAD_TAP_OVERLAY) {
-      recordGamepadTapEvent('GAMEPAD_CONNECTED_EVENT', { index: e.gamepad.index, id: e.gamepad.id });
+      gamepadTapConnectedEventCount++;
+      recordGamepadTapEvent('GAMEPAD_CONNECTED_EVENT', { index: e.gamepad.index, id: e.gamepad.id, count: gamepadTapConnectedEventCount });
     }
   });
   window.addEventListener('gamepaddisconnected', (e) => {
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      gamepadTapDisconnectedEventCount++;
+      recordGamepadTapEvent('GAMEPAD_DISCONNECTED_EVENT', { index: e.gamepad.index, count: gamepadTapDisconnectedEventCount });
+    }
     if (e.gamepad.index === gamepadIndex) gamepadIndex = null;
     // Actual state zeroing happens uniformly in updateGamepadInput()'s own
     // "no active gamepad" branch on the very next frame — never duplicated
@@ -20521,7 +20573,27 @@
     const anyGamepadVisibleNow = padsNowRaw.some((gp2) => gp2 && gp2.connected);
     const gamepadNewlyVisibleThisFrame = anyGamepadVisibleNow && !gamepadWasVisibleLastPoll;
     if (DEBUG_GAMEPAD_TAP_OVERLAY && gamepadNewlyVisibleThisFrame) {
+      if (!gamepadTapFirstNonNullSlotAt) gamepadTapFirstNonNullSlotAt = Date.now();
       recordGamepadTapEvent('GAMEPAD_VISIBLE', { slots: padsNowRaw.map((gp2, i) => gp2 && gp2.connected ? { slot: i, id: gp2.id, index: gp2.index } : null).filter(Boolean) });
+    }
+    // P0 DIAGNOSTIC PHASE 2 (GAMEPAD NOT YET EXPOSED — DIAGNOSE ONLY): a
+    // full change-log of navigator.getGamepads()'s own raw slot shape over
+    // time, independent of GAMEPAD_VISIBLE above (which only fires on a
+    // false->true transition of "is ANY slot connected"). This also catches
+    // flicker a single boolean can't show — e.g. a slot appearing then
+    // disappearing then reappearing at a different index — which is exactly
+    // the kind of pre-adoption instability this phase needs visibility
+    // into. Pure string compare, no game-state read or write.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      const slotSig = padsNowRaw.map((gp2, i) => (gp2 && gp2.connected) ? (i + ':' + gp2.id + ':' + gp2.mapping) : '').join('|');
+      if (slotSig !== gamepadTapLastSlotSignature) {
+        recordGamepadTapEvent('GAMEPAD_SLOTS_CHANGED', { signature: slotSig || '(all null)' });
+        gamepadTapLastSlotSignature = slotSig;
+      }
+      if (navigator.userActivation && navigator.userActivation.isActive && !gamepadTapFirstUserActivationAt) {
+        gamepadTapFirstUserActivationAt = Date.now();
+        recordGamepadTapEvent('USER_ACTIVATION_FIRST_ACTIVE', {});
+      }
     }
     // P0 DIAGNOSTIC PHASE 1: FIRST PRESS SUMMARY front-half capture — pure
     // observation of the browser's own raw button state, taken BEFORE
@@ -21195,6 +21267,14 @@
       `screen: ${gameState.screen}\n` +
       `TAP TO START visible: ${gameState.screen === 'opening' && !openingOverlayEl.hidden}\n` +
       `--- GAMEPAD RAW (navigator.getGamepads()) ---\n${padLines.join('\n')}\n` +
+      `--- PRE-EXPOSURE (before adoption/edge-detection ever runs) ---\n` +
+      `gamepadconnected event count: ${gamepadTapConnectedEventCount}\n` +
+      `gamepaddisconnected event count: ${gamepadTapDisconnectedEventCount}\n` +
+      `first non-null slot seen at: ${gamepadTapFirstNonNullSlotAt ? new Date(gamepadTapFirstNonNullSlotAt).toISOString() + ' (' + ago(gamepadTapFirstNonNullSlotAt) + ')' : '(never this page life)'}\n` +
+      `document.visibilityState: ${document.visibilityState}  document.hasFocus(): ${document.hasFocus()}\n` +
+      `navigator.userActivation: ${navigator.userActivation ? ('isActive=' + navigator.userActivation.isActive + ' hasBeenActive=' + navigator.userActivation.hasBeenActive) : '(API not available)'}\n` +
+      `first user-activation-active seen at: ${ago(gamepadTapFirstUserActivationAt)}\n` +
+      `first pointerdown at: ${ago(gamepadTapFirstPointerDownAt)}  first touchstart at: ${ago(gamepadTapFirstTouchStartAt)}  first keydown at: ${ago(gamepadTapFirstKeyDownAt)}\n` +
       `--- ADOPTED STATE ---\n` +
       `adopted gamepadIndex: ${gamepadIndex}\n` +
       `gamepadWasVisibleLastPoll: ${gamepadWasVisibleLastPoll}\n` +
