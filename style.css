@@ -887,6 +887,77 @@ body {
   display: none;
 }
 
+/* P0 DIAGNOSTIC PHASE 1 (GAMEPAD FIRST-PRESS FAILURE — DIAGNOSE ONLY):
+   bottom-anchored, semi-transparent real-device panel — readable font size
+   (13px, not the tiny 9-10px other debug overlays use, per spec's own
+   "text is not too small" requirement) so a real iPhone screenshot stays
+   legible. z-index above the touch control zones so it's visible over
+   them, but capped height + internal scroll (never full-screen) so the
+   game view stays mostly visible underneath and TAP TO START (vertically
+   centered) is never covered. [hidden] keeps it fully absent from a normal
+   session — never display:none-by-CSS-only, so game.js's own
+   DEBUG_GAMEPAD_TAP_OVERLAY flag is the single source of truth for
+   visibility. */
+#debug-gamepad-tap-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  max-height: 42vh;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.82);
+  border-top: 1px solid rgba(255, 160, 220, 0.6);
+  font-family: monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(235, 235, 238, 0.95);
+}
+#debug-gamepad-tap-panel[hidden] { display: none; }
+#debug-gamepad-tap-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 160, 220, 0.3);
+  flex-shrink: 0;
+}
+#debug-gamepad-tap-header span {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(255, 160, 220, 0.95);
+}
+#debug-gamepad-tap-copy-btn {
+  font-family: monospace;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: rgba(255, 160, 220, 0.15);
+  color: rgba(255, 160, 220, 0.95);
+  border: 1px solid rgba(255, 160, 220, 0.6);
+  border-radius: 4px;
+}
+#debug-gamepad-tap-text {
+  margin: 0;
+  padding: 8px 10px 12px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  flex: 1 1 auto;
+}
+#debug-gamepad-tap-fallback-textarea {
+  width: 100%;
+  height: 30vh;
+  box-sizing: border-box;
+  font-family: monospace;
+  font-size: 12px;
+  background: #111;
+  color: #eee;
+  border: 1px solid rgba(255, 160, 220, 0.6);
+}
+#debug-gamepad-tap-fallback-textarea[hidden] { display: none; }
+
 /* ---------- SECTION G/H/I/J: LOADING / OPENING / MAIN MENU ----------
    Each is position:fixed/inset:0, shown one at a time via [hidden]
    (game.js's screen state machine — see setScreen()) — stacked below the

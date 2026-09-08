@@ -11097,6 +11097,20 @@
     unlockBackgroundBgmForIOS(isTrustedGesture);
   }
   function onOpeningTap(e) {
+    // P0 DIAGNOSTIC PHASE 1: pure observation — records that onOpeningTap()
+    // was invoked and from which of its 3 existing call sites (touchstart/
+    // mousedown listeners on openingOverlayEl, or the gamepad-driven
+    // synthetic {preventDefault(){}} call in updateGamepadInput() — the
+    // synthetic object has no .type, which is exactly how "gamepad" is
+    // distinguished here). Placed before the existing early-return so a
+    // rejected/duplicate call (stray double-fire) is counted too, matching
+    // "onOpeningTap() called count" literally. No existing line touched.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      gamepadTapOnOpeningTapCallCount++;
+      gamepadTapLastOnOpeningTapSource = e && e.type === 'touchstart' ? 'touch' : e && e.type === 'mousedown' ? 'mouse' : 'gamepad';
+      gamepadTapLastOnOpeningTapAt = Date.now();
+      recordGamepadTapEvent('ON_OPENING_TAP_CALLED', { source: gamepadTapLastOnOpeningTapSource, screenAtCall: gameState.screen });
+    }
     e.preventDefault();
     if (gameState.screen !== 'opening') return; // guards against a stray double-fire (touchstart + mousedown) doing this twice
     // P0 STARTUP STATE MACHINE REWRITE item 10: WAITING_FOR_TAP -> ENTERING_MENU
@@ -17515,6 +17529,12 @@
     get auditAudibleBgm() { return auditAudibleBgm; },
     get DEBUG_AUDIO_OVERLAY() { return DEBUG_AUDIO_OVERLAY; }, set DEBUG_AUDIO_OVERLAY(v) { DEBUG_AUDIO_OVERLAY = v; },
     get DEBUG_PERF_OVERLAY() { return DEBUG_PERF_OVERLAY; }, set DEBUG_PERF_OVERLAY(v) { DEBUG_PERF_OVERLAY = v; }, updateDebugPerfOverlay, debugPerfCounters, // P0 INTEGRATED REGRESSION FIX (H) — debug/verification only
+    get DEBUG_GAMEPAD_TAP_OVERLAY() { return DEBUG_GAMEPAD_TAP_OVERLAY; }, set DEBUG_GAMEPAD_TAP_OVERLAY(v) { DEBUG_GAMEPAD_TAP_OVERLAY = v; },
+    get gamepadTapTrace() { return gamepadTapTrace; }, get GAMEPAD_TAP_TRACE_MAX() { return GAMEPAD_TAP_TRACE_MAX; },
+    get gamepadTapFirstPressSummary() { return gamepadTapFirstPressSummary; },
+    get gamepadTapOnOpeningTapCallCount() { return gamepadTapOnOpeningTapCallCount; },
+    get gamepadTapLastOnOpeningTapSource() { return gamepadTapLastOnOpeningTapSource; },
+    classifyGamepadFirstPress, buildGamepadTapDebugText, updateDebugGamepadTapOverlay, // P0 DIAGNOSTIC PHASE 1 — debug/verification only
     get debugAudioEl() { return debugAudioEl; },
     get startBgmStutterLog() { return startBgmStutterLog; },
     get resolvePlayerOverlapAfterPhaseChange() { return resolvePlayerOverlapAfterPhaseChange; }, // ADDENDUM 2 (GABRIEL DARK PHASE) — debug/verification only
@@ -20016,6 +20036,42 @@
     }
     DEBUG_AREA_LOS_OVERLAY = localStorage.getItem('debugAreaLos') === '1';
   } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  // ==========================================================================
+  // P0 DIAGNOSTIC PHASE 1 (GAMEPAD FIRST-PRESS FAILURE — DIAGNOSE ONLY): same
+  // ?debugGamepadTap=1/0 -> localStorage persistence pattern as every other
+  // overlay above. Everything below this block is PURELY OBSERVATIONAL — it
+  // records what the EXISTING gamepad/adoption/rising-edge/TAP-gate code
+  // (unmodified anywhere in this batch) already decides, on its own, every
+  // frame. No condition, threshold, timing value, readiness rule, fail-open
+  // window, or edge-detection algorithm is read here in order to CHANGE
+  // behavior — only to LOG it. recordGamepadTapEvent() is a no-op (zero
+  // allocation) whenever DEBUG_GAMEPAD_TAP_OVERLAY is false, so a normal
+  // player's session is completely unaffected. See updateDebugGamepadTapOverlay()
+  // (called from loop()'s own existing updateDebugXOverlay() sequence — no
+  // new requestAnimationFrame/setInterval loop) for the rendered panel.
+  // ==========================================================================
+  let DEBUG_GAMEPAD_TAP_OVERLAY = false;
+  try {
+    if (new URLSearchParams(window.location.search).get('debugGamepadTap') === '1') {
+      localStorage.setItem('debugGamepadTap', '1');
+    } else if (new URLSearchParams(window.location.search).get('debugGamepadTap') === '0') {
+      localStorage.removeItem('debugGamepadTap');
+    }
+    DEBUG_GAMEPAD_TAP_OVERLAY = localStorage.getItem('debugGamepadTap') === '1';
+  } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  const GAMEPAD_TAP_TRACE_MAX = 100; // ring buffer cap, per spec section 2
+  const gamepadTapTrace = [];
+  function recordGamepadTapEvent(type, fields) {
+    if (!DEBUG_GAMEPAD_TAP_OVERLAY) return;
+    gamepadTapTrace.push(Object.assign({ t: Date.now(), type }, fields || {}));
+    if (gamepadTapTrace.length > GAMEPAD_TAP_TRACE_MAX) gamepadTapTrace.shift();
+  }
+  let gamepadTapOnOpeningTapCallCount = 0;
+  let gamepadTapLastOnOpeningTapSource = '(none)';
+  let gamepadTapLastOnOpeningTapAt = 0;
+  let gamepadTapPrevStartupStateForDiag = null; // diagnostic-only shadow copy — never read by any real game-logic branch
+  let gamepadTapFirstPressCaptured = false;
+  let gamepadTapFirstPressSummary = null;
   // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD): same ?debugStartup=1/0
   // -> localStorage persistence pattern as the other debug overlays above —
   // a SEPARATE overlay from ?debugInput=1 (never replaces or alters it),
@@ -20274,6 +20330,9 @@
     gamepadIndex = newIndex;
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     const gp = pads[newIndex];
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      recordGamepadTapEvent('GAMEPAD_ADOPTED', { index: newIndex, id: gp ? gp.id : null, mapping: gp ? gp.mapping : null, buttonsLength: gp && gp.buttons ? gp.buttons.length : 0, axesLength: gp && gp.axes ? gp.axes.length : 0 });
+    }
     if (gp && gp.mapping !== undefined) {
       const idx = (gp.mapping === 'standard') ? STANDARD_GAMEPAD_BUTTONS : FALLBACK_GAMEPAD_BUTTONS;
       const btn = (i) => gp.buttons[i];
@@ -20371,6 +20430,20 @@
   function updateGamepadInput(now) {
     gamepadSubsystemInitialized = true; // P0 INTEGRATED WORK ORDER: subsystem-alive, independent of whether any pad is actually connected
     gamepadPollFrameCount++; // P0 REAL-DEVICE HOTFIX: real polled-frame count backing isGamepadSubsystemSettled()'s enumeration-latency settle window
+    // P0 DIAGNOSTIC PHASE 1: pure observation — STARTUP_STATE_CHANGE trace
+    // event, and reset the FIRST PRESS SUMMARY capture the instant a fresh
+    // WAITING_FOR_TAP begins (so the summary always reflects THIS TAP
+    // screen's own first press, never a stale one from a previous attempt/
+    // RETRY). Reads startupState, writes nothing any real logic branch
+    // below ever reads back.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY && startupState !== gamepadTapPrevStartupStateForDiag) {
+      recordGamepadTapEvent('STARTUP_STATE_CHANGE', { from: gamepadTapPrevStartupStateForDiag, to: startupState });
+      if (startupState === STARTUP_STATE.WAITING_FOR_TAP) {
+        gamepadTapFirstPressCaptured = false;
+        gamepadTapFirstPressSummary = null;
+      }
+      gamepadTapPrevStartupStateForDiag = startupState;
+    }
     // P0 FIRST-SESSION STABILITY (this batch, root-cause fix for "reload,
     // TAP shown, physical press does nothing, works on the NEXT reload"):
     // Chromium/WebKit do not expose an already-connected (from before this
@@ -20411,12 +20484,56 @@
     const padsNowRaw = navigator.getGamepads ? navigator.getGamepads() : [];
     const anyGamepadVisibleNow = padsNowRaw.some((gp2) => gp2 && gp2.connected);
     const gamepadNewlyVisibleThisFrame = anyGamepadVisibleNow && !gamepadWasVisibleLastPoll;
+    if (DEBUG_GAMEPAD_TAP_OVERLAY && gamepadNewlyVisibleThisFrame) {
+      recordGamepadTapEvent('GAMEPAD_VISIBLE', { slots: padsNowRaw.map((gp2, i) => gp2 && gp2.connected ? { slot: i, id: gp2.id, index: gp2.index } : null).filter(Boolean) });
+    }
+    // P0 DIAGNOSTIC PHASE 1: FIRST PRESS SUMMARY front-half capture — pure
+    // observation of the browser's own raw button state, taken BEFORE
+    // pollForGamepadConnection()/adoption runs this frame, so "browser
+    // detected press" and "previous pressed" reflect ONLY what
+    // navigator.getGamepads() itself reports, never anything this file's
+    // own adoption/edge logic has touched yet. The back half (TAP handler
+    // reached/accepted/rejected reason/screen after) is filled in further
+    // down, once the EXISTING TAP-check block (unmodified) has run for
+    // this exact same frame.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY && !gamepadTapFirstPressCaptured &&
+        (startupState === STARTUP_STATE.WAITING_FOR_TAP || gameState.screen === 'opening')) {
+      let pressedSlot = null, pressedButtonIndex = -1;
+      for (let s = 0; s < padsNowRaw.length; s++) {
+        const cand = padsNowRaw[s];
+        if (cand && cand.connected && cand.buttons) {
+          const bi = cand.buttons.findIndex((b) => b && b.pressed);
+          if (bi !== -1) { pressedSlot = s; pressedButtonIndex = bi; break; }
+        }
+      }
+      if (pressedSlot !== null) {
+        gamepadTapFirstPressCaptured = true;
+        gamepadTapFirstPressSummary = {
+          browserDetectedPress: true,
+          slot: pressedSlot,
+          buttonIndex: pressedButtonIndex,
+          adoptedIndexAtPress: gamepadIndex, // adoption state as of BEFORE this frame's pollForGamepadConnection() runs
+          rawPressed: true,
+          previousPressed: gamepadLastAnyButtonPressed, // existing tracker's value going into this frame — unread/unwritten by this diagnostic
+          risingEdgeAtPress: null, // filled in just below, once anyButtonPressedNow is computed
+          tapHandlerReached: false,
+          tapAccepted: false,
+          rejectedReason: null,
+          screenAfterPress: null,
+          capturedAt: Date.now(),
+        };
+        recordGamepadTapEvent('FIRST_PRESS_RAW_DETECTED', { slot: pressedSlot, buttonIndex: pressedButtonIndex, adoptedIndexAtPress: gamepadIndex, previousPressed: gamepadLastAnyButtonPressed });
+      }
+    }
     gamepadWasVisibleLastPoll = anyGamepadVisibleNow;
     const gamepadIndexBeforePoll = gamepadIndex;
     pollForGamepadConnection();
     const freshlyAdoptedThisFrame = gamepadIndexBeforePoll === null && gamepadIndex !== null && gamepadNewlyVisibleThisFrame;
     const gp = getActiveGamepad();
     if (!gp) {
+      if (DEBUG_GAMEPAD_TAP_OVERLAY && gamepadIndexBeforePoll !== null) {
+        recordGamepadTapEvent('GAMEPAD_LOST', { lostIndex: gamepadIndexBeforePoll });
+      }
       // The index we had is no longer a real connected pad (it vanished
       // without a gamepaddisconnected event ever firing — exactly the
       // Safari unreliability this whole polling design exists to tolerate).
@@ -20470,6 +20587,19 @@
     // (AXIS movement alone, e.g. a stick pushed without clicking it, never
     // counts — only gp.buttons entries do).
     const anyButtonPressedNow = gp.buttons.some((b) => b && b.pressed);
+    // P0 DIAGNOSTIC PHASE 1: pure observation — this is the EXACT same
+    // rising-edge expression the real TAP-check block below already
+    // evaluates independently; re-reading it here changes nothing, it only
+    // lets the diagnostic log/finalize the FIRST PRESS SUMMARY's
+    // risingEdgeAtPress field with the real value the game logic itself
+    // will act on a few lines down.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      const risingEdgeDiag = anyButtonPressedNow && !gamepadLastAnyButtonPressed;
+      if (risingEdgeDiag) recordGamepadTapEvent('RISING_EDGE', { index: gamepadIndex });
+      if (gamepadTapFirstPressSummary && gamepadTapFirstPressSummary.risingEdgeAtPress === null) {
+        gamepadTapFirstPressSummary.risingEdgeAtPress = risingEdgeDiag;
+      }
+    }
     // TAP TO START GAMEPAD SUPPORT: the "wait for full release" gate —
     // re-arms the instant every gamepad button is up again, never before.
     if (!gamepadInputArmed && !anyButtonPressedNow) gamepadInputArmed = true;
@@ -20507,6 +20637,9 @@
         debugLastButtonPressed = isPressed;
         debugLastButtonValue = b ? b.value : 0;
         debugLastButtonAt = now;
+        if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+          recordGamepadTapEvent(isPressed ? 'BUTTON_RAW_DOWN' : 'BUTTON_RAW_UP', { index: i, value: b ? b.value : 0, touched: !!(b && b.touched) });
+        }
       }
     });
     debugPrevButtonsPressedSnapshot = gp.buttons.map((b) => !!(b && b.pressed));
@@ -20648,6 +20781,9 @@
       // D-PAD-nav/A-confirm rising edge.
       let tapToStartFiredThisFrame = false;
       if (gameState.screen === 'opening') {
+        if (DEBUG_GAMEPAD_TAP_OVERLAY && gamepadTapFirstPressSummary && !gamepadTapFirstPressSummary.tapHandlerReached) {
+          gamepadTapFirstPressSummary.tapHandlerReached = true; // TAP-check block was reached this frame — see back-half finalize just below the block for accepted/rejected
+        }
         // P0 STARTUP STATE MACHINE REWRITE item 13/14: startupState (and its
         // generation snapshot) must ALSO agree before a rising edge is ever
         // accepted -- screen==='opening' alone is not proof the current
@@ -20655,9 +20791,11 @@
         if (startupState !== STARTUP_STATE.WAITING_FOR_TAP) {
           if (anyButtonPressedNow) lastTapRejectReason = TAP_REJECT_REASON.WRONG_STARTUP_STATE;
           debugLastRejectedBranch = 'opening:wrong-startup-state:' + startupState;
+          if (DEBUG_GAMEPAD_TAP_OVERLAY && anyButtonPressedNow) recordGamepadTapEvent('TAP_REJECTED', { reason: 'WRONG_STARTUP_STATE', startupState });
         } else if (tapReadyGeneration !== startupGeneration) {
           if (anyButtonPressedNow) lastTapRejectReason = TAP_REJECT_REASON.STALE_GENERATION;
           debugLastRejectedBranch = 'opening:stale-generation';
+          if (DEBUG_GAMEPAD_TAP_OVERLAY && anyButtonPressedNow) recordGamepadTapEvent('TAP_REJECTED', { reason: 'STALE_GENERATION' });
         } else if ((gamepadInputArmed && anyButtonPressedNow && !gamepadLastAnyButtonPressed) || (freshlyAdoptedThisFrame && anyButtonPressedNow)) {
           // freshlyAdoptedThisFrame branch: see updateGamepadInput()'s own
           // top-of-function comment — this pad was JUST discovered this
@@ -20670,17 +20808,38 @@
           debugStartHandlerCalledAt = now; // ?debugInput=1 overlay — see updateDebugInputOverlay()
           debugLastInputBranch = freshlyAdoptedThisFrame ? 'opening:tap-to-start-fired(freshly-adopted-with-button-held)' : 'opening:tap-to-start-fired';
           lastTapRejectReason = '(none)';
+          if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('TAP_ACCEPTED', { freshlyAdopted: freshlyAdoptedThisFrame });
           onOpeningTap({ preventDefault() {} });
           gamepadInputArmed = false;
           tapToStartFiredThisFrame = true;
+          if (DEBUG_GAMEPAD_TAP_OVERLAY && gamepadTapFirstPressSummary && !gamepadTapFirstPressSummary.tapAccepted) {
+            gamepadTapFirstPressSummary.tapAccepted = true;
+          }
         } else if (anyButtonPressedNow) {
           if (!gamepadInputArmed) {
             lastTapRejectReason = TAP_REJECT_REASON.NOT_ARMED;
             debugLastRejectedBranch = 'opening:disarmed';
+            if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('TAP_REJECTED', { reason: 'NOT_ARMED' });
           } else {
             lastTapRejectReason = TAP_REJECT_REASON.WAITING_FOR_RELEASE;
             debugLastRejectedBranch = 'opening:no-rising-edge(already-was-pressed-last-frame)';
+            if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('TAP_REJECTED', { reason: 'WAITING_FOR_RELEASE' });
           }
+          if (DEBUG_GAMEPAD_TAP_OVERLAY && gamepadTapFirstPressSummary && !gamepadTapFirstPressSummary.tapAccepted && !gamepadTapFirstPressSummary.rejectedReason) {
+            gamepadTapFirstPressSummary.rejectedReason = lastTapRejectReason;
+          }
+        }
+        // P0 DIAGNOSTIC PHASE 1: FIRST PRESS SUMMARY back-half finalize —
+        // this exact same frame's TAP-check block (above, unmodified) has
+        // now run to completion, so gameState.screen/tapToStartFiredThisFrame/
+        // lastTapRejectReason all reflect its real, final decision for this
+        // frame. Captured once only (first press after WAITING_FOR_TAP began).
+        if (DEBUG_GAMEPAD_TAP_OVERLAY && gamepadTapFirstPressSummary && gamepadTapFirstPressSummary.screenAfterPress === null) {
+          if (!gamepadTapFirstPressSummary.tapAccepted && gamepadTapFirstPressSummary.rejectedReason === null && lastTapRejectReason !== '(none)') {
+            gamepadTapFirstPressSummary.rejectedReason = lastTapRejectReason;
+          }
+          gamepadTapFirstPressSummary.screenAfterPress = gameState.screen;
+          recordGamepadTapEvent('FIRST_PRESS_SUMMARY_FINALIZED', Object.assign({}, gamepadTapFirstPressSummary));
         }
       }
       // GAMEPAD CONTROL TUNING: PAUSE MENU navigation — D-PAD UP/DOWN
@@ -20927,6 +21086,117 @@
         : '');
   }
 
+  // ==========================================================================
+  // P0 DIAGNOSTIC PHASE 1 (GAMEPAD FIRST-PRESS FAILURE — DIAGNOSE ONLY):
+  // real-device diagnostic panel. Read-only rendering of the pure-
+  // observation state recorded above — never writes to any gamepad/TAP/
+  // startup variable. See section 6 of the work order for the CASE A-G
+  // definitions this classifier implements verbatim.
+  // ==========================================================================
+  function classifyGamepadFirstPress(summary) {
+    if (!summary) return '(no first press captured yet this WAITING_FOR_TAP cycle)';
+    if (!summary.browserDetectedPress) return 'CASE A: navigator.getGamepads() never reported a press';
+    if (summary.adoptedIndexAtPress === null || summary.adoptedIndexAtPress === undefined) return 'CASE B: raw pressed=true but pad not yet adopted at press time';
+    if (summary.risingEdgeAtPress === false) return 'CASE C: adopted, but previous-snapshot handling suppressed the rising edge';
+    if (!summary.tapHandlerReached) return 'CASE D: rising edge=true, but the TAP-check block / onOpeningTap() was not reached this frame';
+    if (!summary.tapAccepted) return 'CASE E: reached the TAP gate, but rejected — reason: ' + (summary.rejectedReason || '(unknown)');
+    if (summary.screenAfterPress !== 'mainMenu') return 'CASE F: accepted, but screen did not transition to mainMenu (screen=' + summary.screenAfterPress + ')';
+    return 'CASE G / OK: accepted and screen transitioned to mainMenu — if the real device still visually shows TAP TO START, this is a RENDER-ONLY discrepancy (compare against a fresh screenshot)';
+  }
+  const debugGamepadTapEl = document.getElementById('debug-gamepad-tap-panel');
+  const debugGamepadTapCopyBtn = document.getElementById('debug-gamepad-tap-copy-btn');
+  const debugGamepadTapTextEl = document.getElementById('debug-gamepad-tap-text');
+  function buildGamepadTapDebugText(now) {
+    const ago = (t) => (!t ? 'never' : Math.round(Date.now() - t) + 'ms ago');
+    const allPads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const padLines = [];
+    for (let i = 0; i < Math.max(4, allPads.length); i++) {
+      const p = allPads[i];
+      padLines.push(p
+        ? `  slot ${i}${i === gamepadIndex ? ' *ADOPTED*' : ''}: connected=${p.connected} id="${p.id.slice(0, 40)}" index=${p.index} mapping=${p.mapping} buttons.length=${p.buttons.length} axes.length=${p.axes.length}`
+        : `  slot ${i}: (null)`);
+    }
+    const buttonLines = [];
+    const activeGp = getActiveGamepad();
+    if (activeGp) {
+      activeGp.buttons.forEach((b, i) => {
+        buttonLines.push(`  [${i}] pressed=${!!(b && b.pressed)} touched=${!!(b && b.touched)} value=${(b ? b.value : 0).toFixed(2)}  prev(any)=${gamepadLastAnyButtonPressed}`);
+      });
+    }
+    const s = gamepadTapFirstPressSummary;
+    const firstPressLines = s
+      ? [
+          `  browser detected press: YES`,
+          `  slot: ${s.slot}  buttonIndex: ${s.buttonIndex}`,
+          `  adopted index at press: ${s.adoptedIndexAtPress === null ? '(none)' : s.adoptedIndexAtPress}`,
+          `  raw pressed: ${s.rawPressed}`,
+          `  previous pressed: ${s.previousPressed}`,
+          `  rising edge: ${s.risingEdgeAtPress === null ? '(not yet evaluated)' : s.risingEdgeAtPress}`,
+          `  TAP handler reached: ${s.tapHandlerReached}`,
+          `  TAP accepted: ${s.tapAccepted}`,
+          `  rejected reason: ${s.rejectedReason || '(none)'}`,
+          `  screen after press: ${s.screenAfterPress || '(pending)'}`,
+          `  CLASSIFICATION: ${classifyGamepadFirstPress(s)}`,
+        ]
+      : ['  browser detected press: NO (waiting for a first physical press)'];
+    return (
+      `=== DARK OUT GAMEPAD TAP DIAGNOSTIC (?debugGamepadTap=1) ===\n` +
+      `timestamp: ${new Date().toISOString()}\n` +
+      `--- STARTUP ---\n` +
+      `STARTUP_STATE: ${startupState}\n` +
+      `startupGeneration: ${startupGeneration}  tapReadyGeneration: ${tapReadyGeneration}\n` +
+      `screen: ${gameState.screen}\n` +
+      `TAP TO START visible: ${gameState.screen === 'opening' && !openingOverlayEl.hidden}\n` +
+      `--- GAMEPAD RAW (navigator.getGamepads()) ---\n${padLines.join('\n')}\n` +
+      `--- ADOPTED STATE ---\n` +
+      `adopted gamepadIndex: ${gamepadIndex}\n` +
+      `gamepadWasVisibleLastPoll: ${gamepadWasVisibleLastPoll}\n` +
+      `gamepadSubsystemSettled: ${isGamepadSubsystemSettled()}\n` +
+      `gamepad ready result: ${isGamepadReadyForTap()}\n` +
+      `gamepad ready rejection (last TAP reject reason): ${lastTapRejectReason}\n` +
+      `--- BUTTON STATE (adopted pad) ---\n${buttonLines.length ? buttonLines.join('\n') : '  (no adopted pad)'}\n` +
+      `--- EDGE ---\n` +
+      `armed: ${gamepadInputArmed}  disarmedFor: ${gamepadDisarmedAt ? Math.round(now - gamepadDisarmedAt) + 'ms' : '0ms'}\n` +
+      `--- TAP ROUTE ---\n` +
+      `onOpeningTap() call count: ${gamepadTapOnOpeningTapCallCount}\n` +
+      `last onOpeningTap source: ${gamepadTapLastOnOpeningTapSource}  (${ago(gamepadTapLastOnOpeningTapAt)})\n` +
+      `--- REJECTION ---\n` +
+      `last TAP reject reason: ${lastTapRejectReason}\n` +
+      `last rejected branch (debugLastRejectedBranch): ${debugLastRejectedBranch}\n` +
+      `--- FIRST PRESS SUMMARY ---\n${firstPressLines.join('\n')}\n` +
+      `--- EVENT TRACE (most recent ${Math.min(gamepadTapTrace.length, 40)} of ${gamepadTapTrace.length}, max ${GAMEPAD_TAP_TRACE_MAX}) ---\n` +
+      gamepadTapTrace.slice(-40).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n')
+    );
+  }
+  function updateDebugGamepadTapOverlay(now) {
+    if (!DEBUG_GAMEPAD_TAP_OVERLAY || !debugGamepadTapEl) return;
+    debugGamepadTapEl.hidden = false;
+    if (debugGamepadTapTextEl) debugGamepadTapTextEl.textContent = buildGamepadTapDebugText(now);
+  }
+  if (debugGamepadTapCopyBtn) {
+    debugGamepadTapCopyBtn.addEventListener('click', () => {
+      const text = buildGamepadTapDebugText(performance.now());
+      const fallback = () => {
+        const ta = document.getElementById('debug-gamepad-tap-fallback-textarea');
+        if (ta) {
+          ta.hidden = false;
+          ta.value = text;
+          ta.focus();
+          ta.select();
+        }
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(fallback);
+        } else {
+          fallback();
+        }
+      } catch (err) {
+        fallback();
+      }
+    });
+  }
+
   let lastBgmWatchdogAt = 0;
   // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION (Part D/K root-
   // cause candidate): before this batch, an uncaught exception ANYWHERE in
@@ -20981,6 +21251,7 @@
       updateDebugStartupOverlay(now); // P0 INTEGRATED WORK ORDER: separate overlay/flag, never touches updateDebugInputOverlay()'s own fields
       updateDebugAudioOverlay(now); // AUDIO ROOT REWRITE (PART B): separate overlay/flag, never touches the other two overlays' own fields
       updateDebugPerfOverlay(now); // P0 INTEGRATED REGRESSION FIX (H): separate overlay/flag, never touches any other overlay's own fields
+      updateDebugGamepadTapOverlay(now); // P0 DIAGNOSTIC PHASE 1: separate overlay/flag, read-only observation, never touches any other overlay's own fields
     } catch (err) {
       console.error('[LOOP] uncaught error this frame, continuing next frame:', err);
       debugLastLoopException = { message: String(err && err.message || err), at: now };
