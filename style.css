@@ -1754,7 +1754,18 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
-  max-width: 82vw;
+  /* P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch, root-cause
+     fix): was max-width, which left this a shrink-to-fit box — the
+     left-aligned rows never got wide enough to make align-self:stretch's
+     text-align:center on #ending-reveal-heading/#ending-reveal-thankyou
+     land at the true viewport center, only at the center of that narrow,
+     left-9vw-anchored box. A fixed width:82vw makes the box span exactly
+     9vw..91vw, symmetric around the real 50vw screen center, so "stretch +
+     center" on those two elements now actually centers on-screen (verified
+     9vw + 82vw/2 = 50vw) — the left-aligned rows/labels are unaffected
+     since align-items:flex-start still hugs their own left edge regardless
+     of the container's width. */
+  width: 82vw;
 }
 /* P0 FULL GAMEPAD E2E HOTFIX (Part F/G): rows are plain, always-visible
    containers now — only the VALUE span inside each (.ending-reveal-fade)
@@ -1797,8 +1808,14 @@ body {
    in this block — align-self:stretch makes it span the same width as the
    left-aligned rows below it so text-align:center actually has room to
    center within, rather than just centering within its own (already
-   left-hugging) content box. Not part of the fade timeline — visible from
-   screen-entry, like the row labels. */
+   left-hugging) content box (see #ending-reveal-result's own width:82vw,
+   below, for why that "room" is actually symmetric around the true
+   viewport center rather than an arbitrary shrink-wrapped box).
+   P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch): now DOES join
+   the fade timeline (.ending-reveal-fade, applied in index.html) instead
+   of being visible from screen-entry — real-device spec wants "RESULTS"
+   itself withheld until the song's late section (see
+   ENDING_REVEAL_HEADING_BEFORE_END_SEC/updateEndingReveal() in game.js). */
 #ending-reveal-heading {
   align-self: stretch;
   margin: 0 0 4px 0;
@@ -1828,6 +1845,14 @@ body {
    fade timeline (via the shared .ending-reveal-fade class in index.html),
    revealing in the same instant as RANK rather than from screen-entry. */
 #ending-reveal-thankyou {
+  /* P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch, root-cause
+     fix): was text-align:left with no align-self — real-device spec
+     requires this line horizontally centered, sharing the exact same
+     center as "RESULTS" (#ending-reveal-heading). align-self:stretch +
+     text-align:center is the identical pattern #ending-reveal-heading
+     already uses, so both land at the same true viewport center (see
+     #ending-reveal-result's width:82vw above). */
+  align-self: stretch;
   margin-top: 6px;
   font-family: sans-serif;
   font-weight: 600;
@@ -1835,7 +1860,7 @@ body {
   letter-spacing: 0.08em;
   color: rgba(255, 255, 255, 0.55);
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
-  text-align: left;
+  text-align: center;
 }
 #ending-reveal-nav {
   position: absolute;

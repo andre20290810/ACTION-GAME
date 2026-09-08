@@ -3066,6 +3066,22 @@
     // so this is a safe no-op on any stage/state that doesn't have them.
     clampPlayerAwayFromBarrels();
     clampPlayerAwayFromAdamSphereCombat();
+    // P0 RUNTIME/INPUT LOCK + ROID1 STAGE STABILITY (this batch, root-cause
+    // fix for the real-device "first DRONE stage" and "ROID1 battle,
+    // Touch-only, near barrels" total MOVE/AIM/FIRE/DASH freeze reports —
+    // see resolvePlayerSolidOverlapsConverging()'s own comment for the full
+    // root-cause writeup): every clamp above (the ROID/ADAM SPHERE Y-
+    // blockade gates and the boss/DRONE/barrel/ADAM-SPHERE-combat circles)
+    // is a single, non-reconciled push, evaluated once each in this fixed
+    // order — when two of them disagree (the player is simultaneously too
+    // close to a barrel AND north of a blockade line, or squeezed between
+    // two solids), whichever ran LAST wins this frame, only for the NEXT
+    // frame's FIRST-evaluated constraint to immediately undo it — visually
+    // reading as the player being frozen in place even though movement and
+    // every clamp above did run, every frame. This call resolves any such
+    // leftover conflict to a single, mutually-valid resting position before
+    // the frame ends, so no oscillation ever reaches the next frame.
+    resolvePlayerSolidOverlapsConverging();
     // HOTFIX SECTION 7: ADAM SPHERE is a strictly single-AREA context, same
     // requirement as ROID above — AREA2 must never be enterable at all.
     // ADAM SPHERE is its own STORY_STAGE_PLAN entry (plan.type==='adamSphere',
@@ -3782,6 +3798,113 @@
     for (const b of barrels) {
       if (!b.alive) continue;
       sweepAndClampPlayerAwayFromCircle(b.x, b.y, PLAYER_BODY_RADIUS + BARREL_LOS_BLOCK_RADIUS);
+    }
+  }
+  // P0 RUNTIME/INPUT LOCK + ROID1 STAGE STABILITY (this batch, root-cause
+  // fix): investigation into two real-device reports — the first DRONE
+  // stage sometimes leaving the player fully unable to act, and a Touch-
+  // ONLY ROID1 battle freezing specifically near barrels (explicitly
+  // reported as reproducing with NO gamepad involved at all, ruling out a
+  // gamepad-specific cause) — traced BOTH to the SAME mechanism: every
+  // clamp above this point (clampPlayerAwayFromBoss/Drones/Barrels/
+  // AdamSphereCombat, plus the ROID1/ROID2 and ADAM SPHERE Y-blockade
+  // gates just above them in clampPlayerToScreen()) is a single, isolated,
+  // non-reconciled push, each evaluated exactly once per frame in a fixed
+  // order. That is provably correct whenever at most ONE of them is ever
+  // active near the player — but the moment TWO disagree (the player is
+  // simultaneously too close to a barrel AND on the wrong side of the
+  // ROID1 blockade line — a real, reachable overlap: pickBarrelSpot()
+  // only keeps new barrels >=110px from the boss CENTER, which is not far
+  // enough to keep every barrel's own ~39px clearance circle entirely
+  // south of a blockade line sitting only ROID_HURT_RADIUS (~56px) from
+  // that same center; the identical class of overlap is just as reachable
+  // between two DRONEs near each other, or a DRONE near a barrel), the
+  // LAST clamp evaluated wins for THIS frame, only for the FIRST-evaluated
+  // constraint to immediately undo it at the very start of the NEXT frame
+  // — an unbounded frame-to-frame oscillation. Movement, DASH, and every
+  // clamp above all genuinely DO run every one of those frames; the
+  // player only ever reads as "frozen" because the net on-screen result
+  // cancels out. This is exactly the same failure class the pre-existing
+  // resolvePlayerOverlapAfterPhaseChange() below already discovered and
+  // fixed once before — for its own one-shot GABRIEL-DARK-PHASE-
+  // reactivation case only — generalized here to run every single frame,
+  // covering every circular solid (boss/DRONEs/barrels/ADAM SPHERE combat)
+  // AND the two directional Y-blockade gates together, so whatever the
+  // single pass above left in conflict converges to one real, mutually-
+  // valid resting position before the frame ends, instead of leaking into
+  // the next frame as an oscillation. A true no-op by construction on the
+  // overwhelming majority of frames (no active conflict => the very first
+  // pass finds nothing to push => loop exits immediately). Never a fixed-
+  // time wait, never an input unlock — purely a POSITION correction, and
+  // completely independent of whatever input source (gamepad or touch)
+  // produced the movement in the first place, which is exactly why the
+  // Touch-only ROID1 report reproduces this identically to gamepad.
+  function resolvePlayerSolidOverlapsConverging() {
+    for (let pass = 0; pass < 8; pass++) {
+      let anyPush = false;
+      if (boss.spawned && isRoidBossType(boss.type) && boss.state !== 'dead') {
+        const roidBlockadeY = boss.y + ROID_HURT_RADIUS;
+        if (player.y < roidBlockadeY) { player.y = roidBlockadeY; anyPush = true; }
+      }
+      if (adamSphereCombatState.active && !adamSphereCombatState.dying) {
+        const adamSphereBlockadeY = adamSphereCombatState.y + ADAM_SPHERE_COMBAT_HIT_RADIUS;
+        if (player.y < adamSphereBlockadeY) { player.y = adamSphereBlockadeY; anyPush = true; }
+      }
+      if (boss.spawned && isSolidCollisionBossType(boss.type) && !bossHasNoPhysicalPresence()) {
+        let dx = player.x - boss.x, dy = player.y - boss.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < BOSS_SOLID_MIN_DIST) {
+          if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+          const scale = BOSS_SOLID_MIN_DIST / dist;
+          player.x = boss.x + dx * scale; player.y = boss.y + dy * scale;
+          anyPush = true;
+        }
+      }
+      for (const robot of securityRobots) {
+        if (droneHasNoPhysicalPresence(robot)) continue;
+        let dx = player.x - robot.x, dy = player.y - robot.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < DRONE_SOLID_MIN_DIST) {
+          if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+          const scale = DRONE_SOLID_MIN_DIST / dist;
+          player.x = robot.x + dx * scale; player.y = robot.y + dy * scale;
+          anyPush = true;
+        }
+      }
+      let barrelPushedThisPass = false;
+      for (let bi = 0; bi < barrels.length; bi++) {
+        const b = barrels[bi];
+        if (!b.alive) continue;
+        const minDist = PLAYER_BODY_RADIUS + BARREL_LOS_BLOCK_RADIUS;
+        let dx = player.x - b.x, dy = player.y - b.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < minDist) {
+          if (DEBUG_RUNTIME_OVERLAY) debugLastBarrelCollisionInfo = { barrelIndex: bi, penetration: +(minDist - dist).toFixed(1) };
+          if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+          const scale = minDist / dist;
+          player.x = b.x + dx * scale; player.y = b.y + dy * scale;
+          anyPush = true;
+          barrelPushedThisPass = true;
+        }
+      }
+      if (pass === 0 && DEBUG_RUNTIME_OVERLAY) {
+        if (barrelPushedThisPass && !debugLastBarrelCollisionActive) recordRuntimeEvent('BARREL_COLLISION_START', debugLastBarrelCollisionInfo || {});
+        if (!barrelPushedThisPass && debugLastBarrelCollisionActive) recordRuntimeEvent('BARREL_COLLISION_END', {});
+        debugLastBarrelCollisionActive = barrelPushedThisPass;
+      }
+      if (adamSphereCombatState.active && !adamSphereCombatState.dying) {
+        const minDist = PLAYER_BODY_RADIUS + ADAM_SPHERE_COMBAT_HIT_RADIUS;
+        let dx = player.x - adamSphereCombatState.x, dy = player.y - adamSphereCombatState.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < minDist) {
+          if (dist === 0) { dx = 0; dy = -1; dist = 1; }
+          const scale = minDist / dist;
+          player.x = adamSphereCombatState.x + dx * scale; player.y = adamSphereCombatState.y + dy * scale;
+          anyPush = true;
+        }
+      }
+      if (DEBUG_RUNTIME_OVERLAY && anyPush && pass === 0) recordRuntimeEvent('MOVEMENT_UPDATE_SOLID_OVERLAP_RESOLVED', { pass });
+      if (!anyPush) break;
     }
   }
   // ADDENDUM 2 (GABRIEL DARK PHASE stuck-after-collision-reactivation
@@ -8858,6 +8981,24 @@
   }
 
   function updateBoss(dt, now) {
+    // P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch): ?debugRuntime=1
+    // ROID1 STATE CHANGE / ROID1 DAMAGE — a single generic edge-detector
+    // here (comparing against the previous frame's snapshot) rather than
+    // instrumenting every one of ROID1's own ~15 individual `boss.state =`
+    // assignments scattered through this file's ROID AI — far lower risk of
+    // missing one, and zero risk of altering the AI itself (purely a read).
+    if (DEBUG_RUNTIME_OVERLAY && boss.spawned && boss.type === 'roid1') {
+      if (boss.state !== debugLastRoid1State) {
+        recordRuntimeEvent('ROID1_STATE_CHANGE', { from: debugLastRoid1State, to: boss.state });
+        debugLastRoid1State = boss.state;
+      }
+      if (typeof boss.hp === 'number' && boss.hp < debugLastRoid1Hp) {
+        recordRuntimeEvent('ROID1_DAMAGE', { hpBefore: debugLastRoid1Hp, hpAfter: boss.hp, delta: +(debugLastRoid1Hp - boss.hp).toFixed(1) });
+      }
+      if (typeof boss.hp === 'number') debugLastRoid1Hp = boss.hp;
+    } else if (DEBUG_RUNTIME_OVERLAY && debugLastRoid1State !== null) {
+      debugLastRoid1State = null; // ROID1 no longer the active boss — next encounter starts its own fresh baseline, never a stale cross-encounter "state change"
+    }
     // DARK OUT PART 3: BOSS BATTLE MODE's GABRIEL fight reuses this EXACT
     // function (no copy) — widened from 'boss'-only so its own spawnBoss()
     // call (see startBossBattle()) actually gets an AI.
@@ -11297,6 +11438,24 @@
   // same event are fine; both simply run every pageshow, one narrow
   // (audio-context-resume-only) and one broad (full reboot, persisted-only).
   window.addEventListener('pageshow', (e) => {
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('PAGESHOW', { persisted: !!e.persisted });
+    // P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch): real-device
+    // reports of the START BGM double-playing specifically after a
+    // refresh/close-reopen (never on a genuine first launch) persisted even
+    // with the persisted===true branch above already in place. e.persisted
+    // is WebKit's own signal for "this really was a bfcache restore" — but
+    // it is not the only way stale native <audio> playback state can bleed
+    // across a navigation boundary on iOS Safari (its own page-lifecycle/
+    // process-reuse behavior does not always set persisted=true for what is
+    // functionally still a resumed/cached page instance). Unlike the full
+    // beginStartupSequence() reboot above (screen/generation change — kept
+    // strictly persisted-only, deliberately conservative), a bare BGM hard-
+    // reset is cheap, idempotent, and provably harmless on every OTHER
+    // pageshow too: this event fires before the player has ever interacted
+    // with the page, so no legitimate BGM should be audible yet regardless
+    // of which pageshow branch runs. Making it unconditional closes the
+    // gap without widening what actually reboots the game.
+    hardResetAllBgmForFreshBoot();
     if (e.persisted) beginStartupSequence();
   });
   loadingRetryBtnEl.addEventListener('click', () => {
@@ -11600,7 +11759,10 @@
       try { audioEl.pause(); audioEl.muted = true; } catch (e) {}
     }
   }
-  window.addEventListener('pagehide', pauseAllBgmForPageTeardown);
+  window.addEventListener('pagehide', (e) => {
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('PAGEHIDE', { persisted: !!e.persisted });
+    pauseAllBgmForPageTeardown();
+  });
   window.addEventListener('beforeunload', pauseAllBgmForPageTeardown);
 
   // ---------- SECTION I: MAIN MENU ----------
@@ -11943,17 +12105,32 @@
     endingRevealAudio.load();
   }
 
-  // Reveal timing is expressed as a FRACTION of the song's own real runtime
-  // (item 28 — never a hard-coded 144s), read from endingRevealAudio.duration
-  // at the moment it's actually needed, so it works correctly for whatever
-  // the real file's exact duration turns out to be. Recommended ranges from
-  // spec item 29: CLEAR TIME ~8-12%, CONTINUE ~15-20%, RANK ~25-30% — the
-  // exact values below sit centrally within each range, and Part F item 30
-  // ("主要RESULTをすべて表示完了" well within the song's first third) holds
-  // since 27.5% < 33%.
-  const ENDING_REVEAL_CLEAR_TIME_FRAC = 0.10;
-  const ENDING_REVEAL_CONTINUE_FRAC = 0.175;
-  const ENDING_REVEAL_RANK_FRAC = 0.275;
+  // P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch): reveal timing
+  // is now expressed as SECONDS-BEFORE-THE-SONG'S-OWN-END (revealAt =
+  // duration - X), read from endingRevealAudio.duration at the moment each
+  // is actually needed — never a hardcoded total length — per real-device
+  // feedback that the old fraction-of-total scheme (10%/17.5%/27.5%, i.e.
+  // everything fully revealed by ~40s into a 144s song) revealed RESULT far
+  // too early and left ~100s of the song playing with nothing new on
+  // screen, reading as "the presentation peaked and then repeats" even
+  // though the song itself never loops. Using "duration - X" instead of a
+  // fraction means the reveal always lands the same fixed distance from the
+  // real end regardless of the exact file length, matching the requested
+  // "曲を最後まで聴かないとランクが分からない" pacing: RANK/THANK YOU now
+  // land at ENDING_REVEAL_RANK_BEFORE_END_SEC before the very end (a few
+  // seconds — the true final moment), "RESULTS" itself only appears at
+  // ENDING_REVEAL_HEADING_BEFORE_END_SEC before the end (the start of the
+  // song's late section, well past its midpoint for any song longer than
+  // ~68s), and PLAY TIME/CONTINUE (pre-existing, unrelated to this batch's
+  // spec — kept exactly where they always sat in the reveal ORDER, just
+  // re-anchored to the same end-relative scheme) land in between. Each
+  // Math.max(0, duration - X) clamp is what makes a pathologically short
+  // audio file degrade gracefully (reveals earlier rather than never) with
+  // no fixed-wait/loop=true hack of any kind.
+  const ENDING_REVEAL_HEADING_BEFORE_END_SEC = 34;
+  const ENDING_REVEAL_CLEAR_TIME_BEFORE_END_SEC = 24;
+  const ENDING_REVEAL_CONTINUE_BEFORE_END_SEC = 15;
+  const ENDING_REVEAL_RANK_BEFORE_END_SEC = 5;
   const ENDING_REVEAL_BACK_TO_TOP_DELAY_MS = 2000; // item 49: ~1.5-3s after ARTIST PAGE appears
   // Part P (AUDIO FAILURE SAFETY): if the song genuinely can't play at all
   // (load error, or a play() rejection that never recovers), RESULT must
@@ -11971,6 +12148,12 @@
   // clear-time/PLAY-TIME value it holds — see computeResultRank()'s own
   // untouched playTimeSec math — only the on-screen LABEL text changed to
   // "PLAY TIME" in index.html).
+  // P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch): "RESULTS"
+  // itself now joins the reveal timeline (see updateEndingReveal()) instead
+  // of being plain always-visible text from screen-entry — real-device spec
+  // item this batch's 4-step order explicitly wants it appearing only once
+  // the song reaches its late section, not from the very start.
+  const endingRevealHeadingEl = document.getElementById('ending-reveal-heading');
   const endingRevealClearTimeValueEl = document.getElementById('ending-reveal-clear-time');
   const endingRevealContinueValueEl = document.getElementById('ending-reveal-continue');
   const endingRevealRankValueEl = document.getElementById('ending-reveal-rank');
@@ -11989,6 +12172,7 @@
   const endingRevealState = {
     active: false,
     songStartedAt: 0,
+    revealedHeading: false,
     revealedClearTime: false,
     revealedContinue: false,
     revealedRank: false,
@@ -11998,6 +12182,7 @@
   };
 
   function revealAllEndingRevealStatsNow() {
+    if (!endingRevealState.revealedHeading) { endingRevealState.revealedHeading = true; endingRevealHeadingEl.classList.add('ending-reveal-visible'); }
     endingRevealState.revealedClearTime = true;
     endingRevealState.revealedContinue = true;
     endingRevealState.revealedRank = true;
@@ -12018,6 +12203,7 @@
   function startEndingRevealSong(now) {
     endingRevealAudio.currentTime = 0; // item 18: always from 0, every single entry
     endingRevealState.songStartedAt = now;
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('RESULT_MUSIC_PLAY', {});
     claimAudibleBgm('ending', endingRevealAudio, { onRejected: (err) => {
       console.error('[ENDING REVEAL] song play() rejected:', err && err.name, err && err.message);
       armEndingRevealAudioFailureFallback();
@@ -12031,8 +12217,9 @@
   // completion trigger — never a computed/estimated timer.
   endingRevealAudio.addEventListener('ended', () => {
     if (!endingRevealState.active) return;
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('RESULT_MUSIC_ENDED', {});
     if (endingRevealState.fallbackTimer) { clearTimeout(endingRevealState.fallbackTimer); endingRevealState.fallbackTimer = null; }
-    revealAllEndingRevealStatsNow(); // guarantees all 3 are visible by song end even if duration was momentarily unavailable
+    revealAllEndingRevealStatsNow(); // guarantees all 3 (now 4, incl. heading) are visible by song end even if duration was momentarily unavailable
     onEndingRevealSongEnded();
   });
   function onEndingRevealSongEnded() {
@@ -12063,34 +12250,45 @@
   function updateEndingReveal(now) {
     if (!endingRevealState.active) return;
     const duration = endingRevealAudio.duration;
-    if (!isFinite(duration) || duration <= 0) return; // duration not known yet this tick — the 'ended' handler's own revealAllEndingRevealStatsNow() is the guaranteed backstop regardless
-    const frac = (now - endingRevealState.songStartedAt) / (duration * 1000);
-    // P0 FULL GAMEPAD E2E HOTFIX (Part G item 39/41): reveal order is
-    // PLAY TIME value -> CONTINUE value -> RANK letter (RANK always last)
-    // — the SAME three fraction thresholds as before, just now applied to
-    // the value spans instead of the whole row (labels are already
-    // visible from screen-entry).
-    if (!endingRevealState.revealedClearTime && frac >= ENDING_REVEAL_CLEAR_TIME_FRAC) {
+    if (!isFinite(duration) || duration <= 0) return; // duration not known yet this tick (the safe fallback: reveal NOTHING early rather than guess) — the 'ended' handler's own revealAllEndingRevealStatsNow() is the guaranteed backstop regardless
+    const elapsedSec = (now - endingRevealState.songStartedAt) / 1000;
+    // P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch): reveal order
+    // is "RESULTS" heading -> PLAY TIME value -> CONTINUE value -> RANK
+    // letter (+ THANK YOU, always simultaneous with RANK) — each threshold
+    // is duration-minus-a-fixed-number-of-seconds (Math.max(0, ...) so a
+    // pathologically short audio file still degrades to an early-but-
+    // working reveal instead of never firing).
+    if (!endingRevealState.revealedHeading && elapsedSec >= Math.max(0, duration - ENDING_REVEAL_HEADING_BEFORE_END_SEC)) {
+      endingRevealState.revealedHeading = true;
+      endingRevealHeadingEl.classList.add('ending-reveal-visible');
+      if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('RESULT_REVEAL_START', { elapsedSec: +elapsedSec.toFixed(1), duration: +duration.toFixed(1) });
+    }
+    if (!endingRevealState.revealedClearTime && elapsedSec >= Math.max(0, duration - ENDING_REVEAL_CLEAR_TIME_BEFORE_END_SEC)) {
       endingRevealState.revealedClearTime = true;
       endingRevealClearTimeValueEl.classList.add('ending-reveal-visible');
     }
-    if (!endingRevealState.revealedContinue && frac >= ENDING_REVEAL_CONTINUE_FRAC) {
+    if (!endingRevealState.revealedContinue && elapsedSec >= Math.max(0, duration - ENDING_REVEAL_CONTINUE_BEFORE_END_SEC)) {
       endingRevealState.revealedContinue = true;
       endingRevealContinueValueEl.classList.add('ending-reveal-visible');
     }
-    if (!endingRevealState.revealedRank && frac >= ENDING_REVEAL_RANK_FRAC) {
+    if (!endingRevealState.revealedRank && elapsedSec >= Math.max(0, duration - ENDING_REVEAL_RANK_BEFORE_END_SEC)) {
       endingRevealState.revealedRank = true;
       endingRevealRankValueEl.classList.add('ending-reveal-visible');
       // P0 REAL-DEVICE HOTFIX: THANK YOU FOR PLAYING!! reveals in this SAME
       // instant as RANK — never earlier, never later — per the real-device
       // report that it used to appear immediately on screen-entry instead.
       endingRevealThankYouEl.classList.add('ending-reveal-visible');
+      if (DEBUG_RUNTIME_OVERLAY) {
+        recordRuntimeEvent('RESULT_RANK_REVEAL', { elapsedSec: +elapsedSec.toFixed(1), duration: +duration.toFixed(1) });
+        recordRuntimeEvent('THANK_YOU_REVEAL', { elapsedSec: +elapsedSec.toFixed(1), duration: +duration.toFixed(1) });
+      }
     }
   }
   // The ONE entry point — called from beginStoryEscapeEnding()'s MAIN
   // branch, right after main_bad_ending finishes (never ealier: MOVIE1
   // itself never needed the image/song, so this never delays it).
   function enterEndingReveal(now) {
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('RESULT_ENTER', { runtimeGeneration });
     storyEndingState.active = false; // the escape/movie chain that led here is now fully complete — this screen IS the RESULT screen for MAIN
     // item 16: every other BGM track stops — ending music only.
     musicContext = 'ending';
@@ -12117,11 +12315,13 @@
     // item 117 (REPLAY): every entry starts completely fresh, regardless of
     // whatever state a previous run through this same screen left behind.
     endingRevealState.active = true;
+    endingRevealState.revealedHeading = false;
     endingRevealState.revealedClearTime = false;
     endingRevealState.revealedContinue = false;
     endingRevealState.revealedRank = false;
     endingRevealState.artistPageShown = false;
     endingRevealState.backToTopShown = false;
+    endingRevealHeadingEl.classList.remove('ending-reveal-visible'); // item 117 (REPLAY): a 2nd entry must never start with "RESULTS" already visible from the previous run
     endingRevealClearTimeValueEl.classList.remove('ending-reveal-visible');
     endingRevealContinueValueEl.classList.remove('ending-reveal-visible');
     endingRevealRankValueEl.classList.remove('ending-reveal-visible');
@@ -13641,14 +13841,28 @@
 
   function explodeBarrel(barrel, now) {
     barrel.alive = false;
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('BARREL_EXPLOSION', { barrelX: Math.round(barrel.x), barrelY: Math.round(barrel.y), bossType: boss.spawned ? boss.type : null });
     spawnExplosionVisual(barrel.x, barrel.y, now);
     // Explosion damage bypasses DEFENSE entirely — a stage gimmick that
     // works regardless of the boss's current state, unlike gunfire. The
     // reach check adds BOSS_HURT_RADIUS so it's the boss's hurtbox CIRCLE
     // (not just its exact center point) that has to be within blast range.
-    if (boss.spawned && boss.state !== 'dead' &&
+    // P0 RUNTIME/STAGE STABILITY (this batch): ROID1 no longer takes barrel-
+    // explosion damage at all — real-device spec change, ROID1 self-
+    // destructing while clearing its own drum-can cover was unintended.
+    // Scoped to boss.type==='roid1' EXACTLY (never isRoidBossType(), which
+    // also covers ROID2) — ROID2/GABRIEL/ADAM SPHERE and every other
+    // barrel-explosion-damage target keep their existing behavior
+    // unchanged, and ROID1's own barrel-DESTROYING behavior (barrel.alive=
+    // false above, the explosion visual, player/other-target blast
+    // knockback+damage) is untouched — only ROID1's own receipt of blast
+    // DAMAGE is suppressed.
+    if (boss.spawned && boss.state !== 'dead' && boss.type !== 'roid1' &&
         Math.hypot(barrel.x - boss.x, barrel.y - boss.y) <= BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS + BOSS_HURT_RADIUS) {
       applyExplosionDamageToBoss(BARREL_DAMAGE_BOSS, now);
+    } else if (DEBUG_RUNTIME_OVERLAY && boss.spawned && boss.type === 'roid1' && boss.state !== 'dead' &&
+        Math.hypot(barrel.x - boss.x, barrel.y - boss.y) <= BARREL_EXPLOSION_DAMAGE_RADIUS_BOSS + BOSS_HURT_RADIUS) {
+      recordRuntimeEvent('ROID1_BARREL_DAMAGE_IGNORED', { barrelX: Math.round(barrel.x), barrelY: Math.round(barrel.y) });
     }
     // SECTION F: knockback is entirely separate from damage above — it
     // applies to the player AND the boss purely by blast-radius proximity,
@@ -16294,6 +16508,7 @@
   // is only ever triggered by the player's own tap on the PAUSE MENU's
   // existing RESUME button, never automatically.
   document.addEventListener('visibilitychange', () => {
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('VISIBILITY_CHANGE', { hidden: document.hidden });
     if (document.hidden) autoPauseOnInterruption();
     // P0 REAL-DEVICE HOTFIX (root-cause fix, this batch): real-device
     // reports of an EVENT MOVIE's own embedded audio (opening infiltration
@@ -16312,6 +16527,33 @@
     if (!document.hidden && typeof eventMovieAudioContext !== 'undefined' && eventMovieAudioContext && eventMovieAudioContext.state === 'suspended') {
       eventMovieAudioContext.resume().catch(() => {});
     }
+    // P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch, root-cause
+    // fix): real-device report of the gamepad reading unresponsive at the
+    // START screen or MAIN MENU specifically after a reload/close-reopen —
+    // never on a genuine first launch. gamepadIndex/gamepadLastButtons only
+    // ever get a fresh reseed at a handful of explicit call sites (STARTUP_
+    // READY, TAP TO START, returnToTopMenu()) — there was no equivalent
+    // hook for "the tab/app regained visibility," so a controller whose
+    // real button state changed while backgrounded (or whose browser-level
+    // Gamepad object briefly reports stale/incomplete data for the first
+    // few polls right after a reload — the exact enumeration-latency class
+    // of bug GAMEPAD_SETTLE_MIN_FRAMES/isGamepadReadyForTap() already
+    // documents elsewhere in this file, just for the STARTUP path only)
+    // could leave gamepadLastButtons out of sync with reality, with nothing
+    // ever forcing a resync short of a full menu round-trip.
+    // resetGamepadEdgeBaselineForMenuReturn() only clears gamepad EDGE/ARM
+    // tracking (gamepadIndex/gamepadLastButtons/gamepadInputArmed) — it
+    // never touches gameState/screen/BGM/stage state, so it is exactly as
+    // safe to call here, unconditionally, as it already is at every one of
+    // its existing call sites: a real no-op whenever the pad's tracked
+    // state was already correct, and the fix whenever it wasn't. Matches
+    // the explicit requirement that input become usable the instant
+    // (controller visible) AND (physically neutral) AND (screen
+    // interactive) — never a fixed-time wait.
+    if (!document.hidden) {
+      resetGamepadEdgeBaselineForMenuReturn();
+      if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('PLAYER_INPUT_ENABLE', { source: 'visibilitychange-resync' });
+    }
   });
   // Same reasoning as the visibilitychange branch above, for the bfcache-
   // restore/app-reopen case specifically (pageshow's own persisted flag is
@@ -16322,8 +16564,16 @@
     if (typeof eventMovieAudioContext !== 'undefined' && eventMovieAudioContext && eventMovieAudioContext.state === 'suspended') {
       eventMovieAudioContext.resume().catch(() => {});
     }
+    // Same gamepad edge-baseline resync as the visibilitychange branch
+    // above, for the same reason — a pageshow (bfcache-persisted or not)
+    // is exactly as capable of leaving a stale gamepad snapshot behind.
+    // Harmless/idempotent to call redundantly alongside beginStartupSequence()'s
+    // OWN reset on the persisted===true path (that one already does this).
+    resetGamepadEdgeBaselineForMenuReturn();
   });
   window.addEventListener('blur', autoPauseOnInterruption);
+  window.addEventListener('blur', () => { if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('BLUR', {}); });
+  window.addEventListener('focus', () => { if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('FOCUS', {}); });
 
   // Restarts whichever mode is currently selected, from scratch — startMode()
   // already does a full resetModeState() (player/boss/HP/bullets/blade
@@ -16637,16 +16887,23 @@
     actionStickRect = actionStickZone.getBoundingClientRect();
     try { actionStickZone.setPointerCapture(e.pointerId); } catch (err) { /* defensive: capture is a robustness enhancement, never allowed to block the drag itself from registering */ }
     handleActionStickMove(e.clientX, e.clientY);
+    debugLastPointerDownAt = Date.now();
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('TOUCH_POINTER_DOWN', { zone: 'move', pointerId: e.pointerId });
   }, { passive: false });
 
   actionStickZone.addEventListener('pointermove', (e) => {
     if (e.pointerId !== actionStickTouchId) return;
     e.preventDefault();
     handleActionStickMove(e.clientX, e.clientY);
+    debugLastPointerMoveAt = Date.now(); // ?debugRuntime=1 TOUCH field group only — deliberately NOT a trace event (would flood the ring buffer at drag frame-rate)
   }, { passive: false });
 
   function actionStickTouchEnd(e) {
     if (e.pointerId !== actionStickTouchId) return;
+    if (DEBUG_RUNTIME_OVERLAY) {
+      if (e.type === 'pointercancel') { debugLastPointerCancelAt = Date.now(); recordRuntimeEvent('TOUCH_POINTER_CANCEL', { zone: 'move', pointerId: e.pointerId }); }
+      else { debugLastPointerUpAt = Date.now(); recordRuntimeEvent('TOUCH_POINTER_UP', { zone: 'move', pointerId: e.pointerId }); }
+    }
     actionStickReset();
   }
   actionStickZone.addEventListener('pointerup', actionStickTouchEnd, { passive: false });
@@ -16838,6 +17095,8 @@
     try { aimStickZone.setPointerCapture(e.pointerId); } catch (err) { /* defensive: capture is a robustness enhancement, never allowed to block the drag itself from registering */ }
     aimStickActive = true;
     const distFromCenter = Math.hypot(e.clientX - (aimStickRect.left + aimStickRect.width / 2), e.clientY - (aimStickRect.top + aimStickRect.height / 2));
+    debugLastPointerDownAt = Date.now();
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('TOUCH_POINTER_DOWN', { zone: 'aim', pointerId: e.pointerId });
     if (tryAimDoubleTap(performance.now(), distFromCenter)) return; // snap already applied
     handleAimStickMove(e.clientX, e.clientY);
   }, { passive: false });
@@ -16846,10 +17105,15 @@
     if (e.pointerId !== aimStickTouchId) return;
     e.preventDefault();
     handleAimStickMove(e.clientX, e.clientY);
+    debugLastPointerMoveAt = Date.now(); // ?debugRuntime=1 TOUCH field group only — see actionStickZone's own identical comment for why this is not a trace event
   }, { passive: false });
 
   function aimStickTouchEnd(e) {
     if (e.pointerId !== aimStickTouchId) return;
+    if (DEBUG_RUNTIME_OVERLAY) {
+      if (e.type === 'pointercancel') { debugLastPointerCancelAt = Date.now(); recordRuntimeEvent('TOUCH_POINTER_CANCEL', { zone: 'aim', pointerId: e.pointerId }); }
+      else { debugLastPointerUpAt = Date.now(); recordRuntimeEvent('TOUCH_POINTER_UP', { zone: 'aim', pointerId: e.pointerId }); }
+    }
     aimStickReset();
   }
   aimStickZone.addEventListener('pointerup', aimStickTouchEnd, { passive: false });
@@ -17984,7 +18248,7 @@
     get endingRevealVideoEl() { return endingRevealVideoEl; },
     get endingRevealAudio() { return endingRevealAudio; },
     ENDING_REVEAL_VIDEO_URL, ENDING_REVEAL_AUDIO_URL,
-    ENDING_REVEAL_CLEAR_TIME_FRAC, ENDING_REVEAL_CONTINUE_FRAC, ENDING_REVEAL_RANK_FRAC,
+    ENDING_REVEAL_HEADING_BEFORE_END_SEC, ENDING_REVEAL_CLEAR_TIME_BEFORE_END_SEC, ENDING_REVEAL_CONTINUE_BEFORE_END_SEC, ENDING_REVEAL_RANK_BEFORE_END_SEC,
     runStartupLoadingPhase, showLoadingErrorState, hideLoadingErrorState, // debug/verification only
     flashPress, startBossFlashDown, isGabrielDownDamageableBlinking, // debug/verification only
     get flashCooldownRemainingMs() { return flashCooldownRemainingMs; },
@@ -18229,6 +18493,7 @@
   let lastTime = performance.now();
 
   function update(dt, now) {
+    lastMovementUpdateFnAt = now; // ?debugRuntime=1 MOVEMENT UPDATE field group — stamped before every early return below so a genuinely dead update() call is visible as a growing frameAge, distinct from a known lock reason
     if (gameState.paused) return; // PAUSE freezes everything: no movement, AI, bullets, timers
     // DARK OUT PART 9 SECTION H: cinematic freeze — a SEPARATE, independent
     // early-return from PAUSE (never sets gameState.paused/pauseStartedAt,
@@ -18380,6 +18645,7 @@
     if (!player.dashing && moving && !knockbackLocked) {
       player.x += vx * player.speed * dt;
       player.y += vy * player.speed * dt;
+      lastMovementTranslationAppliedAt = now; // ?debugRuntime=1 MOVEMENT UPDATE field group
     }
 
     // Clamp to screen bounds (keep character fully visible)
@@ -20874,7 +21140,16 @@
   // itself changes (including "no longer locked").
   let lastInputLockSignature = null;
   function checkInputLockStateChange() {
-    if (!DEBUG_TRANSITION_OVERLAY) return;
+    // P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch, root-cause
+    // fix): this used to no-op entirely unless ?debugTransition=1 was ALSO
+    // set — so PLAYER INPUT ENABLE/BLOCK and MOVEMENT UPDATE SKIPPED (both
+    // explicitly requested ?debugRuntime=1 event types this batch) could
+    // never fire under ?debugRuntime=1 alone. recordTransitionEvent()/
+    // recordRuntimeEvent() each already self-guard on their OWN flag, so
+    // widening this outer gate to either flag is safe — it changes nothing
+    // for a caller with only ?debugTransition=1 (recordRuntimeEvent is
+    // still a no-op then, same as before).
+    if (!DEBUG_TRANSITION_OVERLAY && !DEBUG_RUNTIME_OVERLAY) return;
     const reason = computeInputLockReason();
     if (reason !== lastInputLockSignature) {
       // A null<->non-null transition is a genuine LOCK/UNLOCK edge; a
@@ -20885,8 +21160,21 @@
       // unlock/re-lock cycle that didn't actually happen.
       const type = reason === null ? 'INPUT_LOCK_OFF' : (lastInputLockSignature === null ? 'INPUT_LOCK_ON' : 'INPUT_LOCK_REASON_CHANGE');
       recordTransitionEvent(type, { from: lastInputLockSignature, to: reason });
+      if (DEBUG_RUNTIME_OVERLAY) {
+        recordRuntimeEvent(reason === null ? 'INPUT_LOCK_OFF' : 'INPUT_LOCK_ON', { reason });
+        // PLAYER INPUT ENABLE/BLOCK — the same edge, under the exact names
+        // this batch's spec asks for, alongside (not instead of) the
+        // pre-existing INPUT_LOCK_ON/OFF pair above.
+        recordRuntimeEvent(reason === null ? 'PLAYER_INPUT_ENABLE' : 'PLAYER_INPUT_BLOCK', { reason });
+        // MOVEMENT UPDATE SKIPPED — fires on the SAME edge a lock engages
+        // (never spammed every frame while it stays locked): the moment
+        // player-movement-update starts being skipped by a KNOWN reason,
+        // as opposed to the "INPUT: ENABLED / movementUpdate: NOT
+        // EXECUTING" silent-failure case the MOVEMENT UPDATE field group
+        // above is what actually surfaces.
+        if (reason !== null) recordRuntimeEvent('MOVEMENT_UPDATE_SKIPPED', { reason });
+      }
       lastInputLockSignature = reason;
-      if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent(reason === null ? 'INPUT_LOCK_OFF' : 'INPUT_LOCK_ON', { reason });
     }
   }
 
@@ -20918,6 +21206,26 @@
     if (runtimeTrace.length > RUNTIME_TRACE_MAX) runtimeTrace.shift();
   }
   if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('PAGE_LOAD', {});
+  // P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch): state backing
+  // the new PLAYER INPUT / MOVEMENT UPDATE / TOUCH / COLLISION / BOSS
+  // ?debugRuntime=1 field groups — see buildRuntimeDebugText()'s own new
+  // blocks below for how each is read. lastMovementUpdateFnAt is stamped
+  // unconditionally at the very top of update(dt,now), before ANY early
+  // return — this is what lets the panel distinguish "INPUT: LOCKED /
+  // reason: X" (a known flag from computeInputLockReason()) from "INPUT:
+  // ENABLED / movementUpdate: NOT EXECUTING" (nothing known is locking
+  // input, yet update() itself somehow never ran this frame — frameAge
+  // would read large/growing instead of ~16ms).
+  let lastMovementUpdateFnAt = 0;
+  let lastMovementTranslationAppliedAt = 0; // only stamped when player.x/y actually translated this frame
+  let debugLastPointerDownAt = 0;
+  let debugLastPointerMoveAt = 0;
+  let debugLastPointerUpAt = 0;
+  let debugLastPointerCancelAt = 0;
+  let debugLastBarrelCollisionActive = false; // edge-triggers BARREL_COLLISION_START/END
+  let debugLastBarrelCollisionInfo = null; // { barrelIndex, penetration } — most recent barrel push, panel/COLLISION block only
+  let debugLastRoid1State = null; // updateBoss()'s own ROID1 STATE CHANGE/DAMAGE edge-detector baseline
+  let debugLastRoid1Hp = Infinity;
   const GAMEPAD_MOVE_DEADZONE = 0.12; // radial (magnitude-based), not per-axis
   const GAMEPAD_AIM_DEADZONE = 0.12; // radial
   const GAMEPAD_FIRE_THRESHOLD = 0.25; // RT analog value >= this counts as FIRE held
@@ -22323,11 +22631,51 @@
     const gameLoopBlock =
       `--- GAME LOOP ---\n` +
       `alive: ${lastGameLoopTickAt !== 0}  last frame age: ${ctx.gameLoopAliveMs}ms\n`;
+    // P0 RUNTIME/INPUT LOCK + RESULT PRESENTATION (this batch): the 5 new
+    // field groups the real-device DRONE-stage/ROID1-Touch-lockup
+    // investigation asked for. PLAYER INPUT/MOVEMENT UPDATE together are
+    // what let this panel distinguish "INPUT: LOCKED / reason: X" (a known
+    // flag from computeInputLockReason(), reused for the header above) from
+    // "INPUT: ENABLED / movementUpdate: NOT EXECUTING" (nothing known is
+    // locking input, yet update() itself silently isn't running — visible
+    // here as movementUpdateFrameAge growing far past one real frame's
+    // worth of ms instead of staying ~16ms).
+    const playerInputBlock =
+      `--- PLAYER INPUT ---\n` +
+      `enabled: ${!ctx.inputLocked}  blockedReason: ${ctx.lockReason}\n`;
+    const movementUpdateFrameAge = lastMovementUpdateFnAt ? +(now - lastMovementUpdateFnAt).toFixed(1) : null;
+    const movementTranslationAge = lastMovementTranslationAppliedAt ? +(now - lastMovementTranslationAppliedAt).toFixed(1) : null;
+    const movementUpdateBlock =
+      `--- MOVEMENT UPDATE ---\n` +
+      `lastExecutedAt: ${lastMovementUpdateFnAt ? lastMovementUpdateFnAt.toFixed(1) : '(never)'}  frameAge: ${movementUpdateFrameAge === null ? '(never)' : movementUpdateFrameAge + 'ms'}\n` +
+      `lastTranslationAppliedAt: ${lastMovementTranslationAppliedAt ? lastMovementTranslationAppliedAt.toFixed(1) : '(never)'}  translationAge: ${movementTranslationAge === null ? '(never)' : movementTranslationAge + 'ms'}\n`;
+    const playerStateBlock =
+      `--- PLAYER STATE ---\n` +
+      `alive: ${player.life > 0}  stunned: ${!!player.stunned}  frozen: ${ctx.inputLocked}  knockback: ${now < player.knockbackUntil}\n` +
+      `velocity: dashing=${!!player.dashing} moving=${!!player.moving}  position: x=${Math.round(player.x)} y=${Math.round(player.y)}\n`;
+    const activePointerCount = (actionStickTouchId !== null ? 1 : 0) + (aimStickTouchId !== null ? 1 : 0);
+    const touchBlock =
+      `--- TOUCH ---\n` +
+      `activePointers: ${activePointerCount}  movePointerId: ${actionStickTouchId}  aimPointerId: ${aimStickTouchId}\n` +
+      `lastPointerDown: ${debugLastPointerDownAt ? new Date(debugLastPointerDownAt).toISOString().slice(11, 23) : '(never)'}  ` +
+      `lastPointerMove: ${debugLastPointerMoveAt ? new Date(debugLastPointerMoveAt).toISOString().slice(11, 23) : '(never)'}  ` +
+      `lastPointerUp: ${debugLastPointerUpAt ? new Date(debugLastPointerUpAt).toISOString().slice(11, 23) : '(never)'}  ` +
+      `lastPointerCancel: ${debugLastPointerCancelAt ? new Date(debugLastPointerCancelAt).toISOString().slice(11, 23) : '(never)'}\n`;
+    const collisionBlock =
+      `--- COLLISION ---\n` +
+      `collidingWithBarrel: ${debugLastBarrelCollisionActive}  collisionObjectId: ${debugLastBarrelCollisionInfo ? 'barrel#' + debugLastBarrelCollisionInfo.barrelIndex : '(none)'}  ` +
+      `penetration: ${debugLastBarrelCollisionInfo ? debugLastBarrelCollisionInfo.penetration + 'px' : '(none)'}  lastResolution: ${lastRuntimeEventType === 'BARREL_COLLISION_START' || lastRuntimeEventType === 'BARREL_COLLISION_END' ? lastRuntimeEventType : '(n/a)'}\n`;
+    const specialSequenceActive = boss.spawned && (boss.state === 'roidDying' || boss.state === 'barrelSweep' || boss.state === 'barrelPurge' || boss.state === 'antiBurstCounter' || (adamSphereCombatState.active && adamSphereCombatState.dying));
+    const bossBlock =
+      `--- BOSS ---\n` +
+      `bossType: ${boss.spawned ? boss.type : '(none)'}  bossState: ${boss.spawned ? boss.state : '(none)'}  ` +
+      `bossIntroLocked: ${boss.spawned ? isBossIntroLocked() : false}  specialSequenceActive: ${specialSequenceActive}\n`;
     const traceLines = runtimeTrace.slice(-100).map((e) => {
       const extra = Object.keys(e).filter((k) => k !== 't' && k !== 'pt' && k !== 'type').map((k) => `${k}=${JSON.stringify(e[k])}`).join(' ');
       return `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${extra}`;
     });
     return header + gamepadBlock + audioBlock + openingMovieBlock + eventMovieBlock + transitionBlock + documentBlock + gameLoopBlock +
+      playerInputBlock + movementUpdateBlock + playerStateBlock + touchBlock + collisionBlock + bossBlock +
       `--- EVENT TIMELINE (most recent ${Math.min(runtimeTrace.length, 100)} of ${runtimeTrace.length}, max ${RUNTIME_TRACE_MAX}) ---\n` +
       traceLines.join('\n') + '\n';
   }
