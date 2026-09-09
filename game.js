@@ -12026,6 +12026,13 @@
     gamepadIndex = null;
     gamepadInputArmed = true;
     gamepadDisarmedAt = 0;
+    // P0 TAP TO START INPUT DELAY AUDIT (this batch): marks the exact
+    // instant this work order's "MAIN MENU shows but GameSir doesn't
+    // respond for several seconds" window begins — read only by the new
+    // MAIN_MENU_INPUT_GATE_STATE diagnostic below, never by any real
+    // accept/reject decision.
+    lastMainMenuEnterAt = performance.now();
+    confirmMenuButtonReleaseObservedSinceMainMenuEnter = false;
     startupState = STARTUP_STATE.MAIN_MENU;
     if (DEBUG_AUDIO_START_OVERLAY) {
       recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState });
@@ -18564,6 +18571,10 @@
     attemptStartupAudioUnlock, // debug/verification only
     get startupAudioUnlockConsumedGeneration() { return startupAudioUnlockConsumedGeneration; }, // debug/verification only
     get openingGestureAcceptedGeneration() { return openingGestureAcceptedGeneration; }, // debug/verification only
+    // P0 TAP TO START INPUT DELAY AUDIT (this batch) — debug/verification only:
+    get lastMainMenuEnterAt() { return lastMainMenuEnterAt; },
+    get confirmMenuButtonReleaseObservedSinceMainMenuEnter() { return confirmMenuButtonReleaseObservedSinceMainMenuEnter; },
+    recordMainMenuInputGateState,
     get menuBgmAudio() { return menuBgmAudio; },
     get bgmAudio() { return bgmAudio; },
     get bossBgmAudio() { return bossBgmAudio; },
@@ -21931,6 +21942,18 @@
   let gamepadLastAnyButtonPressed = false;
   let gamepadDisarmedAt = 0; // Part 1E timeout safety-net — see its own comment at the re-arm check
   const GAMEPAD_ARM_TIMEOUT_MS = 3000;
+  // P0 TAP TO START INPUT DELAY AUDIT (this batch): diagnostic-only state
+  // for MAIN_MENU_INPUT_GATE_STATE/BLOCKED/ACCEPTED (?debugGamepadTap=1) —
+  // lastMainMenuEnterAt is set once, in onOpeningTap(), at the exact instant
+  // startupState flips to MAIN_MENU (the TAP-TO-START-triggered entry this
+  // work order is about — returnToTopMenu()'s own separate MAIN MENU return
+  // path is untouched). confirmMenuButtonReleaseObservedSinceMainMenuEnter
+  // tracks whether the confirm button (A) has read not-pressed at least once
+  // since that entry — purely observational, read by the gate-state
+  // snapshot below, never consulted by any real accept/reject decision.
+  let lastMainMenuEnterAt = 0;
+  let confirmMenuButtonReleaseObservedSinceMainMenuEnter = false;
+  let lastMainMenuInputGateSignature = '';
   // PAUSE MENU gamepad navigation state — see GAMEPAD_PAUSE_MENU_STICK_THRESHOLD.
   let gamepadPauseMenuStickWasUp = false;
   let gamepadPauseMenuStickWasDown = false;
@@ -22098,6 +22121,63 @@
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     const gp = pads[gamepadIndex];
     return (gp && gp.connected) ? gp : null;
+  }
+
+  // P0 TAP TO START INPUT DELAY AUDIT (this batch): read-only snapshot of
+  // "why would MAIN MENU gamepad input work or not work RIGHT NOW" —
+  // captures every field this work order's audit asked for, computed
+  // directly from the SAME real state the actual (unmodified) menu-nav code
+  // a few lines below already reads, never a second/parallel copy of any
+  // decision logic. Called from BOTH of updateGamepadInput()'s own two
+  // relevant spots: the `if (!gp) return;` early-exit (gp===null case) and
+  // the normal per-frame path once gp/pressedNow/navContainer are known —
+  // so this is the ONE place able to prove or disprove, from a real device,
+  // whether a "MAIN MENU shows but input does nothing for several seconds"
+  // report is caused by the pad itself being invisible to
+  // navigator.getGamepads() (gamepadVisible:false) during that window, by
+  // dpadAllowed/leftStickAllowed/anyButtonAllowed genuinely reading false
+  // (which nothing in the current FULL MENU NAVIGATION code below actually
+  // produces — see its own comment), or by something else entirely.
+  // Diagnostic only: writes confirmMenuButtonReleaseObservedSinceMainMenuEnter
+  // (read only by this same function) and emits trace events; never gates,
+  // blocks, or changes any real input decision.
+  function recordMainMenuInputGateState(now, gp, confirmButtonHeldNow, freshlyAdoptedThisFrame) {
+    if (!DEBUG_GAMEPAD_TAP_OVERLAY || gameState.screen !== 'mainMenu') return;
+    if (!confirmButtonHeldNow) confirmMenuButtonReleaseObservedSinceMainMenuEnter = true;
+    let navContainer = null;
+    try { navContainer = getGamepadMenuNavContainer(); } catch (e) { /* diagnostic-only */ }
+    const releaseGateActive = !gamepadInputArmed;
+    // CODE-TRUTH fields, per this batch's explicit spec: D-PAD/LEFT STICK/
+    // any-button menu navigation in the FULL MENU NAVIGATION block below
+    // has never checked gamepadInputArmed — only a resolved navContainer
+    // and the pad itself being present gate it. These 3 fields report that
+    // real truth directly, so a real-device trace can distinguish "the code
+    // itself is blocking D-pad" (would show true here despite no input
+    // registering — would mean a NEW bug) from "the code allows it, but the
+    // browser isn't giving us a live pad to read" (gamepadVisible:false).
+    const inputStructurallyAllowed = !!gp && !!navContainer;
+    const fields = {
+      screen: gameState.screen,
+      startupState,
+      menuInputEnabled: inputStructurallyAllowed,
+      releaseGateActive,
+      releaseGateReason: releaseGateActive ? 'waiting-for-full-controller-release-since-tap-to-start' : null,
+      confirmButtonHeld: !!confirmButtonHeldNow,
+      confirmButtonReleasedObserved: confirmMenuButtonReleaseObservedSinceMainMenuEnter,
+      dpadAllowed: inputStructurallyAllowed,
+      leftStickAllowed: inputStructurallyAllowed,
+      anyButtonAllowed: inputStructurallyAllowed,
+      freshlyAdoptedThisFrame: !!freshlyAdoptedThisFrame,
+      gamepadVisible: !!gp,
+      padIndex: gp ? gp.index : null,
+      padId: gp ? gp.id : null,
+      elapsedSinceMainMenuEnterMs: lastMainMenuEnterAt ? Math.round(now - lastMainMenuEnterAt) : null,
+    };
+    const sig = JSON.stringify(fields);
+    if (sig !== lastMainMenuInputGateSignature) {
+      lastMainMenuInputGateSignature = sig;
+      recordGamepadTapEvent('MAIN_MENU_INPUT_GATE_STATE', fields);
+    }
   }
 
   // P0 REAL-DEVICE REGRESSION SESSION (Issue 1 / Part 1C): re-scans ALL
@@ -22304,6 +22384,15 @@
       gamepadInputArmed = true; // never leave a disconnected pad stuck disarmed
       gamepadDisarmedAt = 0;
       if (gameState.screen === 'opening') lastTapRejectReason = TAP_REJECT_REASON.NO_ACTIVE_PAD;
+      // P0 TAP TO START INPUT DELAY AUDIT (this batch): this exact branch —
+      // getActiveGamepad() returned null — is the prime suspect for "MAIN
+      // MENU shows but GameSir does nothing for several seconds": every
+      // real input decision below (D-PAD/LEFT STICK/A-confirm) is skipped
+      // wholesale on any frame that lands here, regardless of what the
+      // player is physically doing to the controller. Recording it directly
+      // (gp is null here by definition) is what lets a real-device retrace
+      // prove or disprove this.
+      recordMainMenuInputGateState(now, null, false, false);
       updateGamepadDebugOverlay(null);
       return;
     }
@@ -22657,15 +22746,39 @@
           if (navContainer) updateGamepadMenuNavFocusVisual();
         }
         debugLastInputBranch = navContainer ? ('menu-nav:' + navContainer.id) : 'menu-nav:no-container-resolved';
-        if (!navContainer && anyButtonPressedNow) debugLastRejectedBranch = 'menu-nav:no-container-for-screen:' + gameState.screen;
+        // P0 TAP TO START INPUT DELAY AUDIT (this batch): gate-state snapshot
+        // for this exact frame's FULL MENU NAVIGATION decision — computed
+        // from the same gp/navContainer this block already resolved above,
+        // diagnostic only, never a second parallel decision. screenAtMenuNavStart
+        // is captured BEFORE any nav action below runs (moveGamepadMenuNavFocus/
+        // confirmGamepadMenuNavFocus can synchronously change gameState.screen,
+        // e.g. CONFIRM navigating mainMenu -> a submenu) so the ACCEPTED/BLOCKED
+        // report reflects which screen the input was actually decided on, never
+        // a screen the action itself already left.
+        const screenAtMenuNavStart = gameState.screen;
+        recordMainMenuInputGateState(now, gp, !!pressedNow.a, freshlyAdoptedThisFrame);
+        if (!navContainer && anyButtonPressedNow) {
+          debugLastRejectedBranch = 'menu-nav:no-container-for-screen:' + gameState.screen;
+          if (DEBUG_GAMEPAD_TAP_OVERLAY && screenAtMenuNavStart === 'mainMenu') {
+            recordGamepadTapEvent('MAIN_MENU_INPUT_BLOCKED', { inputType: 'any', reason: 'no-nav-container-resolved', elapsedSinceMainMenuEnterMs: lastMainMenuEnterAt ? Math.round(now - lastMainMenuEnterAt) : null });
+          }
+        }
         if (navContainer) {
-          if (pressedNow.dpadUp && !prev.dpadUp) { moveGamepadMenuNavFocus(-1); debugLastDpadNavAt = now; }
-          if (pressedNow.dpadDown && !prev.dpadDown) { moveGamepadMenuNavFocus(1); debugLastDpadNavAt = now; }
+          // P0 TAP TO START INPUT DELAY AUDIT (this batch): reports an
+          // already-accepted input decision made by the unmodified code
+          // below — never itself gates, blocks, or alters that decision.
+          const reportMainMenuAccepted = (inputType, buttonIndexOrAxis) => {
+            if (DEBUG_GAMEPAD_TAP_OVERLAY && screenAtMenuNavStart === 'mainMenu') {
+              recordGamepadTapEvent('MAIN_MENU_INPUT_ACCEPTED', { inputType, buttonIndexOrAxis, elapsedSinceMainMenuEnterMs: lastMainMenuEnterAt ? Math.round(now - lastMainMenuEnterAt) : null });
+            }
+          };
+          if (pressedNow.dpadUp && !prev.dpadUp) { moveGamepadMenuNavFocus(-1); debugLastDpadNavAt = now; reportMainMenuAccepted('dpad', 'up'); }
+          if (pressedNow.dpadDown && !prev.dpadDown) { moveGamepadMenuNavFocus(1); debugLastDpadNavAt = now; reportMainMenuAccepted('dpad', 'down'); }
           const stickY = gp.axes[1] || 0;
           const stickPastUp = stickY <= -GAMEPAD_PAUSE_MENU_STICK_THRESHOLD;
           const stickPastDown = stickY >= GAMEPAD_PAUSE_MENU_STICK_THRESHOLD;
-          if (stickPastUp && !gamepadMenuNavStickWasUp) { moveGamepadMenuNavFocus(-1); debugLastStickNavAt = now; }
-          if (stickPastDown && !gamepadMenuNavStickWasDown) { moveGamepadMenuNavFocus(1); debugLastStickNavAt = now; }
+          if (stickPastUp && !gamepadMenuNavStickWasUp) { moveGamepadMenuNavFocus(-1); debugLastStickNavAt = now; reportMainMenuAccepted('leftStick', 'up'); }
+          if (stickPastDown && !gamepadMenuNavStickWasDown) { moveGamepadMenuNavFocus(1); debugLastStickNavAt = now; reportMainMenuAccepted('leftStick', 'down'); }
           gamepadMenuNavStickWasUp = stickPastUp;
           gamepadMenuNavStickWasDown = stickPastDown;
           // MENU中はGAMEPLAY actionを発動しない — A is CONFIRM-only here
@@ -22673,7 +22786,7 @@
           // the gameplayActive branch's own A=SOUTH DASH is never evaluated
           // this frame regardless; context-sensitive by construction, not a
           // special case).
-          if (pressedNow.a && !prev.a) confirmGamepadMenuNavFocus();
+          if (pressedNow.a && !prev.a) { confirmGamepadMenuNavFocus(); reportMainMenuAccepted('confirm', 0); }
         }
       }
     }
