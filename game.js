@@ -81,6 +81,24 @@
   const audioStartTrace = [];
   let audioStartPlayCallSeq = 0;
   const startMenuAudioSnapshots = [];
+  // P0 REAL DEVICE ADDENDUM (fresh nav/reload + NotAllowedError repro, this
+  // batch): the real-device report's own EVENT TIMELINE showed "most recent
+  // 150 of 200" — the shared audioStartTrace ring buffer had filled and
+  // evicted its OLDEST entries, which included SNEAKING's own eventMovieVideoEl
+  // play-lifecycle evidence (muted/PLAY_CALL/PLAY_RESOLVED/PLAY_REJECTED) —
+  // exactly the evidence needed to confirm/refute the "292ed56's SNEAKING
+  // muted fix actually took effect on real hardware" question. A dedicated,
+  // separate buffer for eventMovieVideoEl's own play lifecycle only, fed from
+  // playEventMovie() itself (never the generic HTMLMediaElement.prototype.play
+  // patch above, which stays shared/unchanged), so this evidence survives
+  // regardless of how much unrelated audio noise floods the shared trace.
+  const EVENT_MOVIE_AUDIO_TRACE_MAX = 80;
+  const eventMovieAudioTrace = [];
+  function recordEventMovieAudioTrace(type, fields) {
+    if (!DEBUG_AUDIO_START_OVERLAY) return;
+    eventMovieAudioTrace.push(Object.assign({ t: Date.now(), type }, fields || {}));
+    if (eventMovieAudioTrace.length > EVENT_MOVIE_AUDIO_TRACE_MAX) eventMovieAudioTrace.shift();
+  }
   let audioStartLastStartupState = null; // shadow copy for STARTUP_STATE_CHANGE from/to — diagnostic-only, never read by real startup logic
   // Shortened call-stack label — same technique as this file's own
   // bgmCallerLabel() (declared much further down, for ?debugBgm=1), kept as
@@ -1541,6 +1559,7 @@
     // gabriel_down likewise, true_ending/ENDING ROLL are untouched (see
     // above).
     eventMovieVideoEl.muted = key === 'gabriel_arrival' || key === 'main_escape' || key === 'main_bad_ending' || key === 'experiment_lab';
+    recordEventMovieAudioTrace('MUTED_SET', { key, muted: eventMovieVideoEl.muted, volume: eventMovieVideoEl.volume });
     // P0 INTEGRATED REGRESSION HOTFIX (Part H): gabriel_defeated alone gets
     // GABRIEL_DEFEATED_GAIN; every other key resets to 1.0 (identical to
     // the old, un-amplified behavior) — see ensureEventMovieGainNode()'s
@@ -1643,7 +1662,11 @@
     const EVENT_MOVIE_PLAY_RETRY_DELAYS_MS = [200, 600, 1500];
     let playRetryAttempt = 0;
     function attemptPlay() {
-      eventMovieVideoEl.play().catch((err) => {
+      recordEventMovieAudioTrace('PLAY_CALL', { key, attempt: playRetryAttempt, muted: eventMovieVideoEl.muted, volume: eventMovieVideoEl.volume, readyState: eventMovieVideoEl.readyState, networkState: eventMovieVideoEl.networkState });
+      eventMovieVideoEl.play().then(() => {
+        recordEventMovieAudioTrace('PLAY_RESOLVED', { key, attempt: playRetryAttempt, muted: eventMovieVideoEl.muted, volume: eventMovieVideoEl.volume, readyState: eventMovieVideoEl.readyState });
+      }).catch((err) => {
+        recordEventMovieAudioTrace('PLAY_REJECTED', { key, attempt: playRetryAttempt, errName: err && err.name, muted: eventMovieVideoEl.muted, volume: eventMovieVideoEl.volume, readyState: eventMovieVideoEl.readyState });
         if (eventMovieState.token !== token) return; // superseded before the rejected promise even resolved
         console.warn('[EVENT MOVIE] play() rejected for key=' + key + ' (attempt ' + playRetryAttempt + '):', err && err.name, err && err.message);
         if (playRetryAttempt < EVENT_MOVIE_PLAY_RETRY_DELAYS_MS.length) {
@@ -10818,6 +10841,23 @@
   // audioStartTrace ring buffer as every other ?debugAudioStart=1 event —
   // never gates, blocks, or changes any real playback decision.
   const BGM_AUDIBILITY_CHECKPOINT_DELAYS_MS = [100, 500, 1000, 3000, 5000];
+  // P0 REAL DEVICE ADDENDUM (fresh nav/reload + NotAllowedError repro, this
+  // batch) — CONFIRMED ROOT CAUSE of the reported EVENT TIMELINE flood
+  // ("most recent 150 of 200", early SNEAKING evidence evicted): while
+  // bgmAudio.play() keeps rejecting with NotAllowedError, the PRE-EXISTING
+  // syncMusicContext()/bgmTimeupdateWatchdog() retry loop (fires ~4x/sec for
+  // as long as a movie is playing — see reassertGameplayBgmIfExpected()'s
+  // own comment, unmodified here) calls claimAudibleBgm() again on every
+  // tick, and every one of THOSE calls was re-scheduling a brand new set of
+  // 5 delayed checkpoints on top of whatever earlier sets hadn't finished
+  // yet — compounding without bound for as long as the rejection persisted.
+  // Fixed by tracking one pending-schedule flag per element and skipping
+  // the delayed re-schedule (never the immediate 'play-call' snapshot
+  // itself, which stays cheap and one-shot per call) while a set is still
+  // in flight for that same element. The retry loop's own real behavior
+  // (how often it actually calls .play()) is untouched — only this
+  // diagnostic's redundant over-scheduling is fixed.
+  const bgmAudibilityScheduledElements = new WeakSet();
   function captureBgmAudibilityCheckpoints(key, element) {
     if (!DEBUG_AUDIO_START_OVERLAY) return;
     const trackLabel = BGM_TRACK_NAMES_BY_ELEMENT.get(element) || key;
@@ -10849,7 +10889,15 @@
       });
     };
     snap('play-call');
-    for (const delayMs of BGM_AUDIBILITY_CHECKPOINT_DELAYS_MS) setTimeout(() => snap('+' + delayMs + 'ms'), delayMs);
+    if (bgmAudibilityScheduledElements.has(element)) return; // a checkpoint set for this element is already in flight — never stack a second one on top
+    bgmAudibilityScheduledElements.add(element);
+    const delays = BGM_AUDIBILITY_CHECKPOINT_DELAYS_MS;
+    delays.forEach((delayMs, i) => {
+      setTimeout(() => {
+        snap('+' + delayMs + 'ms');
+        if (i === delays.length - 1) bgmAudibilityScheduledElements.delete(element); // last checkpoint fired — this element can be scheduled again
+      }, delayMs);
+    });
   }
   // Hard single-owner claim for every REAL (non-priming) BGM play() call in
   // this file (2C/2D/2H): immediately pauses every OTHER tracked BGM/song
@@ -18994,6 +19042,8 @@
     // verification only:
     get DEBUG_AUDIO_START_OVERLAY() { return DEBUG_AUDIO_START_OVERLAY; }, set DEBUG_AUDIO_START_OVERLAY(v) { DEBUG_AUDIO_START_OVERLAY = v; },
     get audioStartTrace() { return audioStartTrace; }, get AUDIO_START_TRACE_MAX() { return AUDIO_START_TRACE_MAX; },
+    // P0 REAL DEVICE ADDENDUM (this batch) — debug/verification only:
+    get eventMovieAudioTrace() { return eventMovieAudioTrace; }, get EVENT_MOVIE_AUDIO_TRACE_MAX() { return EVENT_MOVIE_AUDIO_TRACE_MAX; },
     get startMenuAudioSnapshots() { return startMenuAudioSnapshots; },
     audioStartMediaInventory, classifyAudioStartCase, captureStartMenuAudioSnapshot,
     buildAudioStartDebugText, updateDebugAudioStartOverlay,
@@ -22260,7 +22310,7 @@
   // Diagnostic only: writes confirmMenuButtonReleaseObservedSinceMainMenuEnter
   // (read only by this same function) and emits trace events; never gates,
   // blocks, or changes any real input decision.
-  function recordMainMenuInputGateState(now, gp, confirmButtonHeldNow, freshlyAdoptedThisFrame) {
+  function recordMainMenuInputGateState(now, gp, confirmButtonHeldNow, freshlyAdoptedThisFrame, prev) {
     if (!DEBUG_GAMEPAD_TAP_OVERLAY || gameState.screen !== 'mainMenu') return;
     if (!confirmButtonHeldNow) confirmMenuButtonReleaseObservedSinceMainMenuEnter = true;
     let navContainer = null;
@@ -22290,6 +22340,21 @@
       gamepadVisible: !!gp,
       padIndex: gp ? gp.index : null,
       padId: gp ? gp.id : null,
+      // P0 REAL DEVICE ADDENDUM (MAIN MENU A confirm depends on D-PAD?, this
+      // batch): the "previousButtons[0] baseline" / "previous button
+      // baseline" the addendum's STEP1-3 diff explicitly asks for — this is
+      // the SAME `prev` (gamepadLastButtons from the prior processed frame)
+      // the real rising-edge checks (`pressedNow.a && !prev.a` etc.) already
+      // read; exposing it directly is what lets a real-device trace show
+      // whether a still-true prev.a from before D-PAD was pressed is what
+      // suppressed A's rising edge, and whether pressing D-PAD first changes
+      // that baseline as a side effect. Diagnostic only — never itself part
+      // of any accept/reject decision.
+      previousConfirmButtonPressed: prev ? !!prev.a : null,
+      previousDpadUpPressed: prev ? !!prev.dpadUp : null,
+      previousDpadDownPressed: prev ? !!prev.dpadDown : null,
+      selectionIndex: gamepadMenuNavFocusIndex,
+      navContainerId: navContainer ? navContainer.id : null,
       elapsedSinceMainMenuEnterMs: lastMainMenuEnterAt ? Math.round(now - lastMainMenuEnterAt) : null,
     };
     // P0 REAL DEVICE FOLLOW-UP (this batch) — ROOT CAUSE FIX: the dedup
@@ -22358,7 +22423,17 @@
       dpadLeftRaw: pressedNow ? !!pressedNow.dpadLeft : null,
       dpadRightRaw: pressedNow ? !!pressedNow.dpadRight : null,
       stickAxes: gp ? gp.axes.slice() : null,
+      // P0 REAL DEVICE ADDENDUM (MAIN MENU A confirm depends on D-PAD?, this
+      // batch): explicit previous-frame baseline, so a real-device trace can
+      // directly diff "A pressed before any D-PAD" vs "A pressed after one
+      // D-PAD move" without having to infer prev.a from risingEdgeConfirm
+      // alone.
+      previousConfirmButtonPressed: prev ? !!prev.a : null,
+      previousDpadUpPressed: prev ? !!prev.dpadUp : null,
+      previousDpadDownPressed: prev ? !!prev.dpadDown : null,
       risingEdgeConfirm: !!(pressedNow && prev && pressedNow.a && !prev.a),
+      risingEdgeDpadUp: !!(pressedNow && prev && pressedNow.dpadUp && !prev.dpadUp),
+      risingEdgeDpadDown: !!(pressedNow && prev && pressedNow.dpadDown && !prev.dpadDown),
       handlerReached: !!navContainer,
       inputBlockedCountSoFar: mainMenuInputBlockedCountThisGeneration,
       inputAcceptedCountSoFar: mainMenuInputAcceptedCountThisGeneration,
@@ -22999,7 +23074,7 @@
         // report reflects which screen the input was actually decided on, never
         // a screen the action itself already left.
         const screenAtMenuNavStart = gameState.screen;
-        recordMainMenuInputGateState(now, gp, !!pressedNow.a, freshlyAdoptedThisFrame);
+        recordMainMenuInputGateState(now, gp, !!pressedNow.a, freshlyAdoptedThisFrame, prev);
         captureMainMenuEarlySnapshotIfDue(now, gp, navContainer, pressedNow, prev);
         if (!navContainer && anyButtonPressedNow) {
           debugLastRejectedBranch = 'menu-nav:no-container-for-screen:' + gameState.screen;
