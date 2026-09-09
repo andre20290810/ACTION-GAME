@@ -135,6 +135,20 @@ body {
    FLASH (secondary row, right edge) and DASH (primary row, right edge)
    land directly above/below each other, with STEALTH just to FLASH's
    left, matching the requested "STEALTH FLASH / (blank) DASH" cluster. */
+/* P0 WORK ORDER D (P1, root-cause fix): #control-area itself carries no
+   z-index (position:relative alone never establishes a new stacking
+   context), so LOADING/OPENING/MAIN MENU/SNEAKING overlays that DO declare
+   a real z-index (14 and up) render above it — and swallow its clicks —
+   regardless of what z-index the debug-panel CHILDREN inside it declare,
+   since a descendant's z-index is only ever compared within its own
+   ancestor's stacking level. body.debug-control-zone-active is set (see
+   updateDebugGamepadTapOverlay()/updateDebugAudioStartOverlay() in game.js)
+   whenever EITHER debug flag is active, and elevates #control-area itself
+   above every other z-index this file declares (max 62) so the two debug
+   panels inside it are actually visible AND clickable on every screen this
+   work order's real-device symptoms happen on — not just 'gameplay'. Never
+   applied on a normal (non-debug) URL, where this class is never set. */
+body.debug-control-zone-active #control-area { z-index: 70; }
 #control-area {
   position: relative; /* SECTION E: anchors #control-blackout-overlay's absolute inset:0 */
   flex: 0 0 auto;
@@ -887,34 +901,51 @@ body {
   display: none;
 }
 
-/* P0 DIAGNOSTIC PHASE 1 (GAMEPAD FIRST-PRESS FAILURE — DIAGNOSE ONLY):
-   bottom-anchored, semi-transparent real-device panel — readable font size
-   (13px, not the tiny 9-10px other debug overlays use, per spec's own
-   "text is not too small" requirement) so a real iPhone screenshot stays
-   legible. z-index above the touch control zones so it's visible over
-   them, but capped height + internal scroll (never full-screen) so the
-   game view stays mostly visible underneath and TAP TO START (vertically
-   centered) is never covered. [hidden] keeps it fully absent from a normal
-   session — never display:none-by-CSS-only, so game.js's own
-   DEBUG_GAMEPAD_TAP_OVERLAY flag is the single source of truth for
-   visibility. */
+/* P0 WORK ORDER D (P1, real-device requirement): both #debug-gamepad-tap-panel
+   and #debug-audio-start-panel now live INSIDE #control-area (the CONTROL
+   PANEL ZONE — see index.html for the DOM move) and are positioned with
+   position:absolute against it as the nearest positioned ancestor
+   (#control-area is position:relative), each taking an exact left/right 50%
+   half — a horizontal 2-column split, per spec's own stated default
+   preference, and genuinely practical here since #control-area already
+   spans the FULL viewport width in both portrait and landscape (see its own
+   rules above) while its height is comfortably tall enough for two readable
+   columns in either orientation, unlike a vertical split which would leave
+   each panel a very short strip under the (already short) control-area
+   height on a landscape phone. Together the two panels cover effectively
+   100% of the CONTROL PANEL ZONE's own box exactly (inset:0 split down the
+   middle) — covering (hiding) the touch buttons underneath while active is
+   explicitly acceptable per spec ("これは診断専用画面です"). Each panel's
+   own #debug-*-text child keeps its existing independent overflow-y:auto
+   scrolling. [hidden] (unmodified, still driven solely by
+   DEBUG_GAMEPAD_TAP_OVERLAY/DEBUG_AUDIO_START_OVERLAY in game.js) keeps
+   both fully out of layout/paint on a normal, non-debug URL — this move
+   changes ZERO pixels there. Readable font size (13px, not the tiny 9-10px
+   other debug overlays use) so a real iPhone screenshot stays legible. */
 #debug-gamepad-tap-panel {
-  position: fixed;
-  left: 0;
-  right: 0;
+  position: absolute;
+  top: 0;
   bottom: 0;
+  left: 0;
+  width: 50%;
   z-index: 60;
-  max-height: 42vh;
+  pointer-events: auto; /* #control-area sets pointer-events:none in landscape (see its own media-query rule) — must be re-enabled explicitly here so the COPY button stays tappable in both orientations */
   display: flex;
   flex-direction: column;
-  background: rgba(0, 0, 0, 0.82);
-  border-top: 1px solid rgba(255, 160, 220, 0.6);
+  background: rgba(0, 0, 0, 0.92);
+  border-right: 1px solid rgba(255, 160, 220, 0.5);
   font-family: monospace;
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 1.4;
   color: rgba(235, 235, 238, 0.95);
 }
 #debug-gamepad-tap-panel[hidden] { display: none; }
+/* P0 WORK ORDER D (P1): when only ?debugGamepadTap=1 is active (no
+   ?debugAudioStart=1), this panel takes the FULL CONTROL PANEL ZONE width
+   instead of leaving the other 50% showing plain/functional touch buttons
+   for no reason — see updateDebugGamepadTapOverlay()'s own body.classList
+   toggle in game.js. */
+body.debug-gamepad-tap-only #debug-gamepad-tap-panel { width: 100%; border-right: none; }
 #debug-gamepad-tap-header {
   display: flex;
   align-items: center;
@@ -933,6 +964,13 @@ body {
   font-family: monospace;
   font-size: 12px;
   padding: 6px 10px;
+  /* P0 WORK ORDER D (Additional requirement 2): fixed min-width sized for
+     the longest of the 3 label states ("✓ COPIED"/"COPY FAILED"/"COPY DEBUG
+     LOG") so swapping between them on click never reflows the header row —
+     see wireDebugCopyButtonFeedback() in game.js for the actual feedback
+     logic (checkmark on genuine clipboard success only). */
+  min-width: 118px;
+  text-align: center;
   background: rgba(255, 160, 220, 0.15);
   color: rgba(255, 160, 220, 0.95);
   border: 1px solid rgba(255, 160, 220, 0.6);
@@ -1186,25 +1224,36 @@ body {
    panel's bottom edge can never reach that band, regardless of how much
    real content either panel renders: max-height <= 100vh - 42vh - top-offset,
    with a few vh of visible margin between them. Layout-only change — no
-   game logic, no z-index reshuffle, no new pointer-events behavior. */
+   game logic, no z-index reshuffle, no new pointer-events behavior.
+   P0 WORK ORDER D (P1): superseded by the CONTROL PANEL ZONE placement —
+   see #debug-gamepad-tap-panel's own updated comment above for the full
+   reasoning (this panel now sits inside #control-area too, as its right
+   50% half; the old top-right fixed-corner/vh-math approach this comment
+   originally described no longer applies). */
 #debug-audio-start-panel {
-  position: fixed;
-  top: calc(12px + env(safe-area-inset-top, 0px));
-  right: calc(12px + env(safe-area-inset-right, 0px));
-  z-index: 63;
-  width: min(46vw, 440px);
-  max-height: calc(54vh - 12px);
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: 50%;
+  z-index: 60;
+  width: auto;
+  max-height: none;
+  pointer-events: auto; /* see #debug-gamepad-tap-panel's own comment */
   display: flex;
   flex-direction: column;
-  background: rgba(0, 0, 0, 0.88);
-  border: 1px solid rgba(255, 190, 60, 0.6);
-  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.92);
+  border-left: 1px solid rgba(255, 190, 60, 0.5);
+  border-radius: 0;
   font-family: monospace;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
   color: rgba(235, 235, 238, 0.95);
 }
 #debug-audio-start-panel[hidden] { display: none; }
+/* P0 WORK ORDER D (P1): mirror of body.debug-gamepad-tap-only above, for
+   when only ?debugAudioStart=1 is active. */
+body.debug-audio-start-only #debug-audio-start-panel { width: 100%; left: 0; border-left: none; }
 #debug-audio-start-header {
   display: flex;
   align-items: center;
@@ -1223,6 +1272,10 @@ body {
   font-family: monospace;
   font-size: 12px;
   padding: 6px 10px;
+  /* P0 WORK ORDER D (Additional requirement 2): see #debug-gamepad-tap-copy-btn's
+     own comment — identical fixed min-width, same reasoning. */
+  min-width: 118px;
+  text-align: center;
   background: rgba(255, 190, 60, 0.15);
   color: rgba(255, 190, 60, 0.95);
   border: 1px solid rgba(255, 190, 60, 0.6);

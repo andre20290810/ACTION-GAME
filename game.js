@@ -1223,7 +1223,43 @@
   // needs a restart-from-0 does that explicitly at its own call site, same
   // as every existing BGM function already did). Safe to call from
   // anywhere, any number of times, regardless of gameState.screen/mode.
-  function syncMusicContext() {
+  // P0 WORK ORDER D (root-cause fix): retry-storm suppression. Real-device
+  // evidence (SNEAKING seq54-79: a continuous run of AUDIO_PLAY_REJECTED/
+  // NotAllowedError on bgmAudio, screen/eventMovieActive/userActivation all
+  // unchanged the whole time, then the SAME .play() call resolving cleanly
+  // at seq80 right after a genuine SCREEN_CHANGE) shows syncMusicContext()'s
+  // own watchdog-driven retry (bgmTimeupdateWatchdog -> reassertGameplayBgmIfExpected
+  // -> here, ~4x/sec for as long as a movie plays) re-attempting
+  // claimAudibleBgm() on every single tick regardless of whether anything
+  // about the browser's own playback-authorization state has genuinely
+  // changed since the last rejection — a real NotAllowedError retry storm,
+  // costing a play()/pause() cycle across every tracked element each time,
+  // for as long as the rejection persists. Gated on a REAL state transition
+  // (a fresh trusted pointer/touch/mouse/key interaction observed AFTER the
+  // last rejection — the same signal updateGamepadDiscoveryTap()'s own
+  // exclusion window already reads) rather than any elapsed-time throttle:
+  // the very next genuinely new interaction always retries immediately,
+  // never waits out a fixed delay, and a track that has never been rejected
+  // (or already succeeded) is never throttled at all. `force` lets a real,
+  // deliberate context change (setMusicContext()) always attempt for real —
+  // only the watchdog's own repeated re-invocation of the SAME still-
+  // rejected attempt is ever suppressed.
+  const bgmClaimRejection = new WeakMap(); // element -> { at }
+  function latestTrustedInteractionAt() {
+    return Math.max(
+      typeof lastNonGamepadPointerDownAt !== 'undefined' ? lastNonGamepadPointerDownAt : 0,
+      typeof lastNonGamepadTouchStartAt !== 'undefined' ? lastNonGamepadTouchStartAt : 0,
+      typeof lastNonGamepadMouseDownAt !== 'undefined' ? lastNonGamepadMouseDownAt : 0,
+      typeof lastNonGamepadKeyDownAt !== 'undefined' ? lastNonGamepadKeyDownAt : 0
+    );
+  }
+  function shouldRetryBgmClaim(element, force) {
+    if (force) return true;
+    const rej = bgmClaimRejection.get(element);
+    if (!rej) return true; // never rejected (or already cleared by a resolved claim) — always allowed
+    return latestTrustedInteractionAt() > rej.at; // only a genuinely NEW interaction since the rejection re-opens the retry
+  }
+  function syncMusicContext(force) {
     if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'syncMusicContext' });
     const wantMenu = musicContext === 'menu';
     const wantNormal = musicContext === 'normal';
@@ -1246,13 +1282,17 @@
     // replacement for it (this never itself STARTS the song — only 'ending'
     // entry does that — it only ever silences it when it shouldn't be on).
     if (!wantEnding && typeof endingRevealAudio !== 'undefined' && !endingRevealAudio.paused) { endingRevealAudio.pause(); if (audibleBgmElement === endingRevealAudio) { audibleBgmGeneration++; audibleBgmKey = null; audibleBgmElement = null; } }
-    if (wantMenu && menuBgmStarted && menuBgmAudio.paused) claimAudibleBgm('menu', menuBgmAudio);
-    if (wantNormal && bgmAudio.paused) claimAudibleBgm('normal', bgmAudio);
-    if (wantBoss && bossBgmAudio.paused) claimAudibleBgm('boss', bossBgmAudio);
+    if (wantMenu && menuBgmStarted && menuBgmAudio.paused && shouldRetryBgmClaim(menuBgmAudio, force)) claimAudibleBgm('menu', menuBgmAudio);
+    if (wantNormal && bgmAudio.paused && shouldRetryBgmClaim(bgmAudio, force)) claimAudibleBgm('normal', bgmAudio);
+    if (wantBoss && bossBgmAudio.paused && shouldRetryBgmClaim(bossBgmAudio, force)) claimAudibleBgm('boss', bossBgmAudio);
   }
   function setMusicContext(ctx) {
     musicContext = ctx;
-    syncMusicContext();
+    // P0 WORK ORDER D: a genuine, deliberate context change always retries
+    // for real — the retry-storm gate below exists only to suppress the
+    // WATCHDOG's own repeated re-invocations of the SAME already-rejected
+    // attempt, never a real new transition like this one.
+    syncMusicContext(true);
   }
   // Kept as a thin alias — every existing call site (playEventMovie's own
   // finish()/skipEventMovie(), and loop()'s own throttled watchdog below)
@@ -1314,6 +1354,43 @@
   // DEBUG_AUDIO_START_OVERLAY is on, so with the flag off this function's
   // real behavior (including exactly how many promise handlers get attached)
   // is identical to before this batch.
+  // P0 WORK ORDER D (root-cause fix, this batch): the resume() call here was
+  // fire-and-forget in production (only a SEPARATE diagnostic .then()/.catch()
+  // chain, gated behind DEBUG_AUDIO_START_OVERLAY, ever looked at the real
+  // outcome) — confirmed by real-device evidence
+  // (eventMovieAudioContextState="suspended" observed DURING SNEAKING
+  // playback) to leave the context genuinely stuck suspended in at least
+  // one real case. Per this work order's explicit instruction, this is not
+  // "fixed" by blindly `await`-ing the promise before continuing (that would
+  // either block movie playback on the resume settling, or require
+  // restructuring every caller into an async chain for no real benefit —
+  // the video's own .play() call already runs independently and correctly
+  // resumes producing audible frames once the context genuinely becomes
+  // 'running', whenever that happens). Instead: verify the REAL outcome once
+  // the promise settles, and if the browser still reports the context as
+  // not-'running' (either a rejection, or — a real, if rare, cross-browser
+  // edge case — a resolved promise that still leaves state!=='running'),
+  // make exactly ONE bounded retry attempt. This is a genuine outcome-
+  // verified fix, not a naive fire-and-forget, while staying non-blocking
+  // and never turning into an unbounded retry loop.
+  function resumeEventMovieAudioContextVerified(diagnosticLabel, isRetry) {
+    const resumePromise = eventMovieAudioContext.resume();
+    if (DEBUG_AUDIO_START_OVERLAY) {
+      recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_CALL', Object.assign({ caller: diagnosticLabel || null, isRetry: !!isRetry }, buildEventMovieAudioDiagnosticFields()));
+    }
+    resumePromise.then(() => {
+      if (DEBUG_AUDIO_START_OVERLAY) recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_RESOLVED', Object.assign({ caller: diagnosticLabel || null, isRetry: !!isRetry, verifiedState: eventMovieAudioContext.state }, buildEventMovieAudioDiagnosticFields()));
+      if (!isRetry && eventMovieAudioContext.state !== 'running') {
+        // Resolved, but the browser still didn't actually leave 'suspended'
+        // — a genuine bounded retry (never a second one; isRetry===true on
+        // this recursive call short-circuits any further chain).
+        resumeEventMovieAudioContextVerified(diagnosticLabel, true);
+      }
+    }).catch((err) => {
+      if (DEBUG_AUDIO_START_OVERLAY) recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_REJECTED', Object.assign({ caller: diagnosticLabel || null, isRetry: !!isRetry, errName: err && err.name, errMessage: err && err.message }, buildEventMovieAudioDiagnosticFields()));
+      if (!isRetry) resumeEventMovieAudioContextVerified(diagnosticLabel, true); // one bounded retry on genuine rejection too
+    });
+  }
   function ensureEventMovieGainNode(diagnosticLabel) {
     if (eventMovieGainNode) {
       // Already wired — just make sure a previously-suspended context (iOS
@@ -1321,13 +1398,9 @@
       // gesture) gets a fresh resume() attempt every time this is called
       // from a genuine gesture.
       if (eventMovieAudioContext && eventMovieAudioContext.state === 'suspended') {
-        const resumePromise = eventMovieAudioContext.resume();
-        resumePromise.catch(() => {});
-        if (DEBUG_AUDIO_START_OVERLAY) {
-          recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_CALL', Object.assign({ caller: diagnosticLabel || null }, buildEventMovieAudioDiagnosticFields()));
-          resumePromise.then(() => recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_RESOLVED', Object.assign({ caller: diagnosticLabel || null }, buildEventMovieAudioDiagnosticFields())))
-            .catch((err) => recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_REJECTED', Object.assign({ caller: diagnosticLabel || null, errName: err && err.name, errMessage: err && err.message }, buildEventMovieAudioDiagnosticFields())));
-        }
+        resumeEventMovieAudioContextVerified(diagnosticLabel);
+      } else if (DEBUG_AUDIO_START_OVERLAY) {
+        recordEventMovieAudioTrace('AUDIO_CONTEXT_CHECK', Object.assign({ caller: diagnosticLabel || null }, buildEventMovieAudioDiagnosticFields()));
       }
       return;
     }
@@ -1340,14 +1413,15 @@
       eventMovieGainNode.gain.value = 1.0;
       source.connect(eventMovieGainNode);
       eventMovieGainNode.connect(eventMovieAudioContext.destination);
+      // P0 WORK ORDER D: a one-time creation-moment trace, regardless of
+      // whether the context needed a resume — previously this diagnostic
+      // only ever recorded RESUME attempts, so a real-device/test run where
+      // the browser happens to create the context already 'running' (no
+      // suspend/resume cycle needed at all) left zero trace evidence of
+      // this call having happened. Read-only, never gates real logic.
+      if (DEBUG_AUDIO_START_OVERLAY) recordEventMovieAudioTrace('AUDIO_CONTEXT_CREATED', Object.assign({ caller: diagnosticLabel || null }, buildEventMovieAudioDiagnosticFields()));
       if (eventMovieAudioContext.state === 'suspended') {
-        const resumePromise = eventMovieAudioContext.resume();
-        resumePromise.catch(() => {});
-        if (DEBUG_AUDIO_START_OVERLAY) {
-          recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_CALL', Object.assign({ caller: diagnosticLabel || null }, buildEventMovieAudioDiagnosticFields()));
-          resumePromise.then(() => recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_RESOLVED', Object.assign({ caller: diagnosticLabel || null }, buildEventMovieAudioDiagnosticFields())))
-            .catch((err) => recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_REJECTED', Object.assign({ caller: diagnosticLabel || null, errName: err && err.name, errMessage: err && err.message }, buildEventMovieAudioDiagnosticFields())));
-        }
+        resumeEventMovieAudioContextVerified(diagnosticLabel);
       }
     } catch (e) {
       // Never let a Web Audio setup failure block movie playback itself —
@@ -10526,7 +10600,25 @@
     // hidden (not just covered) the rest of the time so no stray touch can
     // reach a control zone underneath LOADING/OPENING/MAIN MENU/RESULT/GAME OVER.
     document.getElementById('play-area').style.display = next === 'gameplay' ? '' : 'none';
-    document.getElementById('control-area').style.display = next === 'gameplay' ? '' : 'none';
+    // P0 WORK ORDER D (P1, root-cause fix): #control-area (the CONTROL PANEL
+    // ZONE) is the new host for #debug-gamepad-tap-panel/#debug-audio-start-panel
+    // (see their own DOM/CSS comments) — but nearly every real-device symptom
+    // this work order investigates happens at TAP TO START/MAIN MENU/SNEAKING,
+    // none of which is the 'gameplay' screen this element was originally
+    // gated on exclusively. Without this exception, hiding #control-area via
+    // display:none on every non-gameplay screen would ALSO collapse both
+    // debug panels to zero size (position:absolute descendants of a
+    // display:none ancestor render nothing and report an all-zero
+    // getBoundingClientRect) exactly when a real-device tester needs them
+    // most. Keeping #control-area visible whenever either debug flag is on,
+    // regardless of screen, is what the spec's own "hiding the touch
+    // controller UI behind the debug panels is acceptable under debug URLs"
+    // allowance already anticipates — the panels themselves (opaque,
+    // z-index above the touch buttons) still fully cover it whenever a panel
+    // is actually shown; on a normal (non-debug) URL neither flag is ever
+    // true, so this condition is always false and behavior is identical to
+    // before this batch.
+    document.getElementById('control-area').style.display = (next === 'gameplay' || DEBUG_GAMEPAD_TAP_OVERLAY || DEBUG_AUDIO_START_OVERLAY) ? '' : 'none';
   }
 
   // ---------- SECTION T: game-wide BGM (Outbreak 1.1) ----------
@@ -11035,10 +11127,12 @@
       const p = element.play();
       if (p && typeof p.then === 'function') {
         p.then(() => {
+          bgmClaimRejection.delete(element); // P0 WORK ORDER D: a resolved claim clears any prior retry-storm suppression for this element
           if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_RESOLVED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, stale: audibleBgmGeneration !== myGen });
           if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_RESOLVE', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), stale: audibleBgmGeneration !== myGen });
           if (audibleBgmGeneration !== myGen) { try { element.pause(); } catch (e2) {} }
         }).catch((err) => {
+          bgmClaimRejection.set(element, { at: performance.now() }); // P0 WORK ORDER D: retry-storm suppression — see shouldRetryBgmClaim()'s own comment
           if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_REJECTED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, errName: err && err.name });
           if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_REJECT', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), errName: err && err.name });
           if (opts && opts.onRejected) opts.onRejected(err);
@@ -11801,6 +11895,32 @@
         gamepadIndex = null;
         gamepadInputArmed = true;
         gamepadDisarmedAt = 0;
+        // P0 WORK ORDER D (root-cause fix, this batch): real-device report
+        // "Reload -> Loading finishes almost instantly -> TAP TO START shown
+        // -> GameSir A does not advance" (vs. a fresh boot, where it works).
+        // Root cause found by code audit: on some browsers a RELOAD (same
+        // origin/tab, not a fresh navigation) can expose an already-paired
+        // controller via navigator.getGamepads() from the very first polled
+        // frame — i.e. DURING the LOADING screen, well before this
+        // WAITING_FOR_TAP transition even runs. gamepadNewlyVisibleThisFrame
+        // (updateGamepadInput()'s false->true visibility flip) therefore
+        // flips true during LOADING, not during WAITING_FOR_TAP, so
+        // updateGamepadDiscoveryTap()'s CASE A rescue window — which only
+        // ever opens on conditionA (startupState===WAITING_FOR_TAP) seeing a
+        // genuine newly-visible/connected signal — never has a chance to
+        // open for this generation's WAITING_FOR_TAP episode at all. Forcing
+        // gamepadWasVisibleLastPoll=false here, at the exact same
+        // generation-guarded boundary gamepadIndex is already reset to null,
+        // makes the very next poll re-evaluate a currently-connected pad as
+        // "newly visible" for THIS WAITING_FOR_TAP episode's own purposes —
+        // exactly mirroring why gamepadIndex is reset here (a pad already
+        // known before this boundary must still be treated as fresh
+        // discovery for the episode that starts at this boundary). Never
+        // fabricates a press, never widens any existing safety condition
+        // (userActivation/exclusion-window/generation/once-per-generation
+        // checks in updateGamepadDiscoveryTap() are all unchanged) — it only
+        // ever affects whether the window gets a chance to open at all.
+        gamepadWasVisibleLastPoll = false;
         if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('STARTUP_READY', { generation: myGeneration });
         // P0 REAL DEVICE FOLLOW-UP (this batch): fresh WAITING_FOR_TAP entry
         // resets the dedicated TAP TO START early-opening trace, so a fresh
@@ -12090,6 +12210,35 @@
           : 'native DOM gesture (touch/mouse) — real-device A/B trace showed no duplication from this priming pass; unchanged',
       });
     }
+    // P0 WORK ORDER D (root-cause fix, this batch): real-device evidence
+    // (eventMovieAudioContextState="suspended" DIRECTLY OBSERVED during
+    // SNEAKING playback) confirms eventMovieAudioContext genuinely never
+    // reaches 'running' for a gamepad-sourced accepted opening — because the
+    // early return just below skips unlockEventMovieElementForIOS()
+    // entirely for that path, and THAT function is the only call site that
+    // ever created/resumed eventMovieAudioContext this early. That skip was
+    // deliberate (real-device A/B trace: gamepad-sourced priming caused
+    // audible duplication — see this function's own comment above), but the
+    // duplication was traced to the MEDIA-ELEMENT priming (eventMovieVideoEl's
+    // own play()/pause() cycle, plus unlockBackgroundBgmForIOS()'s
+    // bgmAudio/bossBgmAudio/endingRevealAudio priming) — NOT to Web Audio's
+    // AudioContext.resume(), which is governed by a DIFFERENT, looser
+    // WebKit autoplay policy (recent user-activation-based, not strictly
+    // "must be the synchronous continuation of a trusted DOM event") than
+    // HTMLMediaElement.play(). A genuine GameSir button press already makes
+    // navigator.userActivation.isActive true at the exact moment this
+    // function runs (required by updateGamepadDiscoveryTap()'s own
+    // eligibility gate) — giving AudioContext.resume() a real chance to
+    // succeed here without re-touching any of the media-element priming
+    // that actually caused the documented duplication. Calling ONLY
+    // ensureEventMovieGainNode() (context creation + resume — never
+    // eventMovieVideoEl.play()/.pause(), never bgmAudio/bossBgmAudio/
+    // endingRevealAudio) for BOTH opening sources closes this gap with the
+    // smallest possible change: touch/mouse opens already called this
+    // (via unlockEventMovieElementForIOS() below) with zero reported issue;
+    // gamepad opens now get the exact same early resume attempt, nothing
+    // more.
+    ensureEventMovieGainNode('attemptStartupAudioUnlock:' + openingSource);
     if (isSyntheticGamepadOpening) return;
     unlockEventMovieElementForIOS(isTrustedGesture);
     unlockBackgroundBgmForIOS(isTrustedGesture);
@@ -12242,9 +12391,28 @@
     // itself is genuinely ready (menuNavContainer is computed live from
     // gameState.screen, already 'mainMenu' as of the line above) the instant
     // MAIN_MENU is reached.
-    gamepadIndex = null;
-    gamepadInputArmed = true;
-    gamepadDisarmedAt = 0;
+    // P0 WORK ORDER D (root-cause fix, this batch): this reset used to
+    // inline only 3 of resetGamepadEdgeBaselineForMenuReturn()'s 5 fields
+    // (gamepadIndex/gamepadInputArmed/gamepadDisarmedAt), leaving
+    // gamepadLastButtons/gamepadLastAnyButtonPressed untouched here — exactly
+    // the same class of gap already found and fixed once in
+    // updateMainMenuGamepadExposureRescue() (see its own comment on the
+    // "gamepadInputArmed inconsistency after baseline reset" bug). The gap
+    // matters most for CASE A-RECOVERED (the discovery-tap rescue calling
+    // onOpeningTap() synchronously from inside updateGamepadInput(), on the
+    // SAME frame the confirming button is still physically held): this
+    // frame's own later pollForGamepadConnection()/adoptGamepadIndex() call
+    // reseeds gamepadLastButtons/gamepadLastAnyButtonPressed from the pad's
+    // CURRENT real state (button still down) and, per its own "still-held
+    // at adoption time" rule, sets gamepadInputArmed back to false —
+    // silently undoing the gamepadInputArmed=true this function just set,
+    // even though gamepadIndex was already nulled here specifically to force
+    // that exact reseed. Using the shared helper (already used identically
+    // by beginStartupSequence()/returnToTopMenu()) closes the gap for every
+    // onOpeningTap() call site (touch/mouse/gamepad raw/gamepad discovery)
+    // at once, with no new behavior beyond what those other call sites
+    // already rely on.
+    resetGamepadEdgeBaselineForMenuReturn();
     // P0 TAP TO START INPUT DELAY AUDIT (this batch): marks the exact
     // instant this work order's "MAIN MENU shows but GameSir doesn't
     // respond for several seconds" window begins — read only by the new
@@ -22360,6 +22528,24 @@
   const gamepadMoveVec = { x: 0, y: 0 }; // post-deadzone LEFT STICK, debug/verification only
   let gamepadAimVec = null; // post-deadzone RIGHT STICK {x,y}, or null while neutral — debug/verification only
   let gamepadFireHeld = false; // RT >= GAMEPAD_FIRE_THRESHOLD
+  // P0 WORK ORDER D (Additional requirement 1): GameSir A+RB simultaneous
+  // press skips the currently-playing EVENT MOVIE — "wait for a genuine
+  // release before re-consuming" gate, same pattern as gamepadInputArmed
+  // above, so holding the combo down for multiple frames fires exactly ONE
+  // skip, not one per frame. Reset to false the instant EITHER button is no
+  // longer held (not just both at once), so a quick re-press-the-combo
+  // (e.g. to skip 2 consecutive movies back to back) is never blocked
+  // waiting on a full double-release that already happened.
+  let eventMovieSkipComboConsumed = false;
+  // Excluded per spec ("ENDING movie and RESULT-related movies... not
+  // skippable via this mechanism"): the 3 ENDING-chain movies that lead
+  // directly into the RESULT screen (see playEventMovie()'s own "Only the 3
+  // ENDING movies" comment for why these 3 keys are the complete set) — the
+  // actual ENDING ROLL system (playEndingRoll()/ending_darkout.MOV) is
+  // separate and superseded by the static RESULT screen, and was never
+  // reachable through eventMovieState in the first place, so it needs no
+  // entry here.
+  const EVENT_MOVIE_SKIP_EXCLUDED_KEYS = ['main_escape', 'main_bad_ending', 'true_ending'];
   let gamepadLastButtons = {}; // previous-frame pressed state, for rising-edge detection
   // TAP TO START GAMEPAD SUPPORT: ANY gamepad button (not just A — see
   // anyButtonPressedNow below) transitioning not-pressed -> pressed while
@@ -22409,7 +22595,11 @@
   // checkpoints survive regardless of how noisy the shared gamepadTapTrace
   // ring buffer gets — its own array, capped at exactly the 11 checkpoints
   // per MAIN MENU entry, reset at the same instant lastMainMenuEnterAt is.
-  const MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS = [0, 100, 250, 500, 1000, 2000, 3000, 4000, 5000, 7500, 10000];
+  // P0 WORK ORDER D: checkpoint list matches the exact schedule this work
+  // order's own new diagnostic requirement specifies (0/100/250/500/1000/
+  // 2000/3000/5000/7500/10000ms — no 4000ms entry, unlike this buffer's
+  // original 11-point schedule from the previous batch).
+  const MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS = [0, 100, 250, 500, 1000, 2000, 3000, 5000, 7500, 10000];
   let mainMenuEarlySnapshots = [];
   let mainMenuEarlySnapshotNextIndex = 0;
   let mainMenuInputBlockedCountThisGeneration = 0;
@@ -22701,6 +22891,35 @@
       navigatorRawSlots = [0, 1, 2, 3].map((i) => { const p = pads[i]; return p ? { index: p.index, id: p.id, connected: p.connected } : null; });
     } catch (e) { /* diagnostic-only */ }
     const inputStructurallyAllowed = !!gp && !!navContainer;
+    // P0 WORK ORDER D: the remaining fields this work order's own new
+    // diagnostic requirement explicitly asks for, on top of what this same
+    // buffer already captured from the previous batch — gamepadInputArmed/
+    // gamepadDisarmedAt as their own explicit fields (previously only
+    // exposed indirectly via releaseGateActive=!gamepadInputArmed), the
+    // selected/highlighted menu item itself (not just its index), and the
+    // page-level focus/activation/visibility signals the work order's own
+    // investigation list calls out by name. All pure reads, never written to
+    // by any real input-handling code path.
+    let selectedMenuItemLabel = null;
+    try {
+      const items = navContainer ? getGamepadMenuNavItems() : [];
+      const selEl = items[gamepadMenuNavFocusIndex];
+      selectedMenuItemLabel = selEl ? (selEl.id || selEl.textContent.trim().slice(0, 40) || '(unlabeled)') : null;
+    } catch (e) { /* diagnostic-only */ }
+    let activeElementDesc = null, hasFocus = null, visibilityState = null;
+    let userActivationIsActive = null, userActivationHasBeenActive = null;
+    let screenOrientation = null, screenWidth = null, screenHeight = null;
+    try { activeElementDesc = document.activeElement ? (document.activeElement.id || document.activeElement.tagName || '(unlabeled)') : null; } catch (e) { /* diagnostic-only */ }
+    try { hasFocus = document.hasFocus ? document.hasFocus() : null; } catch (e) { /* diagnostic-only */ }
+    try { visibilityState = document.visibilityState; } catch (e) { /* diagnostic-only */ }
+    try {
+      if (navigator.userActivation) { userActivationIsActive = navigator.userActivation.isActive; userActivationHasBeenActive = navigator.userActivation.hasBeenActive; }
+    } catch (e) { /* diagnostic-only */ }
+    try {
+      screenOrientation = (window.screen && window.screen.orientation) ? window.screen.orientation.type : null;
+      screenWidth = window.screen ? window.screen.width : null;
+      screenHeight = window.screen ? window.screen.height : null;
+    } catch (e) { /* diagnostic-only */ }
     const snapshot = {
       checkpointMs: MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS[mainMenuEarlySnapshotNextIndex],
       elapsedActualMs: Math.round(elapsed),
@@ -22713,6 +22932,8 @@
       padIndex: gp ? gp.index : null,
       padId: gp ? gp.id : null,
       menuInputEnabled: inputStructurallyAllowed,
+      gamepadInputArmed,
+      gamepadDisarmedAt,
       releaseGateActive: !gamepadInputArmed,
       releaseGateReason: !gamepadInputArmed ? 'waiting-for-full-controller-release-since-tap-to-start' : null,
       confirmButtonHeld: pressedNow ? !!pressedNow.a : null,
@@ -22726,6 +22947,12 @@
       dpadLeftRaw: pressedNow ? !!pressedNow.dpadLeft : null,
       dpadRightRaw: pressedNow ? !!pressedNow.dpadRight : null,
       stickAxes: gp ? gp.axes.slice() : null,
+      selectedMenuItemLabel,
+      documentActiveElement: activeElementDesc,
+      documentHasFocus: hasFocus,
+      visibilityState,
+      userActivationIsActive, userActivationHasBeenActive,
+      screenOrientation, screenWidth, screenHeight,
       // P0 REAL DEVICE ADDENDUM (MAIN MENU A confirm depends on D-PAD?, this
       // batch): explicit previous-frame baseline, so a real-device trace can
       // directly diff "A pressed before any D-PAD" vs "A pressed after one
@@ -23163,6 +23390,21 @@
         eventMovieTapFallbackEl.click();
         gamepadInputArmed = false;
         if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_DISARMED', { reason: 'movie-tap-to-play-confirmed' });
+      }
+      // Additional requirement 1: A+RB simultaneous press skips the movie —
+      // checked independently of the TAP TO PLAY branch just above (that
+      // one only ever matters while the fallback button is visible; this
+      // one applies whenever a movie is genuinely playing). Only a real
+      // combo (both held at once) counts — A alone or RB alone never fires
+      // this, matching pressedNow.a/pressedNow.rb being read as a logical
+      // AND, never OR.
+      const comboHeldNow = !!(pressedNow.a && pressedNow.rb);
+      if (comboHeldNow && !eventMovieSkipComboConsumed && EVENT_MOVIE_SKIP_EXCLUDED_KEYS.indexOf(eventMovieState.key) === -1) {
+        eventMovieSkipComboConsumed = true; // set BEFORE calling skipEventMovie() so a re-entrant frame can never double-fire
+        if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_MOVIE_SKIP_COMBO', { key: eventMovieState.key });
+        skipEventMovie(); // the REAL completion/cleanup/story-progression path — never a hide-only shortcut, never lets progression run twice
+      } else if (!comboHeldNow) {
+        eventMovieSkipComboConsumed = false; // either button released — a genuinely NEW combo press may fire again
       }
     } else if (gameplayActive) {
       // ---- LEFT STICK -> MOVE ----
@@ -23668,6 +23910,81 @@
     }
     return 'OK: accepted, screen transitioned to mainMenu, and the overlay DOM matches — if the real device still visually shows TAP TO START despite this, check for a CSS/paint issue outside this diagnostic\'s scope';
   }
+  // P0 WORK ORDER D (P1): current-location/context diagnostic fields,
+  // shared by BOTH the GAMEPAD TAP and AUDIO START debug panels (spec's own
+  // "either to both panels or a shared header" — implemented as identical
+  // text in both, simplest given the two panels are two independent <pre>
+  // blocks with no shared DOM ancestor of their own). Strictly READ-ONLY —
+  // every field below is read from EXISTING game-progression state; nothing
+  // here ever writes to gameState/currentStageIndex/bossEncounterIndex/
+  // storyScenarioState/eventStageState/bossBattleState/musicContext/
+  // audibleBgmKey/eventMovieState, matching the explicit spec requirement
+  // ("debug表示のためにゲームprogression stateを変更してはいけません").
+  // GABRIEL is the one stage whose raw STAGE_REGISTRY key ('boss_c3_gabriel')
+  // never disambiguates which of the 3 encounters is showing — bossEncounterIndex
+  // (0-2, the SAME field STORY's own GABRIEL-specific logic already keys off
+  // exclusively — see its own declaration) is read here purely for display.
+  function resolveDebugStageRegistryId() {
+    try {
+      if (typeof eventStageState !== 'undefined' && eventStageState.active) return eventStageState.stageId;
+      if (typeof storyScenarioState !== 'undefined' && gameState.mode === 'boss' && storyScenarioState.stageOverrideId) return storyScenarioState.stageOverrideId;
+      if (typeof bossBattleState !== 'undefined' && bossBattleState.active) return bossBattleState.stageId;
+      if (typeof trainingVoidBridgeKey !== 'undefined' && gameState.mode === 'securityTraining' && trainingVoidBridgeKey) return VOID_BRIDGE_STAGES[trainingVoidBridgeKey].stageId;
+    } catch (e) { /* diagnostic-only */ }
+    return null; // TRAINING_BACKGROUNDS-driven modes and plain STORY normal stages have no single STAGE_REGISTRY id — see stageDisplayName below for those
+  }
+  function resolveDebugHumanReadableStageName() {
+    try {
+      const regId = resolveDebugStageRegistryId();
+      const isGabrielBoss = (typeof boss !== 'undefined' && boss.type === 'gabriel' && gameState.mode === 'boss');
+      if (regId === 'boss_c3_gabriel' || (isGabrielBoss && !regId)) {
+        const n = (typeof bossEncounterIndex === 'number') ? (bossEncounterIndex + 1) : '?';
+        return 'GABRIEL ENCOUNTER #' + n + '/3';
+      }
+      if (typeof boss !== 'undefined' && gameState.mode === 'boss' && boss.spawned) {
+        if (boss.type === 'roid1') return 'ROID1';
+        if (boss.type === 'roid2') return 'ROID2';
+        if (boss.type === 'adam' || boss.type === 'adamSphere') return 'ADAM SPHERE';
+      }
+      if (typeof eventMovieState !== 'undefined' && eventMovieState.active && eventMovieState.key === 'sneaking') return 'SNEAKING';
+      if (regId) return regId; // fall back to the raw STAGE_REGISTRY id — still meaningful, just not hand-named
+      if (gameState.mode === 'training') return 'TRAINING STAGE ' + ((typeof trainingStageIndex === 'number' ? trainingStageIndex : basicTrainingBgIndex) + 1);
+      if (gameState.mode === 'securityTraining') return 'SECURITY TRAINING STAGE ' + (securityTrainingBgIndex + 1);
+      if (typeof currentStageIndex === 'number') return 'STORY STAGE ' + (currentStageIndex + 1);
+    } catch (e) { /* diagnostic-only */ }
+    return '(unresolved)';
+  }
+  function buildDebugContextSummaryLines() {
+    let bgAsset = null, movieSrc = null, expectedBgmTrack = null;
+    try { const bg = currentStage(); bgAsset = bg ? bg.file : null; } catch (e) { /* diagnostic-only */ }
+    try { movieSrc = eventMovieVideoEl.currentSrc || eventMovieVideoEl.src || null; } catch (e) { /* diagnostic-only */ }
+    try {
+      expectedBgmTrack = musicContext === 'menu' ? 'menuBgmAudio (Outbreak0)'
+        : musicContext === 'normal' ? 'bgmAudio (Outbreak1.1)'
+        : musicContext === 'boss' ? 'bossBgmAudio (Outbreak2)'
+        : musicContext === 'ending' ? 'endingRevealAudio (Shining Grace)'
+        : '(none — silent)';
+    } catch (e) { /* diagnostic-only */ }
+    let modeLabel = '(none)';
+    try {
+      modeLabel = gameState.mode === 'training' ? 'TRAINING (BASIC)'
+        : gameState.mode === 'securityTraining' ? 'TRAINING (SECURITY)'
+        : gameState.mode === 'boss' ? ('MAIN' + (typeof storyScenarioState !== 'undefined' && storyScenarioState.scenario ? (' [' + storyScenarioState.scenario + ']') : ''))
+        : gameState.mode === 'event' ? 'EVENT STAGE'
+        : String(gameState.mode || '(none)');
+    } catch (e) { /* diagnostic-only */ }
+    return [
+      '--- CONTEXT (read-only, current-location diagnostic) ---',
+      '  screen: ' + gameState.screen + '  mode: ' + modeLabel,
+      '  stage registry key: ' + (resolveDebugStageRegistryId() || '(n/a for this mode)') + '  stage index: ' + (typeof currentStageIndex === 'number' ? currentStageIndex : '(n/a)'),
+      '  human-readable stage: ' + resolveDebugHumanReadableStageName(),
+      '  area: ' + (typeof currentArea !== 'undefined' ? currentArea : '(n/a)') + '  background asset: ' + (bgAsset || '(none)'),
+      '  eventMovieActive: ' + (typeof eventMovieState !== 'undefined' ? eventMovieState.active : '(n/a)') + '  movie key: ' + (typeof eventMovieState !== 'undefined' ? eventMovieState.key : '(n/a)') + '  movie src: ' + (movieSrc || '(none)'),
+      '  musicContext: ' + (typeof musicContext !== 'undefined' ? musicContext : '(n/a)') + '  audibleBgmOwner: ' + (typeof audibleBgmKey !== 'undefined' ? (audibleBgmKey || '(none)') : '(n/a)') + '  expected BGM: ' + expectedBgmTrack,
+      '  boss: ' + (typeof boss !== 'undefined' && boss.spawned ? (boss.name + ' (type=' + boss.type + ', state=' + boss.state + ')') : '(no boss active)') +
+        ((typeof boss !== 'undefined' && boss.spawned && boss.type === 'gabriel') ? '  encounter: #' + (bossEncounterIndex + 1) + '/3' : ''),
+    ].join('\n');
+  }
   const debugGamepadTapEl = document.getElementById('debug-gamepad-tap-panel');
   const debugGamepadTapCopyBtn = document.getElementById('debug-gamepad-tap-copy-btn');
   const debugGamepadTapTextEl = document.getElementById('debug-gamepad-tap-text');
@@ -23708,6 +24025,7 @@
     return (
       `=== DARK OUT GAMEPAD TAP DIAGNOSTIC (?debugGamepadTap=1) ===\n` +
       `timestamp: ${new Date().toISOString()}\n` +
+      buildDebugContextSummaryLines() + '\n' +
       `--- STARTUP ---\n` +
       `STARTUP_STATE: ${startupState}\n` +
       `startupGeneration: ${startupGeneration}  tapReadyGeneration: ${tapReadyGeneration}\n` +
@@ -23751,6 +24069,21 @@
         ].join('\n');
       })()}\n` +
       `--- FIRST PRESS SUMMARY ---\n${firstPressLines.join('\n')}\n` +
+      // P0 WORK ORDER D: mainMenuEarlySnapshots was already being captured
+      // (previous batch) into its own non-ring-buffer array specifically so
+      // it could never be evicted by the shared 100-slot gamepadTapTrace —
+      // but this visible on-screen/COPY-DEBUG-LOG panel text never actually
+      // rendered it, only window.__game.mainMenuEarlySnapshots did (devtools-
+      // only, unusable on a real device with no computer attached). Rendered
+      // here in full (never truncated — this array is fixed-size, at most
+      // MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS.length entries) so a real
+      // device COPY DEBUG LOG actually carries this work order's own
+      // required 0/100/250/500/1000/2000/3000/5000/7500/10000ms checkpoints.
+      `--- MAIN MENU EARLY SNAPSHOTS (fixed schedule, non-ring-buffer, ${mainMenuEarlySnapshots.length}/${MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS.length} captured) ---\n${
+        mainMenuEarlySnapshots.length
+          ? mainMenuEarlySnapshots.map((snap) => `  [+${snap.checkpointMs}ms / actual ${snap.elapsedActualMs}ms] ${JSON.stringify(snap)}`).join('\n')
+          : '  (none captured yet — MAIN MENU not yet entered this page life)'
+      }\n` +
       `--- EVENT TRACE (most recent ${Math.min(gamepadTapTrace.length, GAMEPAD_TAP_TRACE_MAX)} of ${gamepadTapTrace.length}, ring buffer max ${GAMEPAD_TAP_TRACE_MAX}) ---\n` +
       gamepadTapTrace.slice(-GAMEPAD_TAP_TRACE_MAX).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n')
     );
@@ -23758,23 +24091,64 @@
   function updateDebugGamepadTapOverlay(now) {
     if (!DEBUG_GAMEPAD_TAP_OVERLAY || !debugGamepadTapEl) return;
     debugGamepadTapEl.hidden = false;
+    // P0 WORK ORDER D (P1): only ever true/false for the whole page life
+    // (DEBUG_GAMEPAD_TAP_OVERLAY is a fixed URL-flag const) — setting it
+    // every call is cheap (classList.toggle is idempotent) and avoids
+    // needing a separate one-time init call. Lets CSS give this panel the
+    // FULL CONTROL PANEL ZONE width when ?debugAudioStart=1 is NOT also
+    // active, instead of leaving the other 50% just showing plain (or
+    // hidden) touch buttons for no reason — see body.debug-gamepad-tap-only
+    // in style.css.
+    document.body.classList.toggle('debug-gamepad-tap-only', !DEBUG_AUDIO_START_OVERLAY);
+    // P0 WORK ORDER D (P1, root-cause fix): #control-area sits at a plain
+    // z-index:auto stacking position (position:relative alone does not
+    // establish a new stacking context) — LOADING/OPENING/other overlays
+    // that carry a real z-index (14 and up) render ABOVE it and swallow
+    // pointer events regardless of what z-index my debug-panel CHILDREN
+    // declare, since a descendant's z-index is only ever compared within
+    // its own ancestor's stacking level, never against siblings of that
+    // ancestor. Elevating #control-area itself above every real z-index
+    // this file declares (max 62) is what actually lets these panels
+    // render on top of, and receive clicks through, LOADING/TAP TO START/
+    // MAIN MENU/SNEAKING — exactly the screens this work order's own real-
+    // device symptoms happen on, not just 'gameplay'. See
+    // body.debug-control-zone-active in style.css.
+    document.body.classList.add('debug-control-zone-active');
     if (debugGamepadTapTextEl) debugGamepadTapTextEl.textContent = buildGamepadTapDebugText(now);
   }
-  if (debugGamepadTapCopyBtn) {
-    debugGamepadTapCopyBtn.addEventListener('click', () => {
-      const text = buildGamepadTapDebugText(performance.now());
+  // P0 WORK ORDER D (Additional requirement 2): shared COPY-button success/
+  // failure visual feedback for both debug panels' COPY DEBUG LOG buttons —
+  // identical behavior on both, debug-URL-only (only ever wired to these 2
+  // buttons, which only exist/are visible under their own [hidden] flags).
+  // Checkmark shown ONLY on a genuinely resolved navigator.clipboard.
+  // writeText() promise — never speculatively, never on the synchronous
+  // fallback-textarea path (that path means the real clipboard write did
+  // NOT happen). Button label/width are restored via a per-button pending
+  // timer so a rapid double-click can never leave two overlapping reverts
+  // racing each other.
+  const debugCopyBtnRevertTimers = new WeakMap();
+  function wireDebugCopyButtonFeedback(btn, buildText, fallbackTextareaId) {
+    if (!btn) return;
+    const originalLabel = btn.textContent;
+    const setLabel = (text, ms) => {
+      const existing = debugCopyBtnRevertTimers.get(btn);
+      if (existing) clearTimeout(existing);
+      btn.textContent = text;
+      if (ms) {
+        const t = setTimeout(() => { btn.textContent = originalLabel; debugCopyBtnRevertTimers.delete(btn); }, ms);
+        debugCopyBtnRevertTimers.set(btn, t);
+      }
+    };
+    btn.addEventListener('click', () => {
+      const text = buildText();
       const fallback = () => {
-        const ta = document.getElementById('debug-gamepad-tap-fallback-textarea');
-        if (ta) {
-          ta.hidden = false;
-          ta.value = text;
-          ta.focus();
-          ta.select();
-        }
+        const ta = document.getElementById(fallbackTextareaId);
+        if (ta) { ta.hidden = false; ta.value = text; ta.focus(); ta.select(); }
+        setLabel('COPY FAILED', 1500); // optional per spec — never the checkmark
       };
       try {
         if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).catch(fallback);
+          navigator.clipboard.writeText(text).then(() => setLabel('✓ COPIED', 1500)).catch(fallback);
         } else {
           fallback();
         }
@@ -23783,6 +24157,7 @@
       }
     });
   }
+  wireDebugCopyButtonFeedback(debugGamepadTapCopyBtn, () => buildGamepadTapDebugText(performance.now()), 'debug-gamepad-tap-fallback-textarea');
 
   // ==========================================================================
   // P0 BGM DOUBLE-PLAY DIAGNOSTIC (this batch): real-device diagnostic panel.
@@ -24162,6 +24537,7 @@
     const header =
       `=== DARK OUT START MENU BGM DUPLICATION DIAGNOSTIC (?debugAudioStart=1) ===\n` +
       `timestamp: ${new Date().toISOString()}\n` +
+      buildDebugContextSummaryLines() + '\n' +
       `screen: ${gameState.screen}  startupState: ${startupState}  musicContext: ${musicContext}  audibleBgmOwner: ${audibleBgmKey}\n\n` +
       `--- EXPECTED START MENU BGM (established by static code read, not a guess) ---\n` +
       `asset: ${EXPECTED_START_MENU_BGM.asset}  variable: ${EXPECTED_START_MENU_BGM.variable}  ownerKey: ${EXPECTED_START_MENU_BGM.ownerKey}  startFunction: ${EXPECTED_START_MENU_BGM.startFunction}\n\n`;
@@ -24199,21 +24575,16 @@
   function updateDebugAudioStartOverlay(now) {
     if (!DEBUG_AUDIO_START_OVERLAY || !debugAudioStartEl) return;
     debugAudioStartEl.hidden = false;
+    // P0 WORK ORDER D (P1): see updateDebugGamepadTapOverlay()'s own comment
+    // — same idea, mirrored for this panel.
+    document.body.classList.toggle('debug-audio-start-only', !DEBUG_GAMEPAD_TAP_OVERLAY);
+    document.body.classList.add('debug-control-zone-active'); // see updateDebugGamepadTapOverlay()'s own comment
     if (debugAudioStartTextEl) debugAudioStartTextEl.textContent = buildAudioStartDebugText();
   }
-  if (debugAudioStartCopyBtn) {
-    debugAudioStartCopyBtn.addEventListener('click', () => {
-      const text = buildAudioStartDebugText();
-      const fallback = () => {
-        const ta = document.getElementById('debug-audio-start-fallback-textarea');
-        if (ta) { ta.hidden = false; ta.value = text; ta.focus(); ta.select(); }
-      };
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(fallback);
-        else fallback();
-      } catch (err) { fallback(); }
-    });
-  }
+  // P0 WORK ORDER D (Additional requirement 2): same shared COPY-button
+  // success/failure feedback as #debug-gamepad-tap-copy-btn — see
+  // wireDebugCopyButtonFeedback()'s own comment.
+  wireDebugCopyButtonFeedback(debugAudioStartCopyBtn, () => buildAudioStartDebugText(), 'debug-audio-start-fallback-textarea');
 
   let lastBgmWatchdogAt = 0;
   // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION (Part D/K root-

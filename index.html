@@ -23,7 +23,7 @@
 <meta name="twitter:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_site_v2.jpg">
 <link rel="icon" href="assets/branding/dark_out_site_v2.jpg" type="image/jpeg">
 <link rel="apple-touch-icon" href="assets/branding/dark_out_site_v2.jpg">
-<link rel="stylesheet" href="style.css?v=p0-mainmenu-rescue-audiotrace-1">
+<link rel="stylesheet" href="style.css?v=p0-workorder-d-integrated-1">
 </head>
 <body>
 
@@ -239,19 +239,22 @@
   <video id="ending-reveal-video" src="" autoplay muted loop playsinline disablepictureinpicture></video>
   <div id="ending-reveal-scrim"></div>
   <div id="ending-reveal-result">
-    <!-- P0 FULL GAMEPAD E2E HOTFIX (Part F/G): "RESULTS" is the one
-         center-aligned line in this block; RANK/PLAY TIME/CONTINUE below
-         it are left-aligned, in that row order (RANK first). Each row's
-         LABEL is plain static text (visible from screen-entry, never
-         faded) — only the VALUE span (.ending-reveal-fade) participates
-         in the reveal-by-song-fraction timeline, in the order PLAY TIME
-         value -> CONTINUE value -> RANK letter (see updateEndingReveal()/
-         enterEndingReveal() in game.js). -->
+    <!-- P0 WORK ORDER D (P2, root-cause fix): this row order used to be
+         RANK/PLAY TIME/CONTINUE ("RANK first" — see the old Part F/G
+         comment this replaces) — a genuine discrepancy against this work
+         order's explicit spec ("Display order: PLAY TIME -> CONTINUE ->
+         RANK, RANK always last"), found by direct comparison, not
+         guessed. Reordered to PLAY TIME/CONTINUE/RANK below — the ONLY
+         change: 3 existing row <div>s moved, nothing added/removed/
+         restyled, and the reveal-by-song-fraction TIMING in
+         updateEndingReveal()/enterEndingReveal() (game.js) was already
+         PLAY TIME value -> CONTINUE value -> RANK letter, so this now
+         also matches the STATIC row order it always should have. "RESULTS"
+         is the one center-aligned line in this block; the 3 rows below it
+         are left-aligned. Each row's LABEL is plain static text (visible
+         from screen-entry, never faded) — only the VALUE span
+         (.ending-reveal-fade) participates in the reveal timeline. -->
     <h1 id="ending-reveal-heading" class="ending-reveal-fade">RESULTS</h1>
-    <div id="ending-reveal-rank-row" class="ending-reveal-row">
-      <span class="ending-reveal-stat-label">RANK</span>
-      <span id="ending-reveal-rank" class="ending-reveal-stat-value ending-reveal-rank-value ending-reveal-fade"></span>
-    </div>
     <div id="ending-reveal-clear-time-row" class="ending-reveal-row">
       <span class="ending-reveal-stat-label">PLAY TIME</span>
       <span id="ending-reveal-clear-time" class="ending-reveal-stat-value ending-reveal-fade"></span>
@@ -259,6 +262,10 @@
     <div id="ending-reveal-continue-row" class="ending-reveal-row">
       <span class="ending-reveal-stat-label">CONTINUE</span>
       <span id="ending-reveal-continue" class="ending-reveal-stat-value ending-reveal-fade"></span>
+    </div>
+    <div id="ending-reveal-rank-row" class="ending-reveal-row">
+      <span class="ending-reveal-stat-label">RANK</span>
+      <span id="ending-reveal-rank" class="ending-reveal-stat-value ending-reveal-rank-value ending-reveal-fade"></span>
     </div>
     <!-- P0 FULL GAMEPAD E2E HOTFIX (Part I): fixed text, below the RESULT
          details, still part of the same vertically-centered block — this
@@ -428,6 +435,39 @@
   <div id="control-blackout-overlay" hidden>
     <div id="control-blackout-message">Reboot The Control Pannel!!</div>
   </div>
+
+  <!-- P0 WORK ORDER D (P1): the GAMEPAD TAP and AUDIO START debug panels are
+       moved here, as DIRECT CHILDREN of #control-area (previously plain
+       top-level <body> siblings, positioned as independent fixed overlays —
+       see their own CSS for the full history), specifically so their new
+       CSS can position them with position:absolute against #control-area's
+       own box (the CONTROL PANEL ZONE) as the nearest positioned ancestor,
+       occupying it at an exact 1:1 left/right split — never a JS-computed
+       geometry sync, never a guessed vh-based approximation. Debug-URL-only:
+       each panel is still individually gated by its own [hidden] attribute
+       (DEBUG_GAMEPAD_TAP_OVERLAY / DEBUG_AUDIO_START_OVERLAY in game.js,
+       untouched by this move), so on a normal (non-debug) URL both stay
+       [hidden] -> display:none, contributing nothing to layout or paint,
+       exactly as before this move. Every other debug panel (#debug-bgm-panel/
+       #debug-transition-panel/#debug-runtime-panel) is deliberately left in
+       its original location/CSS — this work order's P1 scope names only
+       ?debugGamepadTap=1/?debugAudioStart=1. -->
+  <div id="debug-gamepad-tap-panel" hidden>
+    <div id="debug-gamepad-tap-header">
+      <span>GAMEPAD TAP DIAGNOSTIC</span>
+      <button id="debug-gamepad-tap-copy-btn" type="button">COPY DEBUG LOG</button>
+    </div>
+    <pre id="debug-gamepad-tap-text"></pre>
+    <textarea id="debug-gamepad-tap-fallback-textarea" readonly hidden></textarea>
+  </div>
+  <div id="debug-audio-start-panel" hidden>
+    <div id="debug-audio-start-header">
+      <span>START MENU BGM DUPLICATION DIAGNOSTIC</span>
+      <button id="debug-audio-start-copy-btn" type="button">COPY DEBUG LOG</button>
+    </div>
+    <pre id="debug-audio-start-text"></pre>
+    <textarea id="debug-audio-start-fallback-textarea" readonly hidden></textarea>
+  </div>
 </div>
 
 <!-- SECTION S/T/U: simplified — RESUME/SETTING/QUIT (per spec's own
@@ -500,25 +540,8 @@
      loads, and current mode/screen/stage. -->
 <div id="debug-perf-overlay"></div>
 
-<!-- P0 DIAGNOSTIC PHASE 1 (GAMEPAD FIRST-PRESS FAILURE — DIAGNOSE ONLY): a
-     SEPARATE overlay from all the ones above (?debugGamepadTap=1/0 in the
-     URL, same localStorage-persistence pattern) — anchored to the bottom of
-     the screen (the one edge not already owned), semi-transparent so it
-     never fully blocks the view underneath, and NOT pointer-events:none
-     (its COPY DEBUG LOG button must be tappable) but sized/positioned so it
-     never overlaps the TAP TO START tap target or the touch control zones.
-     Hidden (CSS [hidden]) unless DEBUG_GAMEPAD_TAP_OVERLAY is true — never
-     shown in normal play. See updateDebugGamepadTapOverlay()/
-     buildGamepadTapDebugText() in game.js — this panel only ever displays
-     what the EXISTING gamepad/TAP code already decided; it changes nothing. -->
-<div id="debug-gamepad-tap-panel" hidden>
-  <div id="debug-gamepad-tap-header">
-    <span>GAMEPAD TAP DIAGNOSTIC</span>
-    <button id="debug-gamepad-tap-copy-btn" type="button">COPY DEBUG LOG</button>
-  </div>
-  <pre id="debug-gamepad-tap-text"></pre>
-  <textarea id="debug-gamepad-tap-fallback-textarea" readonly hidden></textarea>
-</div>
+<!-- P0 WORK ORDER D (P1): #debug-gamepad-tap-panel moved into #control-area
+     (the CONTROL PANEL ZONE) — see its own comment there for why. -->
 
 <!-- P0 BGM DOUBLE-PLAY DIAGNOSTIC: same shape/pattern as
      #debug-gamepad-tap-panel above — hidden unless DEBUG_BGM_OVERLAY is
@@ -564,20 +587,8 @@
   <textarea id="debug-runtime-fallback-textarea" readonly hidden></textarea>
 </div>
 
-<!-- DARK OUT / P0 START MENU BGM DUPLICATION — DIAGNOSTIC ONLY
-     (?debugAudioStart=1): same shape/pattern as #debug-runtime-panel above —
-     hidden unless DEBUG_AUDIO_START_OVERLAY is true, never shown in normal
-     play. See updateDebugAudioStartOverlay()/buildAudioStartDebugText() in
-     game.js — read-only, changes nothing about existing audio/claim/startup
-     logic. -->
-<div id="debug-audio-start-panel" hidden>
-  <div id="debug-audio-start-header">
-    <span>START MENU BGM DUPLICATION DIAGNOSTIC</span>
-    <button id="debug-audio-start-copy-btn" type="button">COPY DEBUG LOG</button>
-  </div>
-  <pre id="debug-audio-start-text"></pre>
-  <textarea id="debug-audio-start-fallback-textarea" readonly hidden></textarea>
-</div>
+<!-- P0 WORK ORDER D (P1): #debug-audio-start-panel moved into #control-area
+     (the CONTROL PANEL ZONE) — see its own comment there for why. -->
 
 <!-- PART 9 SECTION G: shared EVENT MOVIE PLAYER — one DOM overlay reused
      by every SYSTEM/EVENT movie (opening/sneaking/drone_arrival/
@@ -610,6 +621,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=p0-mainmenu-rescue-audiotrace-1"></script>
+<script src="game.js?v=p0-workorder-d-integrated-1"></script>
 </body>
 </html>
