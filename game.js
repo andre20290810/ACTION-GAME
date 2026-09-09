@@ -1823,46 +1823,40 @@
     // above).
     eventMovieVideoEl.muted = key === 'gabriel_arrival' || key === 'main_escape' || key === 'main_bad_ending' || key === 'experiment_lab';
     recordEventMovieAudioTrace('MUTED_SET', { key, muted: eventMovieVideoEl.muted, volume: eventMovieVideoEl.volume });
-    // P0 INTEGRATED REGRESSION HOTFIX (Part H): gabriel_defeated alone gets
-    // GABRIEL_DEFEATED_GAIN — see ensureEventMovieGainNode()'s own comment
-    // for why plain .volume can't achieve this.
-    // P0 WORK ORDER D FOLLOW-UP (root-cause fix, this batch): ensureEventMovieGainNode()
-    // is now called ONLY for gabriel_defeated, the one key that genuinely
-    // needs amplification beyond .volume's 1.0 ceiling — never for any other
-    // key, including sneaking. createMediaElementSource() (inside that
-    // function) is a ONE-TIME, IRREVERSIBLE, ELEMENT-WIDE operation: the
-    // instant it is ever called on eventMovieVideoEl, this element's NATIVE
-    // audio output is permanently severed for every movie played through it
-    // from then on, regardless of which key triggered the call — real-device
-    // evidence (eventMovieAudioContextState="running" yet SNEAKING silent)
-    // shows that routing through the Web Audio graph is not reliably audible
-    // on this device even once 'running', while every OTHER unmuted movie
-    // that has only ever used the plain native <video> audio path
-    // (roid1_arrival/drone_arrival/adam_arrival/etc.) has never been
-    // reported silent. Deferring this call to the one key that actually
-    // needs it keeps every other movie — sneaking included — on that same
-    // already-reliable native path. gabriel_defeated is chronologically the
-    // LAST movie played in a normal run (STORY_STAGE_PLAN's own GABRIEL
-    // ENCOUNTER 3/final), well after sneaking (played first, via
-    // beginScenarioOpening(), before startMode() even runs) — so within a
-    // single fresh run, sneaking's own audio can never be affected by this
-    // call regardless of gabriel_defeated's own outcome. This is the same
-    // GABRIEL_DEFEATED_GAIN amplification as before, just created lazily
-    // instead of pre-warmed at STARTUP — its own resume()-retry logic
-    // (ensureEventMovieGainNode()'s "already wired" branch) is unchanged.
-    if (key === 'gabriel_defeated') {
-      ensureEventMovieGainNode('playEventMovie:gabriel_defeated');
-    }
-    // Reset gain back to 1.0 for every OTHER key whenever eventMovieGainNode
-    // already exists — this can only be true once gabriel_defeated has
-    // played at least once THIS page session (createMediaElementSource() is
-    // never called for any other key — see the comment above), but once it
-    // does exist, this element's native audio is permanently Web-Audio-
-    // routed for every later movie regardless of key, so a later normal-
-    // volume movie played through the SAME session (e.g. a replayed
-    // sneaking/drone_arrival after a full playthrough) must not inherit
-    // GABRIEL_DEFEATED_GAIN's 2x amplification. Never creates the node —
-    // only resets it if it already exists.
+    // P0 WORK ORDER D FOLLOW-UP 8 (root-cause fix, this batch): gabriel_defeated
+    // used to call ensureEventMovieGainNode() here to get GABRIEL_DEFEATED_GAIN
+    // (2x) amplification beyond .volume's 1.0 ceiling. Real-device trace this
+    // round showed video.play() genuinely RESOLVING (muted=false, volume=1,
+    // readyState=4 — never a NotAllowedError) with own audio still silent,
+    // and eventMovieAudioContextState="suspended" at that exact moment.
+    // ensureEventMovieGainNode() is called from here — deep inside
+    // playEventMovie(), itself invoked by GABRIEL's OWN defeat-sequence game
+    // logic, never a direct user tap/click/button-press — so its own
+    // AudioContext.resume() attempt has no real trusted gesture backing it on
+    // iOS Safari and can stay 'suspended' indefinitely; once
+    // createMediaElementSource() reroutes eventMovieVideoEl's audio through
+    // that suspended graph, NOTHING reaches eventMovieAudioContext.destination
+    // — video.play() resolving fine is expected and unrelated, since play()
+    // only concerns the decode pipeline, never the WebAudio output stage. The
+    // comment this replaced already documents the identical historical bug
+    // for 'sneaking' (WebAudio-routed audio proven unreliable on this
+    // hardware even once eventMovieAudioContextState reached 'running', not
+    // just 'suspended') — sneaking was fixed by moving off this graph
+    // entirely, and every OTHER movie that has only ever used the plain
+    // native <video> audio path (sneaking/drone_arrival/roid1_arrival/
+    // gabriel_arrival/adam_arrival/etc.) has never been reported silent.
+    // gabriel_defeated is fixed the same proven way: no longer calls
+    // ensureEventMovieGainNode() at all, so eventMovieGainNode/
+    // eventMovieAudioContext are never created and this element's audio stays
+    // on the same reliable native path as every other movie — it now plays at
+    // normal (1.0) volume like the rest, trading the 2x amplification for
+    // actually being audible. ensureEventMovieGainNode() itself is left
+    // in place (unreachable from here now) rather than deleted, since this is
+    // a targeted P0 hotfix, not a refactor.
+    // Dead code as of Follow-up 8 (kept, never deleted, per that comment
+    // above): eventMovieGainNode is never created any more (nothing calls
+    // ensureEventMovieGainNode() from this file), so this never runs — left
+    // in place only in case a future batch reintroduces a real caller.
     if (eventMovieGainNode) {
       eventMovieGainNode.gain.value = (key === 'gabriel_defeated') ? GABRIEL_DEFEATED_GAIN : 1.0;
     }
@@ -11242,6 +11236,60 @@
       bgmAudio.muted = wasMuted;
     }
   }
+  // P0 WORK ORDER D FOLLOW-UP 8 (root-cause fix, this batch): real-device
+  // trace showed bossBgmAudio (Outbreak2) rejecting with NotAllowedError
+  // every single GABRIEL encounter, while bgmAudio (Outbreak1.1) already
+  // plays fine — the exact same gap unlockGameplayBgmOnlyForIOS() above was
+  // built to close for bgmAudio, just never extended to bossBgmAudio.
+  // unlockBackgroundBgmForIOS()'s own 3-track pass (bgmAudio/bossBgmAudio/
+  // endingRevealAudio together) IS skipped entirely for every gamepad-
+  // sourced accepted opening (see attemptStartupAudioUnlock()'s own
+  // isSyntheticGamepadOpening branch — real-device A/B evidence attributed
+  // audible START MENU duplication to that exact 3-track pass on a gamepad
+  // session, so the whole thing was skipped rather than root-caused per-
+  // track), so on a gamepad-only session bossBgmAudio never gets ANY
+  // WebKit per-element gesture-unlock at all: its first-ever real .play()
+  // is always startBossBgm()'s own non-gesture stage-transition call, which
+  // always rejects. Fixed the same narrow way bgmAudio already was: prime
+  // ONLY bossBgmAudio (never menuBgmAudio/endingRevealAudio — no report
+  // concerns either, and touching menuBgmAudio again is exactly the
+  // duplication risk the 3-track skip exists to avoid) via
+  // confirmGamepadMenuNavFocus(), using the SAME deferred, generation-
+  // token-gated cleanup unlockGameplayBgmOnlyForIOS() already uses (Follow
+  // -up 6) so this can never race a real startBossBgm()/claimAudibleBgm()
+  // claim the way the old synchronous teardown did.
+  let bossBgmOnlyUnlocked = false;
+  let bossBgmAudioPrimeGeneration = 0;
+  function unlockBossBgmOnlyForIOS(isTrustedGesture) {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'unlockBossBgmOnlyForIOS', isTrustedGesture, alreadyUnlocked: bossBgmOnlyUnlocked });
+    if (bossBgmOnlyUnlocked) return;
+    if (isTrustedGesture) bossBgmOnlyUnlocked = true;
+    if (audibleBgmElement === bossBgmAudio) return; // a real claim already owns it — priming has nothing to do here
+    const myPrimeGeneration = ++bossBgmAudioPrimeGeneration;
+    const wasMuted = bossBgmAudio.muted;
+    try {
+      bossBgmAudio.muted = true;
+      const p = bossBgmAudio.play();
+      if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_PLAY_CALL', { track: 'boss', caller: 'unlockBossBgmOnlyForIOS' });
+      const cleanup = () => {
+        if (myPrimeGeneration !== bossBgmAudioPrimeGeneration) return; // superseded by a newer priming attempt — stale, never act
+        if (audibleBgmElement === bossBgmAudio) return; // a real claim has since taken ownership — never pause/mute/reset it out from under real playback
+        try {
+          bossBgmAudio.pause();
+          bossBgmAudio.currentTime = 0;
+          bossBgmAudio.muted = wasMuted;
+          if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_DEFERRED_TEARDOWN', { track: 'boss', caller: 'unlockBossBgmOnlyForIOS' });
+        } catch (e2) {}
+      };
+      if (p && typeof p.then === 'function') {
+        p.then(cleanup, cleanup); // resolve or reject — either way, clean up only if still the current owner
+      } else {
+        cleanup(); // no Promise (older engine) — nothing async could have raced it, safe to clean up right away
+      }
+    } catch (e) {
+      bossBgmAudio.muted = wasMuted;
+    }
+  }
   // P0 REAL DEVICE FOLLOW-UP (GameSir TAP失敗 + MAIN MENU入力遅延 +
   // SNEAKING音声/Outbreak1.1無音, this batch): the real-device report showed
   // bgmAudio (Outbreak1.1) with paused=false, muted=false, volume=1,
@@ -17755,8 +17803,13 @@
     // neither ever got that chance before on a gamepad-only session, and why
     // this is safe (narrow, single-element, never touches menuBgmAudio, never
     // reassigns eventMovieVideoEl.src).
+    // P0 WORK ORDER D FOLLOW-UP 8: bossBgmAudio gets the SAME narrow, single-
+    // element unlock here too — see unlockBossBgmOnlyForIOS()'s own comment
+    // for why it never got one before (the only track this batch's report
+    // concerns; menuBgmAudio/endingRevealAudio are deliberately untouched).
     const gamepadConfirmActivationIsActive = !!(navigator.userActivation && navigator.userActivation.isActive);
     unlockGameplayBgmOnlyForIOS(gamepadConfirmActivationIsActive);
+    unlockBossBgmOnlyForIOS(gamepadConfirmActivationIsActive);
     unlockEventMoviePlaybackForGamepadConfirm(gamepadConfirmActivationIsActive);
     if (el) el.click();
   }
@@ -19459,6 +19512,7 @@
     get eventMovieElementUnlocked() { return eventMovieElementUnlocked; },
     get backgroundBgmUnlocked() { return backgroundBgmUnlocked; },
     get gameplayBgmOnlyUnlocked() { return gameplayBgmOnlyUnlocked; }, // P0 WORK ORDER D FOLLOW-UP 3 — debug/verification only
+    get bossBgmOnlyUnlocked() { return bossBgmOnlyUnlocked; }, // P0 WORK ORDER D FOLLOW-UP 8 — debug/verification only
     get menuBgmStarted() { return menuBgmStarted; },
     // P0 FULL GAMEPAD E2E HOTFIX (Part A) — debug/verification only: the
     // rolling per-frame gamepad trace (see recordGamepadDebugTrace()) —
