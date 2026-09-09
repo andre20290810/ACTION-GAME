@@ -1616,21 +1616,44 @@
   // own MAIN-MENU-entry head start (see its own comment) — reassigning
   // .src/.load() here would throw that real buffering progress away and
   // reopen pollReady()'s own async wait gap this fix is trying to close.
-  // Priming IN PLACE (muted play()+immediate pause(), never touching .src)
-  // keeps that head start completely intact.
+  // Priming IN PLACE (muted play(), never touching .src) keeps that head
+  // start completely intact.
+  //
+  // P0 WORK ORDER D FOLLOW-UP 6 (root-cause fix, this batch): same real-
+  // device stale-cleanup race as unlockGameplayBgmOnlyForIOS() above — this
+  // used to call pause()/restore muted SYNCHRONOUSLY right after play(),
+  // which can race a REAL playEventMovie('sneaking', ...) call that starts
+  // moments later in the very same synchronous confirm chain. Deferred into
+  // this priming promise's own resolve/reject instead, and gated on
+  // eventMovieState.active (a real movie has since started — never touch
+  // muted/paused out from under it) plus a generation token (a newer priming
+  // attempt superseded this one).
+  let eventMoviePrimeGeneration = 0;
   function unlockEventMoviePlaybackForGamepadConfirm(isActivationActive) {
     if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'unlockEventMoviePlaybackForGamepadConfirm', isActivationActive, alreadyUnlocked: eventMovieElementUnlocked });
     if (eventMovieElementUnlocked) return; // already unlocked (by this path or the real-touch one) — nothing left to do
     if (isActivationActive) eventMovieElementUnlocked = true;
     if (eventMovieState.active) return; // never fight over the element while a real movie is genuinely showing
+    const myPrimeGeneration = ++eventMoviePrimeGeneration;
+    const wasMuted = eventMovieVideoEl.muted;
     try {
-      const wasMuted = eventMovieVideoEl.muted;
       eventMovieVideoEl.muted = true;
       const p = eventMovieVideoEl.play();
-      eventMovieVideoEl.pause();
-      eventMovieVideoEl.muted = wasMuted;
-      if (p && typeof p.then === 'function') p.catch(() => {});
+      const cleanup = () => {
+        if (myPrimeGeneration !== eventMoviePrimeGeneration) return; // superseded by a newer priming attempt — stale, never act
+        if (eventMovieState.active) return; // a real movie has since started — never pause/mute it out from under real playback
+        try {
+          eventMovieVideoEl.pause();
+          eventMovieVideoEl.muted = wasMuted;
+        } catch (e2) {}
+      };
+      if (p && typeof p.then === 'function') {
+        p.then(cleanup, cleanup);
+      } else {
+        cleanup(); // no Promise (older engine) — nothing async could have raced it, safe to clean up right away
+      }
     } catch (e) {
+      eventMovieVideoEl.muted = wasMuted;
       // Never let a priming failure block menu navigation itself.
     }
   }
@@ -11165,22 +11188,58 @@
   // the historical duplication bug (never touches menuBgmAudio, never
   // touches the other 2 tracks, never leaves anything audible).
   let gameplayBgmOnlyUnlocked = false;
+  // P0 WORK ORDER D FOLLOW-UP 6 (root-cause fix, this batch): real-device
+  // trace showed the OLD version's synchronous "play(); pause();" teardown
+  // (comment used to claim "the synchronous pause() already granted (or
+  // didn't) the real unlock" — that assumption was wrong) racing against the
+  // REAL playback claim that follows moments later in the very same
+  // synchronous chain (confirmGamepadMenuNavFocus() primes bgmAudio, THEN
+  // el.click() -> beginScenarioOpening() -> startGameplayBgm() ->
+  // claimAudibleBgm('normal', bgmAudio, ...) claims it for real, all before
+  // this priming call's own play() promise has settled). The trace showed
+  // this priming play() resolving ~300ms late and being immediately followed
+  // by an unattributed AUDIO_PAUSE_CALL on bgmAudio — i.e. once the browser
+  // finally finishes processing this stale request, calling pause() on it
+  // (even though our OWN .catch() never did) stomps the real, already-
+  // playing claim right back to paused. Fixed by never touching
+  // pause()/currentTime/muted SYNCHRONOUSLY any more — that pairing is
+  // exactly what raced the real claim. Instead: only clean up once the
+  // priming promise itself settles, and ONLY if (a) no newer priming attempt
+  // has superseded this one (myPrimeGeneration token) and (b) no real claim
+  // has taken ownership of bgmAudio in the meantime (audibleBgmElement check,
+  // set synchronously as claimAudibleBgm()'s very first action — see its own
+  // comment). Once a real claim owns the element, this function has nothing
+  // left to do; touching muted/currentTime/paused at that point would only
+  // ever fight the real playback, never help it.
+  let bgmAudioPrimeGeneration = 0;
   function unlockGameplayBgmOnlyForIOS(isTrustedGesture) {
     if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'unlockGameplayBgmOnlyForIOS', isTrustedGesture, alreadyUnlocked: gameplayBgmOnlyUnlocked });
     if (gameplayBgmOnlyUnlocked) return;
     if (isTrustedGesture) gameplayBgmOnlyUnlocked = true;
     if (audibleBgmElement === bgmAudio) return; // a real claim already owns it — priming has nothing to do here
+    const myPrimeGeneration = ++bgmAudioPrimeGeneration;
+    const wasMuted = bgmAudio.muted;
     try {
-      const wasMuted = bgmAudio.muted;
       bgmAudio.muted = true;
       const p = bgmAudio.play();
-      bgmAudio.pause();
-      bgmAudio.currentTime = 0;
-      bgmAudio.muted = wasMuted;
-      if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_SYNC_TEARDOWN', { track: 'normal', caller: 'unlockGameplayBgmOnlyForIOS' });
-      if (p && typeof p.then === 'function') p.catch(() => {}); // diagnostic-only outcome, never acted on — the synchronous pause() already granted (or didn't) the real unlock
+      if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_PLAY_CALL', { track: 'normal', caller: 'unlockGameplayBgmOnlyForIOS' });
+      const cleanup = () => {
+        if (myPrimeGeneration !== bgmAudioPrimeGeneration) return; // superseded by a newer priming attempt — stale, never act
+        if (audibleBgmElement === bgmAudio) return; // a real claim has since taken ownership — never pause/mute/reset it out from under real playback
+        try {
+          bgmAudio.pause();
+          bgmAudio.currentTime = 0;
+          bgmAudio.muted = wasMuted;
+          if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_DEFERRED_TEARDOWN', { track: 'normal', caller: 'unlockGameplayBgmOnlyForIOS' });
+        } catch (e2) {}
+      };
+      if (p && typeof p.then === 'function') {
+        p.then(cleanup, cleanup); // resolve or reject — either way, clean up only if still the current owner
+      } else {
+        cleanup(); // no Promise (older engine) — nothing async could have raced it, safe to clean up right away
+      }
     } catch (e) {
-      // Never let a priming failure block TAP TO START itself.
+      bgmAudio.muted = wasMuted;
     }
   }
   // P0 REAL DEVICE FOLLOW-UP (GameSir TAP失敗 + MAIN MENU入力遅延 +
@@ -12282,7 +12341,32 @@
     // with the page, so no legitimate BGM should be audible yet regardless
     // of which pageshow branch runs. Making it unconditional closes the
     // gap without widening what actually reboots the game.
-    hardResetAllBgmForFreshBoot();
+    //
+    // P0 WORK ORDER D FOLLOW-UP 6 (root-cause fix, this batch): that "fires
+    // before the player has ever interacted with the page" assumption is
+    // exactly what real-device evidence disproved this round — a real
+    // 'pageshow' (persisted===false, so nothing else in this file suspected
+    // it) fired ~4s into MAIN SCENARIO, well after MAIN MENU/gameplay had
+    // genuinely started, and this unconditional call silently reset every
+    // BGM track to silent (musicContext='silent', audibleBgmOwner=null) —
+    // this IS game.js:12285(-equivalent)'s real identity: the STARTUP-only
+    // hard-reset safety net, running unconditionally on every pageshow
+    // including ones that have nothing to do with startup. Guarded with the
+    // SAME startupState check attemptStartupAudioUnlock() already uses for
+    // an identical "MAIN MENU already reached, this is a STARTUP-only pass"
+    // purpose (see its own comment) — once startupState reaches MAIN_MENU
+    // (set inside onOpeningTap(), the moment a real/accepted opening gesture
+    // lands) it never regresses for the rest of this page life, so this
+    // reads correctly through scenarioSelect/gameplay/every later screen
+    // too. A genuine bfcache restore (e.persisted===true)
+    // still always resets — beginStartupSequence() right below unconditionally
+    // reboots startupState back to BOOT/LOADING anyway, so warm reload's own
+    // behavior (this listener never even fires the startup reboot branch for
+    // a warm-reload-skip page life, which is not bfcache-restored) is
+    // completely unaffected by this guard.
+    if (e.persisted || startupState !== STARTUP_STATE.MAIN_MENU) {
+      hardResetAllBgmForFreshBoot();
+    }
     if (e.persisted) beginStartupSequence();
   });
   loadingRetryBtnEl.addEventListener('click', () => {
