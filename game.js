@@ -55,6 +55,129 @@
     };
   }
 
+  // ==========================================================================
+  // DARK OUT / P0 START MENU BGM DUPLICATION — DIAGNOSTIC ONLY (?debugAudioStart=1):
+  // pure location.search flag (no localStorage persistence — same convention
+  // as every other ?debugX=1 flag in this file). Declared here, at the very
+  // top of the IIFE, before ANY Audio() element exists further down
+  // (menuBgmAudio/bgmAudio/bossBgmAudio/endingRevealAudio are all created much
+  // later) — a synchronous AUDIO_CREATE record at each element's own
+  // `new Audio(...)` line only works if the flag/logger already exist by the
+  // time that line runs; a closure body (an event listener, a function called
+  // later) does not have this problem since it never executes until long
+  // after the whole file has finished its one synchronous top-to-bottom pass
+  // (same reasoning already used by DEBUG_RUNTIME_OVERLAY/BGM_TRACK_NAMES_BY_ELEMENT
+  // elsewhere in this file — see their own comments). Purely observational —
+  // reports what the EXISTING audio/claim/startup code already does; this
+  // block never calls .play()/.pause(), never sets .muted/.volume/.src, never
+  // changes claimAudibleBgm()/startMenuBgmOnce()/onOpeningTap()/GameSir input/
+  // startup-state logic. DIAGNOSTIC ONLY.
+  // ==========================================================================
+  let DEBUG_AUDIO_START_OVERLAY = false;
+  try {
+    DEBUG_AUDIO_START_OVERLAY = new URLSearchParams(window.location.search).get('debugAudioStart') === '1';
+  } catch (err) { /* private-mode/localStorage-disabled: stay OFF */ }
+  const AUDIO_START_TRACE_MAX = 200;
+  const audioStartTrace = [];
+  let audioStartPlayCallSeq = 0;
+  const startMenuAudioSnapshots = [];
+  let audioStartLastStartupState = null; // shadow copy for STARTUP_STATE_CHANGE from/to — diagnostic-only, never read by real startup logic
+  // Shortened call-stack label — same technique as this file's own
+  // bgmCallerLabel() (declared much further down, for ?debugBgm=1), kept as
+  // an independent copy here since this whole block must be readable/usable
+  // before that later declaration exists in the file's own top-to-bottom
+  // execution order.
+  function audioStartShortStack(skipFrames) {
+    try {
+      const stack = (new Error()).stack || '';
+      const lines = stack.split('\n').map((l) => l.trim()).filter(Boolean);
+      const idx = 2 + (skipFrames || 0);
+      return lines.slice(idx, idx + 4).map((l) => l.replace(/^at\s+/, '')).join(' <- ') || '(unknown)';
+    } catch (e) { return '(unknown)'; }
+  }
+  function recordAudioStartEvent(type, fields) {
+    if (!DEBUG_AUDIO_START_OVERLAY) return;
+    audioStartTrace.push(Object.assign({ t: Date.now(), pt: +performance.now().toFixed(3), type }, fields || {}));
+    if (audioStartTrace.length > AUDIO_START_TRACE_MAX) audioStartTrace.shift();
+  }
+  // Resolves a media element to a stable human label. References
+  // menuBgmAudio/bgmAudio/bossBgmAudio/endingRevealAudio/eventMovieVideoEl/
+  // openingVideoEl even though every one of them is declared LATER in this
+  // same file — safe because this function's BODY only ever runs once
+  // actually invoked (from the play/pause monkey-patch below, itself only
+  // ever invoked at real runtime, long after the whole file's synchronous
+  // top-to-bottom pass — including every one of those later declarations —
+  // has already completed).
+  function audioStartTrackLabel(el) {
+    try {
+      if (el === menuBgmAudio) return 'menuBgmAudio';
+      if (el === bgmAudio) return 'bgmAudio';
+      if (el === bossBgmAudio) return 'bossBgmAudio';
+      if (el === endingRevealAudio) return 'endingRevealAudio';
+      if (typeof eventMovieVideoEl !== 'undefined' && el === eventMovieVideoEl) return 'eventMovieVideoEl';
+      if (typeof openingVideoEl !== 'undefined' && el === openingVideoEl) return 'openingVideoEl';
+    } catch (e) { /* referenced before its own declaration executed — fall through */ }
+    return (el && (el.id || el.tagName)) || '(unlabeled)';
+  }
+  // Single choke-point for AUDIO_PLAY_CALL/AUDIO_PLAY_RESOLVED/
+  // AUDIO_PLAY_REJECTED/AUDIO_PAUSE_CALL across EVERY <audio>/<video> element
+  // in the page (not just the 4 canonical BGM tracks) — wraps whatever
+  // HTMLMediaElement.prototype.play/pause already is at this point (the
+  // debugPerfCounters patch just above), so both keep working exactly as
+  // before; this is purely an additional read-only observer layered on top,
+  // the same layering pattern this file already uses (a THIRD such layer,
+  // bgmPlayPauseCounts, is added further down for ?debugBgm=1 — the three
+  // coexist without conflict, each one calling through to the one before it).
+  {
+    const originPlay = HTMLMediaElement.prototype.play;
+    const originPause = HTMLMediaElement.prototype.pause;
+    HTMLMediaElement.prototype.play = function (...args) {
+      if (DEBUG_AUDIO_START_OVERLAY) {
+        audioStartPlayCallSeq++;
+        try {
+          recordAudioStartEvent('AUDIO_PLAY_CALL', {
+            seq: audioStartPlayCallSeq,
+            track: audioStartTrackLabel(this),
+            src: (this.currentSrc || this.src || '').split('/').pop() || '(none)',
+            currentTime: +this.currentTime.toFixed(2),
+            paused: this.paused,
+            ended: this.ended,
+            muted: this.muted,
+            volume: this.volume,
+            readyState: this.readyState,
+            networkState: this.networkState,
+            screen: typeof gameState !== 'undefined' ? gameState.screen : '(pre-init)',
+            startupState: typeof startupState !== 'undefined' ? startupState : '(pre-init)',
+            eventMovieActive: typeof eventMovieState !== 'undefined' ? eventMovieState.active : null,
+            audibleBgmOwner: typeof audibleBgmKey !== 'undefined' ? audibleBgmKey : null,
+            caller: audioStartShortStack(1),
+          });
+        } catch (e) { /* diagnostic-only, never let this block the real play() call */ }
+      }
+      const mySeq = audioStartPlayCallSeq;
+      const p = originPlay.apply(this, args);
+      if (DEBUG_AUDIO_START_OVERLAY && p && typeof p.then === 'function') {
+        const track = audioStartTrackLabel(this);
+        p.then(() => { recordAudioStartEvent('AUDIO_PLAY_RESOLVED', { seq: mySeq, track }); },
+          (err) => { recordAudioStartEvent('AUDIO_PLAY_REJECTED', { seq: mySeq, track, errName: err && err.name }); });
+      }
+      return p;
+    };
+    HTMLMediaElement.prototype.pause = function (...args) {
+      if (DEBUG_AUDIO_START_OVERLAY) {
+        try {
+          recordAudioStartEvent('AUDIO_PAUSE_CALL', {
+            track: audioStartTrackLabel(this),
+            src: (this.currentSrc || this.src || '').split('/').pop() || '(none)',
+            currentTime: +this.currentTime.toFixed(2),
+            caller: audioStartShortStack(1),
+          });
+        } catch (e) { /* diagnostic-only */ }
+      }
+      return originPause.apply(this, args);
+    };
+  }
+
   // ---------- Canvas setup ----------
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
@@ -10176,6 +10299,7 @@
 
   function setScreen(next) {
     if (DEBUG_RUNTIME_OVERLAY && next !== gameState.screen) recordRuntimeEvent('SCREEN_CHANGE', { from: gameState.screen, to: next });
+    if (DEBUG_AUDIO_START_OVERLAY && next !== gameState.screen) recordAudioStartEvent('SCREEN_CHANGE', { from: gameState.screen, to: next });
     gameState.screen = next;
     // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: the single choke point every
     // route into MAIN MENU already passes through (TAP TO START, RETRY/QUIT
@@ -10254,6 +10378,7 @@
   // stage-transition/GAME OVER/RETRY-position/QUIT-reset/audio-unlock) is
   // completely unchanged — only the audio source itself moved.
   const bgmAudio = new Audio('assets/audio/outbreak_1_1.mp3');
+  if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('AUDIO_CREATE', { track: 'bgmAudio', src: 'outbreak_1_1.mp3' }); recordAudioStartEvent('AUDIO_SRC_SET', { track: 'bgmAudio', src: 'outbreak_1_1.mp3' }); }
   bgmAudio.loop = true; // T-5: loop forever
   bgmAudio.preload = 'auto';
   // T-10: no on/off toggle in SETTING this turn (always-on) — but kept as a
@@ -10290,6 +10415,7 @@
   // call) — mirrors bgmAudio's own pre-existing "reset to 0 only on return
   // to TOP" rule, applied to this new MENU-only track instead.
   const menuBgmAudio = new Audio('assets/audio/Outbreak0.mp3');
+  if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('AUDIO_CREATE', { track: 'menuBgmAudio', src: 'Outbreak0.mp3' }); recordAudioStartEvent('AUDIO_SRC_SET', { track: 'menuBgmAudio', src: 'Outbreak0.mp3' }); }
   menuBgmAudio.loop = true;
   menuBgmAudio.preload = 'auto';
   menuBgmAudio.volume = BGM_VOLUME;
@@ -10362,6 +10488,7 @@
   // normal stage), the second just silences Outbreak 2 and lets whatever
   // ELSE the caller does next (menu BGM, ending BGM-silence) take over.
   const bossBgmAudio = new Audio('assets/audio/outbreak_2.mp3');
+  if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('AUDIO_CREATE', { track: 'bossBgmAudio', src: 'outbreak_2.mp3' }); recordAudioStartEvent('AUDIO_SRC_SET', { track: 'bossBgmAudio', src: 'outbreak_2.mp3' }); }
   bossBgmAudio.loop = true;
   bossBgmAudio.preload = 'auto';
   bossBgmAudio.volume = BGM_VOLUME;
@@ -10399,6 +10526,7 @@
   // references it) — called no later than MAIN's own ADAM SPHERE stage
   // entry (item 78).
   const endingRevealAudio = new Audio(ENDING_REVEAL_AUDIO_URL);
+  if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('AUDIO_CREATE', { track: 'endingRevealAudio', src: ENDING_REVEAL_AUDIO_URL.split('/').pop() }); recordAudioStartEvent('AUDIO_SRC_SET', { track: 'endingRevealAudio', src: ENDING_REVEAL_AUDIO_URL.split('/').pop() }); }
   endingRevealAudio.loop = false;
   endingRevealAudio.preload = 'none';
   endingRevealAudio.volume = BGM_VOLUME;
@@ -10509,6 +10637,29 @@
   for (const [label, el] of [['menu', menuBgmAudio], ['normal', bgmAudio], ['boss', bossBgmAudio], ['ending', endingRevealAudio]]) {
     el.addEventListener('playing', () => { if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAYING', { track: label }); });
     el.addEventListener('pause', () => { if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PAUSE', { track: label }); });
+  }
+  // DARK OUT / P0 START MENU BGM DUPLICATION diagnostic (?debugAudioStart=1
+  // only): AUDIO_ENDED/AUDIO_VOLUME_CHANGE/AUDIO_MUTED_CHANGE — a SEPARATE
+  // set of listeners from the ?debugRuntime=1 pair just above (never removes
+  // or replaces them; both fire independently on the same native events).
+  // 'volumechange' is the one native HTMLMediaElement event that fires for
+  // BOTH a real .volume change AND a .muted change (WHATWG media element
+  // spec) — the two are told apart here by comparing against each element's
+  // own last-known values, tracked in a WeakMap so this stays purely
+  // observational and per-element.
+  {
+    const lastAudioStartVolumeState = new WeakMap();
+    for (const [label, el] of [['menu', menuBgmAudio], ['normal', bgmAudio], ['boss', bossBgmAudio], ['ending', endingRevealAudio]]) {
+      lastAudioStartVolumeState.set(el, { volume: el.volume, muted: el.muted });
+      el.addEventListener('ended', () => { if (DEBUG_AUDIO_START_OVERLAY) recordAudioStartEvent('AUDIO_ENDED', { track: label }); });
+      el.addEventListener('volumechange', () => {
+        if (!DEBUG_AUDIO_START_OVERLAY) return;
+        const prior = lastAudioStartVolumeState.get(el) || { volume: el.volume, muted: el.muted };
+        if (prior.volume !== el.volume) recordAudioStartEvent('AUDIO_VOLUME_CHANGE', { track: label, from: prior.volume, to: el.volume });
+        if (prior.muted !== el.muted) recordAudioStartEvent('AUDIO_MUTED_CHANGE', { track: label, from: prior.muted, to: el.muted });
+        lastAudioStartVolumeState.set(el, { volume: el.volume, muted: el.muted });
+      });
+    }
   }
   // P0 ADDENDUM (root-cause fix, this batch): ROID1 ARRIVAL BGM CONTINUITY —
   // the reported "Outbreak2は静か" was root-caused to the EXACT SAME WebKit
@@ -10625,12 +10776,24 @@
   // whatever legitimately took over after it.
   function claimAudibleBgm(key, element, opts) {
     if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'claimAudibleBgm', key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), priorGeneration: audibleBgmGeneration, priorKey: audibleBgmKey });
+    // DARK OUT / P0 START MENU BGM DUPLICATION diagnostic (?debugAudioStart=1
+    // only): BGM_CLAIM/BGM_OWNER_CHANGE breadcrumbs, read-only, captured
+    // BEFORE any of this function's own real ownership state below changes —
+    // never alters what claimAudibleBgm() actually does.
+    if (DEBUG_AUDIO_START_OVERLAY) {
+      const priorKeyForAudit = audibleBgmKey;
+      recordAudioStartEvent('BGM_CLAIM', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), priorKey: priorKeyForAudit });
+      if (priorKeyForAudit !== key) recordAudioStartEvent('BGM_OWNER_CHANGE', { from: priorKeyForAudit, to: key });
+    }
     audibleBgmGeneration++;
     const myGen = audibleBgmGeneration;
     audibleBgmKey = key;
     audibleBgmElement = element;
     for (const other of [menuBgmAudio, bgmAudio, bossBgmAudio, endingRevealAudio]) {
-      if (other !== element && !other.paused) other.pause();
+      if (other !== element && !other.paused) {
+        if (DEBUG_AUDIO_START_OVERLAY) recordAudioStartEvent('BGM_RELEASE', { track: BGM_TRACK_NAMES_BY_ELEMENT.get(other), releasedFor: key });
+        other.pause();
+      }
     }
     element.muted = false;
     if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_CALL', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element) });
@@ -11343,6 +11506,7 @@
     startupGeneration++;
     const myGeneration = startupGeneration;
     startupState = STARTUP_STATE.BOOT;
+    if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState }); audioStartLastStartupState = startupState; }
     if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('STARTUP_START', { generation: myGeneration });
     hardResetAllBgmForFreshBoot();
     // Forces adoptGamepadIndex() to reseed the rising-edge baseline from the
@@ -11355,6 +11519,7 @@
     runtimeGeneration++;
     lastTapRejectReason = '(none)';
     startupState = STARTUP_STATE.LOADING;
+    if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState }); audioStartLastStartupState = startupState; }
     setScreen('loading');
     runStartupLoadingPhase(myGeneration);
     return myGeneration;
@@ -11390,6 +11555,7 @@
       if (assertStartupReady()) {
         fullPreloadReady = true;
         startupState = STARTUP_STATE.STARTUP_READY;
+        if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState }); audioStartLastStartupState = startupState; }
         // P0 STARTUP STATE MACHINE REWRITE item 7: TAP display and input-accept
         // must become true atomically, in this exact order, all within the
         // SAME generation-guarded transition — never TAP shown first with
@@ -11403,6 +11569,7 @@
         gamepadDisarmedAt = 0;
         if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('STARTUP_READY', { generation: myGeneration });
         startupState = STARTUP_STATE.WAITING_FOR_TAP; // TAP handler (onOpeningTap) is already always-installed; screen becomes 'opening' in this same synchronous step below
+        if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState }); audioStartLastStartupState = startupState; }
         tapReadyGeneration = myGeneration;
         lastTapRejectReason = '(none)';
         setScreen('opening'); // TAP TO START, same black screen — never a separate video-backed screen
@@ -11639,6 +11806,22 @@
     // NORMAL vs. DOUBLE_AUDIO vs. SILENT real-device run. No-op unless
     // ?debugBgm=1 is active; never touches the tap-handling logic itself.
     if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'onOpeningTap', gestureType: e && e.type ? e.type : '(synthetic/gamepad)', isTrusted: !!e.isTrusted });
+    // DARK OUT / P0 START MENU BGM DUPLICATION diagnostic (?debugAudioStart=1
+    // only): OPENING_TAP — recorded BEFORE the early-return below, same as
+    // the existing GAMEPAD TAP DIAGNOSTIC breadcrumb above, so a
+    // rejected/duplicate call is counted too (directly relevant to
+    // hypothesis H3 — whether more than one call site's own onOpeningTap()
+    // invocation actually gets past this early-return in the same
+    // generation).
+    if (DEBUG_AUDIO_START_OVERLAY) {
+      recordAudioStartEvent('OPENING_TAP', {
+        source: e && e.type ? e.type : '(synthetic/gamepad)',
+        isTrusted: !!e.isTrusted,
+        screenAtCall: gameState.screen,
+        startupStateAtCall: startupState,
+        willEarlyReturn: gameState.screen !== 'opening',
+      });
+    }
     e.preventDefault();
     if (gameState.screen !== 'opening') return; // guards against a stray double-fire (touchstart + mousedown) doing this twice
     // P0 STARTUP STATE MACHINE REWRITE item 10: WAITING_FOR_TAP -> ENTERING_MENU
@@ -11647,6 +11830,7 @@
     // ready" must hold unconditionally the instant setScreen('mainMenu') runs
     // below.
     startupState = STARTUP_STATE.ENTERING_MENU;
+    if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState }); audioStartLastStartupState = startupState; }
     // SECTION 2-3: a tap during ATTRACT playback cancels it (never lets a
     // stale onended fire afterward) and proceeds exactly like a normal
     // tap-to-start.
@@ -11699,6 +11883,20 @@
     gamepadInputArmed = true;
     gamepadDisarmedAt = 0;
     startupState = STARTUP_STATE.MAIN_MENU;
+    if (DEBUG_AUDIO_START_OVERLAY) {
+      recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState });
+      audioStartLastStartupState = startupState;
+      recordAudioStartEvent('MAIN_MENU_ENTER', { screen: gameState.screen, musicContext, audibleBgmKey });
+      // START MENU LIVE AUDIO SNAPSHOT: one immediately at entry, plus the
+      // 5 timed re-checks the spec calls for — every one of these is a
+      // read-only inventory pass (captureStartMenuAudioSnapshot(), declared
+      // further down this file), never a play()/pause()/claim() call of its
+      // own.
+      captureStartMenuAudioSnapshot('entry');
+      [100, 500, 1000, 2000, 5000].forEach((ms) => {
+        setTimeout(() => { if (DEBUG_AUDIO_START_OVERLAY) captureStartMenuAudioSnapshot('+' + ms + 'ms'); }, ms);
+      });
+    }
     // P0 STARTUP LOADING HOTFIX Part L: every NON-CRITICAL movie (GABRIEL/
     // ROID/ADAM arrivals, GABRIEL defeated, the 3 ending-chain movies) only
     // ever starts fetching from THIS point on — well after TAP TO START,
@@ -18490,6 +18688,14 @@
     recordRuntimeEvent, buildRuntimeDebugText, updateDebugRuntimeOverlay,
     resetGamepadEdgeBaselineForMenuReturn, playOpeningVideoWithRetry,
     get openingVideoLastPlayError() { return openingVideoLastPlayError; },
+    // DARK OUT / P0 START MENU BGM DUPLICATION (?debugAudioStart=1) — debug/
+    // verification only:
+    get DEBUG_AUDIO_START_OVERLAY() { return DEBUG_AUDIO_START_OVERLAY; }, set DEBUG_AUDIO_START_OVERLAY(v) { DEBUG_AUDIO_START_OVERLAY = v; },
+    get audioStartTrace() { return audioStartTrace; }, get AUDIO_START_TRACE_MAX() { return AUDIO_START_TRACE_MAX; },
+    get startMenuAudioSnapshots() { return startMenuAudioSnapshots; },
+    audioStartMediaInventory, classifyAudioStartCase, captureStartMenuAudioSnapshot,
+    buildAudioStartDebugText, updateDebugAudioStartOverlay,
+    get EXPECTED_START_MENU_BGM() { return EXPECTED_START_MENU_BGM; },
   };
 
   // ---------- Main loop ----------
@@ -22896,6 +23102,142 @@
     });
   }
 
+  // ==========================================================================
+  // DARK OUT / P0 START MENU BGM DUPLICATION — DIAGNOSTIC ONLY (?debugAudioStart=1):
+  // read-only panel over audioStartTrace/startMenuAudioSnapshots — reports
+  // what the EXISTING audio/claim/startup code already did; never
+  // changes any of it. Same shape/pattern as every other #debug-*-panel in
+  // this file.
+  // ==========================================================================
+  const debugAudioStartEl = document.getElementById('debug-audio-start-panel');
+  const debugAudioStartCopyBtn = document.getElementById('debug-audio-start-copy-btn');
+  const debugAudioStartTextEl = document.getElementById('debug-audio-start-text');
+  // The one non-speculative answer to "what SHOULD be playing at START
+  // MENU" — established by direct code read (see this batch's own audit):
+  // menuBgmAudio = new Audio('assets/audio/Outbreak0.mp3'), started via
+  // startMenuBgmOnce() -> claimAudibleBgm('menu', menuBgmAudio, ...), owner
+  // key 'menu'. Never a guess — every one of these 4 facts is grep/read-
+  // verified in this file, not inferred from behavior.
+  const EXPECTED_START_MENU_BGM = { asset: 'Outbreak0.mp3', variable: 'menuBgmAudio', ownerKey: 'menu', startFunction: 'startMenuBgmOnce()' };
+  function audioStartMediaInventory() {
+    const canonical = [
+      ['menuBgmAudio', menuBgmAudio], ['bgmAudio', bgmAudio], ['bossBgmAudio', bossBgmAudio], ['endingRevealAudio', endingRevealAudio],
+    ];
+    let domExtra = [];
+    try {
+      domExtra = Array.from(document.querySelectorAll('audio, video'))
+        .filter((el) => !(el.dataset && el.dataset.movieKey))
+        .filter((el) => el !== menuBgmAudio && el !== bgmAudio && el !== bossBgmAudio && el !== endingRevealAudio)
+        .map((el) => [el.id || el.tagName, el]);
+    } catch (e) { /* diagnostic-only */ }
+    return canonical.concat(domExtra).map(([name, el]) => ({
+      name,
+      src: (el.currentSrc || el.src || '').split('/').pop() || '(none)',
+      paused: el.paused,
+      currentTime: +el.currentTime.toFixed(2),
+      muted: el.muted,
+      volume: +el.volume.toFixed(2),
+      playbackRate: el.playbackRate,
+      owner: BGM_TRACK_NAMES_BY_ELEMENT.get(el) || null,
+      audible: isMediaElementAudible(el),
+    }));
+  }
+  // CASE A-G classification — conservative by design: only ever asserts a
+  // specific case when the snapshot itself unambiguously shows that exact
+  // pattern (same src on 2 elements = CASE B; menuBgmAudio + bgmAudio(the
+  // OLD outbreak_1_1 track) both audible = CASE A; menuBgmAudio + a video's
+  // own audio track both audible = CASE F) — every other multi-audible
+  // shape is reported as CASE G with an explicit "cross-reference EVENT
+  // TIMELINE" note instead of a guessed label, per this batch's own
+  // "推測で「多分これ」と書かない" instruction.
+  function classifyAudioStartCase(inventory) {
+    const audible = inventory.filter((m) => m.audible);
+    if (audible.length === 0) return 'CASE (none): no audible track at all — silent, not a duplication symptom.';
+    if (audible.length === 1) return 'OK: exactly one audible track (' + audible[0].name + ', ' + audible[0].src + ') — no duplication detected.';
+    const names = audible.map((m) => m.name);
+    const menuAudible = audible.find((m) => m.name === 'menuBgmAudio');
+    const normalAudible = audible.find((m) => m.name === 'bgmAudio');
+    const movieAudible = audible.find((m) => m.name !== 'menuBgmAudio' && m.name !== 'bgmAudio' && m.name !== 'bossBgmAudio' && m.name !== 'endingRevealAudio');
+    if (menuAudible && normalAudible) {
+      return 'CASE A candidate: menuBgmAudio (Outbreak0, the current intended START MENU BGM) AND bgmAudio (outbreak_1_1, the OLD gameplay-only track) are BOTH audible at once — matches the user\'s own H1 hypothesis shape. Cross-reference AUDIO_PLAY_CALL/caller for bgmAudio in the EVENT TIMELINE below to find what actually called .play() on it.';
+    }
+    if (menuAudible && movieAudible) {
+      return 'CASE F candidate: menuBgmAudio AND a non-canonical media element (' + movieAudible.name + ', likely an event/movie element) are BOTH audible — cross-reference the EVENT TIMELINE for what left ' + movieAudible.name + ' unmuted/playing.';
+    }
+    const srcCounts = {};
+    for (const m of audible) srcCounts[m.src] = (srcCounts[m.src] || 0) + 1;
+    const dupSrc = Object.keys(srcCounts).find((s) => srcCounts[s] > 1);
+    if (dupSrc) return 'CASE B candidate: two separate elements share the same src (' + dupSrc + ') and are both audible — same track, two independent elements.';
+    return 'CASE G: ' + audible.length + ' tracks audible at once (' + names.join('+') + ') — not classifiable from this snapshot alone; cross-reference AUDIO_PLAY_CALL/BGM_CLAIM entries in the EVENT TIMELINE below for src/caller/stack of each.';
+  }
+  function captureStartMenuAudioSnapshot(label) {
+    if (!DEBUG_AUDIO_START_OVERLAY) return;
+    try {
+      const inventory = audioStartMediaInventory();
+      const audibleCount = inventory.filter((m) => m.audible).length;
+      const classification = classifyAudioStartCase(inventory);
+      recordAudioStartEvent('START_MENU_SNAPSHOT', { label, audibleCount, duplicateWarning: audibleCount >= 2, classification });
+      startMenuAudioSnapshots.push({ label, at: Date.now(), audibleCount, inventory, classification });
+      if (startMenuAudioSnapshots.length > 20) startMenuAudioSnapshots.shift();
+    } catch (e) { /* diagnostic-only */ }
+  }
+  function buildAudioStartDebugText() {
+    const header =
+      `=== DARK OUT START MENU BGM DUPLICATION DIAGNOSTIC (?debugAudioStart=1) ===\n` +
+      `timestamp: ${new Date().toISOString()}\n` +
+      `screen: ${gameState.screen}  startupState: ${startupState}  musicContext: ${musicContext}  audibleBgmOwner: ${audibleBgmKey}\n\n` +
+      `--- EXPECTED START MENU BGM (established by static code read, not a guess) ---\n` +
+      `asset: ${EXPECTED_START_MENU_BGM.asset}  variable: ${EXPECTED_START_MENU_BGM.variable}  ownerKey: ${EXPECTED_START_MENU_BGM.ownerKey}  startFunction: ${EXPECTED_START_MENU_BGM.startFunction}\n\n`;
+    const latest = startMenuAudioSnapshots.length ? startMenuAudioSnapshots[startMenuAudioSnapshots.length - 1] : null;
+    let summaryBlock = `--- START MENU AUDIO SUMMARY ---\n(no snapshot captured yet this page life — reach MAIN MENU via TAP TO START to populate)\n\n`;
+    if (latest) {
+      const lines = latest.inventory.map((m) =>
+        `  [${m.audible ? 'AUDIBLE' : 'silent'}] ${m.name}  src=${m.src}  startedBy=${m.owner || '(untracked)'}  owner=${m.owner || '(none)'}  ` +
+        `paused=${m.paused} muted=${m.muted} volume=${m.volume} currentTime=${m.currentTime} playbackRate=${m.playbackRate}`
+      );
+      summaryBlock =
+        `--- START MENU AUDIO SUMMARY (label: ${latest.label}, captured ${new Date(latest.at).toISOString().slice(11, 23)}) ---\n` +
+        `expected BGM asset: ${EXPECTED_START_MENU_BGM.asset}\n` +
+        `audible count: ${latest.audibleCount}${latest.audibleCount >= 2 ? '  *** DUPLICATE AUDIBLE AUDIO DETECTED ***' : ''}\n` +
+        lines.join('\n') + '\n' +
+        `classification: ${latest.classification}\n\n` +
+        `--- ALL SNAPSHOTS THIS PAGE LIFE (${startMenuAudioSnapshots.length}) ---\n` +
+        startMenuAudioSnapshots.map((s) => `  [${s.label}] audibleCount=${s.audibleCount}${s.audibleCount >= 2 ? ' *** DUPLICATE ***' : ''} (${s.inventory.filter((m) => m.audible).map((m) => m.name).join('+') || 'none'})`).join('\n') + '\n\n';
+    }
+    const hypothesesBlock =
+      `--- HYPOTHESIS VERIFICATION (static-audit-grounded; runtime trace above is the actual evidence) ---\n` +
+      `H1 (old Outbreak1.1-at-START path still present): NOT CONFIRMED by static audit — startBgmOnce() (the only function that calls bgmAudio.play() directly) has ZERO call sites anywhere in this file besides its own definition; it is unreachable dead code as currently written.\n` +
+      `H2 (onOpeningTap() and a separate mainMenu-entry hook both independently start BGM): NOT CONFIRMED by static audit — startMenuBgmOnce() has exactly ONE call site (attemptStartupAudioUnlock(), itself called only from onOpeningTap()); no separate MAIN MENU entry hook calls it. Verify against OPENING_TAP/MAIN_MENU_ENTER counts in the EVENT TIMELINE for THIS session.\n` +
+      `H3 (discovery-TAP path AND normal START both trigger an audio side effect): REQUIRES REAL-DEVICE TRACE — onOpeningTap()'s own screen==='opening' early-return should prevent a second synchronous call in the same generation; check the OPENING_TAP count/willEarlyReturn fields in the EVENT TIMELINE below for this exact run.\n` +
+      `H4 (pageshow/focus/visibilitychange recovery overlapping START MENU transition): PARTIALLY ADDRESSED BY EXISTING CODE — hardResetAllBgmForFreshBoot() runs on every pageshow, but only before the user has interacted; check for a PAGESHOW/VISIBILITY event in the EVENT TIMELINE below in the seconds after MAIN_MENU_ENTER.\n` +
+      `H5 (unmanaged direct .play() outside claimAudibleBgm remains): PARTIALLY CONFIRMED BY STATIC AUDIT — unlockBackgroundBgmForIOS()'s own priming pass calls .play() directly on bgmAudio/bossBgmAudio/endingRevealAudio outside claimAudibleBgm(), by design (muted, torn down on non-superseding resolve); check AUDIO_PLAY_CALL entries below with muted:false for any of those 3 tracks near MAIN_MENU_ENTER — that would mean the mute did not actually take effect on this device.\n\n`;
+    const traceLines = audioStartTrace.slice(-150).map((e) => {
+      const extra = Object.keys(e).filter((k) => k !== 't' && k !== 'pt' && k !== 'type' && k !== 'inventory').map((k) => `${k}=${JSON.stringify(e[k])}`).join(' ');
+      return `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${extra}`;
+    });
+    return header + summaryBlock + hypothesesBlock +
+      `--- EVENT TIMELINE (most recent ${Math.min(audioStartTrace.length, 150)} of ${audioStartTrace.length}, ring buffer max ${AUDIO_START_TRACE_MAX}) ---\n` +
+      traceLines.join('\n') + '\n';
+  }
+  function updateDebugAudioStartOverlay(now) {
+    if (!DEBUG_AUDIO_START_OVERLAY || !debugAudioStartEl) return;
+    debugAudioStartEl.hidden = false;
+    if (debugAudioStartTextEl) debugAudioStartTextEl.textContent = buildAudioStartDebugText();
+  }
+  if (debugAudioStartCopyBtn) {
+    debugAudioStartCopyBtn.addEventListener('click', () => {
+      const text = buildAudioStartDebugText();
+      const fallback = () => {
+        const ta = document.getElementById('debug-audio-start-fallback-textarea');
+        if (ta) { ta.hidden = false; ta.value = text; ta.focus(); ta.select(); }
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(fallback);
+        else fallback();
+      } catch (err) { fallback(); }
+    });
+  }
+
   let lastBgmWatchdogAt = 0;
   // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION (Part D/K root-
   // cause candidate): before this batch, an uncaught exception ANYWHERE in
@@ -22975,6 +23317,7 @@
       updateDebugBgmOverlay(now); // P0 BGM DOUBLE-PLAY DIAGNOSTIC: separate overlay/flag, read-only observation, never touches any other overlay's own fields
       updateDebugTransitionOverlay(now); // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: separate overlay/flag, read-only observation, never touches any other overlay's own fields
       updateDebugRuntimeOverlay(now); // P0 RUNTIME STATE/ASYNC RACE STABILIZATION: separate overlay/flag, read-only observation, never touches any other overlay's own fields
+      updateDebugAudioStartOverlay(now); // DARK OUT / P0 START MENU BGM DUPLICATION: separate overlay/flag, read-only observation, never touches any other overlay's own fields
     } catch (err) {
       console.error('[LOOP] uncaught error this frame, continuing next frame:', err);
       debugLastLoopException = { message: String(err && err.message || err), at: now };

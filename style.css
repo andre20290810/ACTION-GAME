@@ -1163,6 +1163,77 @@ body {
 }
 #debug-runtime-fallback-textarea[hidden] { display: none; }
 
+/* DARK OUT / P0 START MENU BGM DUPLICATION diagnostic (?debugAudioStart=1):
+   same shape/pattern as the other 4 full-log-panel diagnostics above, but a
+   smaller floating panel (not a full-edge dock) so it can coexist with any
+   of ?debugRuntime=1/?debugTransition=1/?debugBgm=1/?debugGamepadTap=1
+   active at the same time without fully overlapping any of them — anchored
+   top-right, inset from the very corner so it doesn't sit flush against
+   #debug-transition-panel's own right-edge dock. Amber accent for visual
+   distinction from the other 4. [hidden] keeps it fully absent from a
+   normal session — DEBUG_AUDIO_START_OVERLAY in game.js is the single
+   source of truth. */
+#debug-audio-start-panel {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 63;
+  width: min(46vw, 440px);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.88);
+  border: 1px solid rgba(255, 190, 60, 0.6);
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(235, 235, 238, 0.95);
+}
+#debug-audio-start-panel[hidden] { display: none; }
+#debug-audio-start-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 190, 60, 0.3);
+  flex-shrink: 0;
+}
+#debug-audio-start-header span {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(255, 190, 60, 0.95);
+}
+#debug-audio-start-copy-btn {
+  font-family: monospace;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: rgba(255, 190, 60, 0.15);
+  color: rgba(255, 190, 60, 0.95);
+  border: 1px solid rgba(255, 190, 60, 0.6);
+  border-radius: 4px;
+}
+#debug-audio-start-text {
+  margin: 0;
+  padding: 8px 10px 12px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  flex: 1 1 auto;
+}
+#debug-audio-start-fallback-textarea {
+  width: 100%;
+  height: 30vh;
+  box-sizing: border-box;
+  font-family: monospace;
+  font-size: 12px;
+  background: #111;
+  color: #eee;
+  border: 1px solid rgba(255, 190, 60, 0.6);
+}
+#debug-audio-start-fallback-textarea[hidden] { display: none; }
+
 /* ---------- SECTION G/H/I/J: LOADING / OPENING / MAIN MENU ----------
    Each is position:fixed/inset:0, shown one at a time via [hidden]
    (game.js's screen state machine — see setScreen()) — stacked below the

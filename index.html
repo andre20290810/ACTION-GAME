@@ -23,7 +23,7 @@
 <meta name="twitter:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_site_v2.jpg">
 <link rel="icon" href="assets/branding/dark_out_site_v2.jpg" type="image/jpeg">
 <link rel="apple-touch-icon" href="assets/branding/dark_out_site_v2.jpg">
-<link rel="stylesheet" href="style.css?v=p0-gamepad-discovery-1">
+<link rel="stylesheet" href="style.css?v=p0-audiostart-diag-1">
 </head>
 <body>
 
@@ -564,6 +564,21 @@
   <textarea id="debug-runtime-fallback-textarea" readonly hidden></textarea>
 </div>
 
+<!-- DARK OUT / P0 START MENU BGM DUPLICATION — DIAGNOSTIC ONLY
+     (?debugAudioStart=1): same shape/pattern as #debug-runtime-panel above —
+     hidden unless DEBUG_AUDIO_START_OVERLAY is true, never shown in normal
+     play. See updateDebugAudioStartOverlay()/buildAudioStartDebugText() in
+     game.js — read-only, changes nothing about existing audio/claim/startup
+     logic. -->
+<div id="debug-audio-start-panel" hidden>
+  <div id="debug-audio-start-header">
+    <span>START MENU BGM DUPLICATION DIAGNOSTIC</span>
+    <button id="debug-audio-start-copy-btn" type="button">COPY DEBUG LOG</button>
+  </div>
+  <pre id="debug-audio-start-text"></pre>
+  <textarea id="debug-audio-start-fallback-textarea" readonly hidden></textarea>
+</div>
+
 <!-- PART 9 SECTION G: shared EVENT MOVIE PLAYER — one DOM overlay reused
      by every SYSTEM/EVENT movie (opening/sneaking/drone_arrival/
      gabriel_arrival/gabriel_down/gabriel_defeated/experiment_lab/
@@ -595,6 +610,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=p0-gamepad-discovery-1"></script>
+<script src="game.js?v=p0-audiostart-diag-1"></script>
 </body>
 </html>
