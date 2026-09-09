@@ -1584,6 +1584,56 @@
       // Never let a priming failure block TAP TO START itself.
     }
   }
+  // P0 WORK ORDER D FOLLOW-UP 3 (root-cause fix, this batch): real-device
+  // trace confirmed MAIN SCENARIO's sneaking.mp4/Outbreak1.1 both reject
+  // with NotAllowedError (userActivation already false) by the time
+  // beginScenarioOpening()'s own synchronous play() calls run — while
+  // Outbreak0 (menuBgmAudio), claimed one or more real GameSir A-presses
+  // earlier via reportMainMenuAccepted(), resolves fine with userActivation
+  // genuinely still active at THAT call. That proves a physical gamepad
+  // button press DOES grant a real (if short-lived) navigator.userActivation
+  // window on this device — contrary to unlockEventMovieElementForIOS()'s
+  // own isTrustedGesture===false assumption above, which was written before
+  // this was known and only ever considered DOM touchstart/mousedown
+  // "trusted". eventMovieVideoEl (and, via unlockGameplayBgmOnlyForIOS(),
+  // bgmAudio) never got a chance at WebKit's real per-element unlock on a
+  // gamepad-only session, so every later programmatic play() stayed at the
+  // mercy of whichever specific A-press's own window happened to still be
+  // open by the time it ran — exactly the fragile dependency the real log
+  // shows failing once MAIN SCENARIO is reached several screens deep.
+  //
+  // Fix: attempt this SAME per-element unlock again at the one point that
+  // is both (a) reachable on every menu-family gamepad confirm, across every
+  // screen, and (b) reads navigator.userActivation.isActive itself rather
+  // than assuming gamepad input is never trusted — confirmGamepadMenuNavFocus()
+  // calls this (and unlockGameplayBgmOnlyForIOS()) right before its own
+  // el.click(), so the very first confirm where the browser genuinely still
+  // reports isActive===true latches eventMovieElementUnlocked permanently,
+  // the same way a real touch always has. Deliberately NOT a copy of
+  // unlockEventMovieElementForIOS()'s own src-swap+teardown priming: by the
+  // time any menu-family confirm can fire, eventMovieVideoEl is always
+  // already sitting on sneaking.mp4 via prewarmEventMoviePlaybackElement()'s
+  // own MAIN-MENU-entry head start (see its own comment) — reassigning
+  // .src/.load() here would throw that real buffering progress away and
+  // reopen pollReady()'s own async wait gap this fix is trying to close.
+  // Priming IN PLACE (muted play()+immediate pause(), never touching .src)
+  // keeps that head start completely intact.
+  function unlockEventMoviePlaybackForGamepadConfirm(isActivationActive) {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'unlockEventMoviePlaybackForGamepadConfirm', isActivationActive, alreadyUnlocked: eventMovieElementUnlocked });
+    if (eventMovieElementUnlocked) return; // already unlocked (by this path or the real-touch one) — nothing left to do
+    if (isActivationActive) eventMovieElementUnlocked = true;
+    if (eventMovieState.active) return; // never fight over the element while a real movie is genuinely showing
+    try {
+      const wasMuted = eventMovieVideoEl.muted;
+      eventMovieVideoEl.muted = true;
+      const p = eventMovieVideoEl.play();
+      eventMovieVideoEl.pause();
+      eventMovieVideoEl.muted = wasMuted;
+      if (p && typeof p.then === 'function') p.catch(() => {});
+    } catch (e) {
+      // Never let a priming failure block menu navigation itself.
+    }
+  }
 
   // P0 GAMEPLAY STARTUP/TRANSITION STABILITY (real-device "sneaking.mp4
   // takes 10+ seconds to start" root-cause fix): resolves a relative movie
@@ -17564,6 +17614,22 @@
     const el = items[gamepadMenuNavFocusIndex];
     debugLastAConfirmAt = performance.now();
     debugLastAConfirmTarget = el ? (el.id || el.textContent.trim().slice(0, 24) || '(unlabeled)') : '(no item at focus index)';
+    // P0 WORK ORDER D FOLLOW-UP 3 (root-cause fix, this batch): attempt
+    // bgmAudio/eventMovieVideoEl's real per-element WebKit unlock here, BEFORE
+    // el.click() below — this fires on every menu-family gamepad confirm,
+    // across every screen, so the earliest confirm where the browser still
+    // genuinely reports navigator.userActivation.isActive===true (confirmed
+    // by real-device trace to be true at least for the first post-warm-
+    // reload A-press, since Outbreak0's own claimAudibleBgm() call already
+    // relies on and succeeds from exactly that) permanently unlocks both
+    // elements — see unlockGameplayBgmOnlyForIOS()/
+    // unlockEventMoviePlaybackForGamepadConfirm()'s own comments for why
+    // neither ever got that chance before on a gamepad-only session, and why
+    // this is safe (narrow, single-element, never touches menuBgmAudio, never
+    // reassigns eventMovieVideoEl.src).
+    const gamepadConfirmActivationIsActive = !!(navigator.userActivation && navigator.userActivation.isActive);
+    unlockGameplayBgmOnlyForIOS(gamepadConfirmActivationIsActive);
+    unlockEventMoviePlaybackForGamepadConfirm(gamepadConfirmActivationIsActive);
     if (el) el.click();
   }
 
@@ -19264,6 +19330,7 @@
     // P0 INTEGRATED REGRESSION HOTFIX (STARTUP GAMEPAD/AUDIO) — debug/verification only:
     get eventMovieElementUnlocked() { return eventMovieElementUnlocked; },
     get backgroundBgmUnlocked() { return backgroundBgmUnlocked; },
+    get gameplayBgmOnlyUnlocked() { return gameplayBgmOnlyUnlocked; }, // P0 WORK ORDER D FOLLOW-UP 3 — debug/verification only
     get menuBgmStarted() { return menuBgmStarted; },
     // P0 FULL GAMEPAD E2E HOTFIX (Part A) — debug/verification only: the
     // rolling per-frame gamepad trace (see recordGamepadDebugTrace()) —
