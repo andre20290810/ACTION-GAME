@@ -1359,36 +1359,30 @@
     ensureEventMovieGainNode(); // P0 INTEGRATED REGRESSION HOTFIX (Part H): best chance of an un-suspended AudioContext is inside this same real STARTUP gesture
     try {
       const primeSrc = EVENT_MOVIES.sneaking; // any always-registered, already-preloaded movie works — this one is simply the first ever played
-      // P0 BGM WORK ORDER C (real-device double-audible re-audit): snapshot
-      // eventMovieState.token here, BEFORE the priming play() promise is even
-      // created. If a REAL playEventMovie() call takes ownership of
-      // eventMovieVideoEl (bumping the token) while this promise is still in
-      // flight — e.g. a late-resolving prime racing a fast STORY MODE
-      // start — the teardown below must never pause/reset/clear the real
-      // movie out from under it. Mirrors unlockBackgroundBgmForIOS()'s own
-      // audibleBgmElement ownership guard just below, which already
-      // protects its 3 BGM tracks the same way; this element had no
-      // equivalent guard at all until now.
-      const primeOwnerToken = eventMovieState.token;
+      // P0 PRE-DEMO STABILIZATION (this batch): same reasoning as
+      // unlockBackgroundBgmForIOS()'s own comment — pause() now runs
+      // synchronously, same tick as play(), instead of waiting for the
+      // returned Promise to settle. The per-element WebKit unlock this
+      // grants is what makes every LATER programmatic playEventMovie() call
+      // (GABRIEL/ROID/ADAM arrival, gabriel_defeated, etc. — none of which
+      // fire from a fresh click/tap, only from stage-transition/proximity
+      // triggers) succeed without ever showing a "TAP TO PLAY" fallback
+      // outside STARTUP, exactly as before — only the exposure window
+      // (previously held open until the Promise settled) is removed.
+      // Nothing can race this teardown: it's fully synchronous, so no other
+      // code (including a real playEventMovie() call) can run between the
+      // play() and pause()/removeAttribute() calls below.
       eventMovieVideoEl.muted = true;
       eventMovieVideoEl.src = primeSrc;
       const p = eventMovieVideoEl.play();
+      eventMovieVideoEl.pause();
+      eventMovieVideoEl.currentTime = 0;
+      eventMovieVideoEl.removeAttribute('src');
+      eventMovieVideoEl.load();
+      if (DEBUG_BGM_OVERLAY) recordBgmEvent('EM_PRIME_SYNC_TEARDOWN', {});
       if (p && typeof p.then === 'function') {
-        const teardown = (settledAs) => {
-          if (DEBUG_BGM_OVERLAY) recordBgmEvent(settledAs === 'resolved' ? 'EM_PRIME_PROMISE_RESOLVED' : 'EM_PRIME_PROMISE_REJECTED', { primeOwnerToken, currentToken: eventMovieState.token, stale: eventMovieState.token !== primeOwnerToken });
-          // Even a rejected promise here still counts, on WebKit, as a
-          // play() attempt made synchronously within the gesture — the
-          // unlock is about the CALL happening in-gesture, not about the
-          // prime clip actually audibly playing. Tear the src back down
-          // regardless so nothing lingers loaded — but only while nothing
-          // real has claimed the element in the meantime.
-          if (eventMovieState.token !== primeOwnerToken) return; // superseded by a real playEventMovie() call — never touch its element
-          eventMovieVideoEl.pause();
-          eventMovieVideoEl.currentTime = 0;
-          eventMovieVideoEl.removeAttribute('src');
-          eventMovieVideoEl.load();
-        };
-        p.then(() => teardown('resolved')).catch(() => teardown('rejected'));
+        p.then(() => { if (DEBUG_BGM_OVERLAY) recordBgmEvent('EM_PRIME_PROMISE_RESOLVED', {}); })
+         .catch(() => { if (DEBUG_BGM_OVERLAY) recordBgmEvent('EM_PRIME_PROMISE_REJECTED', {}); });
       }
     } catch (e) {
       // Never let a priming failure block TAP TO START itself.
@@ -10764,59 +10758,53 @@
     // here too, so its own first real play() (deep into a MAIN run, well
     // after this startup gesture) never needs a fresh TAP TO PLAY.
     //
-    // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION (root-cause fix,
-    // this batch): this used to "silence" the priming play() by setting
-    // audioEl.volume = 0 and restoring it in teardown() — that works in
-    // every desktop browser (including this project's own sandboxed
-    // Playwright/Chromium testing, which is exactly why it was never
-    // caught), but iOS Safari deliberately ignores script writes to
-    // HTMLMediaElement.volume (playback volume there is fixed at 1.0 and
-    // controlled only by the hardware buttons — a long-standing, documented
-    // WebKit restriction). So on a real iPhone this priming play() of
-    // bgmAudio (Outbreak 1_1) / bossBgmAudio (Outbreak 2) / endingRevealAudio
-    // (Shining Grace) was NOT silent — it played at full volume for however
-    // long the returned Promise took to settle, at the exact same moment
-    // startMenuBgmOnce() (called immediately before this, from the same
-    // attemptStartupAudioUnlock()) started menuBgmAudio (Outbreak 0) for
-    // real. That is the direct root cause of the reported real-device
-    // "Shining Grace + Outbreak" / "Outbreak + Outbreak" simultaneous
-    // playback at STARTUP/START MENU. Fixed by using the SAME technique
-    // unlockEventMovieElementForIOS() already uses correctly for the movie
-    // element — audioEl.muted, which iOS Safari DOES honor — instead of
-    // volume. Muting (rather than lowering volume) still counts as a real,
-    // in-gesture play() call for WebKit's per-element unlock purposes, so
-    // every later real (unmuted) play() from startBossBgm()/
-    // startGameplayBgm()/enterEndingReveal() is unaffected.
+    // P0 PRE-DEMO STABILIZATION (this batch, replaces the async-teardown
+    // priming above): bgmAudio/bossBgmAudio/endingRevealAudio each still
+    // need their own one-time, per-element WebKit gesture-unlock — real
+    // code paths call .play() on all three from NON-gesture contexts
+    // throughout the whole session (startBossBgm() from a stage-transition/
+    // proximity trigger, claimAudibleBgm('normal', bgmAudio) from
+    // syncMusicContext()'s watchdog after literally any stage change/RETRY,
+    // claimAudibleBgm('ending', endingRevealAudio) from the RESULT-screen
+    // timer) — so simply deleting this priming pass would leave every one
+    // of those silently unplayable on iOS for the rest of the run, exactly
+    // the "後続audio/videoがiOSで全滅する" failure this batch's own spec
+    // explicitly forbids.
+    //
+    // What changed: the previous version kept each track "muted, but really
+    // playing" for however long its play() Promise took to settle before
+    // pausing it back down in the resolve/reject callback — an inherently
+    // async gap (network/decode dependent, sometimes hundreds of ms) during
+    // which the element was live. Real-device evidence this batch (fresh
+    // navigation, openingSource=native-touch, willPrimeBackgroundMedia=true)
+    // showed audible duplication with this exact code in place, despite
+    // audioEl.muted=true being set before play() every time — WebKit grants
+    // the per-element unlock from the SYNCHRONOUS play() CALL itself, never
+    // from the returned Promise settling, so there was never any unlock
+    // benefit to waiting for that Promise before pausing. Now play() and
+    // pause() happen back-to-back in the same synchronous tick, eliminating
+    // essentially all of that exposure window while the unlock guarantee
+    // for every later non-gesture call is unchanged. This also means two
+    // overlapping calls can no longer race each other's teardown — nothing
+    // is left "pending" for a later call to interfere with.
     for (const audioEl of [bgmAudio, bossBgmAudio, endingRevealAudio]) {
       try {
-        // P0 REAL-DEVICE REGRESSION (Issue 2, 2C/2D/2H): per-element priming
-        // token so TWO overlapping unlockBackgroundBgmForIOS() calls on the
-        // SAME element (possible since backgroundBgmUnlocked only latches on
-        // a TRUSTED gesture — an untrusted/gamepad-driven call can re-run
-        // this whole loop while an earlier call's own promise is still
-        // pending) can never stomp each other's wasMuted snapshot, and a
-        // teardown that's been superseded by either a newer prime call OR a
-        // REAL claimAudibleBgm() ownership change on this same element
-        // becomes a safe no-op instead of pausing/re-muting a track that
-        // legitimately started playing in the meantime (the exact async
-        // race identified as the likely remaining real-device double/silent
-        // BGM cause).
         if (audibleBgmElement === audioEl) continue; // a real claim already owns this element — priming has nothing to do here
-        const token = (audioEl._primeToken = (audioEl._primeToken || 0) + 1);
         const wasMuted = audioEl.muted;
+        const trackLabel = BGM_TRACK_NAMES_BY_ELEMENT.get(audioEl);
         audioEl.muted = true;
         const p = audioEl.play();
-        const trackLabel = BGM_TRACK_NAMES_BY_ELEMENT.get(audioEl);
-        const teardown = (settledAs) => {
-          if (DEBUG_BGM_OVERLAY) recordBgmEvent(settledAs === 'resolved' ? 'BGM_PRIME_PROMISE_RESOLVED' : settledAs === 'rejected' ? 'BGM_PRIME_PROMISE_REJECTED' : 'BGM_PRIME_TEARDOWN_SYNC', { track: trackLabel, primeToken: token, currentPrimeToken: audioEl._primeToken, audibleBgmElementIsThis: audibleBgmElement === audioEl });
-          if (audioEl._primeToken !== token) return; // superseded by a newer prime call on this element
-          if (audibleBgmElement === audioEl) return; // superseded by a real claim
-          audioEl.pause();
-          audioEl.currentTime = 0;
-          audioEl.muted = wasMuted;
-        };
-        if (p && typeof p.then === 'function') p.then(() => teardown('resolved')).catch(() => teardown('rejected'));
-        else teardown('sync');
+        audioEl.pause();
+        audioEl.currentTime = 0;
+        audioEl.muted = wasMuted;
+        if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_SYNC_TEARDOWN', { track: trackLabel });
+        // p is only observed for diagnostics from here on — pausing this
+        // synchronously already granted (or didn't) the real unlock; a
+        // rejected promise here is expected/harmless noise, never acted on.
+        if (p && typeof p.then === 'function') {
+          p.then(() => { if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_PROMISE_RESOLVED', { track: trackLabel }); })
+           .catch(() => { if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_PROMISE_REJECTED', { track: trackLabel }); });
+        }
       } catch (e) {
         // Never let a priming failure block TAP TO START itself.
       }
@@ -21377,6 +21365,25 @@
   // generic menu nav) is completely untouched.
   // ==========================================================================
   const GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS = 120; // spec section 7's own "100-150ms" middle value
+  // P0 PRE-DEMO STABILIZATION (this batch): the rescue's original acceptance
+  // window was effectively a single rAF frame — gamepadNewlyVisibleThisFrame
+  // is true for exactly one frame, and connectedEventThisFrame only holds
+  // for 50ms after the 'gamepadconnected' event. Real-device evidence this
+  // round (fresh navigation, GAMEPAD_CONNECTED_EVENT/VISIBLE/ADOPTED all
+  // within ~5ms of each other, yet the discovery-tap rescue still did not
+  // fire and the run fell through to touch fallback) shows that single-frame
+  // window can close before navigator.userActivation.isActive has caught up
+  // to true, or before this function's own eligibility check runs on the
+  // exact right frame — WebKit gives no guarantee those all land on the same
+  // tick. Widened below into a short GENERATION-scoped window (opened once,
+  // the first frame either signal is seen, held open for
+  // GAMEPAD_DISCOVERY_TAP_WINDOW_MS) so a userActivation flag arriving a few
+  // frames late still gets rescued. This does not weaken any existing safety
+  // condition: userActivation.isActive is still re-checked fresh on whichever
+  // frame actually accepts, the non-gamepad-activation exclusion window below
+  // is unchanged, and acceptance is still consumed at most once per
+  // startupGeneration.
+  const GAMEPAD_DISCOVERY_TAP_WINDOW_MS = 250;
   let lastNonGamepadPointerDownAt = 0;
   let lastNonGamepadTouchStartAt = 0;
   let lastNonGamepadMouseDownAt = 0;
@@ -21387,6 +21394,11 @@
   // what makes this reset for free on the next WAITING_FOR_TAP, with no
   // separate reset call needed anywhere.
   let gamepadDiscoveryTapConsumedGeneration = -1;
+  // Timestamp the discovery window opened at, and which generation it
+  // belongs to — reset to closed (0) the instant startupGeneration changes,
+  // exactly like gamepadDiscoveryTapConsumedGeneration above.
+  let gamepadDiscoveryWindowOpenedAt = 0;
+  let gamepadDiscoveryWindowGeneration = -1;
   // Debug-panel-only live snapshot of the last evaluation — never read by
   // any real acceptance logic above; see buildGamepadTapDebugText()'s own
   // GAMEPAD DISCOVERY TAP block.
@@ -21405,9 +21417,16 @@
   function updateGamepadDiscoveryTap(now, gamepadNewlyVisibleThisFrame) {
     const connectedEventThisFrame = lastGamepadConnectedEventAt > 0 && (now - lastGamepadConnectedEventAt) < 50;
     const newlyVisibleOrConnected = gamepadNewlyVisibleThisFrame || connectedEventThisFrame;
+    if (gamepadDiscoveryWindowGeneration !== startupGeneration) {
+      gamepadDiscoveryWindowGeneration = startupGeneration;
+      gamepadDiscoveryWindowOpenedAt = 0;
+    }
+    if (newlyVisibleOrConnected && gamepadDiscoveryWindowOpenedAt === 0) gamepadDiscoveryWindowOpenedAt = now;
+    const discoveryWindowOpenMs = gamepadDiscoveryWindowOpenedAt > 0 ? (now - gamepadDiscoveryWindowOpenedAt) : null;
+    const withinDiscoveryWindow = discoveryWindowOpenMs !== null && discoveryWindowOpenMs < GAMEPAD_DISCOVERY_TAP_WINDOW_MS;
     const conditionA = startupState === STARTUP_STATE.WAITING_FOR_TAP;
     const notYetConsumed = gamepadDiscoveryTapConsumedGeneration !== startupGeneration;
-    const eligible = conditionA && newlyVisibleOrConnected && notYetConsumed;
+    const eligible = conditionA && withinDiscoveryWindow && notYetConsumed;
     let userActivationApiAvailable = false, userActivationActive = false;
     try { userActivationApiAvailable = !!navigator.userActivation; userActivationActive = userActivationApiAvailable && !!navigator.userActivation.isActive; } catch (e) { /* stay false */ }
     const pointerAge = lastNonGamepadPointerDownAt > 0 ? +(now - lastNonGamepadPointerDownAt).toFixed(1) : null;
@@ -21431,6 +21450,8 @@
     if (DEBUG_GAMEPAD_TAP_OVERLAY) {
       debugDiscoveryTapState = {
         newlyVisibleThisFrame: gamepadNewlyVisibleThisFrame, connectedEventThisFrame,
+        discoveryWindowOpenMs: discoveryWindowOpenMs !== null ? +discoveryWindowOpenMs.toFixed(1) : null,
+        withinDiscoveryWindow,
         userActivationActive, lastPointerAgeMs: pointerAge, lastTouchAgeMs: touchAge,
         lastMouseAgeMs: mouseAge, lastKeyAgeMs: keyAge, nonGamepadActivationDetected,
         discoveryTapEligible: eligible, discoveryTapConsumed: !notYetConsumed,
@@ -23107,7 +23128,25 @@
           // the gameplayActive branch's own A=SOUTH DASH is never evaluated
           // this frame regardless; context-sensitive by construction, not a
           // special case).
-          if (pressedNow.a && !prev.a) { confirmGamepadMenuNavFocus(); reportMainMenuAccepted('confirm', 0); }
+          // P0 PRE-DEMO STABILIZATION (this batch): added `&& gamepadInputArmed`.
+          // recordMainMenuInputGateState()'s own long-standing comment already
+          // documented that this exact rising-edge check was the ONLY gate —
+          // gamepadInputArmed (TAP TO START's proven, per-frame "wait for a
+          // real full release" flag, re-armed universally at line ~22793 the
+          // instant zero buttons are held, regardless of screen) was computed
+          // for the debug panel but never actually consulted here. In the
+          // ordinary case (a genuine release before the next press) this
+          // changes nothing — gamepadInputArmed is already true again well
+          // before prev.a itself goes false. It only closes the narrow gap
+          // where a rising edge could be read as "new" without a real,
+          // detected release having happened first (matching this same
+          // rising-edge/adoption-timing class of issue already confirmed for
+          // TAP TO START's own CASE A). D-PAD/LEFT STICK navigation above is
+          // intentionally left untouched — real-device evidence shows those
+          // already register reliably; this fix targets A-confirm only, and
+          // never introduces any artificial post-entry delay (it still fires
+          // the instant a real release+press happens, exactly like before).
+          if (pressedNow.a && !prev.a && gamepadInputArmed) { confirmGamepadMenuNavFocus(); reportMainMenuAccepted('confirm', 0); }
         }
       }
     }
@@ -23406,6 +23445,7 @@
         if (!d) return '  (not yet evaluated this page life)';
         return [
           `  newlyVisibleThisFrame: ${d.newlyVisibleThisFrame}  connectedEventThisFrame: ${d.connectedEventThisFrame}`,
+          `  discoveryWindowOpenMs: ${d.discoveryWindowOpenMs === null ? '(not open)' : d.discoveryWindowOpenMs}  withinDiscoveryWindow: ${d.withinDiscoveryWindow}`,
           `  userActivationActive: ${d.userActivationActive}`,
           `  lastPointerAgeMs: ${d.lastPointerAgeMs === null ? '(never)' : d.lastPointerAgeMs}  lastTouchAgeMs: ${d.lastTouchAgeMs === null ? '(never)' : d.lastTouchAgeMs}  lastMouseAgeMs: ${d.lastMouseAgeMs === null ? '(never)' : d.lastMouseAgeMs}  lastKeyAgeMs: ${d.lastKeyAgeMs === null ? '(never)' : d.lastKeyAgeMs}`,
           `  nonGamepadActivationDetected: ${d.nonGamepadActivationDetected}`,
