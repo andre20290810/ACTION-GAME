@@ -11823,11 +11823,55 @@
   // second, independent line of protection against any future new caller),
   // but with only one real caller left, they are normally a no-op the very
   // first time onOpeningTap() itself is ever accepted.
-  function attemptStartupAudioUnlock(isTrustedGesture) {
+  // P0 START MENU AUDIO (this batch, real-device A/B trace): explicit
+  // classification of WHERE an accepted TAP TO START gesture came from —
+  // e.type alone ('touchstart'/'mousedown' for the 2 real DOM listeners on
+  // openingOverlayEl; 'gamepad-discovery' for updateGamepadDiscoveryTap()'s
+  // own synthetic call; no .type at all for the raw rising-edge synthetic
+  // call in updateGamepadInput()) already fully distinguishes these 4 cases
+  // — isTrusted alone cannot (a synthetic call has no real isTrusted value
+  // to read, and always resolves falsy regardless of which of the 2 gamepad
+  // paths produced it).
+  function classifyOpeningSource(e) {
+    if (e && e.type === 'touchstart') return 'native-touch';
+    if (e && e.type === 'mousedown') return 'native-mouse';
+    if (e && e.type === 'gamepad-discovery') return 'gamepad-discovery';
+    return 'gamepad-raw'; // the raw rising-edge synthetic call — no .type property at all
+  }
+  function attemptStartupAudioUnlock(isTrustedGesture, openingSource) {
     startMenuBgmOnce();
     if (startupState === STARTUP_STATE.MAIN_MENU) return; // MAIN MENU already reached — background priming is a STARTUP-only pass, never re-entered after this
     if (startupAudioUnlockConsumedGeneration === startupGeneration) return; // already attempted once this generation — never re-run regardless of trust
     startupAudioUnlockConsumedGeneration = startupGeneration;
+    // P0 START MENU AUDIO (real-device A/B comparison, this batch): a
+    // touch-accepted opening and a gamepad-accepted opening were traced
+    // side by side on the same physical device — touch: no duplication;
+    // gamepad-discovery: audible duplication, even though the DOM-level
+    // diagnostic (paused/muted-based) reported only menuBgmAudio as
+    // "audible" in both cases. Per this batch's explicit instruction, that
+    // DOM state is NOT treated as proof of silence — the real-device ear
+    // test is the source of truth. The one concrete code difference between
+    // the two accepted-opening paths is exactly this priming pass, so for
+    // any gamepad-sourced accepted opening (raw rising-edge OR discovery-
+    // tap — neither is a native DOM gesture), the background-media priming
+    // half is skipped entirely; only startMenuBgmOnce() (already called,
+    // unconditionally, above) runs. Native touch/mouse openings are
+    // completely unaffected — this only narrows WHICH accepted-opening
+    // sources may prime, never how often or whether Outbreak0 itself
+    // starts.
+    const isSyntheticGamepadOpening = openingSource === 'gamepad-discovery' || openingSource === 'gamepad-raw';
+    if (DEBUG_AUDIO_START_OVERLAY) {
+      recordAudioStartEvent('STARTUP_PRIMING_DECISION', {
+        openingSource,
+        isTrusted: !!isTrustedGesture,
+        isSyntheticGamepadOpening,
+        willPrimeBackgroundMedia: !isSyntheticGamepadOpening,
+        reason: isSyntheticGamepadOpening
+          ? 'gamepad-sourced accepted opening (raw or discovery-tap) — real-device A/B trace showed audible duplication from this priming pass; skipped'
+          : 'native DOM gesture (touch/mouse) — real-device A/B trace showed no duplication from this priming pass; unchanged',
+      });
+    }
+    if (isSyntheticGamepadOpening) return;
     unlockEventMovieElementForIOS(isTrustedGesture);
     unlockBackgroundBgmForIOS(isTrustedGesture);
   }
@@ -11957,7 +12001,7 @@
     // can prevent the setScreen('mainMenu') call a few lines below from
     // running.
     try {
-      attemptStartupAudioUnlock(!!e.isTrusted);
+      attemptStartupAudioUnlock(!!e.isTrusted, classifyOpeningSource(e));
     } catch (err) {
       console.error('[STARTUP AUDIO UNLOCK] failed, continuing screen transition anyway:', err);
     }
