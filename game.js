@@ -10588,6 +10588,17 @@
   function setScreen(next) {
     if (DEBUG_RUNTIME_OVERLAY && next !== gameState.screen) recordRuntimeEvent('SCREEN_CHANGE', { from: gameState.screen, to: next });
     if (DEBUG_AUDIO_START_OVERLAY && next !== gameState.screen) recordAudioStartEvent('SCREEN_CHANGE', { from: gameState.screen, to: next });
+    // P0 WORK ORDER D FOLLOW-UP 4 (diagnostic visualization only — no
+    // condition/logic change): narrowly scoped to any transition into or
+    // out of scenarioSelect, since that is the exact screen this batch's
+    // BGM-continuity question concerns — captures musicContext/
+    // menuBgmAudio state on BOTH sides of the transition (this "before"
+    // half, and the "after" half right before this function returns) in
+    // the same ?debugGamepadTap=1 trace as the other new events above.
+    const isScenarioSelectTransitionForDiag = DEBUG_GAMEPAD_TAP_OVERLAY && next !== gameState.screen && (next === 'scenarioSelect' || gameState.screen === 'scenarioSelect');
+    if (isScenarioSelectTransitionForDiag) {
+      recordGamepadTapEvent('SCENARIO_SELECT_TRANSITION_BEFORE', { from: gameState.screen, to: next, musicContext, menuBgmPaused: menuBgmAudio.paused, menuBgmCurrentTime: menuBgmAudio.currentTime });
+    }
     gameState.screen = next;
     // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: the single choke point every
     // route into MAIN MENU already passes through (TAP TO START, RETRY/QUIT
@@ -10671,6 +10682,14 @@
     // true, so this condition is always false and behavior is identical to
     // before this batch.
     document.getElementById('control-area').style.display = (next === 'gameplay' || DEBUG_GAMEPAD_TAP_OVERLAY || DEBUG_AUDIO_START_OVERLAY) ? '' : 'none';
+    // P0 WORK ORDER D FOLLOW-UP 4 (diagnostic visualization only): the
+    // "after" half of SCENARIO_SELECT_TRANSITION_BEFORE above — see its
+    // own comment. isScenarioSelectTransitionForDiag was computed before
+    // gameState.screen was overwritten, so it still reflects THIS call's
+    // own transition correctly here.
+    if (isScenarioSelectTransitionForDiag) {
+      recordGamepadTapEvent('SCENARIO_SELECT_TRANSITION_AFTER', { screen: gameState.screen, musicContext, menuBgmPaused: menuBgmAudio.paused, menuBgmCurrentTime: menuBgmAudio.currentTime });
+    }
   }
 
   // ---------- SECTION T: game-wide BGM (Outbreak 1.1) ----------
@@ -10727,6 +10746,12 @@
   menuBgmAudio.volume = BGM_VOLUME;
   let menuBgmStarted = false;
   function startMenuBgmOnce() {
+    // P0 WORK ORDER D FOLLOW-UP 4 (diagnostic visualization only — no
+    // condition/logic change): fires on EVERY call, including an
+    // already-started early return, so a real-device COPY DEBUG LOG shows
+    // whether this function was ever reached at all versus reached-but-
+    // already-latched. Read-only.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('START_MENU_BGM_ONCE_ENTER', { alreadyStarted: menuBgmStarted, musicContextAtEntry: musicContext });
     if (menuBgmStarted) return;
     menuBgmStarted = true;
     musicContext = 'menu'; // HOTFIX 2 SECTION 3: TAP TO START -> MENU context, menuBgmAudio only
@@ -11215,6 +11240,16 @@
     }
     element.muted = false;
     if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_CALL', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element) });
+    // P0 WORK ORDER D FOLLOW-UP 4 (diagnostic visualization only — no
+    // condition/logic change): a narrow, menuBgmAudio-only mirror of the
+    // AUDIO_PLAY_CALL/RESOLVE/REJECT events above, in the SAME
+    // ?debugGamepadTap=1 panel/trace as the new WARM RELOAD STORAGE and
+    // reportMainMenuAccepted() traces (those are DEBUG_RUNTIME_OVERLAY-gated,
+    // a different flag, so would not otherwise appear together on one real-
+    // device COPY DEBUG LOG) — and includes err.message, which the existing
+    // AUDIO_PLAY_REJECT event does not carry. Scoped to key === 'menu' only,
+    // matching the exact question this batch needs answered.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY && key === 'menu') recordGamepadTapEvent('MENU_BGM_PLAY_CALL', { musicContextAtCall: musicContext });
     captureBgmAudibilityCheckpoints(key, element);
     try {
       const p = element.play();
@@ -11223,15 +11258,18 @@
           bgmClaimRejection.delete(element); // P0 WORK ORDER D: a resolved claim clears any prior retry-storm suppression for this element
           if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_RESOLVED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, stale: audibleBgmGeneration !== myGen });
           if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_RESOLVE', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), stale: audibleBgmGeneration !== myGen });
+          if (DEBUG_GAMEPAD_TAP_OVERLAY && key === 'menu') recordGamepadTapEvent('MENU_BGM_PLAY_RESOLVED', { musicContextAtResolve: musicContext, stale: audibleBgmGeneration !== myGen });
           if (audibleBgmGeneration !== myGen) { try { element.pause(); } catch (e2) {} }
         }).catch((err) => {
           bgmClaimRejection.set(element, { at: performance.now() }); // P0 WORK ORDER D: retry-storm suppression — see shouldRetryBgmClaim()'s own comment
           if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_REJECTED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, errName: err && err.name });
           if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_REJECT', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), errName: err && err.name });
+          if (DEBUG_GAMEPAD_TAP_OVERLAY && key === 'menu') recordGamepadTapEvent('MENU_BGM_PLAY_REJECTED', { musicContextAtReject: musicContext, errName: err && err.name, errMessage: err && err.message });
           if (opts && opts.onRejected) opts.onRejected(err);
         });
       }
     } catch (e) {
+      if (DEBUG_GAMEPAD_TAP_OVERLAY && key === 'menu') recordGamepadTapEvent('MENU_BGM_PLAY_SYNC_THROW', { musicContextAtThrow: musicContext, errName: e && e.name, errMessage: e && e.message });
       if (opts && opts.onRejected) opts.onRejected(e);
     }
     return myGen;
@@ -23974,11 +24012,47 @@
         const screenAtMenuNavStart = gameState.screen;
         recordMainMenuInputGateState(now, gp, !!pressedNow.a, freshlyAdoptedThisFrame, prev);
         captureMainMenuEarlySnapshotIfDue(now, gp, navContainer, pressedNow, prev);
+        // P0 WORK ORDER D FOLLOW-UP 4 (diagnostic visualization only — no
+        // condition/logic change): scenarioSelect-scoped physical-input
+        // snapshot, fired only on an actual rising edge of one of the 5
+        // buttons this screen's navigation cares about — never every frame,
+        // to avoid flooding the 100-entry ring buffer. Distinguishes "raw
+        // input never arrives here at all" (compare against the existing,
+        // always-on BUTTON_RAW_DOWN/UP events, unconditional for every
+        // screen) from "raw input arrives but scenarioSelect's own
+        // processing doesn't act on it" (this event's own navContainer/
+        // itemsCount/focusIndex fields).
+        if (DEBUG_GAMEPAD_TAP_OVERLAY && screenAtMenuNavStart === 'scenarioSelect') {
+          const dpadUpEdge = !!pressedNow.dpadUp && !prev.dpadUp;
+          const dpadDownEdge = !!pressedNow.dpadDown && !prev.dpadDown;
+          const dpadLeftEdge = !!pressedNow.dpadLeft && !prev.dpadLeft;
+          const dpadRightEdge = !!pressedNow.dpadRight && !prev.dpadRight;
+          const aEdge = !!pressedNow.a && !prev.a;
+          if (dpadUpEdge || dpadDownEdge || dpadLeftEdge || dpadRightEdge || aEdge) {
+            recordGamepadTapEvent('SCENARIO_SELECT_PHYSICAL_INPUT_SNAPSHOT', {
+              gamepadPresentAtAdoptedIndex: !!gp,
+              rawButton0: gp && gp.buttons[0] ? { pressed: !!gp.buttons[0].pressed, value: gp.buttons[0].value } : null,
+              rawButton12: gp && gp.buttons[12] ? { pressed: !!gp.buttons[12].pressed, value: gp.buttons[12].value } : null,
+              rawButton13: gp && gp.buttons[13] ? { pressed: !!gp.buttons[13].pressed, value: gp.buttons[13].value } : null,
+              rawButton14: gp && gp.buttons[14] ? { pressed: !!gp.buttons[14].pressed, value: gp.buttons[14].value } : null,
+              rawButton15: gp && gp.buttons[15] ? { pressed: !!gp.buttons[15].pressed, value: gp.buttons[15].value } : null,
+              prevDpadUp: !!prev.dpadUp, prevDpadDown: !!prev.dpadDown, prevDpadLeft: !!prev.dpadLeft, prevDpadRight: !!prev.dpadRight, prevA: !!prev.a,
+              dpadUpEdge, dpadDownEdge, dpadLeftEdge, dpadRightEdge, aEdge,
+              gamepadInputArmed,
+              navContainerId: navContainer ? navContainer.id : null,
+              navItemsCount: navContainer ? getGamepadMenuNavItems().length : 0,
+              gamepadMenuNavFocusIndex,
+            });
+          }
+        }
         if (!navContainer && anyButtonPressedNow) {
           debugLastRejectedBranch = 'menu-nav:no-container-for-screen:' + gameState.screen;
           if (DEBUG_GAMEPAD_TAP_OVERLAY && screenAtMenuNavStart === 'mainMenu') {
             mainMenuInputBlockedCountThisGeneration++;
             recordGamepadTapEvent('MAIN_MENU_INPUT_BLOCKED', { inputType: 'any', reason: 'no-nav-container-resolved', elapsedSinceMainMenuEnterMs: lastMainMenuEnterAt ? Math.round(now - lastMainMenuEnterAt) : null });
+          }
+          if (DEBUG_GAMEPAD_TAP_OVERLAY && screenAtMenuNavStart === 'scenarioSelect') {
+            recordGamepadTapEvent('SCENARIO_SELECT_INPUT_BLOCKED', { reason: 'no-nav-container-resolved' });
           }
         }
         if (navContainer) {
@@ -23986,6 +24060,14 @@
           // already-accepted input decision made by the unmodified code
           // below — never itself gates, blocks, or alters that decision.
           const reportMainMenuAccepted = (inputType, buttonIndexOrAxis) => {
+            // P0 WORK ORDER D FOLLOW-UP 4 (diagnostic visualization only —
+            // no condition/logic change): traces the exact warm-reload BGM
+            // consumption path this callback drives, to determine on the
+            // next real-device run whether startMenuBgmOnce() genuinely
+            // ran here and, if so, whether menuBgmAudio.play() itself
+            // resolved or rejected. Read-only recordGamepadTapEvent() calls
+            // only — every line of real behavior below is unchanged.
+            if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('REPORT_MAIN_MENU_ACCEPTED_ENTER', { inputType, warmReloadMenuBgmPendingAtEntry: warmReloadMenuBgmPending });
             // P0 WORK ORDER D FOLLOW-UP 2 (warm reload): the gamepad half of
             // the one-shot deferred Outbreak0 retry — see
             // warmReloadMenuBgmPending's own declaration and
@@ -23998,8 +24080,23 @@
             // the diagnostic branch below, this is never
             // DEBUG_GAMEPAD_TAP_OVERLAY-gated — it is real behavior).
             if (warmReloadMenuBgmPending) {
+              if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('WARM_RELOAD_BGM_PENDING_CONSUMED', { musicContextBeforeStartMenuBgmOnce: musicContext });
               warmReloadMenuBgmPending = false;
+              if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('START_MENU_BGM_ONCE_CALL', { musicContextBefore: musicContext, caller: 'reportMainMenuAccepted' });
               startMenuBgmOnce();
+              if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('START_MENU_BGM_ONCE_RETURNED', { musicContextAfter: musicContext, menuBgmStartedAfter: menuBgmStarted, caller: 'reportMainMenuAccepted' });
+            }
+            // P0 WORK ORDER D FOLLOW-UP 4 (diagnostic visualization only —
+            // no condition/logic change): confirms moveGamepadMenuNavFocus()/
+            // confirmGamepadMenuNavFocus() were actually CALLED for
+            // scenarioSelect specifically — this callback only ever runs
+            // from the exact call sites that call those functions
+            // immediately beforehand, so reaching here IS that proof.
+            // Answers "raw input arrives but isn't processed" vs "processed
+            // fine" together with SCENARIO_SELECT_PHYSICAL_INPUT_SNAPSHOT
+            // above.
+            if (DEBUG_GAMEPAD_TAP_OVERLAY && screenAtMenuNavStart === 'scenarioSelect') {
+              recordGamepadTapEvent('SCENARIO_SELECT_NAV_ACTION_FIRED', { inputType, buttonIndexOrAxis, gamepadMenuNavFocusIndexAfter: gamepadMenuNavFocusIndex, screenAfter: gameState.screen });
             }
             if (DEBUG_GAMEPAD_TAP_OVERLAY && screenAtMenuNavStart === 'mainMenu') {
               mainMenuInputAcceptedCountThisGeneration++;
