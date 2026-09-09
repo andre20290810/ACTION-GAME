@@ -99,6 +99,54 @@
     eventMovieAudioTrace.push(Object.assign({ t: Date.now(), type }, fields || {}));
     if (eventMovieAudioTrace.length > EVENT_MOVIE_AUDIO_TRACE_MAX) eventMovieAudioTrace.shift();
   }
+  // P0 NEXT-SESSION SCOPE ITEM 2 (SNEAKING own-audio silence diagnostic):
+  // eventMovieVideoEl's own audio output is routed through
+  // eventMovieAudioContext (see ensureEventMovieGainNode() further below) —
+  // createMediaElementSource() means NO audio reaches the speakers at all
+  // while that AudioContext is 'suspended', regardless of the video
+  // element's own .paused/.muted/.currentTime state. Every existing SNEAKING
+  // diagnostic (this trace included, before this batch) only ever recorded
+  // the HTMLMediaElement-level fields — eventMovieAudioContext.state itself
+  // was never captured anywhere in this trace, so the real-device "SNEAKING
+  // plays visibly but is silent" report could not be distinguished from "the
+  // Web Audio graph itself was never actually running". This helper adds
+  // that one missing fact, plus the full field list requested for this
+  // diagnostic, to every checkpoint below — read-only, changes no production
+  // playback behavior.
+  function getEventMovieAudioContextStateLabel() {
+    if (typeof eventMovieAudioContext === 'undefined' || !eventMovieAudioContext) return 'not-created';
+    try { return eventMovieAudioContext.state || 'unknown'; } catch (e) { return 'unknown'; }
+  }
+  function buildEventMovieAudioDiagnosticFields(key) {
+    let userActivationIsActive = null, userActivationHasBeenActive = null;
+    try {
+      if (navigator.userActivation) {
+        userActivationIsActive = navigator.userActivation.isActive;
+        userActivationHasBeenActive = navigator.userActivation.hasBeenActive;
+      }
+    } catch (e) { /* diagnostic-only */ }
+    let hasFocus = null;
+    try { hasFocus = document.hasFocus(); } catch (e) { /* diagnostic-only */ }
+    let src = null;
+    try { src = eventMovieVideoEl.currentSrc || eventMovieVideoEl.src || null; } catch (e) { /* diagnostic-only */ }
+    return {
+      key: key !== undefined ? key : (typeof eventMovieState !== 'undefined' && eventMovieState ? eventMovieState.key : null),
+      src,
+      screen: gameState.screen,
+      startupState,
+      eventMovieActive: typeof eventMovieState !== 'undefined' && eventMovieState ? eventMovieState.active : null,
+      paused: eventMovieVideoEl.paused,
+      muted: eventMovieVideoEl.muted,
+      volume: eventMovieVideoEl.volume,
+      currentTime: +eventMovieVideoEl.currentTime.toFixed(2),
+      readyState: eventMovieVideoEl.readyState,
+      networkState: eventMovieVideoEl.networkState,
+      eventMovieAudioContextState: getEventMovieAudioContextStateLabel(),
+      documentVisibilityState: document.visibilityState,
+      hasFocus,
+      userActivationIsActive, userActivationHasBeenActive,
+    };
+  }
   let audioStartLastStartupState = null; // shadow copy for STARTUP_STATE_CHANGE from/to — diagnostic-only, never read by real startup logic
   // Shortened call-stack label — same technique as this file's own
   // bgmCallerLabel() (declared much further down, for ?debugBgm=1), kept as
@@ -1257,14 +1305,29 @@
   const GABRIEL_DEFEATED_GAIN = 2.0;
   let eventMovieAudioContext = null;
   let eventMovieGainNode = null;
-  function ensureEventMovieGainNode() {
+  // P0 NEXT-SESSION SCOPE ITEM 2: diagnosticLabel identifies WHICH caller
+  // triggered this resume() attempt in the trace (e.g. 'unlockEventMovieElementForIOS'
+  // vs 'playEventMovie') — purely descriptive, never read by any real logic.
+  // The production resume()/.catch(() => {}) call itself is unchanged in
+  // shape and behavior; the diagnostic .then()/.catch() below is a SEPARATE
+  // chain attached to the same promise, only ever created when
+  // DEBUG_AUDIO_START_OVERLAY is on, so with the flag off this function's
+  // real behavior (including exactly how many promise handlers get attached)
+  // is identical to before this batch.
+  function ensureEventMovieGainNode(diagnosticLabel) {
     if (eventMovieGainNode) {
       // Already wired — just make sure a previously-suspended context (iOS
       // Safari creates AudioContext in 'suspended' state outside a real
       // gesture) gets a fresh resume() attempt every time this is called
       // from a genuine gesture.
       if (eventMovieAudioContext && eventMovieAudioContext.state === 'suspended') {
-        eventMovieAudioContext.resume().catch(() => {});
+        const resumePromise = eventMovieAudioContext.resume();
+        resumePromise.catch(() => {});
+        if (DEBUG_AUDIO_START_OVERLAY) {
+          recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_CALL', Object.assign({ caller: diagnosticLabel || null }, buildEventMovieAudioDiagnosticFields()));
+          resumePromise.then(() => recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_RESOLVED', Object.assign({ caller: diagnosticLabel || null }, buildEventMovieAudioDiagnosticFields())))
+            .catch((err) => recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_REJECTED', Object.assign({ caller: diagnosticLabel || null, errName: err && err.name, errMessage: err && err.message }, buildEventMovieAudioDiagnosticFields())));
+        }
       }
       return;
     }
@@ -1278,7 +1341,13 @@
       source.connect(eventMovieGainNode);
       eventMovieGainNode.connect(eventMovieAudioContext.destination);
       if (eventMovieAudioContext.state === 'suspended') {
-        eventMovieAudioContext.resume().catch(() => {});
+        const resumePromise = eventMovieAudioContext.resume();
+        resumePromise.catch(() => {});
+        if (DEBUG_AUDIO_START_OVERLAY) {
+          recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_CALL', Object.assign({ caller: diagnosticLabel || null }, buildEventMovieAudioDiagnosticFields()));
+          resumePromise.then(() => recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_RESOLVED', Object.assign({ caller: diagnosticLabel || null }, buildEventMovieAudioDiagnosticFields())))
+            .catch((err) => recordEventMovieAudioTrace('AUDIO_CONTEXT_RESUME_REJECTED', Object.assign({ caller: diagnosticLabel || null, errName: err && err.name, errMessage: err && err.message }, buildEventMovieAudioDiagnosticFields())));
+        }
       }
     } catch (e) {
       // Never let a Web Audio setup failure block movie playback itself —
@@ -1304,6 +1373,30 @@
   // end) — registered once here rather than per-playEventMovie() call so it
   // covers every movie uniformly with no extra wiring per call site.
   eventMovieVideoEl.addEventListener('timeupdate', bgmTimeupdateWatchdog);
+  // P0 NEXT-SESSION SCOPE ITEM 2: 'playing' is the browser's own signal that
+  // playback has genuinely started producing frames/time — a real
+  // checkpoint distinct from play()'s own Promise resolving (which can
+  // resolve before any audio/video data has actually started flowing).
+  // Filtered to eventMovieState.active so this never fires for the
+  // START-time silent priming plays in unlockEventMovieElementForIOS()
+  // (torn down synchronously well before 'playing' could ever fire for
+  // those). One extra +1000ms checkpoint (only ever scheduled once per
+  // token) lets a real-device trace see whether eventMovieAudioContext
+  // later became suspended again mid-playback, not just at the initial
+  // play() call — diagnostic-only, changes no playback behavior.
+  let eventMoviePlayingCheckpointScheduledForToken = -1;
+  eventMovieVideoEl.addEventListener('playing', () => {
+    if (!DEBUG_AUDIO_START_OVERLAY || !eventMovieState.active) return;
+    recordEventMovieAudioTrace('MOVIE_PLAYING_EVENT', buildEventMovieAudioDiagnosticFields(eventMovieState.key));
+    const tokenAtPlaying = eventMovieState.token;
+    if (eventMoviePlayingCheckpointScheduledForToken === tokenAtPlaying) return; // already scheduled for this exact playback
+    eventMoviePlayingCheckpointScheduledForToken = tokenAtPlaying;
+    setTimeout(() => {
+      if (eventMovieState.token === tokenAtPlaying && eventMovieState.active) {
+        recordEventMovieAudioTrace('MOVIE_PLAYING_CHECKPOINT_1000MS', buildEventMovieAudioDiagnosticFields(eventMovieState.key));
+      }
+    }, 1000);
+  });
 
   // P0 GAME FLOW & COMBAT HOTFIX (root-cause fix, this batch): TAP TO PLAY
   // (event-movie-tap-fallback) was reappearing mid-STORY, not just at
@@ -1356,7 +1449,7 @@
     if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'unlockEventMovieElementForIOS', isTrustedGesture, alreadyUnlocked: eventMovieElementUnlocked });
     if (eventMovieElementUnlocked) return; // already unlocked by a genuine gesture — nothing left to do
     if (isTrustedGesture) eventMovieElementUnlocked = true;
-    ensureEventMovieGainNode(); // P0 INTEGRATED REGRESSION HOTFIX (Part H): best chance of an un-suspended AudioContext is inside this same real STARTUP gesture
+    ensureEventMovieGainNode('unlockEventMovieElementForIOS'); // P0 INTEGRATED REGRESSION HOTFIX (Part H): best chance of an un-suspended AudioContext is inside this same real STARTUP gesture
     try {
       const primeSrc = EVENT_MOVIES.sneaking; // any always-registered, already-preloaded movie works — this one is simply the first ever played
       // P0 PRE-DEMO STABILIZATION (this batch): same reasoning as
@@ -1374,6 +1467,12 @@
       // play() and pause()/removeAttribute() calls below.
       eventMovieVideoEl.muted = true;
       eventMovieVideoEl.src = primeSrc;
+      // P0 NEXT-SESSION SCOPE ITEM 2: also visible under the existing
+      // ?debugAudioStart=1 trace (eventMovieAudioTrace), alongside the
+      // pre-existing ?debugBgm=1 EM_PRIME_* events below — this is still the
+      // same eventMovieVideoEl.play() call the requested checkpoint list
+      // asks for, just for the priming source rather than a real movie key.
+      if (DEBUG_AUDIO_START_OVERLAY) recordEventMovieAudioTrace('PLAY_CALL', Object.assign({ phase: 'priming' }, buildEventMovieAudioDiagnosticFields('sneaking')));
       const p = eventMovieVideoEl.play();
       eventMovieVideoEl.pause();
       eventMovieVideoEl.currentTime = 0;
@@ -1381,8 +1480,14 @@
       eventMovieVideoEl.load();
       if (DEBUG_BGM_OVERLAY) recordBgmEvent('EM_PRIME_SYNC_TEARDOWN', {});
       if (p && typeof p.then === 'function') {
-        p.then(() => { if (DEBUG_BGM_OVERLAY) recordBgmEvent('EM_PRIME_PROMISE_RESOLVED', {}); })
-         .catch(() => { if (DEBUG_BGM_OVERLAY) recordBgmEvent('EM_PRIME_PROMISE_REJECTED', {}); });
+        p.then(() => {
+          if (DEBUG_BGM_OVERLAY) recordBgmEvent('EM_PRIME_PROMISE_RESOLVED', {});
+          if (DEBUG_AUDIO_START_OVERLAY) recordEventMovieAudioTrace('PLAY_RESOLVED', Object.assign({ phase: 'priming' }, buildEventMovieAudioDiagnosticFields('sneaking')));
+        })
+         .catch((err) => {
+           if (DEBUG_BGM_OVERLAY) recordBgmEvent('EM_PRIME_PROMISE_REJECTED', {});
+           if (DEBUG_AUDIO_START_OVERLAY) recordEventMovieAudioTrace('PLAY_REJECTED', Object.assign({ phase: 'priming', errName: err && err.name, errMessage: err && err.message }, buildEventMovieAudioDiagnosticFields('sneaking')));
+         });
       }
     } catch (e) {
       // Never let a priming failure block TAP TO START itself.
@@ -1558,7 +1663,7 @@
     // GABRIEL_DEFEATED_GAIN; every other key resets to 1.0 (identical to
     // the old, un-amplified behavior) — see ensureEventMovieGainNode()'s
     // own comment for why plain .volume can't achieve this.
-    ensureEventMovieGainNode();
+    ensureEventMovieGainNode('playEventMovie');
     if (eventMovieGainNode) {
       eventMovieGainNode.gain.value = (key === 'gabriel_defeated') ? GABRIEL_DEFEATED_GAIN : 1.0;
     }
@@ -1656,11 +1761,19 @@
     const EVENT_MOVIE_PLAY_RETRY_DELAYS_MS = [200, 600, 1500];
     let playRetryAttempt = 0;
     function attemptPlay() {
-      recordEventMovieAudioTrace('PLAY_CALL', { key, attempt: playRetryAttempt, muted: eventMovieVideoEl.muted, volume: eventMovieVideoEl.volume, readyState: eventMovieVideoEl.readyState, networkState: eventMovieVideoEl.networkState });
+      // P0 NEXT-SESSION SCOPE ITEM 2: augmented with
+      // buildEventMovieAudioDiagnosticFields() — adds eventMovieAudioContextState
+      // (the single missing fact needed to distinguish "HTMLMediaElement
+      // played but the Web Audio graph was suspended, so nothing was
+      // actually audible" from every other possible cause) plus the rest of
+      // this batch's requested field list, on top of the fields this trace
+      // already recorded. Diagnostic-only — the play()/retry logic itself
+      // below is untouched.
+      recordEventMovieAudioTrace('PLAY_CALL', Object.assign({ attempt: playRetryAttempt }, buildEventMovieAudioDiagnosticFields(key)));
       eventMovieVideoEl.play().then(() => {
-        recordEventMovieAudioTrace('PLAY_RESOLVED', { key, attempt: playRetryAttempt, muted: eventMovieVideoEl.muted, volume: eventMovieVideoEl.volume, readyState: eventMovieVideoEl.readyState });
+        recordEventMovieAudioTrace('PLAY_RESOLVED', Object.assign({ attempt: playRetryAttempt }, buildEventMovieAudioDiagnosticFields(key)));
       }).catch((err) => {
-        recordEventMovieAudioTrace('PLAY_REJECTED', { key, attempt: playRetryAttempt, errName: err && err.name, muted: eventMovieVideoEl.muted, volume: eventMovieVideoEl.volume, readyState: eventMovieVideoEl.readyState });
+        recordEventMovieAudioTrace('PLAY_REJECTED', Object.assign({ attempt: playRetryAttempt, errName: err && err.name, errMessage: err && err.message }, buildEventMovieAudioDiagnosticFields(key)));
         if (eventMovieState.token !== token) return; // superseded before the rejected promise even resolved
         console.warn('[EVENT MOVIE] play() rejected for key=' + key + ' (attempt ' + playRetryAttempt + '):', err && err.name, err && err.message);
         if (playRetryAttempt < EVENT_MOVIE_PLAY_RETRY_DELAYS_MS.length) {
@@ -21495,6 +21608,175 @@
       recordGamepadTapEvent('FIRST_PRESS_SUMMARY_FINALIZED', Object.assign({}, gamepadTapFirstPressSummary));
     }
   }
+  // ==========================================================================
+  // P0 NEXT-SESSION SCOPE ITEM 1 (MAIN MENU first-exposure gamepad rescue):
+  // real-device analysis (this batch's own investigation) found a SEPARATE,
+  // later-stage case of the same "browser doesn't deliver the physical press
+  // that first exposes the pad" phenomenon updateGamepadDiscoveryTap() above
+  // already rescues for WAITING_FOR_TAP — but that rescue is deliberately
+  // scoped EXCLUSIVELY to WAITING_FOR_TAP (conditionA). If the GameSir never
+  // becomes visible to navigator.getGamepads() during WAITING_FOR_TAP at all
+  // (a real, observed case — all slots null, zero gamepadconnected events,
+  // never adopted) and the player uses touch to pass TAP TO START instead,
+  // the controller's TRUE first-ever exposure to the browser can end up
+  // happening AFTER MAIN MENU is already showing. adoptGamepadIndex() seeds
+  // gamepadLastButtons from whatever the pad's real button state reads AT
+  // THAT ADOPTION MOMENT — if the exact physical press that finally exposed
+  // the pad is still being read as held by the time adoption runs (same
+  // "browser hasn't caught up yet" class of timing issue), that press gets
+  // baked into the baseline as "already pressed", so the existing D-PAD/A
+  // rising-edge checks in FULL MENU NAVIGATION never see a rising edge for
+  // it — the player has to release and press again with no visible feedback
+  // telling them that's needed, which reads as "GameSir does nothing".
+  //
+  // This is a DELIBERATELY SEPARATE function/branch from
+  // updateGamepadDiscoveryTap() above — screen responsibilities are not
+  // merged. Critically, this must NEVER call onOpeningTap() (that would
+  // re-run TAP TO START/opening/audio-unlock ownership on a screen that has
+  // already passed all of that) and must NEVER itself decide to "confirm"
+  // anything. What it does is narrower and safer: when a genuinely NEW
+  // exposure is detected while gameState.screen is already 'mainMenu', it
+  // clears ONLY the button-edge baseline (gamepadLastButtons/
+  // gamepadLastAnyButtonPressed) — the exact same two fields
+  // resetGamepadEdgeBaselineForMenuReturn() already clears for its own
+  // menu-return cases — so THIS SAME FRAME's already-unmodified pressedNow/
+  // prev rising-edge computation (a few lines below, in updateGamepadInput())
+  // reads whatever the controller is genuinely doing right now as a fresh
+  // press, instead of a false "already held" baseline. It never fabricates
+  // a press, never touches gamepadIndex/gamepadInputArmed/gamepadDisarmedAt/
+  // startupGeneration/tapReadyGeneration, and if nothing is physically
+  // pressed at the exact rescue moment, pressedNow reads all-false too and
+  // nothing happens — there is no scenario where this alone produces a
+  // confirm.
+  // ==========================================================================
+  const MAIN_MENU_GAMEPAD_EXPOSURE_RESCUE_WINDOW_MS = 250; // same magnitude as GAMEPAD_DISCOVERY_TAP_WINDOW_MS, same reasoning
+  // Only starts counting from a newly-visible/connected signal that arrives
+  // WHILE gameState.screen is already 'mainMenu' — an exposure that happened
+  // earlier (e.g. during WAITING_FOR_TAP, the pad held through TAP TO START
+  // into MAIN MENU — the exact case P0-B's release-gate already protects)
+  // must never retroactively open this window once the screen changes, or a
+  // still-held button from that earlier press could get misread as a fresh
+  // MAIN MENU press the instant this window's condition happens to line up.
+  let mainMenuGamepadExposureWindowOpenedAt = 0;
+  let mainMenuGamepadExposureWindowGeneration = -1;
+  // Consumed at most once per startupGeneration, same reasoning as
+  // gamepadDiscoveryTapConsumedGeneration above — resets for free on every
+  // fresh boot/RETRY/bfcache-restore, no separate reset call needed.
+  let mainMenuGamepadExposureRescueConsumedGeneration = -1;
+  let debugMainMenuExposureRescueState = null; // debug-panel-only live snapshot, never read by real logic
+  function updateMainMenuGamepadExposureRescue(now, gamepadNewlyVisibleThisFrame, screenAtFrameStart) {
+    // Deliberately NEVER falls back to a "connected event within the last
+    // 50ms" signal the way updateGamepadDiscoveryTap() above does — that
+    // 50ms grace exists there to tolerate Safari's unreliable
+    // 'gamepadconnected' event landing a frame or two after the real
+    // visibility flip. Reusing the exact same grace here would let a
+    // connected-event echo from an EARLIER (pre-MAIN-MENU) exposure still
+    // read as "new" several frames later, once screenAtFrameStart has
+    // naturally become 'mainMenu' on its own (not a same-frame race, just a
+    // later frame within that 50ms grace) — reopening exactly the P0-B held-
+    // button hazard the block comment above warns about. This rescue has a
+    // much weaker reliability requirement than the original TAP TO START
+    // one: pollForGamepadConnection() keeps re-scanning every frame
+    // regardless, so a missed 'gamepadconnected' event here just means the
+    // rescue's chance is smaller, never that the pad goes undetected.
+    const newlyVisibleOrConnected = gamepadNewlyVisibleThisFrame;
+    if (mainMenuGamepadExposureWindowGeneration !== startupGeneration) {
+      mainMenuGamepadExposureWindowGeneration = startupGeneration;
+      mainMenuGamepadExposureWindowOpenedAt = 0;
+    }
+    const onMainMenuScreen = gameState.screen === 'mainMenu';
+    // The window may ONLY open on a frame where we were ALREADY on MAIN MENU
+    // at the START of this exact frame (screenAtFrameStart, captured in
+    // updateGamepadInput() BEFORE updateGamepadDiscoveryTap() runs) — never
+    // the LIVE gameState.screen here. Both rescues run within the same
+    // frame/function call: if updateGamepadDiscoveryTap()'s own WAITING_FOR_TAP
+    // rescue is what JUST flipped the screen to 'mainMenu' a few lines
+    // earlier THIS SAME FRAME, the live screen already reads 'mainMenu' even
+    // though, chronologically, this newly-visible signal happened BEFORE
+    // MAIN MENU was ever reached — exactly the earlier (pre-MAIN-MENU)
+    // exposure case the block comment above says must never be picked up
+    // here (a still-held button from that press must stay governed by
+    // P0-B's own gamepadInputArmed release-gate, never this rescue).
+    if (screenAtFrameStart === 'mainMenu' && newlyVisibleOrConnected && mainMenuGamepadExposureWindowOpenedAt === 0) {
+      mainMenuGamepadExposureWindowOpenedAt = now;
+    }
+    const windowOpenMs = mainMenuGamepadExposureWindowOpenedAt > 0 ? (now - mainMenuGamepadExposureWindowOpenedAt) : null;
+    const withinWindow = windowOpenMs !== null && windowOpenMs < MAIN_MENU_GAMEPAD_EXPOSURE_RESCUE_WINDOW_MS;
+    const notYetConsumed = mainMenuGamepadExposureRescueConsumedGeneration !== startupGeneration;
+    const eligible = onMainMenuScreen && withinWindow && notYetConsumed;
+    let userActivationApiAvailable = false, userActivationActive = false;
+    try { userActivationApiAvailable = !!navigator.userActivation; userActivationActive = userActivationApiAvailable && !!navigator.userActivation.isActive; } catch (e) { /* stay false */ }
+    // Reuses the EXACT SAME non-gamepad-activation timestamps
+    // updateGamepadDiscoveryTap() already tracks (updated by the same
+    // always-on window-level pointerdown/touchstart/mousedown/keydown
+    // listeners declared once, above) — never a second/duplicate tracker.
+    const pointerAge = lastNonGamepadPointerDownAt > 0 ? +(now - lastNonGamepadPointerDownAt).toFixed(1) : null;
+    const touchAge = lastNonGamepadTouchStartAt > 0 ? +(now - lastNonGamepadTouchStartAt).toFixed(1) : null;
+    const mouseAge = lastNonGamepadMouseDownAt > 0 ? +(now - lastNonGamepadMouseDownAt).toFixed(1) : null;
+    const keyAge = lastNonGamepadKeyDownAt > 0 ? +(now - lastNonGamepadKeyDownAt).toFixed(1) : null;
+    const nonGamepadActivationDetected =
+      (pointerAge !== null && pointerAge < GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS) ||
+      (touchAge !== null && touchAge < GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS) ||
+      (mouseAge !== null && mouseAge < GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS) ||
+      (keyAge !== null && keyAge < GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS);
+    let rejectionReason = null;
+    let accepted = false;
+    if (eligible) {
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('MAIN_MENU_GAMEPAD_EXPOSURE_RESCUE_ELIGIBLE', { newlyVisible: gamepadNewlyVisibleThisFrame });
+      if (!userActivationApiAvailable) rejectionReason = 'USER_ACTIVATION_API_UNAVAILABLE';
+      else if (!userActivationActive) rejectionReason = 'NO_USER_ACTIVATION';
+      else if (nonGamepadActivationDetected) rejectionReason = 'NON_GAMEPAD_ACTIVATION_DETECTED';
+      else accepted = true;
+    }
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      debugMainMenuExposureRescueState = {
+        onMainMenuScreen, newlyVisibleThisFrame: gamepadNewlyVisibleThisFrame,
+        windowOpenMs: windowOpenMs !== null ? +windowOpenMs.toFixed(1) : null, withinWindow,
+        userActivationActive, lastPointerAgeMs: pointerAge, lastTouchAgeMs: touchAge,
+        lastMouseAgeMs: mouseAge, lastKeyAgeMs: keyAge, nonGamepadActivationDetected,
+        eligible, consumed: !notYetConsumed, accepted, rejectionReason,
+      };
+      if (eligible && rejectionReason) recordGamepadTapEvent('MAIN_MENU_GAMEPAD_EXPOSURE_RESCUE_REJECTED', { reason: rejectionReason, pointerAge, touchAge, mouseAge, keyAge });
+    }
+    if (!accepted) return;
+    mainMenuGamepadExposureRescueConsumedGeneration = startupGeneration; // at most once per generation, set before mutating anything so a re-entrant poll can never double-fire
+    // The actual rescue: clear gamepadLastButtons/gamepadLastAnyButtonPressed
+    // (never gamepadIndex — the pad is already correctly adopted THIS same
+    // frame, by the ordinary pollForGamepadConnection()/adoptGamepadIndex()
+    // call that always runs before this function; re-nulling it would only
+    // force a redundant re-adopt) so this SAME frame's pressedNow/prev
+    // rising-edge check (computed a few lines below in updateGamepadInput(),
+    // completely unmodified) reads the controller's genuinely-current state
+    // as fresh — never a fabricated press, never an auto-confirm decided
+    // here.
+    //
+    // Also clears gamepadInputArmed/gamepadDisarmedAt. This is NOT the
+    // prohibited "treat a long-held button as auto-released" pattern: that
+    // pattern reinterprets a button held from BEFORE, unrelated to any new
+    // signal, purely because time passed. This is the opposite — it is
+    // ONLY reachable at all once `accepted` above is true, which already
+    // required a genuinely NEW exposure signal this exact generation plus
+    // fresh navigator.userActivation plus the same non-gamepad-activation
+    // exclusion updateGamepadDiscoveryTap() uses. adoptGamepadIndex() (which
+    // just ran earlier THIS SAME FRAME) derives its OWN gamepadInputArmed
+    // value from the exact button snapshot being corrected here — if A is
+    // physically down at the moment this exposure is first seen (the normal
+    // case: that physical press is what exposes the pad in the first
+    // place), adoption already set gamepadInputArmed=false from that same
+    // reading, which would otherwise block the FULL MENU NAVIGATION
+    // confirm's own `&& gamepadInputArmed` check even after the baseline
+    // above is corrected — leaving the two fields inconsistent with each
+    // other for no reason. Resetting both together keeps them in the same
+    // state adoptGamepadIndex() itself would have produced had it read a
+    // genuinely neutral pad; the eligibility checks above are what actually
+    // guards against misuse, not this bookkeeping.
+    gamepadLastButtons = {};
+    gamepadLastAnyButtonPressed = false;
+    gamepadInputArmed = true;
+    gamepadDisarmedAt = 0;
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('MAIN_MENU_GAMEPAD_EXPOSURE_RESCUE_ACCEPTED', {});
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('MAIN_MENU_GAMEPAD_EXPOSURE_RESCUE', {});
+  }
   // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD): same ?debugStartup=1/0
   // -> localStorage persistence pattern as the other debug overlays above —
   // a SEPARATE overlay from ?debugInput=1 (never replaces or alters it),
@@ -22608,6 +22890,15 @@
       if (!gamepadTapFirstNonNullSlotAt) gamepadTapFirstNonNullSlotAt = Date.now();
       recordGamepadTapEvent('GAMEPAD_VISIBLE', { slots: padsNowRaw.map((gp2, i) => gp2 && gp2.connected ? { slot: i, id: gp2.id, index: gp2.index } : null).filter(Boolean) });
     }
+    // P0 NEXT-SESSION SCOPE ITEM 1: captured BEFORE updateGamepadDiscoveryTap()
+    // below can synchronously flip gameState.screen from 'opening' to
+    // 'mainMenu' (the WAITING_FOR_TAP rescue calling onOpeningTap()) — the
+    // MAIN MENU rescue further down this same function needs to know
+    // whether THIS newly-visible signal was already visible while genuinely
+    // on MAIN MENU, never "became visible this exact frame, which also
+    // happens to be the very frame the OTHER rescue just switched screens
+    // on" — see updateMainMenuGamepadExposureRescue()'s own comment.
+    const screenAtGamepadFrameStart = gameState.screen;
     // GAMEPAD FIRST-PRESS FAILURE — CASE A discovery-gesture rescue: checked
     // BEFORE pollForGamepadConnection()/adoption and before the existing
     // raw-press TAP-check block further down, so if this fires, every one
@@ -22735,6 +23026,12 @@
       updateGamepadDebugOverlay(null);
       return;
     }
+    // P0 NEXT-SESSION SCOPE ITEM 1: MAIN MENU first-exposure rescue — see
+    // updateMainMenuGamepadExposureRescue()'s own top-of-function comment.
+    // Runs here (gp already resolved, BEFORE pressedNow/prev are computed
+    // below) so that if it fires, this SAME frame's rising-edge check
+    // already sees the cleared baseline — never a frame late.
+    updateMainMenuGamepadExposureRescue(now, gamepadNewlyVisibleThisFrame, screenAtGamepadFrameStart);
     gamepadMappingSource = (gp.mapping === 'standard') ? 'standard' : 'fallback';
     const idx = (gp.mapping === 'standard') ? STANDARD_GAMEPAD_BUTTONS : FALLBACK_GAMEPAD_BUTTONS;
     const btn = (i) => gp.buttons[i];
