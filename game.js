@@ -11862,6 +11862,33 @@
       gamepadTapLastOnOpeningTapAt = Date.now();
       recordGamepadTapEvent('ON_OPENING_TAP_CALLED', { source: gamepadTapLastOnOpeningTapSource, screenAtCall: gameState.screen });
     }
+    // DARK OUT / P0 TAP TO START INPUT OWNERSHIP AUDIT (this batch):
+    // OPENING_INPUT_RECEIVED/ACCEPTED/REJECTED — onOpeningTap() is already
+    // the single real entry point every one of its 4 call sites (the 2 DOM
+    // listeners on openingOverlayEl below, and the 2 gamepad synthetic
+    // calls in updateGamepadInput()) funnels through, so these fire here,
+    // once, regardless of which call site reached this function. This is
+    // the "did the accepted-input path itself run, and what did it decide"
+    // half of the picture — the generic document-level touchstart/mousedown
+    // listeners further down record the OTHER half (a touch that reached
+    // the browser but never reached openingOverlayEl at all, so never even
+    // got here).
+    if (DEBUG_GAMEPAD_TAP_OVERLAY || DEBUG_AUDIO_START_OVERLAY) {
+      const receivedFields = {
+        source: e && e.type === 'touchstart' ? 'touch' : e && e.type === 'mousedown' ? 'mouse' : e && e.type === 'gamepad-discovery' ? 'gamepad-discovery' : 'gamepad',
+        eventType: e && e.type ? e.type : '(synthetic/gamepad)',
+        target: e && e.target ? (e.target.id || e.target.tagName || '(unlabeled)') : '(synthetic)',
+        screen: gameState.screen,
+        startupState,
+      };
+      const willAccept = gameState.screen === 'opening';
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('OPENING_INPUT_RECEIVED', Object.assign({ willCallOnOpeningTap: true, isDiagnosticControl: false }, receivedFields));
+      if (DEBUG_AUDIO_START_OVERLAY) recordAudioStartEvent('OPENING_INPUT_RECEIVED', Object.assign({ willCallOnOpeningTap: true, isDiagnosticControl: false }, receivedFields));
+      const outcomeType = willAccept ? 'OPENING_INPUT_ACCEPTED' : 'OPENING_INPUT_REJECTED';
+      const outcomeFields = Object.assign({ reason: willAccept ? '(none)' : 'screen !== opening (stray double-fire or already past TAP TO START)' }, receivedFields);
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent(outcomeType, outcomeFields);
+      if (DEBUG_AUDIO_START_OVERLAY) recordAudioStartEvent(outcomeType, outcomeFields);
+    }
     // P0 BGM WORK ORDER D (real-device timing-race re-audit): FN_ENTER
     // breadcrumb — the first of 11 explicitly-requested checkpoints so the
     // event trace shows exactly which function ran in what order across a
@@ -12013,16 +12040,45 @@
   // under ?debugAudioStart=1, but never calls .play()/.pause()/claim() on
   // anything. This is intentionally the ENTIRE body — no fallback unlock
   // path replaces the one just removed above.
-  document.addEventListener('touchstart', (e) => {
-    if (!e.isTrusted || !DEBUG_AUDIO_START_OVERLAY) return;
-    recordAudioStartEvent('GENERIC_AUDIO_UNLOCK_REQUEST', { source: 'touchstart', screen: gameState.screen, startupState });
-    recordAudioStartEvent('GENERIC_AUDIO_UNLOCK_BLOCKED', { source: 'touchstart', reason: 'startup audio may only be started by an accepted onOpeningTap() gesture' });
-  }, { passive: true, capture: true });
-  document.addEventListener('mousedown', (e) => {
-    if (!e.isTrusted || !DEBUG_AUDIO_START_OVERLAY) return;
-    recordAudioStartEvent('GENERIC_AUDIO_UNLOCK_REQUEST', { source: 'mousedown', screen: gameState.screen, startupState });
-    recordAudioStartEvent('GENERIC_AUDIO_UNLOCK_BLOCKED', { source: 'mousedown', reason: 'startup audio may only be started by an accepted onOpeningTap() gesture' });
-  }, { capture: true });
+  // DARK OUT / P0 TAP TO START INPUT OWNERSHIP AUDIT (this batch): the OTHER
+  // half of OPENING_INPUT_RECEIVED — a touch/click that reached the browser
+  // (this listener fires for literally everything, since it is on
+  // `document` in the capture phase) but did NOT land on #opening-overlay,
+  // so it never bubbled to that element's own onOpeningTap() listeners at
+  // all (onOpeningTap() itself, above, reports its own OPENING_INPUT_*
+  // triple whenever it DOES run — the two together cover every real touch).
+  // isDiagnosticControl (target inside a #debug-*-panel element) is reported
+  // so a real-device retrace can tell "swallowed by a debug panel sitting
+  // visually on top of TAP TO START" apart from any other cause. Read-only —
+  // never calls .play()/.pause()/claim() on anything, never calls
+  // onOpeningTap() itself (that responsibility stays exclusively with
+  // #opening-overlay's own listeners and the 2 gamepad call sites).
+  function reportUnroutedOpeningInput(e, source) {
+    if (!e.isTrusted) return;
+    const withinOpeningOverlay = !!(e.target && e.target.closest && e.target.closest('#opening-overlay'));
+    const isDiagnosticControl = !!(e.target && e.target.closest && e.target.closest('[id^="debug-"]'));
+    const fields = {
+      source,
+      target: e.target ? (e.target.id || e.target.tagName || '(unlabeled)') : '(unknown)',
+      screen: gameState.screen,
+      startupState,
+      isDiagnosticControl,
+      withinOpeningOverlay, // true = this same touch will ALSO reach onOpeningTap() via normal bubbling; its own OPENING_INPUT_* triple is the authoritative outcome for it
+    };
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('OPENING_INPUT_RECEIVED', fields);
+    if (DEBUG_AUDIO_START_OVERLAY) {
+      recordAudioStartEvent('GENERIC_AUDIO_UNLOCK_REQUEST', { source, screen: gameState.screen, startupState });
+      recordAudioStartEvent('GENERIC_AUDIO_UNLOCK_BLOCKED', { source, reason: 'startup audio may only be started by an accepted onOpeningTap() gesture' });
+      recordAudioStartEvent('OPENING_INPUT_RECEIVED', fields);
+    }
+    if (!withinOpeningOverlay && (DEBUG_GAMEPAD_TAP_OVERLAY || DEBUG_AUDIO_START_OVERLAY)) {
+      const reason = isDiagnosticControl ? 'target is inside a debug/diagnostic panel, not #opening-overlay' : 'target is outside #opening-overlay — this touch never reaches onOpeningTap()';
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('OPENING_INPUT_REJECTED', Object.assign({ reason }, fields));
+      if (DEBUG_AUDIO_START_OVERLAY) recordAudioStartEvent('OPENING_INPUT_REJECTED', Object.assign({ reason }, fields));
+    }
+  }
+  document.addEventListener('touchstart', (e) => { reportUnroutedOpeningInput(e, 'touchstart'); }, { passive: true, capture: true });
+  document.addEventListener('mousedown', (e) => { reportUnroutedOpeningInput(e, 'mousedown'); }, { capture: true });
   // P0 INTEGRATED REGRESSION HOTFIX (AUDIO SINGLE-OWNER, refresh-duplicate-
   // Outbreak root cause): a plain page refresh/navigation discards this
   // page's whole JS context, but does NOT guarantee the OS audio session for
