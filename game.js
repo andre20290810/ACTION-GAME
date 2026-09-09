@@ -135,9 +135,20 @@
       if (DEBUG_AUDIO_START_OVERLAY) {
         audioStartPlayCallSeq++;
         try {
+          const trackLabel = audioStartTrackLabel(this);
+          // DARK OUT / P0 AUDIO STARTUP OWNERSHIP FIX: whether THIS play()
+          // call happened after a genuinely-accepted onOpeningTap() gesture
+          // already occurred this startupGeneration — see
+          // openingGestureAcceptedGeneration's own declaration further down
+          // (set synchronously, the instant onOpeningTap() passes its own
+          // screen==='opening' check, BEFORE it does anything audio-related).
+          // Referenced here even though declared later in the file for the
+          // same reason audioStartTrackLabel() above already does.
+          const authorized = typeof openingGestureAcceptedGeneration !== 'undefined' && typeof startupGeneration !== 'undefined' &&
+            openingGestureAcceptedGeneration === startupGeneration;
           recordAudioStartEvent('AUDIO_PLAY_CALL', {
             seq: audioStartPlayCallSeq,
-            track: audioStartTrackLabel(this),
+            track: trackLabel,
             src: (this.currentSrc || this.src || '').split('/').pop() || '(none)',
             currentTime: +this.currentTime.toFixed(2),
             paused: this.paused,
@@ -151,7 +162,17 @@
             eventMovieActive: typeof eventMovieState !== 'undefined' ? eventMovieState.active : null,
             audibleBgmOwner: typeof audibleBgmKey !== 'undefined' ? audibleBgmKey : null,
             caller: audioStartShortStack(1),
+            authorizedByAcceptedOpeningGesture: authorized,
           });
+          // A .play() on any of the 5 startup-relevant tracks BEFORE this
+          // generation's TAP TO START was ever accepted is exactly the class
+          // of real-device bug this batch fixes (menu/gameplay/boss/ending
+          // BGM or the event-movie element starting from a generic page
+          // touch/click while the player is still looking at TAP TO START).
+          const STARTUP_RELEVANT_TRACKS = ['menuBgmAudio', 'bgmAudio', 'bossBgmAudio', 'endingRevealAudio', 'eventMovieVideoEl'];
+          if (!authorized && STARTUP_RELEVANT_TRACKS.indexOf(trackLabel) !== -1) {
+            recordAudioStartEvent('PRE_TAP_AUDIO_SIDE_EFFECT_DETECTED', { track: trackLabel, caller: audioStartShortStack(1) });
+          }
         } catch (e) { /* diagnostic-only, never let this block the real play() call */ }
       }
       const mySeq = audioStartPlayCallSeq;
@@ -11770,46 +11791,38 @@
     playOpeningVideoWithRetry(); // P0 RUNTIME STATE/ASYNC RACE STABILIZATION: bounded retry on rejection — see its own comment
     resetAttractIdleTimer();
   }
-  // P0 INTEGRATED REGRESSION HOTFIX (STARTUP GAMEPAD/AUDIO): single entry
-  // point for the whole per-element iOS unlock pass, called both from
-  // onOpeningTap() (the normal path) and from the document-level trusted-
-  // gesture safety net below (the fallback path for a session whose very
-  // first TAP TO START dismissal happened to be gamepad-driven, which never
-  // satisfies WebKit's real per-element gesture-unlock rule — see
-  // unlockEventMovieElementForIOS()'s own comment). Passing the real
-  // isTrustedGesture through (rather than always true) is what lets a LATER
-  // genuine touch retry and actually complete the unlock instead of the old
-  // one-shot flags permanently (and wrongly) considering it already done.
+  // P0 INTEGRATED REGRESSION HOTFIX (STARTUP GAMEPAD/AUDIO): originally a
+  // shared entry point called both from onOpeningTap() (the accepted-gesture
+  // path) and from a document-level trusted-gesture safety net (removed —
+  // see its own former declaration site further down, near the pagehide
+  // listener, for why).
   //
-  // P0 START MENU BGM DUPLICATION (real-device runtime cause, this batch):
-  // that same document-level safety net (see its own comment further down)
-  // is NEVER unregistered and has NO screen/state guard of its own — it
-  // fires this ENTIRE function on every genuinely-trusted touchstart/
-  // mousedown ANYWHERE on the page, for the rest of the page's life. That
-  // was believed harmless because unlockEventMovieElementForIOS()/
-  // unlockBackgroundBgmForIOS() each have their own "already unlocked" latch
-  // — but BOTH latches only ever engage when isTrustedGesture===true, and
-  // this session's own real-device trace (?debugGamepadTap=1&debugAudioStart=1,
-  // iPhone + GameSir) showed the FIRST successful TAP TO START now routinely
-  // arrives via the gamepad discovery-tap path (isTrustedGesture===false,
-  // since it is a synthetic call — see updateGamepadDiscoveryTap()), so
-  // neither latch ever engages. The next perfectly ordinary trusted touch
-  // ANYWHERE on the page (in the traced case: tapping the debug panel's own
-  // COPY DEBUG LOG button, well after MAIN MENU was already showing) then
-  // re-ran the full background-media priming pass — real .play() calls on
-  // bgmAudio/bossBgmAudio/endingRevealAudio/eventMovieVideoEl, muted in the
-  // DOM but audibly perceptible on this real device for the ~3s each stayed
-  // playing before its own promise-settled teardown paused it again. Fixed
-  // here, at the one shared call site, rather than inside either latch: the
-  // BACKGROUND MEDIA PRIMING half of this function (never startMenuBgmOnce()
-  // itself, which stays exactly as before) now runs at most once per
-  // startupGeneration, and never at all once STARTUP_STATE has reached
-  // MAIN_MENU — regardless of which of this function's 2 call sites invoked
-  // it, or whether isTrustedGesture is true or false. The very first call of
-  // a fresh generation (touch OR gamepad-driven) still performs the real
-  // priming attempt exactly as before — this only removes the UNBOUNDED
-  // re-entry the old per-latch design allowed once the first call happened
-  // not to be trusted.
+  // P0 START MENU BGM DUPLICATION (real-device runtime cause, prior batch):
+  // that document-level safety net had NO screen/state guard — it fired
+  // this ENTIRE function on every genuinely-trusted touchstart/mousedown
+  // ANYWHERE on the page, for the rest of the page's life, because
+  // unlockEventMovieElementForIOS()/unlockBackgroundBgmForIOS()'s own
+  // "already unlocked" latches only ever engage when isTrustedGesture===true
+  // — and the discovery-tap fix means the FIRST successful TAP TO START now
+  // routinely arrives via a synthetic (untrusted) gamepad call, so neither
+  // latch ever engaged. A prior fix in this same batch's history capped that
+  // to "at most once per startupGeneration, never after MAIN_MENU" — but a
+  // FOLLOW-UP real-device trace showed the deeper problem: that generic
+  // listener could fire this function BEFORE TAP TO START was ever accepted
+  // at all (screen==='opening', startupState==='WAITING_FOR_TAP'), starting
+  // Outbreak0 and priming every other track from an ordinary page touch that
+  // was never a TAP TO START dismissal in the first place.
+  //
+  // P0 AUDIO STARTUP OWNERSHIP FIX (this batch, root fix): rather than
+  // bounding HOW OFTEN this function may run, this function is no longer
+  // reachable from anything except an ACCEPTED onOpeningTap() gesture —
+  // its one remaining caller. The document-level generic touchstart/
+  // mousedown listeners (see their own new comment further down) no longer
+  // call this at all; they only ever record diagnostic breadcrumbs now. The
+  // startupState/generation guards below are kept as defense-in-depth (a
+  // second, independent line of protection against any future new caller),
+  // but with only one real caller left, they are normally a no-op the very
+  // first time onOpeningTap() itself is ever accepted.
   function attemptStartupAudioUnlock(isTrustedGesture) {
     startMenuBgmOnce();
     if (startupState === STARTUP_STATE.MAIN_MENU) return; // MAIN MENU already reached — background priming is a STARTUP-only pass, never re-entered after this
@@ -11823,6 +11836,17 @@
   // restore simply because startupGeneration itself advances then (no
   // explicit reset needed, same pattern as gamepadDiscoveryTapConsumedGeneration).
   let startupAudioUnlockConsumedGeneration = -1;
+  // P0 AUDIO STARTUP OWNERSHIP FIX (this batch): the single source of truth
+  // for "has TAP TO START genuinely been accepted this generation" — set
+  // ONLY inside onOpeningTap(), the instant its own screen==='opening' check
+  // passes (see its own comment there). -1 (never equal to any real
+  // startupGeneration, which starts at 1 on the first boot) until then.
+  // Read by the AUDIO_PLAY_CALL diagnostic hook near the top of this file to
+  // label every .play() call as authorized/unauthorized — purely
+  // observational there — and is NOT itself a gate on any real playback
+  // logic (attemptStartupAudioUnlock() above is already unreachable except
+  // from the accepted gesture, so no separate runtime gate is needed here).
+  let openingGestureAcceptedGeneration = -1;
   function onOpeningTap(e) {
     // P0 DIAGNOSTIC PHASE 1: pure observation — records that onOpeningTap()
     // was invoked and from which of its 3 existing call sites (touchstart/
@@ -11862,6 +11886,17 @@
     }
     e.preventDefault();
     if (gameState.screen !== 'opening') return; // guards against a stray double-fire (touchstart + mousedown) doing this twice
+    // DARK OUT / P0 AUDIO STARTUP OWNERSHIP FIX (real-device runtime cause,
+    // this batch): THIS is the one instant TAP TO START becomes genuinely
+    // accepted — screen==='opening' just verified above, so this call is
+    // real, not a stray double-fire. openingGestureAcceptedGeneration is the
+    // single source of truth every startup-relevant .play() call site
+    // (attemptStartupAudioUnlock() below, and the AUDIO_PLAY_CALL diagnostic
+    // hook near the top of this file) checks before treating itself as
+    // "authorized" — set BEFORE any audio-related call in this function, so
+    // nothing downstream can race it.
+    openingGestureAcceptedGeneration = startupGeneration;
+    if (DEBUG_AUDIO_START_OVERLAY) recordAudioStartEvent('ACCEPTED_OPENING_GESTURE', { source: e && e.type ? e.type : '(synthetic/gamepad)', isTrusted: !!e.isTrusted, generation: startupGeneration });
     // P0 STARTUP STATE MACHINE REWRITE item 10: WAITING_FOR_TAP -> ENTERING_MENU
     // -> MAIN_MENU happens synchronously in THIS function, never via a later
     // separate timeout/async callback -- "MAIN_MENU visible = controller nav
@@ -11945,18 +11980,49 @@
   openingOverlayEl.addEventListener('touchstart', onOpeningTap, { passive: false });
   openingOverlayEl.addEventListener('mousedown', onOpeningTap);
   // P0 INTEGRATED REGRESSION HOTFIX (STARTUP GAMEPAD/AUDIO root cause,
-  // safety net): if the session's very first TAP TO START dismissal was
-  // gamepad-driven, attemptStartupAudioUnlock() above deliberately left the
-  // per-element unlock flags un-latched (isTrustedGesture was false) so a
-  // later real gesture can still complete it. This is that later real
-  // gesture's catch-all: every genuinely trusted touchstart/mousedown
-  // ANYWHERE on the page, for the whole session (not just the TAP TO START
-  // overlay), retries the exact same unlock pass. Idempotent and cheap once
-  // already unlocked (each of the three unlock functions' own internal flag
-  // check short-circuits immediately), so this never re-primes/re-starts
-  // anything once a real gesture has already completed the unlock.
-  document.addEventListener('touchstart', (e) => { if (e.isTrusted) attemptStartupAudioUnlock(true); }, { passive: true, capture: true });
-  document.addEventListener('mousedown', (e) => { if (e.isTrusted) attemptStartupAudioUnlock(true); }, { capture: true });
+  // safety net) — REMOVED (P0 AUDIO STARTUP OWNERSHIP FIX, this batch).
+  // This USED TO retry attemptStartupAudioUnlock() (real .play() calls on
+  // menuBgmAudio/bgmAudio/bossBgmAudio/endingRevealAudio/eventMovieVideoEl)
+  // on every genuinely-trusted touchstart/mousedown ANYWHERE on the page,
+  // for the whole session — including well before TAP TO START was ever
+  // accepted. Two consecutive real-device traces (?debugGamepadTap=1&
+  // debugAudioStart=1, iPhone + GameSir) confirmed actual audible BGM
+  // duplication from exactly this path: first after MAIN MENU (fixed by an
+  // earlier commit this same batch, capping re-entry to once per
+  // startupGeneration/never after MAIN_MENU), then — because that fix only
+  // bounded HOW OFTEN, not WHO may call it — from a touch on the debug
+  // panel itself while TAP TO START had NOT yet been accepted at all
+  // (screen==='opening', startupState==='WAITING_FOR_TAP'). Per this
+  // batch's explicit instruction, BGM/audio startup side effects may now
+  // ONLY ever originate from an accepted onOpeningTap() gesture —
+  // attemptStartupAudioUnlock() has exactly one caller left (onOpeningTap()
+  // itself) and this generic listener pair is replaced below with pure,
+  // audio-side-effect-free observation only. If a session's very first
+  // accepted TAP TO START happens to be gamepad-driven (untrusted) and
+  // WebKit genuinely never grants per-element playback because of that,
+  // that is a SEPARATE, real-device-only question this batch does not
+  // attempt to answer speculatively — see this commit's own report for the
+  // audit of the self-healing paths (claimAudibleBgm()'s own onRejected
+  // retries, syncMusicContext()'s periodic re-assertion) that already exist
+  // downstream of every real gameplay/boss/ending BGM start, independent of
+  // this removed safety net.
+  //
+  // DARK OUT / P0 AUDIO STARTUP OWNERSHIP FIX (this batch): generic
+  // page-wide activation observation only — records that a genuinely
+  // trusted touch/click happened somewhere, for diagnostic visibility
+  // under ?debugAudioStart=1, but never calls .play()/.pause()/claim() on
+  // anything. This is intentionally the ENTIRE body — no fallback unlock
+  // path replaces the one just removed above.
+  document.addEventListener('touchstart', (e) => {
+    if (!e.isTrusted || !DEBUG_AUDIO_START_OVERLAY) return;
+    recordAudioStartEvent('GENERIC_AUDIO_UNLOCK_REQUEST', { source: 'touchstart', screen: gameState.screen, startupState });
+    recordAudioStartEvent('GENERIC_AUDIO_UNLOCK_BLOCKED', { source: 'touchstart', reason: 'startup audio may only be started by an accepted onOpeningTap() gesture' });
+  }, { passive: true, capture: true });
+  document.addEventListener('mousedown', (e) => {
+    if (!e.isTrusted || !DEBUG_AUDIO_START_OVERLAY) return;
+    recordAudioStartEvent('GENERIC_AUDIO_UNLOCK_REQUEST', { source: 'mousedown', screen: gameState.screen, startupState });
+    recordAudioStartEvent('GENERIC_AUDIO_UNLOCK_BLOCKED', { source: 'mousedown', reason: 'startup audio may only be started by an accepted onOpeningTap() gesture' });
+  }, { capture: true });
   // P0 INTEGRATED REGRESSION HOTFIX (AUDIO SINGLE-OWNER, refresh-duplicate-
   // Outbreak root cause): a plain page refresh/navigation discards this
   // page's whole JS context, but does NOT guarantee the OS audio session for
@@ -18397,6 +18463,7 @@
     get gamepadDebugTrace() { return gamepadDebugTrace; },
     attemptStartupAudioUnlock, // debug/verification only
     get startupAudioUnlockConsumedGeneration() { return startupAudioUnlockConsumedGeneration; }, // debug/verification only
+    get openingGestureAcceptedGeneration() { return openingGestureAcceptedGeneration; }, // debug/verification only
     get menuBgmAudio() { return menuBgmAudio; },
     get bgmAudio() { return bgmAudio; },
     get bossBgmAudio() { return bossBgmAudio; },
