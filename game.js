@@ -11326,8 +11326,48 @@
   // when a NEWER claim supersedes this one — pauses itself on resolution
   // instead of leaving a stale, no-longer-wanted track audible on top of
   // whatever legitimately took over after it.
+  //
+  // P0 WORK ORDER D FOLLOW-UP 7 (root-cause fix, this batch): real-device
+  // trace found the caller="(unknown)" pause immediately following a late
+  // AUDIO_PLAY_RESOLVED is exactly the generation-mismatch pause a few lines
+  // below (inside this function's own .then() — a Promise microtask, which
+  // is why audioStartShortStack() can't find a named caller frame for it —
+  // that logic itself is correct and unchanged, it exists precisely to
+  // retire a stale claim once superseded). The actual root cause is UPSTREAM
+  // of it: syncMusicContext()'s watchdog (bgmTimeupdateWatchdog, ~4x/sec
+  // for as long as a movie plays) re-invokes claimAudibleBgm('normal',
+  // bgmAudio) on every tick gated only on `bgmAudio.paused` — but iOS Safari
+  // does not always flip .paused back to false synchronously the instant
+  // play() is called the way Chromium does, so while a claim's own play()
+  // Promise is still genuinely pending, .paused can keep reading true and
+  // the watchdog keeps re-claiming the SAME element, piling up a new
+  // overlapping play() every ~250ms. Each of those calls bumps
+  // audibleBgmGeneration, so by the time an EARLIER one's Promise finally
+  // settles it always finds itself stale and pauses — which fires bgmAudio's
+  // own 'pause' event -> handleUnexpectedBgmPause() -> syncMusicContext() ->
+  // another reclaim, a self-sustaining storm (the real-device trace: ~27
+  // play() calls across ~13s on one track). Fixed at the actual source:
+  // never re-issue play() for an element that already has an unsettled
+  // claim in flight for THAT SAME element — a genuine owner change (a
+  // different key/element) is never blocked by this, only a redundant re-
+  // claim of the element that's already the current, still-pending owner.
+  // Once that claim resolves or rejects the flag clears immediately, so a
+  // real rejection's own one-shot onRejected retry (see startGameplayBgm())
+  // is never blocked either.
+  const bgmClaimInFlight = new WeakSet(); // element -> an unsettled claimAudibleBgm() play() Promise is still pending for it
   function claimAudibleBgm(key, element, opts) {
     if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'claimAudibleBgm', key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), priorGeneration: audibleBgmGeneration, priorKey: audibleBgmKey });
+    if (audibleBgmElement === element && bgmClaimInFlight.has(element)) {
+      // This exact element is already the current owner AND already has a
+      // real play() Promise in flight for it -- a redundant re-claim (the
+      // watchdog retry storm this fix targets) would only pile up another
+      // overlapping play() on top of one that hasn't even settled yet. A
+      // genuine owner CHANGE (audibleBgmElement !== element) is never
+      // caught by this check and always proceeds normally below.
+      if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_SKIPPED_IN_FLIGHT', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element) });
+      if (DEBUG_AUDIO_START_OVERLAY) recordAudioStartEvent('BGM_CLAIM_SKIPPED_IN_FLIGHT', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element) });
+      return audibleBgmGeneration;
+    }
     // DARK OUT / P0 START MENU BGM DUPLICATION diagnostic (?debugAudioStart=1
     // only): BGM_CLAIM/BGM_OWNER_CHANGE breadcrumbs, read-only, captured
     // BEFORE any of this function's own real ownership state below changes —
@@ -11363,13 +11403,16 @@
     try {
       const p = element.play();
       if (p && typeof p.then === 'function') {
+        bgmClaimInFlight.add(element); // P0 WORK ORDER D FOLLOW-UP 7: cleared below on resolve/reject — see this function's own comment
         p.then(() => {
+          bgmClaimInFlight.delete(element);
           bgmClaimRejection.delete(element); // P0 WORK ORDER D: a resolved claim clears any prior retry-storm suppression for this element
           if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_RESOLVED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, stale: audibleBgmGeneration !== myGen });
           if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_RESOLVE', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), stale: audibleBgmGeneration !== myGen });
           if (DEBUG_GAMEPAD_TAP_OVERLAY && key === 'menu') recordGamepadTapEvent('MENU_BGM_PLAY_RESOLVED', { musicContextAtResolve: musicContext, stale: audibleBgmGeneration !== myGen });
           if (audibleBgmGeneration !== myGen) { try { element.pause(); } catch (e2) {} }
         }).catch((err) => {
+          bgmClaimInFlight.delete(element);
           bgmClaimRejection.set(element, { at: performance.now() }); // P0 WORK ORDER D: retry-storm suppression — see shouldRetryBgmClaim()'s own comment
           if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_REJECTED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, errName: err && err.name });
           if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_REJECT', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), errName: err && err.name });
@@ -11378,6 +11421,7 @@
         });
       }
     } catch (e) {
+      bgmClaimInFlight.delete(element);
       if (DEBUG_GAMEPAD_TAP_OVERLAY && key === 'menu') recordGamepadTapEvent('MENU_BGM_PLAY_SYNC_THROW', { musicContextAtThrow: musicContext, errName: e && e.name, errMessage: e && e.message });
       if (opts && opts.onRejected) opts.onRejected(e);
     }
