@@ -11689,6 +11689,7 @@
       `STARTUP READY BLOCKER: ${blockedReason}\n` +
       `--- P0 STARTUP STATE MACHINE ---\n` +
       `STARTUP STATE: ${startupState}  STARTUP GENERATION: ${startupGeneration}  TAP-READY GENERATION: ${tapReadyGeneration === null ? '(none)' : tapReadyGeneration}\n` +
+      `WARM RELOAD (this tab): CONFIRMED=${isWarmReloadGamepadSessionConfirmed()}  MENU BGM PENDING=${warmReloadMenuBgmPending}\n` +
       `TAP VISIBLE: ${gameState.screen === 'opening' && !openingOverlayEl.hidden}  TAP INPUT ENABLED: ${startupState === STARTUP_STATE.WAITING_FOR_TAP && tapReadyGeneration === startupGeneration}\n` +
       `GAMEPAD POLL FRAME: ${gamepadPollFrameCount}  ACTIVE PAD INDEX: ${gamepadIndex === null ? '(none)' : gamepadIndex}  PAD ID: ${activeGp ? activeGp.id.slice(0, 28) : '(none)'}\n` +
       `CURRENT ANY PRESSED: ${activeGp ? activeGp.buttons.some((b) => b && b.pressed) : false}  PREVIOUS ANY PRESSED: ${gamepadLastAnyButtonPressed}\n` +
@@ -11870,6 +11871,56 @@
   // none of them alone decides which screen is showing any more).
   const STARTUP_STATE = { BOOT: 'BOOT', LOADING: 'LOADING', STARTUP_READY: 'STARTUP_READY', WAITING_FOR_TAP: 'WAITING_FOR_TAP', ENTERING_MENU: 'ENTERING_MENU', MAIN_MENU: 'MAIN_MENU' };
   let startupState = STARTUP_STATE.BOOT;
+  // P0 WORK ORDER D FOLLOW-UP 2 (warm reload, root-cause redesign): real
+  // device evidence disproved the "focus recovery" theory for the Reload
+  // TAP TO START symptom specifically (see updateGamepadInput()'s own
+  // GAMEPAD_FOCUS_ESTABLISH_ATTEMPT block, "FOLLOW-UP 2 CORRECTION", for the
+  // full writeup) — on a genuine reload, document.hasFocus() was already
+  // TRUE the entire WAITING_FOR_TAP window, yet navigator.getGamepads()
+  // still returned every slot null, zero gamepadconnected events, zero raw
+  // button state, and navigator.userActivation never went active from the
+  // physical press. WebKit gave this page NO signal at all from that press
+  // — not a frozen/stale one, an absent one — so no JS-only scheme (wider
+  // discovery window, a synthesized press, a timeout-based auto-tap) can
+  // ever detect it; per explicit instruction none of those are attempted
+  // here. Instead: once a GAMEPAD-sourced TAP TO START has been genuinely
+  // accepted in this browser tab (proof the pad was exposed, adopted, AND
+  // successfully used — see its own onOpeningTap() call site), that fact is
+  // remembered in sessionStorage — tab-lifetime only: cleared on tab
+  // close/new tab, never synced across devices/browsers, never a permanent
+  // localStorage skip. The NEXT time Loading completes in the SAME tab (an
+  // ordinary reload or a bfcache restore — both already funnel through
+  // beginStartupSequence()/runStartupLoadingPhase() identically, see their
+  // own comments), if that flag is present, TAP TO START is skipped
+  // entirely and MAIN MENU is entered the exact same way a real accepted
+  // tap already would be (by calling onOpeningTap() itself with a
+  // synthetic source — see its own 'warm-reload-skip' branch — so every
+  // invariant that path already maintains, generation bookkeeping
+  // included, is reused rather than duplicated). This NEVER reads or
+  // infers any button/axis state — the sessionStorage flag is the only
+  // input — so a button physically held through the reload can never look
+  // like an auto-confirm. A fresh boot / new tab never carries this flag
+  // and is completely unaffected, still requiring a real TAP TO START
+  // exactly as before. The separate MAIN MENU D-pad-goes-stale symptom
+  // (gamepad already exposed, but its raw state freezes) is NOT this
+  // symptom and is left to the existing document-focus fix — the two are
+  // tracked on separate tracks from here on, never merged into one theory.
+  const WARM_RELOAD_GAMEPAD_SESSION_KEY = 'darkout_gamepad_session_confirmed_v1';
+  function markGamepadSessionConfirmedForWarmReload() {
+    try { sessionStorage.setItem(WARM_RELOAD_GAMEPAD_SESSION_KEY, '1'); } catch (err) { /* private-mode/sessionStorage-disabled: warm reload simply never activates, cold TAP TO START still works exactly as before */ }
+  }
+  function isWarmReloadGamepadSessionConfirmed() {
+    try { return sessionStorage.getItem(WARM_RELOAD_GAMEPAD_SESSION_KEY) === '1'; } catch (err) { return false; }
+  }
+  // Set true for the single warm-reload-skip opening only (never for a real
+  // accepted tap) — see attemptStartupAudioUnlock()'s own 'warm-reload-skip'
+  // branch for why startMenuBgmOnce() cannot safely run at that synchronous
+  // instant, and reportUnroutedOpeningInput()/reportMainMenuAccepted() for
+  // the two places this is actually consumed (whichever real signal — a
+  // touch, or a genuinely accepted gamepad menu input — this new page life
+  // produces first). One-shot: cleared the instant either consumes it,
+  // never a repeated watchdog.
+  let warmReloadMenuBgmPending = false;
   // The ONE generation token for the entire startup pipeline (replaces the
   // old startupPreloadGeneration, which only ever covered the RETRY button —
   // this same token now also covers a fresh boot and a bfcache/pageshow
@@ -12026,6 +12077,21 @@
         tapReadyGeneration = myGeneration;
         lastTapRejectReason = '(none)';
         setScreen('opening'); // TAP TO START, same black screen — never a separate video-backed screen
+        // P0 WORK ORDER D FOLLOW-UP 2 (warm reload): see
+        // WARM_RELOAD_GAMEPAD_SESSION_KEY's own comment above for the full
+        // root-cause writeup. Checked ONLY after the real WAITING_FOR_TAP/
+        // opening state above is already fully established — never skips
+        // setting it up, so tapReadyGeneration, the gamepad edge-baseline
+        // reset, and every other invariant this generation's WAITING_FOR_TAP
+        // episode relies on are identical whether or not this branch fires
+        // next. Never reads gp.buttons/axes or anything gamepad-input
+        // shaped — the sessionStorage flag is the ONLY signal consulted, so
+        // a button physically held through the reload can never be misread
+        // as confirming this.
+        if (isWarmReloadGamepadSessionConfirmed()) {
+          if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('WARM_RELOAD_TAP_SKIP', { generation: myGeneration });
+          onOpeningTap({ type: 'warm-reload-skip', preventDefault() {} });
+        }
         return;
       }
       if (performance.now() - startedAt > STARTUP_LOAD_HARD_CEILING_MS) {
@@ -12268,10 +12334,29 @@
     if (e && e.type === 'touchstart') return 'native-touch';
     if (e && e.type === 'mousedown') return 'native-mouse';
     if (e && e.type === 'gamepad-discovery') return 'gamepad-discovery';
+    if (e && e.type === 'warm-reload-skip') return 'warm-reload-skip'; // P0 WORK ORDER D FOLLOW-UP 2 — see WARM_RELOAD_GAMEPAD_SESSION_KEY's own comment
     return 'gamepad-raw'; // the raw rising-edge synthetic call — no .type property at all
   }
   function attemptStartupAudioUnlock(isTrustedGesture, openingSource) {
-    startMenuBgmOnce();
+    // P0 WORK ORDER D FOLLOW-UP 2 (warm reload): a warm-reload-skip opening
+    // has ZERO gesture/activation backing it at all — it runs synthetically
+    // the instant Loading finishes, before the player has done anything in
+    // this page life. Calling startMenuBgmOnce() here would only ever
+    // reject, and unlike bgmAudio/bossBgmAudio (see syncMusicContext()'s
+    // own watchdog retry, gated only on musicContext+paused, no "started"
+    // latch), menuBgmAudio's own retry condition requires menuBgmStarted to
+    // still be true — a rejection resets that to false via
+    // startMenuBgmOnce()'s own onRejected callback, which would silence
+    // Outbreak0 for the rest of this MAIN MENU visit with no automatic
+    // recovery. Deferred instead via warmReloadMenuBgmPending — see its own
+    // declaration for where it actually starts, on the first real signal
+    // (a touch, or a genuinely accepted gamepad menu input) this page life
+    // ever produces.
+    if (openingSource === 'warm-reload-skip') {
+      warmReloadMenuBgmPending = true;
+    } else {
+      startMenuBgmOnce();
+    }
     if (startupState === STARTUP_STATE.MAIN_MENU) return; // MAIN MENU already reached — background priming is a STARTUP-only pass, never re-entered after this
     if (startupAudioUnlockConsumedGeneration === startupGeneration) return; // already attempted once this generation — never re-run regardless of trust
     startupAudioUnlockConsumedGeneration = startupGeneration;
@@ -12291,7 +12376,15 @@
     // completely unaffected — this only narrows WHICH accepted-opening
     // sources may prime, never how often or whether Outbreak0 itself
     // starts.
-    const isSyntheticGamepadOpening = openingSource === 'gamepad-discovery' || openingSource === 'gamepad-raw';
+    // P0 WORK ORDER D FOLLOW-UP 2: a warm-reload-skip opening folds into this
+    // same "no background-media priming" branch — it has even less gesture
+    // backing than a raw gamepad press (zero, not just untrusted), so
+    // attempting unlockEventMovieElementForIOS()/unlockBackgroundBgmForIOS()
+    // here would be pure wasted play()/pause() cycles with no chance of
+    // success; unlockGameplayBgmOnlyForIOS() below is still safe to call
+    // (see its own comment — it never latches "unlocked" on an untrusted
+    // gesture, so a later real one still gets a genuine attempt).
+    const isSyntheticGamepadOpening = openingSource === 'gamepad-discovery' || openingSource === 'gamepad-raw' || openingSource === 'warm-reload-skip';
     if (DEBUG_AUDIO_START_OVERLAY) {
       recordAudioStartEvent('STARTUP_PRIMING_DECISION', {
         openingSource,
@@ -12427,6 +12520,18 @@
     // nothing downstream can race it.
     openingGestureAcceptedGeneration = startupGeneration;
     if (DEBUG_AUDIO_START_OVERLAY) recordAudioStartEvent('ACCEPTED_OPENING_GESTURE', { source: e && e.type ? e.type : '(synthetic/gamepad)', isTrusted: !!e.isTrusted, generation: startupGeneration });
+    // P0 WORK ORDER D FOLLOW-UP 2 (warm reload): remember, for the lifetime
+    // of this browser tab only, that a GAMEPAD press was genuinely exposed,
+    // adopted, and successfully used to accept TAP TO START — this is the
+    // one and only signal a future warm-reload skip (see
+    // WARM_RELOAD_GAMEPAD_SESSION_KEY's own comment) ever trusts. A
+    // warm-reload-skip acceptance itself is deliberately excluded here —
+    // it is not itself proof of a NEW physical press, only a replay of an
+    // earlier one, so it must never re-arm or extend the flag's meaning.
+    const openingSourceForThisAccept = classifyOpeningSource(e);
+    if (openingSourceForThisAccept === 'gamepad-discovery' || openingSourceForThisAccept === 'gamepad-raw') {
+      markGamepadSessionConfirmedForWarmReload();
+    }
     // P0 STARTUP STATE MACHINE REWRITE item 10: WAITING_FOR_TAP -> ENTERING_MENU
     // -> MAIN_MENU happens synchronously in THIS function, never via a later
     // separate timeout/async callback -- "MAIN_MENU visible = controller nav
@@ -12460,7 +12565,7 @@
     // can prevent the setScreen('mainMenu') call a few lines below from
     // running.
     try {
-      attemptStartupAudioUnlock(!!e.isTrusted, classifyOpeningSource(e));
+      attemptStartupAudioUnlock(!!e.isTrusted, openingSourceForThisAccept);
     } catch (err) {
       console.error('[STARTUP AUDIO UNLOCK] failed, continuing screen transition anyway:', err);
     }
@@ -12592,6 +12697,21 @@
   // #opening-overlay's own listeners and the 2 gamepad call sites).
   function reportUnroutedOpeningInput(e, source) {
     if (!e.isTrusted) return;
+    // P0 WORK ORDER D FOLLOW-UP 2 (warm reload): the touch/mouse half of the
+    // one-shot deferred Outbreak0 retry — see warmReloadMenuBgmPending's own
+    // declaration. Gated on that flag, which is only ever true for a
+    // session that actually took the warm-reload-skip branch, so this is a
+    // pure no-op for every ordinary boot (the existing flow this batch must
+    // not touch). Deliberately placed before the early-return below (that
+    // return only concerns the OPENING_INPUT_* diagnostic pair further
+    // down) so it still fires even for a touch that lands outside
+    // #opening-overlay entirely (e.g. a MAIN MENU touch button) — this
+    // listener is on `document` in the capture phase specifically so it
+    // sees every trusted touch/click on the page.
+    if (warmReloadMenuBgmPending) {
+      warmReloadMenuBgmPending = false;
+      startMenuBgmOnce();
+    }
     const withinOpeningOverlay = !!(e.target && e.target.closest && e.target.closest('#opening-overlay'));
     const isDiagnosticControl = !!(e.target && e.target.closest && e.target.closest('[id^="debug-"]'));
     const fields = {
@@ -19090,6 +19210,11 @@
     get startupGeneration() { return startupGeneration; },
     get tapReadyGeneration() { return tapReadyGeneration; },
     get lastTapRejectReason() { return lastTapRejectReason; },
+    // P0 WORK ORDER D FOLLOW-UP 2 (warm reload) — debug/verification only:
+    get isWarmReloadGamepadSessionConfirmed() { return isWarmReloadGamepadSessionConfirmed; },
+    get markGamepadSessionConfirmedForWarmReload() { return markGamepadSessionConfirmedForWarmReload; },
+    get warmReloadMenuBgmPending() { return warmReloadMenuBgmPending; },
+    get WARM_RELOAD_GAMEPAD_SESSION_KEY() { return WARM_RELOAD_GAMEPAD_SESSION_KEY; },
     get TAP_REJECT_REASON() { return TAP_REJECT_REASON; },
     get beginStartupSequence() { return beginStartupSequence; },
     get hardResetAllBgmForFreshBoot() { return hardResetAllBgmForFreshBoot; },
@@ -23207,43 +23332,54 @@
     const padsNowRaw = navigator.getGamepads ? navigator.getGamepads() : [];
     const anyGamepadVisibleNow = padsNowRaw.some((gp2) => gp2 && gp2.connected);
     const gamepadNewlyVisibleThisFrame = anyGamepadVisibleNow && !gamepadWasVisibleLastPoll;
-    // P0 WORK ORDER D FOLLOW-UP (root-cause fix, this batch): real-device
-    // evidence — documentHasFocus:false held continuously through 0-10000ms
-    // after MAIN MENU entry, rawButtons[0] frozen at a single stale value
-    // for that entire window (the user was NOT holding it), D-pad raw state
-    // frozen all-false the whole time too, gamepadInputArmed correctly
-    // becoming true at +3000ms with STILL no D-pad response — ruling out
-    // menuInputEnabled/dpadAllowed/gamepadInputArmed as the cause, since all
-    // three were already correct. The one signal that changes in lockstep
-    // with the fix (a single screen touch) is document focus itself:
-    // BUTTON_RAW_DOWN/UP and MAIN_MENU_INPUT_ACCEPTED only start appearing
-    // again immediately AFTER that touch. This points at a WebKit-specific
-    // characteristic where navigator.getGamepads() stops delivering fresh
-    // HID state to a document that does not have DOM focus — the poll call
-    // itself keeps running every frame (gamepadPollFrameCount increments
-    // normally), but the browser-level snapshot it returns is frozen at
-    // whatever it last was while unfocused. A physical gamepad button press
-    // is not a DOM-focus-granting event on iOS Safari (unlike a touch),
-    // so a page that has never been touched can stay unfocused indefinitely
-    // even while the player is actively using the controller.
-    // Root-cause fix (not a workaround): establish document focus
-    // programmatically the moment we have real evidence of gamepad-driven
-    // engagement — navigator.userActivation.isActive being true is exactly
-    // that evidence (already the same signal updateGamepadDiscoveryTap()'s
-    // own eligibility gate relies on), independent of which screen/state
-    // this is — so this one check, run every frame regardless of
-    // startupState/gameState.screen, covers the WAITING_FOR_TAP (Reload TAP
-    // TO START) and MAIN_MENU (D-pad) symptoms with the SAME mechanism,
-    // per the explicit instruction to prefer a common cause over separate
-    // per-screen watchdogs. document.body carries tabindex="-1" (see
-    // index.html) specifically so it can receive programmatic focus without
-    // ever entering the real Tab-key focus order — .focus() on a plain
-    // element (unlike audio/video .play() or fullscreen) is not gated
-    // behind a trusted user gesture in WebKit, so this can run from a
-    // synthetic/RAF-driven call. Retried every frame the condition holds
-    // (cheap, idempotent — a no-op the instant document.hasFocus() becomes
-    // true) rather than attempted once, since userActivation.isActive can
-    // still be false on the exact frame a gamepad is first discovered.
+    // P0 WORK ORDER D FOLLOW-UP (root-cause fix): real-device evidence —
+    // documentHasFocus:false held continuously through 0-10000ms after MAIN
+    // MENU entry, rawButtons[0] frozen at a single stale value for that
+    // entire window (the user was NOT holding it), D-pad raw state frozen
+    // all-false the whole time too, gamepadInputArmed correctly becoming
+    // true at +3000ms with STILL no D-pad response — ruling out
+    // menuInputEnabled/dpadAllowed/gamepadInputArmed as the cause for MAIN
+    // MENU, since all three were already correct. The one signal that
+    // changes in lockstep with the fix (a single screen touch) is document
+    // focus itself: BUTTON_RAW_DOWN/UP and MAIN_MENU_INPUT_ACCEPTED only
+    // start appearing again immediately AFTER that touch. This points at a
+    // WebKit-specific characteristic where navigator.getGamepads() stops
+    // delivering fresh HID state to a document that does not have DOM
+    // focus — the poll call itself keeps running every frame
+    // (gamepadPollFrameCount increments normally), but the browser-level
+    // snapshot it returns is frozen at whatever it last was while
+    // unfocused. Root-cause fix (not a workaround) for THIS symptom:
+    // establish document focus programmatically the moment we have real
+    // evidence of gamepad-driven engagement — navigator.userActivation.isActive
+    // being true is exactly that evidence (already the same signal
+    // updateGamepadDiscoveryTap()'s own eligibility gate relies on).
+    // document.body carries tabindex="-1" (see index.html) specifically so
+    // it can receive programmatic focus without ever entering the real
+    // Tab-key focus order — .focus() on a plain element (unlike audio/video
+    // .play() or fullscreen) is not gated behind a trusted user gesture in
+    // WebKit, so this can run from a synthetic/RAF-driven call. Retried
+    // every frame the condition holds (cheap, idempotent — a no-op the
+    // instant document.hasFocus() becomes true) rather than attempted once,
+    // since userActivation.isActive can still be false on the exact frame a
+    // gamepad is first discovered.
+    //
+    // P0 WORK ORDER D FOLLOW-UP 2 CORRECTION: this fix was originally framed
+    // as ALSO covering the Reload TAP TO START symptom (same mechanism, one
+    // common cause) — a LATER, more complete real-device trace disproved
+    // that half. On a genuine reload, document.hasFocus() itself was
+    // already TRUE the entire WAITING_FOR_TAP window, yet
+    // navigator.getGamepads() still returned every slot null, zero
+    // gamepadconnected events, zero raw button state, and
+    // navigator.userActivation never went active from the physical press —
+    // i.e. WebKit gave this page NO signal of any kind from that press, not
+    // a frozen/stale one. Establishing focus cannot fix an input that never
+    // reaches the page at all, so this mechanism is kept ONLY for the MAIN
+    // MENU D-pad-goes-stale symptom above (still real, still the right fix
+    // for it) and is no longer treated as, or relied on for, the Reload TAP
+    // TO START fix — see WARM_RELOAD_GAMEPAD_SESSION_KEY's own comment for
+    // that symptom's actual redesign (a sessionStorage-remembered prior
+    // gamepad success, never a detection scheme for the invisible press
+    // itself). The two symptoms are tracked separately from here on.
     let gamepadDocFocusHasFocusNow = true;
     try { gamepadDocFocusHasFocusNow = document.hasFocus(); } catch (e) { /* stay true — never let this diagnostic read break real input */ }
     if (!gamepadDocFocusHasFocusNow && anyGamepadVisibleNow) {
@@ -23792,6 +23928,21 @@
           // already-accepted input decision made by the unmodified code
           // below — never itself gates, blocks, or alters that decision.
           const reportMainMenuAccepted = (inputType, buttonIndexOrAxis) => {
+            // P0 WORK ORDER D FOLLOW-UP 2 (warm reload): the gamepad half of
+            // the one-shot deferred Outbreak0 retry — see
+            // warmReloadMenuBgmPending's own declaration and
+            // reportUnroutedOpeningInput()'s matching touch-side copy. A
+            // controller-only player who never touches the screen after a
+            // warm-reload skip has no other trusted-DOM-event signal at
+            // all; this callback firing IS the first proof this page life
+            // has genuinely operated the gamepad on a menu, independent of
+            // whether that ever happens on 'mainMenu' specifically (unlike
+            // the diagnostic branch below, this is never
+            // DEBUG_GAMEPAD_TAP_OVERLAY-gated — it is real behavior).
+            if (warmReloadMenuBgmPending) {
+              warmReloadMenuBgmPending = false;
+              startMenuBgmOnce();
+            }
             if (DEBUG_GAMEPAD_TAP_OVERLAY && screenAtMenuNavStart === 'mainMenu') {
               mainMenuInputAcceptedCountThisGeneration++;
               recordGamepadTapEvent('MAIN_MENU_INPUT_ACCEPTED', { inputType, buttonIndexOrAxis, elapsedSinceMainMenuEnterMs: lastMainMenuEnterAt ? Math.round(now - lastMainMenuEnterAt) : null });
