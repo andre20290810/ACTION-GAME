@@ -11906,12 +11906,65 @@
   // symptom and is left to the existing document-focus fix — the two are
   // tracked on separate tracks from here on, never merged into one theory.
   const WARM_RELOAD_GAMEPAD_SESSION_KEY = 'darkout_gamepad_session_confirmed_v1';
-  function markGamepadSessionConfirmedForWarmReload() {
-    try { sessionStorage.setItem(WARM_RELOAD_GAMEPAD_SESSION_KEY, '1'); } catch (err) { /* private-mode/sessionStorage-disabled: warm reload simply never activates, cold TAP TO START still works exactly as before */ }
+  // P0 WORK ORDER D FOLLOW-UP 3 (diagnostic visualization only — no
+  // condition/logic change): the real-device symptom "onOpeningTap() call
+  // count: 0 after a reload, STARTUP_STATE stuck at WAITING_FOR_TAP" was
+  // traced by static code review to isWarmReloadGamepadSessionConfirmed()
+  // returning false, but the code as of 612cd94 gives no way to tell WHY —
+  // never set, setItem() threw silently, or setItem() succeeded but the
+  // value did not survive to the reload's getItem(). These 5 module-level
+  // fields plus the WARM_RELOAD_FLAG_SET_OK/FAILED/READ/READ_FAILED trace
+  // events below exist ONLY to make that distinguishable on the next real
+  // device run — they are read-only observations, never consulted by any
+  // real decision (the actual skip/no-skip branch in
+  // runStartupLoadingPhase() still reads sessionStorage directly via
+  // isWarmReloadGamepadSessionConfirmed()'s own return value, exactly as
+  // before this batch).
+  let warmReloadLastSetResult = '(never)'; // 'OK' | 'FAILED' | '(never)'
+  let warmReloadLastSetSource = '(none)'; // the classifyOpeningSource() value that triggered the SET attempt
+  let warmReloadLastReadResult = '(never)'; // 'true' | 'false(null)' | 'false(<value>)' | 'FAILED' | '(never)'
+  let warmReloadLastStoredValue = null; // the raw sessionStorage string this key held at the last SET or READ, whichever happened most recently
+  let warmReloadStorageError = '(none)'; // '<Error.name>: <Error.message>' from the most recent SET or READ failure, whichever happened most recently
+  function markGamepadSessionConfirmedForWarmReload(source) {
+    try {
+      sessionStorage.setItem(WARM_RELOAD_GAMEPAD_SESSION_KEY, '1');
+      warmReloadLastSetResult = 'OK';
+      warmReloadLastSetSource = source || '(unknown)';
+      warmReloadLastStoredValue = '1';
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('WARM_RELOAD_FLAG_SET_OK', { source: source || '(unknown)', storedValue: '1' });
+    } catch (err) {
+      // private-mode/sessionStorage-disabled: warm reload simply never
+      // activates on the NEXT reload, cold TAP TO START still works exactly
+      // as before — this catch's own behavior (silently proceeding) is
+      // UNCHANGED from 612cd94; only the diagnostic recording below is new.
+      warmReloadLastSetResult = 'FAILED';
+      warmReloadLastSetSource = source || '(unknown)';
+      warmReloadStorageError = (err && err.name ? err.name : '(unknown)') + ': ' + (err && err.message ? err.message : '(no message)');
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('WARM_RELOAD_FLAG_SET_FAILED', { errorName: err && err.name, errorMessage: err && err.message });
+    }
   }
   function isWarmReloadGamepadSessionConfirmed() {
-    try { return sessionStorage.getItem(WARM_RELOAD_GAMEPAD_SESSION_KEY) === '1'; } catch (err) { return false; }
+    try {
+      const storedValue = sessionStorage.getItem(WARM_RELOAD_GAMEPAD_SESSION_KEY);
+      warmReloadLastReadResult = storedValue === '1' ? 'true' : (storedValue === null ? 'false(null)' : 'false(' + storedValue + ')');
+      warmReloadLastStoredValue = storedValue;
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('WARM_RELOAD_FLAG_READ', { storedValue });
+      return storedValue === '1'; // UNCHANGED return condition from 612cd94
+    } catch (err) {
+      warmReloadLastReadResult = 'FAILED';
+      warmReloadStorageError = (err && err.name ? err.name : '(unknown)') + ': ' + (err && err.message ? err.message : '(no message)');
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('WARM_RELOAD_FLAG_READ_FAILED', { errorName: err && err.name, errorMessage: err && err.message });
+      return false; // UNCHANGED return condition from 612cd94
+    }
   }
+  // Diagnostic-only mirror of ACCEPTED_OPENING_GESTURE's own source
+  // classification (see onOpeningTap()'s own recordAudioStartEvent call,
+  // ?debugAudioStart=1 only) into the GAMEPAD TAP panel (?debugGamepadTap=1)
+  // as well, so both are visible from a single real-device panel without
+  // needing to also enable ?debugAudioStart=1. Set unconditionally
+  // (regardless of source) at the same point the warm-reload SET check
+  // already runs — never itself gates anything.
+  let gamepadTapLastAcceptedOpeningGestureSource = '(none)';
   // Set true for the single warm-reload-skip opening only (never for a real
   // accepted tap) — see attemptStartupAudioUnlock()'s own 'warm-reload-skip'
   // branch for why startMenuBgmOnce() cannot safely run at that synchronous
@@ -12529,8 +12582,13 @@
     // it is not itself proof of a NEW physical press, only a replay of an
     // earlier one, so it must never re-arm or extend the flag's meaning.
     const openingSourceForThisAccept = classifyOpeningSource(e);
+    // P0 WORK ORDER D FOLLOW-UP 3 (diagnostic only): mirrors this accept's
+    // source into the GAMEPAD TAP panel — see the variable's own comment.
+    // Never gates anything; the SET condition below is byte-for-byte
+    // unchanged from 612cd94.
+    gamepadTapLastAcceptedOpeningGestureSource = openingSourceForThisAccept;
     if (openingSourceForThisAccept === 'gamepad-discovery' || openingSourceForThisAccept === 'gamepad-raw') {
-      markGamepadSessionConfirmedForWarmReload();
+      markGamepadSessionConfirmedForWarmReload(openingSourceForThisAccept);
     }
     // P0 STARTUP STATE MACHINE REWRITE item 10: WAITING_FOR_TAP -> ENTERING_MENU
     // -> MAIN_MENU happens synchronously in THIS function, never via a later
@@ -24347,6 +24405,13 @@
       `--- TAP ROUTE ---\n` +
       `onOpeningTap() call count: ${gamepadTapOnOpeningTapCallCount}\n` +
       `last onOpeningTap source: ${gamepadTapLastOnOpeningTapSource}  (${ago(gamepadTapLastOnOpeningTapAt)})\n` +
+      `--- WARM RELOAD STORAGE ---\n` +
+      `last set result: ${warmReloadLastSetResult}\n` +
+      `last set source: ${warmReloadLastSetSource}\n` +
+      `last read result: ${warmReloadLastReadResult}\n` +
+      `current stored value: ${warmReloadLastStoredValue === null ? '(null)' : warmReloadLastStoredValue}\n` +
+      `storage error: ${warmReloadStorageError}\n` +
+      `last accepted opening gesture source (ACCEPTED_OPENING_GESTURE): ${gamepadTapLastAcceptedOpeningGestureSource}\n` +
       `--- REJECTION ---\n` +
       `last TAP reject reason: ${lastTapRejectReason}\n` +
       `last rejected branch (debugLastRejectedBranch): ${debugLastRejectedBranch}\n` +
