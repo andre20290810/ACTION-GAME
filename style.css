@@ -32,6 +32,11 @@ html, body {
   overscroll-behavior: none;
   overflow: hidden;
 }
+/* P0 WORK ORDER D FOLLOW-UP: body carries tabindex="-1" (see index.html) so
+   updateGamepadInput()'s document-focus-establishment fix (game.js) can
+   call document.body.focus() programmatically — suppress the default
+   focus-ring outline this would otherwise draw around the whole viewport. */
+body:focus { outline: none; }
 
 body {
   position: fixed;
@@ -147,8 +152,37 @@ body {
    above every other z-index this file declares (max 62) so the two debug
    panels inside it are actually visible AND clickable on every screen this
    work order's real-device symptoms happen on — not just 'gameplay'. Never
-   applied on a normal (non-debug) URL, where this class is never set. */
+   applied on a normal (non-debug) URL, where this class is never set.
+   P0 WORK ORDER D FOLLOW-UP (root-cause fix, this batch): #control-area is
+   only ever bottom-aligned during real gameplay because it sits in NORMAL
+   DOCUMENT FLOW as the flex sibling directly below #play-area (flex:1,
+   pushes it down) — on every OTHER screen #play-area is itself
+   display:none (see setScreen()), so with nothing above it to push it down,
+   #control-area renders at the TOP of the flex column instead, exactly the
+   reported "TAP TO START/MAIN MENU/scenarioSelect/trainingSelect show the
+   debug panels top-aligned" bug. Pulling it out of normal flow entirely
+   (position:fixed, anchored to the bottom edge) whenever a debug flag is
+   active reproduces the EXACT SAME visual geometry gameplay's own flow-based
+   placement already produces — its height is flex:0 0 auto (driven purely
+   by its own children's content, identical either way) and its width/left/
+   right edges are unchanged, so this is a pure position-anchoring fix, not
+   a size change. Scoped to portrait only (see the matching
+   @media (orientation: portrait) block right below) — landscape's own
+   #control-area rule is ALREADY position:fixed;inset:0 unconditionally
+   (covering the full screen every screen, gameplay included, confirmed
+   already working for the debug panels), so it was never screen-dependent
+   to begin with and must not be shrunk down to a bottom-anchored auto-height
+   strip here. Never applied on a normal (non-debug) URL. */
 body.debug-control-zone-active #control-area { z-index: 70; }
+@media (orientation: portrait) {
+  body.debug-control-zone-active #control-area {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+  }
+}
 #control-area {
   position: relative; /* SECTION E: anchors #control-blackout-overlay's absolute inset:0 */
   flex: 0 0 auto;

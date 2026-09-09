@@ -23,9 +23,18 @@
 <meta name="twitter:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_site_v2.jpg">
 <link rel="icon" href="assets/branding/dark_out_site_v2.jpg" type="image/jpeg">
 <link rel="apple-touch-icon" href="assets/branding/dark_out_site_v2.jpg">
-<link rel="stylesheet" href="style.css?v=p0-workorder-d-integrated-1">
+<link rel="stylesheet" href="style.css?v=p0-workorder-d-followup-1">
 </head>
-<body>
+<!-- P0 WORK ORDER D FOLLOW-UP: tabindex="-1" makes <body> programmatically
+     focusable (document.body.focus()) without ever entering the real
+     Tab-key focus order — the standard technique for "give this element
+     focus on demand, never via keyboard navigation." Used by
+     updateGamepadInput()'s document-focus-establishment fix in game.js —
+     see its own comment for the real-device root cause this addresses
+     (navigator.getGamepads() staying frozen while the document itself
+     never received DOM focus, since a physical gamepad button press is not
+     a focus-granting event on iOS Safari the way a touch is). -->
+<body tabindex="-1">
 
 <!-- P0 GAME COMPLETION HOTFIX (STARTUP PRELOAD UI REBUILD): full-blackout
      LOADING screen — shown first, on top of everything, until every asset
@@ -621,6 +630,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=p0-workorder-d-integrated-1"></script>
+<script src="game.js?v=p0-workorder-d-followup-1"></script>
 </body>
 </html>

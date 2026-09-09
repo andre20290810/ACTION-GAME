@@ -1523,7 +1523,24 @@
     if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'unlockEventMovieElementForIOS', isTrustedGesture, alreadyUnlocked: eventMovieElementUnlocked });
     if (eventMovieElementUnlocked) return; // already unlocked by a genuine gesture — nothing left to do
     if (isTrustedGesture) eventMovieElementUnlocked = true;
-    ensureEventMovieGainNode('unlockEventMovieElementForIOS'); // P0 INTEGRATED REGRESSION HOTFIX (Part H): best chance of an un-suspended AudioContext is inside this same real STARTUP gesture
+    // P0 WORK ORDER D FOLLOW-UP (root-cause fix, this batch): this used to
+    // call ensureEventMovieGainNode() here unconditionally, opportunistically
+    // hoping for an un-suspended AudioContext inside the real STARTUP
+    // gesture. Real-device evidence now shows eventMovieAudioContextState
+    // reaching 'running' does NOT guarantee audible SNEAKING own-audio —
+    // see ensureEventMovieGainNode()'s own updated comment for the actual
+    // root cause (createMediaElementSource() permanently and irreversibly
+    // severs eventMovieVideoEl's NATIVE audio output the instant it is ever
+    // called, for every movie played through this shared element from then
+    // on, not just the one that needed it). Calling it this early meant
+    // EVERY movie — including sneaking, which never needed amplification —
+    // was needlessly put at the mercy of the Web Audio graph/AudioContext
+    // instead of the plain, already-reliable native <video> audio path used
+    // by every other unmuted movie (roid1_arrival/drone_arrival/etc., none
+    // of which have ever been reported silent). ensureEventMovieGainNode()
+    // is now called ONLY from playEventMovie(), and only for the one key
+    // that actually needs it (gabriel_defeated) — see that call site's own
+    // comment.
     try {
       const primeSrc = EVENT_MOVIES.sneaking; // any always-registered, already-preloaded movie works — this one is simply the first ever played
       // P0 PRE-DEMO STABILIZATION (this batch): same reasoning as
@@ -1734,10 +1751,45 @@
     eventMovieVideoEl.muted = key === 'gabriel_arrival' || key === 'main_escape' || key === 'main_bad_ending' || key === 'experiment_lab';
     recordEventMovieAudioTrace('MUTED_SET', { key, muted: eventMovieVideoEl.muted, volume: eventMovieVideoEl.volume });
     // P0 INTEGRATED REGRESSION HOTFIX (Part H): gabriel_defeated alone gets
-    // GABRIEL_DEFEATED_GAIN; every other key resets to 1.0 (identical to
-    // the old, un-amplified behavior) — see ensureEventMovieGainNode()'s
-    // own comment for why plain .volume can't achieve this.
-    ensureEventMovieGainNode('playEventMovie');
+    // GABRIEL_DEFEATED_GAIN — see ensureEventMovieGainNode()'s own comment
+    // for why plain .volume can't achieve this.
+    // P0 WORK ORDER D FOLLOW-UP (root-cause fix, this batch): ensureEventMovieGainNode()
+    // is now called ONLY for gabriel_defeated, the one key that genuinely
+    // needs amplification beyond .volume's 1.0 ceiling — never for any other
+    // key, including sneaking. createMediaElementSource() (inside that
+    // function) is a ONE-TIME, IRREVERSIBLE, ELEMENT-WIDE operation: the
+    // instant it is ever called on eventMovieVideoEl, this element's NATIVE
+    // audio output is permanently severed for every movie played through it
+    // from then on, regardless of which key triggered the call — real-device
+    // evidence (eventMovieAudioContextState="running" yet SNEAKING silent)
+    // shows that routing through the Web Audio graph is not reliably audible
+    // on this device even once 'running', while every OTHER unmuted movie
+    // that has only ever used the plain native <video> audio path
+    // (roid1_arrival/drone_arrival/adam_arrival/etc.) has never been
+    // reported silent. Deferring this call to the one key that actually
+    // needs it keeps every other movie — sneaking included — on that same
+    // already-reliable native path. gabriel_defeated is chronologically the
+    // LAST movie played in a normal run (STORY_STAGE_PLAN's own GABRIEL
+    // ENCOUNTER 3/final), well after sneaking (played first, via
+    // beginScenarioOpening(), before startMode() even runs) — so within a
+    // single fresh run, sneaking's own audio can never be affected by this
+    // call regardless of gabriel_defeated's own outcome. This is the same
+    // GABRIEL_DEFEATED_GAIN amplification as before, just created lazily
+    // instead of pre-warmed at STARTUP — its own resume()-retry logic
+    // (ensureEventMovieGainNode()'s "already wired" branch) is unchanged.
+    if (key === 'gabriel_defeated') {
+      ensureEventMovieGainNode('playEventMovie:gabriel_defeated');
+    }
+    // Reset gain back to 1.0 for every OTHER key whenever eventMovieGainNode
+    // already exists — this can only be true once gabriel_defeated has
+    // played at least once THIS page session (createMediaElementSource() is
+    // never called for any other key — see the comment above), but once it
+    // does exist, this element's native audio is permanently Web-Audio-
+    // routed for every later movie regardless of key, so a later normal-
+    // volume movie played through the SAME session (e.g. a replayed
+    // sneaking/drone_arrival after a full playthrough) must not inherit
+    // GABRIEL_DEFEATED_GAIN's 2x amplification. Never creates the node —
+    // only resets it if it already exists.
     if (eventMovieGainNode) {
       eventMovieGainNode.gain.value = (key === 'gabriel_defeated') ? GABRIEL_DEFEATED_GAIN : 1.0;
     }
@@ -11015,6 +11067,47 @@
       }
     }
   }
+  // P0 WORK ORDER D FOLLOW-UP (root-cause fix, this batch): a gamepad-
+  // sourced accepted opening never calls unlockBackgroundBgmForIOS() above
+  // at all (see attemptStartupAudioUnlock()'s own comment — a real-device
+  // A/B trace attributed audible START MENU duplication to priming ALL 3
+  // tracks together on that path, so the whole 3-track pass was skipped
+  // rather than root-caused per-track). Real-device evidence now shows the
+  // direct cost of that: bgmAudio (Outbreak1.1) never receives ANY
+  // WebKit per-element gesture-unlock for a gamepad-only session, so its
+  // first real claimAudibleBgm('normal', bgmAudio) call — always a non-
+  // gesture stage-transition/watchdog call, never a fresh click — rejects
+  // with NotAllowedError every time (seq 3/5/... in the real trace) until
+  // some OTHER, unrelated trusted gesture happens to occur later in the
+  // run. Explicitly prohibited: reverting to priming all 3 tracks together
+  // for gamepad opens too (that is the exact duplication risk the skip was
+  // built to avoid) or playing anything audibly to "unlock" it. Minimal
+  // fix: prime ONLY bgmAudio (never bossBgmAudio/endingRevealAudio, neither
+  // of which this round's report concerns) via the SAME proven silent,
+  // synchronous play()-then-pause()-same-tick technique
+  // unlockBackgroundBgmForIOS() already uses for all 3 tracks on the touch
+  // path — narrowing to one track is what keeps this safely distinct from
+  // the historical duplication bug (never touches menuBgmAudio, never
+  // touches the other 2 tracks, never leaves anything audible).
+  let gameplayBgmOnlyUnlocked = false;
+  function unlockGameplayBgmOnlyForIOS(isTrustedGesture) {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'unlockGameplayBgmOnlyForIOS', isTrustedGesture, alreadyUnlocked: gameplayBgmOnlyUnlocked });
+    if (gameplayBgmOnlyUnlocked) return;
+    if (isTrustedGesture) gameplayBgmOnlyUnlocked = true;
+    if (audibleBgmElement === bgmAudio) return; // a real claim already owns it — priming has nothing to do here
+    try {
+      const wasMuted = bgmAudio.muted;
+      bgmAudio.muted = true;
+      const p = bgmAudio.play();
+      bgmAudio.pause();
+      bgmAudio.currentTime = 0;
+      bgmAudio.muted = wasMuted;
+      if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_SYNC_TEARDOWN', { track: 'normal', caller: 'unlockGameplayBgmOnlyForIOS' });
+      if (p && typeof p.then === 'function') p.catch(() => {}); // diagnostic-only outcome, never acted on — the synchronous pause() already granted (or didn't) the real unlock
+    } catch (e) {
+      // Never let a priming failure block TAP TO START itself.
+    }
+  }
   // P0 REAL DEVICE FOLLOW-UP (GameSir TAP失敗 + MAIN MENU入力遅延 +
   // SNEAKING音声/Outbreak1.1無音, this batch): the real-device report showed
   // bgmAudio (Outbreak1.1) with paused=false, muted=false, volume=1,
@@ -12210,38 +12303,36 @@
           : 'native DOM gesture (touch/mouse) — real-device A/B trace showed no duplication from this priming pass; unchanged',
       });
     }
-    // P0 WORK ORDER D (root-cause fix, this batch): real-device evidence
-    // (eventMovieAudioContextState="suspended" DIRECTLY OBSERVED during
-    // SNEAKING playback) confirms eventMovieAudioContext genuinely never
-    // reaches 'running' for a gamepad-sourced accepted opening — because the
-    // early return just below skips unlockEventMovieElementForIOS()
-    // entirely for that path, and THAT function is the only call site that
-    // ever created/resumed eventMovieAudioContext this early. That skip was
-    // deliberate (real-device A/B trace: gamepad-sourced priming caused
-    // audible duplication — see this function's own comment above), but the
-    // duplication was traced to the MEDIA-ELEMENT priming (eventMovieVideoEl's
-    // own play()/pause() cycle, plus unlockBackgroundBgmForIOS()'s
-    // bgmAudio/bossBgmAudio/endingRevealAudio priming) — NOT to Web Audio's
-    // AudioContext.resume(), which is governed by a DIFFERENT, looser
-    // WebKit autoplay policy (recent user-activation-based, not strictly
-    // "must be the synchronous continuation of a trusted DOM event") than
-    // HTMLMediaElement.play(). A genuine GameSir button press already makes
-    // navigator.userActivation.isActive true at the exact moment this
-    // function runs (required by updateGamepadDiscoveryTap()'s own
-    // eligibility gate) — giving AudioContext.resume() a real chance to
-    // succeed here without re-touching any of the media-element priming
-    // that actually caused the documented duplication. Calling ONLY
-    // ensureEventMovieGainNode() (context creation + resume — never
-    // eventMovieVideoEl.play()/.pause(), never bgmAudio/bossBgmAudio/
-    // endingRevealAudio) for BOTH opening sources closes this gap with the
-    // smallest possible change: touch/mouse opens already called this
-    // (via unlockEventMovieElementForIOS() below) with zero reported issue;
-    // gamepad opens now get the exact same early resume attempt, nothing
-    // more.
-    ensureEventMovieGainNode('attemptStartupAudioUnlock:' + openingSource);
-    if (isSyntheticGamepadOpening) return;
+    // P0 WORK ORDER D FOLLOW-UP (root-cause fix, this batch): the previous
+    // round added an early ensureEventMovieGainNode() call here (both
+    // opening sources) reasoning that a genuinely 'running' AudioContext was
+    // the fix SNEAKING's own-audio silence needed. New real-device evidence
+    // shows eventMovieAudioContextState DID reach 'running' and SNEAKING was
+    // STILL silent — so a suspended AudioContext was never the (sole) real
+    // cause, and priming this graph this early was actively counter-
+    // productive: createMediaElementSource() (inside ensureEventMovieGainNode())
+    // is a ONE-TIME, IRREVERSIBLE operation that permanently disconnects
+    // eventMovieVideoEl's NATIVE audio output for every movie ever played
+    // through this shared element afterward, including sneaking, which never
+    // needed Web Audio at all. Removed entirely — see
+    // ensureEventMovieGainNode()'s own call site inside playEventMovie() for
+    // the actual fix (lazy, gabriel_defeated-only).
+    if (isSyntheticGamepadOpening) {
+      // P0 WORK ORDER D FOLLOW-UP (root-cause fix, this batch): unlike
+      // unlockEventMovieElementForIOS()/unlockBackgroundBgmForIOS() (the
+      // 3-track pass, still skipped here for the documented duplication
+      // reason above), this narrow single-track authorization is safe to
+      // run for a gamepad-sourced opening too — it never touches
+      // menuBgmAudio (the only track ever implicated in the duplication
+      // report) and never touches bossBgmAudio/endingRevealAudio. Without
+      // this, a gamepad-only session's first bgmAudio (Outbreak1.1) claim
+      // is always a non-gesture call and always rejects with
+      // NotAllowedError — see unlockGameplayBgmOnlyForIOS()'s own comment.
+      unlockGameplayBgmOnlyForIOS(isTrustedGesture);
+      return;
+    }
     unlockEventMovieElementForIOS(isTrustedGesture);
-    unlockBackgroundBgmForIOS(isTrustedGesture);
+    unlockBackgroundBgmForIOS(isTrustedGesture); // already primes bgmAudio as part of its own 3-track pass — unlockGameplayBgmOnlyForIOS() is only ever needed on the gamepad branch above, where that pass is skipped
   }
   // Generation token consumed by attemptStartupAudioUnlock()'s background-
   // priming guard above — reset implicitly every fresh boot/RETRY/bfcache-
@@ -22528,6 +22619,9 @@
   const gamepadMoveVec = { x: 0, y: 0 }; // post-deadzone LEFT STICK, debug/verification only
   let gamepadAimVec = null; // post-deadzone RIGHT STICK {x,y}, or null while neutral — debug/verification only
   let gamepadFireHeld = false; // RT >= GAMEPAD_FIRE_THRESHOLD
+  // P0 WORK ORDER D FOLLOW-UP: debug/verification only — see
+  // updateGamepadInput()'s own document-focus-establishment comment.
+  let documentFocusEstablishAttempts = 0;
   // P0 WORK ORDER D (Additional requirement 1): GameSir A+RB simultaneous
   // press skips the currently-playing EVENT MOVIE — "wait for a genuine
   // release before re-consuming" gate, same pattern as gamepadInputArmed
@@ -23113,6 +23207,56 @@
     const padsNowRaw = navigator.getGamepads ? navigator.getGamepads() : [];
     const anyGamepadVisibleNow = padsNowRaw.some((gp2) => gp2 && gp2.connected);
     const gamepadNewlyVisibleThisFrame = anyGamepadVisibleNow && !gamepadWasVisibleLastPoll;
+    // P0 WORK ORDER D FOLLOW-UP (root-cause fix, this batch): real-device
+    // evidence — documentHasFocus:false held continuously through 0-10000ms
+    // after MAIN MENU entry, rawButtons[0] frozen at a single stale value
+    // for that entire window (the user was NOT holding it), D-pad raw state
+    // frozen all-false the whole time too, gamepadInputArmed correctly
+    // becoming true at +3000ms with STILL no D-pad response — ruling out
+    // menuInputEnabled/dpadAllowed/gamepadInputArmed as the cause, since all
+    // three were already correct. The one signal that changes in lockstep
+    // with the fix (a single screen touch) is document focus itself:
+    // BUTTON_RAW_DOWN/UP and MAIN_MENU_INPUT_ACCEPTED only start appearing
+    // again immediately AFTER that touch. This points at a WebKit-specific
+    // characteristic where navigator.getGamepads() stops delivering fresh
+    // HID state to a document that does not have DOM focus — the poll call
+    // itself keeps running every frame (gamepadPollFrameCount increments
+    // normally), but the browser-level snapshot it returns is frozen at
+    // whatever it last was while unfocused. A physical gamepad button press
+    // is not a DOM-focus-granting event on iOS Safari (unlike a touch),
+    // so a page that has never been touched can stay unfocused indefinitely
+    // even while the player is actively using the controller.
+    // Root-cause fix (not a workaround): establish document focus
+    // programmatically the moment we have real evidence of gamepad-driven
+    // engagement — navigator.userActivation.isActive being true is exactly
+    // that evidence (already the same signal updateGamepadDiscoveryTap()'s
+    // own eligibility gate relies on), independent of which screen/state
+    // this is — so this one check, run every frame regardless of
+    // startupState/gameState.screen, covers the WAITING_FOR_TAP (Reload TAP
+    // TO START) and MAIN_MENU (D-pad) symptoms with the SAME mechanism,
+    // per the explicit instruction to prefer a common cause over separate
+    // per-screen watchdogs. document.body carries tabindex="-1" (see
+    // index.html) specifically so it can receive programmatic focus without
+    // ever entering the real Tab-key focus order — .focus() on a plain
+    // element (unlike audio/video .play() or fullscreen) is not gated
+    // behind a trusted user gesture in WebKit, so this can run from a
+    // synthetic/RAF-driven call. Retried every frame the condition holds
+    // (cheap, idempotent — a no-op the instant document.hasFocus() becomes
+    // true) rather than attempted once, since userActivation.isActive can
+    // still be false on the exact frame a gamepad is first discovered.
+    let gamepadDocFocusHasFocusNow = true;
+    try { gamepadDocFocusHasFocusNow = document.hasFocus(); } catch (e) { /* stay true — never let this diagnostic read break real input */ }
+    if (!gamepadDocFocusHasFocusNow && anyGamepadVisibleNow) {
+      let uaActiveForFocus = false;
+      try { uaActiveForFocus = !!(navigator.userActivation && navigator.userActivation.isActive); } catch (e) { /* stay false */ }
+      if (uaActiveForFocus) {
+        try {
+          documentFocusEstablishAttempts++;
+          document.body.focus({ preventScroll: true });
+          if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_FOCUS_ESTABLISH_ATTEMPT', { attempts: documentFocusEstablishAttempts, hasFocusAfter: document.hasFocus(), screen: gameState.screen, startupState });
+        } catch (e) { /* never let a focus() failure break real input handling */ }
+      }
+    }
     if (DEBUG_GAMEPAD_TAP_OVERLAY && gamepadNewlyVisibleThisFrame) {
       if (!gamepadTapFirstNonNullSlotAt) gamepadTapFirstNonNullSlotAt = Date.now();
       recordGamepadTapEvent('GAMEPAD_VISIBLE', { slots: padsNowRaw.map((gp2, i) => gp2 && gp2.connected ? { slot: i, id: gp2.id, index: gp2.index } : null).filter(Boolean) });
