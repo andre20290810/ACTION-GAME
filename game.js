@@ -21707,6 +21707,14 @@
           tapAccepted: false,
           rejectedReason: null,
           screenAfterPress: null,
+          // CASE G capture only — read-only DOM snapshot, never written to by
+          // any gameplay/input code path. Filled in at the same instant as
+          // screenAfterPress below, so a genuine "state says mainMenu but the
+          // overlay DOM never actually toggled" discrepancy is distinguishable
+          // from a plain screen-transition failure (CASE F).
+          domOpeningOverlayHiddenAfter: null,
+          domMainMenuOverlayHiddenAfter: null,
+          domOpeningScreenHiddenAfter: null,
           capturedAt: Date.now(),
         };
         recordGamepadTapEvent('FIRST_PRESS_RAW_DETECTED', { slot: pressedSlot, buttonIndex: pressedButtonIndex, adoptedIndexAtPress: gamepadIndex, previousPressed: gamepadLastAnyButtonPressed });
@@ -22047,6 +22055,13 @@
             gamepadTapFirstPressSummary.rejectedReason = lastTapRejectReason;
           }
           gamepadTapFirstPressSummary.screenAfterPress = gameState.screen;
+          // CASE G capture — pure DOM reads (.hidden getters), never a write;
+          // see this field's own declaration above for why it's captured here.
+          try {
+            gamepadTapFirstPressSummary.domOpeningOverlayHiddenAfter = document.getElementById('opening-overlay').hidden;
+            gamepadTapFirstPressSummary.domMainMenuOverlayHiddenAfter = document.getElementById('main-menu-overlay').hidden;
+            gamepadTapFirstPressSummary.domOpeningScreenHiddenAfter = document.getElementById('opening-screen').hidden;
+          } catch (e) { /* diagnostic-only: never let a missing element break the real TAP flow */ }
           recordGamepadTapEvent('FIRST_PRESS_SUMMARY_FINALIZED', Object.assign({}, gamepadTapFirstPressSummary));
         }
       }
@@ -22309,7 +22324,15 @@
     if (!summary.tapHandlerReached) return 'CASE D: rising edge=true, but the TAP-check block / onOpeningTap() was not reached this frame';
     if (!summary.tapAccepted) return 'CASE E: reached the TAP gate, but rejected — reason: ' + (summary.rejectedReason || '(unknown)');
     if (summary.screenAfterPress !== 'mainMenu') return 'CASE F: accepted, but screen did not transition to mainMenu (screen=' + summary.screenAfterPress + ')';
-    return 'CASE G / OK: accepted and screen transitioned to mainMenu — if the real device still visually shows TAP TO START, this is a RENDER-ONLY discrepancy (compare against a fresh screenshot)';
+    // CASE G: gameState.screen genuinely reached 'mainMenu' (verified above)
+    // but the DOM overlays setScreen('mainMenu') is supposed to toggle in the
+    // very same synchronous call did not end up in the expected visibility
+    // state — a real, distinguishable "state says one thing, UI shows
+    // another" discrepancy, not just an inference from a screenshot.
+    if (summary.domOpeningOverlayHiddenAfter === false || summary.domMainMenuOverlayHiddenAfter === true || summary.domOpeningScreenHiddenAfter === true) {
+      return 'CASE G: screen transitioned to mainMenu, but the overlay DOM did not match (opening-overlay hidden=' + summary.domOpeningOverlayHiddenAfter + ', main-menu-overlay hidden=' + summary.domMainMenuOverlayHiddenAfter + ', opening-screen hidden=' + summary.domOpeningScreenHiddenAfter + ')';
+    }
+    return 'OK: accepted, screen transitioned to mainMenu, and the overlay DOM matches — if the real device still visually shows TAP TO START despite this, check for a CSS/paint issue outside this diagnostic\'s scope';
   }
   const debugGamepadTapEl = document.getElementById('debug-gamepad-tap-panel');
   const debugGamepadTapCopyBtn = document.getElementById('debug-gamepad-tap-copy-btn');
@@ -22344,6 +22367,7 @@
           `  TAP accepted: ${s.tapAccepted}`,
           `  rejected reason: ${s.rejectedReason || '(none)'}`,
           `  screen after press: ${s.screenAfterPress || '(pending)'}`,
+          `  DOM after press: opening-overlay.hidden=${s.domOpeningOverlayHiddenAfter} main-menu-overlay.hidden=${s.domMainMenuOverlayHiddenAfter} opening-screen.hidden=${s.domOpeningScreenHiddenAfter}`,
           `  CLASSIFICATION: ${classifyGamepadFirstPress(s)}`,
         ]
       : ['  browser detected press: NO (waiting for a first physical press)'];
@@ -22380,8 +22404,8 @@
       `last TAP reject reason: ${lastTapRejectReason}\n` +
       `last rejected branch (debugLastRejectedBranch): ${debugLastRejectedBranch}\n` +
       `--- FIRST PRESS SUMMARY ---\n${firstPressLines.join('\n')}\n` +
-      `--- EVENT TRACE (most recent ${Math.min(gamepadTapTrace.length, 40)} of ${gamepadTapTrace.length}, max ${GAMEPAD_TAP_TRACE_MAX}) ---\n` +
-      gamepadTapTrace.slice(-40).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n')
+      `--- EVENT TRACE (most recent ${Math.min(gamepadTapTrace.length, GAMEPAD_TAP_TRACE_MAX)} of ${gamepadTapTrace.length}, ring buffer max ${GAMEPAD_TAP_TRACE_MAX}) ---\n` +
+      gamepadTapTrace.slice(-GAMEPAD_TAP_TRACE_MAX).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n')
     );
   }
   function updateDebugGamepadTapOverlay(now) {
