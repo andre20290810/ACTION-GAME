@@ -11629,7 +11629,7 @@
     // "onOpeningTap() called count" literally. No existing line touched.
     if (DEBUG_GAMEPAD_TAP_OVERLAY) {
       gamepadTapOnOpeningTapCallCount++;
-      gamepadTapLastOnOpeningTapSource = e && e.type === 'touchstart' ? 'touch' : e && e.type === 'mousedown' ? 'mouse' : 'gamepad';
+      gamepadTapLastOnOpeningTapSource = e && e.type === 'touchstart' ? 'touch' : e && e.type === 'mousedown' ? 'mouse' : e && e.type === 'gamepad-discovery' ? 'gamepad-discovery' : 'gamepad';
       gamepadTapLastOnOpeningTapAt = Date.now();
       recordGamepadTapEvent('ON_OPENING_TAP_CALLED', { source: gamepadTapLastOnOpeningTapSource, screenAtCall: gameState.screen });
     }
@@ -18204,6 +18204,9 @@
     get gamepadTapLastOnOpeningTapSource() { return gamepadTapLastOnOpeningTapSource; },
     classifyGamepadFirstPress, buildGamepadTapDebugText, updateDebugGamepadTapOverlay, // P0 DIAGNOSTIC PHASE 1 — debug/verification only
     get gamepadTapConnectedEventCount() { return gamepadTapConnectedEventCount; },
+    get debugDiscoveryTapState() { return debugDiscoveryTapState; }, // GAMEPAD FIRST-PRESS FAILURE (CASE A rescue) — debug/verification only
+    get gamepadDiscoveryTapConsumedGeneration() { return gamepadDiscoveryTapConsumedGeneration; },
+    get GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS() { return GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS; },
     get gamepadTapDisconnectedEventCount() { return gamepadTapDisconnectedEventCount; },
     get gamepadTapFirstNonNullSlotAt() { return gamepadTapFirstNonNullSlotAt; },
     get gamepadTapFirstPointerDownAt() { return gamepadTapFirstPointerDownAt; },
@@ -20788,6 +20791,131 @@
     window.addEventListener('focus', () => recordGamepadTapEvent('WINDOW_FOCUS', {}));
     window.addEventListener('blur', () => recordGamepadTapEvent('WINDOW_BLUR', {}));
   }
+  // ==========================================================================
+  // GAMEPAD FIRST-PRESS FAILURE POINT CONFIRMED BY REAL-DEVICE TRACE (CASE A
+  // discovery-gesture rescue): a real iPhone + GameSir Nova Lite ?debugGamepadTap=1
+  // capture showed GAMEPAD_CONNECTED_EVENT / GAMEPAD_VISIBLE /
+  // USER_ACTIVATION_FIRST_ACTIVE / GAMEPAD_ADOPTED all within ~5ms of each
+  // other, immediately after WAITING_FOR_TAP began — yet all 17 buttons read
+  // pressed=false, zero BUTTON_RAW_DOWN, zero RISING_EDGE, and
+  // onOpeningTap() was never reached. This is CASE A: the very physical
+  // press that makes WebKit first expose an already-paired pad via
+  // navigator.getGamepads() is not delivered to the page as a
+  // buttons[n].pressed=true value at all — there is no rising edge to wait
+  // for, ever, for that specific press, no matter how the existing
+  // rising-edge/release-gate logic below is tuned. (Leading hypothesis only
+  // — see updateGamepadDiscoveryTap()'s own comment; confirming the causal
+  // mechanism itself still needs a real-device recheck after this fix.)
+  //
+  // Fix: a narrowly-scoped rescue path that treats "a gamepad just became
+  // visible, WHILE WAITING_FOR_TAP, alongside a genuine (non-pointer/touch/
+  // mouse/keyboard) navigator.userActivation" as itself the TAP gesture —
+  // completely separate from, and never replacing, the existing raw-press
+  // rising-edge path above/below (that path still runs unmodified and
+  // still fires TAP normally whenever a real press IS exposed). Always-on
+  // (not gated behind any debug flag — this is real acceptance logic), but
+  // scoped EXCLUSIVELY to STARTUP_STATE.WAITING_FOR_TAP; every other gamepad
+  // input path (gameplay MOVE/AIM/FIRE/DASH/FLASH/STEALTH, PAUSE MENU nav,
+  // generic menu nav) is completely untouched.
+  // ==========================================================================
+  const GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS = 120; // spec section 7's own "100-150ms" middle value
+  let lastNonGamepadPointerDownAt = 0;
+  let lastNonGamepadTouchStartAt = 0;
+  let lastNonGamepadMouseDownAt = 0;
+  let lastNonGamepadKeyDownAt = 0;
+  let lastGamepadConnectedEventAt = 0;
+  // Consumed once per startupGeneration — comparing against the CURRENT
+  // startupGeneration (bumped on every fresh boot/RETRY/bfcache-restore) is
+  // what makes this reset for free on the next WAITING_FOR_TAP, with no
+  // separate reset call needed anywhere.
+  let gamepadDiscoveryTapConsumedGeneration = -1;
+  // Debug-panel-only live snapshot of the last evaluation — never read by
+  // any real acceptance logic above; see buildGamepadTapDebugText()'s own
+  // GAMEPAD DISCOVERY TAP block.
+  let debugDiscoveryTapState = null;
+  window.addEventListener('pointerdown', () => { lastNonGamepadPointerDownAt = performance.now(); }, { passive: true, capture: true });
+  window.addEventListener('touchstart', () => { lastNonGamepadTouchStartAt = performance.now(); }, { passive: true, capture: true });
+  window.addEventListener('mousedown', () => { lastNonGamepadMouseDownAt = performance.now(); }, { passive: true, capture: true });
+  window.addEventListener('keydown', () => { lastNonGamepadKeyDownAt = performance.now(); }, { capture: true });
+  // Called once per frame from updateGamepadInput(), BEFORE
+  // pollForGamepadConnection()/adoption and before the existing raw-press
+  // TAP-check block — if this fires, onOpeningTap() flips gameState.screen
+  // to 'mainMenu' synchronously, so that later block's own
+  // `gameState.screen === 'opening'` gate naturally skips for the rest of
+  // this same frame (and every frame after) — no separate double-fire guard
+  // needed beyond the generation-consumed flag below.
+  function updateGamepadDiscoveryTap(now, gamepadNewlyVisibleThisFrame) {
+    const connectedEventThisFrame = lastGamepadConnectedEventAt > 0 && (now - lastGamepadConnectedEventAt) < 50;
+    const newlyVisibleOrConnected = gamepadNewlyVisibleThisFrame || connectedEventThisFrame;
+    const conditionA = startupState === STARTUP_STATE.WAITING_FOR_TAP;
+    const notYetConsumed = gamepadDiscoveryTapConsumedGeneration !== startupGeneration;
+    const eligible = conditionA && newlyVisibleOrConnected && notYetConsumed;
+    let userActivationApiAvailable = false, userActivationActive = false;
+    try { userActivationApiAvailable = !!navigator.userActivation; userActivationActive = userActivationApiAvailable && !!navigator.userActivation.isActive; } catch (e) { /* stay false */ }
+    const pointerAge = lastNonGamepadPointerDownAt > 0 ? +(now - lastNonGamepadPointerDownAt).toFixed(1) : null;
+    const touchAge = lastNonGamepadTouchStartAt > 0 ? +(now - lastNonGamepadTouchStartAt).toFixed(1) : null;
+    const mouseAge = lastNonGamepadMouseDownAt > 0 ? +(now - lastNonGamepadMouseDownAt).toFixed(1) : null;
+    const keyAge = lastNonGamepadKeyDownAt > 0 ? +(now - lastNonGamepadKeyDownAt).toFixed(1) : null;
+    const nonGamepadActivationDetected =
+      (pointerAge !== null && pointerAge < GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS) ||
+      (touchAge !== null && touchAge < GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS) ||
+      (mouseAge !== null && mouseAge < GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS) ||
+      (keyAge !== null && keyAge < GAMEPAD_DISCOVERY_TAP_EXCLUSION_WINDOW_MS);
+    let rejectionReason = null;
+    let accepted = false;
+    if (eligible) {
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('GAMEPAD_DISCOVERY_TAP_ELIGIBLE', { newlyVisible: gamepadNewlyVisibleThisFrame, connectedEventThisFrame });
+      if (!userActivationApiAvailable) rejectionReason = 'USER_ACTIVATION_API_UNAVAILABLE';
+      else if (!userActivationActive) rejectionReason = 'NO_USER_ACTIVATION';
+      else if (nonGamepadActivationDetected) rejectionReason = 'NON_GAMEPAD_ACTIVATION_DETECTED';
+      else accepted = true;
+    }
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      debugDiscoveryTapState = {
+        newlyVisibleThisFrame: gamepadNewlyVisibleThisFrame, connectedEventThisFrame,
+        userActivationActive, lastPointerAgeMs: pointerAge, lastTouchAgeMs: touchAge,
+        lastMouseAgeMs: mouseAge, lastKeyAgeMs: keyAge, nonGamepadActivationDetected,
+        discoveryTapEligible: eligible, discoveryTapConsumed: !notYetConsumed,
+        discoveryTapAccepted: accepted, rejectionReason,
+      };
+      if (eligible && rejectionReason) recordGamepadTapEvent('GAMEPAD_DISCOVERY_TAP_REJECTED', { reason: rejectionReason, pointerAge, touchAge, mouseAge, keyAge });
+    }
+    if (!accepted) return;
+    gamepadDiscoveryTapConsumedGeneration = startupGeneration; // condition F: at most once per generation, set BEFORE calling onOpeningTap() so a re-entrant poll can never double-consume
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('GAMEPAD_DISCOVERY_TAP_ACCEPTED', {});
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_DISCOVERY_TAP', {});
+    // CASE A-RECOVERED capture — same shape as the normal FIRST PRESS
+    // SUMMARY (see the raw-press capture block below) so the panel renders
+    // it identically, but caseARecovered:true keeps it clearly distinct
+    // from a genuine browser-exposed raw press. This intentionally runs
+    // even if the normal capture block never fires this WAITING_FOR_TAP
+    // episode (which, per the real-device trace, it never does for a CASE
+    // A press) — otherwise FIRST PRESS SUMMARY would stay "browser detected
+    // press: NO" forever despite the TAP having actually succeeded.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      gamepadTapFirstPressCaptured = true;
+      gamepadTapFirstPressSummary = {
+        browserDetectedPress: false, caseARecovered: true,
+        slot: null, buttonIndex: -1, adoptedIndexAtPress: gamepadIndex,
+        rawPressed: false, previousPressed: null, risingEdgeAtPress: null,
+        tapHandlerReached: true, tapAccepted: false, rejectedReason: null,
+        screenAfterPress: null,
+        domOpeningOverlayHiddenAfter: null, domMainMenuOverlayHiddenAfter: null, domOpeningScreenHiddenAfter: null,
+        capturedAt: Date.now(),
+      };
+    }
+    onOpeningTap({ preventDefault() {}, type: 'gamepad-discovery' });
+    if (DEBUG_GAMEPAD_TAP_OVERLAY && gamepadTapFirstPressSummary) {
+      gamepadTapFirstPressSummary.tapAccepted = true;
+      gamepadTapFirstPressSummary.screenAfterPress = gameState.screen;
+      try {
+        gamepadTapFirstPressSummary.domOpeningOverlayHiddenAfter = document.getElementById('opening-overlay').hidden;
+        gamepadTapFirstPressSummary.domMainMenuOverlayHiddenAfter = document.getElementById('main-menu-overlay').hidden;
+        gamepadTapFirstPressSummary.domOpeningScreenHiddenAfter = document.getElementById('opening-screen').hidden;
+      } catch (e) { /* diagnostic-only */ }
+      recordGamepadTapEvent('FIRST_PRESS_SUMMARY_FINALIZED', Object.assign({}, gamepadTapFirstPressSummary));
+    }
+  }
   // P0 INTEGRATED WORK ORDER (STARTUP PIPELINE REBUILD): same ?debugStartup=1/0
   // -> localStorage persistence pattern as the other debug overlays above —
   // a SEPARATE overlay from ?debugInput=1 (never replaces or alters it),
@@ -21524,6 +21652,7 @@
   // readiness window. Scoped to adoption timing only: no edge-detection,
   // arm/disarm, or readiness logic is touched.
   window.addEventListener('gamepadconnected', (e) => {
+    lastGamepadConnectedEventAt = performance.now(); // always-on — GAMEPAD DISCOVERY TAP's own condition C, never gated behind a debug flag
     if (DEBUG_GAMEPAD_TAP_OVERLAY) {
       gamepadTapConnectedEventCount++;
       recordGamepadTapEvent('GAMEPAD_CONNECTED_EVENT', { index: e.gamepad.index, id: e.gamepad.id, count: gamepadTapConnectedEventCount });
@@ -21655,6 +21784,14 @@
       if (!gamepadTapFirstNonNullSlotAt) gamepadTapFirstNonNullSlotAt = Date.now();
       recordGamepadTapEvent('GAMEPAD_VISIBLE', { slots: padsNowRaw.map((gp2, i) => gp2 && gp2.connected ? { slot: i, id: gp2.id, index: gp2.index } : null).filter(Boolean) });
     }
+    // GAMEPAD FIRST-PRESS FAILURE — CASE A discovery-gesture rescue: checked
+    // BEFORE pollForGamepadConnection()/adoption and before the existing
+    // raw-press TAP-check block further down, so if this fires, every one
+    // of those runs this same frame simply sees gameState.screen already
+    // !== 'opening' and no-ops, exactly like a real touch/mouse TAP already
+    // having happened this frame. Always-on, WAITING_FOR_TAP-scoped only —
+    // see updateGamepadDiscoveryTap()'s own comment for the full spec.
+    updateGamepadDiscoveryTap(now, gamepadNewlyVisibleThisFrame);
     // P0 DIAGNOSTIC PHASE 2 (GAMEPAD NOT YET EXPOSED — DIAGNOSE ONLY): a
     // full change-log of navigator.getGamepads()'s own raw slot shape over
     // time, independent of GAMEPAD_VISIBLE above (which only fires on a
@@ -22318,6 +22455,21 @@
   // ==========================================================================
   function classifyGamepadFirstPress(summary) {
     if (!summary) return '(no first press captured yet this WAITING_FOR_TAP cycle)';
+    // CASE A-RECOVERED: the discovery-gesture rescue path (updateGamepadDiscoveryTap())
+    // fired successfully for a press that navigator.getGamepads() itself
+    // never exposed as buttons[n].pressed=true at all — checked BEFORE the
+    // plain "CASE A" check below, which would otherwise also match
+    // (browserDetectedPress is false here too) and report the unrecovered
+    // failure text instead of the recovery outcome.
+    if (summary.caseARecovered) {
+      return 'CASE A-RECOVERED\n' +
+        '  browser raw first-button state: NOT EXPOSED\n' +
+        '  gamepad discovery detected: YES\n' +
+        '  user activation detected: YES\n' +
+        '  discovery TAP accepted: ' + (summary.tapAccepted ? 'YES' : 'NO') + '\n' +
+        '  onOpeningTap reached: ' + (summary.tapHandlerReached ? 'YES' : 'NO') + '\n' +
+        '  screen transition: ' + (summary.screenAfterPress === 'mainMenu' ? 'MAIN MENU' : (summary.screenAfterPress || '(pending)'));
+    }
     if (!summary.browserDetectedPress) return 'CASE A: navigator.getGamepads() never reported a press';
     if (summary.adoptedIndexAtPress === null || summary.adoptedIndexAtPress === undefined) return 'CASE B: raw pressed=true but pad not yet adopted at press time';
     if (summary.risingEdgeAtPress === false) return 'CASE C: adopted, but previous-snapshot handling suppressed the rising edge';
@@ -22357,7 +22509,7 @@
     const s = gamepadTapFirstPressSummary;
     const firstPressLines = s
       ? [
-          `  browser detected press: YES`,
+          `  browser detected press: ${s.browserDetectedPress ? 'YES' : 'NO'}`,
           `  slot: ${s.slot}  buttonIndex: ${s.buttonIndex}`,
           `  adopted index at press: ${s.adoptedIndexAtPress === null ? '(none)' : s.adoptedIndexAtPress}`,
           `  raw pressed: ${s.rawPressed}`,
@@ -22403,6 +22555,18 @@
       `--- REJECTION ---\n` +
       `last TAP reject reason: ${lastTapRejectReason}\n` +
       `last rejected branch (debugLastRejectedBranch): ${debugLastRejectedBranch}\n` +
+      `--- GAMEPAD DISCOVERY TAP ---\n${(() => {
+        const d = debugDiscoveryTapState;
+        if (!d) return '  (not yet evaluated this page life)';
+        return [
+          `  newlyVisibleThisFrame: ${d.newlyVisibleThisFrame}  connectedEventThisFrame: ${d.connectedEventThisFrame}`,
+          `  userActivationActive: ${d.userActivationActive}`,
+          `  lastPointerAgeMs: ${d.lastPointerAgeMs === null ? '(never)' : d.lastPointerAgeMs}  lastTouchAgeMs: ${d.lastTouchAgeMs === null ? '(never)' : d.lastTouchAgeMs}  lastMouseAgeMs: ${d.lastMouseAgeMs === null ? '(never)' : d.lastMouseAgeMs}  lastKeyAgeMs: ${d.lastKeyAgeMs === null ? '(never)' : d.lastKeyAgeMs}`,
+          `  nonGamepadActivationDetected: ${d.nonGamepadActivationDetected}`,
+          `  discoveryTapEligible: ${d.discoveryTapEligible}  discoveryTapConsumed: ${d.discoveryTapConsumed}`,
+          `  discoveryTapAccepted: ${d.discoveryTapAccepted}  rejectionReason: ${d.rejectionReason || '(none)'}`,
+        ].join('\n');
+      })()}\n` +
       `--- FIRST PRESS SUMMARY ---\n${firstPressLines.join('\n')}\n` +
       `--- EVENT TRACE (most recent ${Math.min(gamepadTapTrace.length, GAMEPAD_TAP_TRACE_MAX)} of ${gamepadTapTrace.length}, ring buffer max ${GAMEPAD_TAP_TRACE_MAX}) ---\n` +
       gamepadTapTrace.slice(-GAMEPAD_TAP_TRACE_MAX).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n')
