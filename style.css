@@ -920,7 +920,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 6px calc(10px + env(safe-area-inset-right, 0px)) 6px calc(10px + env(safe-area-inset-left, 0px));
   border-bottom: 1px solid rgba(255, 160, 220, 0.3);
   flex-shrink: 0;
 }
@@ -940,7 +940,7 @@ body {
 }
 #debug-gamepad-tap-text {
   margin: 0;
-  padding: 8px 10px 12px;
+  padding: 8px 10px calc(12px + env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1172,14 +1172,28 @@ body {
    #debug-transition-panel's own right-edge dock. Amber accent for visual
    distinction from the other 4. [hidden] keeps it fully absent from a
    normal session — DEBUG_AUDIO_START_OVERLAY in game.js is the single
-   source of truth. */
+   source of truth.
+   DEBUG UI LAYOUT FIX (real-device report: this panel's own COPY DEBUG LOG
+   button was untappable, and it was ALSO covering #debug-gamepad-tap-panel's
+   COPY button underneath it): the "without fully overlapping any of them"
+   claim above was never actually true for #debug-gamepad-tap-panel —
+   max-height:70vh from top:12px reaches to ~72vh down, well past that
+   panel's own worst-case top edge at (100vh - 42vh) = 58vh from the top, and
+   this panel's z-index (63) is higher, so it rendered on top of and blocked
+   the gamepad panel's header/COPY button in that overlap band. Fixed with a
+   height ceiling computed FROM #debug-gamepad-tap-panel's own worst-case
+   footprint (max-height:42vh, anchored bottom:0 — see that rule) so this
+   panel's bottom edge can never reach that band, regardless of how much
+   real content either panel renders: max-height <= 100vh - 42vh - top-offset,
+   with a few vh of visible margin between them. Layout-only change — no
+   game logic, no z-index reshuffle, no new pointer-events behavior. */
 #debug-audio-start-panel {
   position: fixed;
-  top: 12px;
-  right: 12px;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  right: calc(12px + env(safe-area-inset-right, 0px));
   z-index: 63;
   width: min(46vw, 440px);
-  max-height: 70vh;
+  max-height: calc(54vh - 12px);
   display: flex;
   flex-direction: column;
   background: rgba(0, 0, 0, 0.88);
