@@ -1517,19 +1517,30 @@
     // gabriel_defeated) keep their audio ON, layered with boss BGM — that
     // exact combination was explicitly, deliberately requested via real-
     // device feedback (HOTFIX 2 SECTION 13 above) and is left untouched
-    // here. sneaking and experiment_lab are different in kind: both are
-    // narrative/story WAYPOINT scenes (not a combat arrival sting) that
-    // play with the FULL gameplay BGM track already running underneath
-    // (beginScenarioOpening() calls startGameplayBgm() before playing
-    // sneaking; the PROJECT ADAM waypoint leaves whatever gameplay BGM was
-    // already playing untouched before playing experiment_lab) — exactly
-    // the "two full songs at once" shape the real-device report describes,
-    // and exactly the flow (MAIN MENU -> STORY MODE start) the report's own
-    // repro steps name. Muted here, same scoped-by-exact-key pattern as
-    // gabriel_arrival/main_escape/main_bad_ending above — every other movie
-    // key (drone_arrival has no live call site; gabriel_down likewise;
-    // true_ending/ENDING ROLL are untouched, see above) is unaffected.
-    eventMovieVideoEl.muted = key === 'gabriel_arrival' || key === 'main_escape' || key === 'main_bad_ending' || key === 'sneaking' || key === 'experiment_lab';
+    // here. experiment_lab (PROJECT ADAM waypoint, leaves whatever gameplay
+    // BGM was already playing untouched before playing it) stays muted —
+    // that scene was never the subject of the "own audio must play" report
+    // below and is left exactly as it was.
+    //
+    // P0 REAL DEVICE FOLLOW-UP (GameSir TAP失敗 + MAIN MENU入力遅延 +
+    // SNEAKING音声/Outbreak1.1無音, this batch) — ROOT CAUSE of "SNEAKING
+    // played but had no own audio": 'sneaking' used to be included in this
+    // muted list (added by the WORK ORDER C pass directly above, to fix a
+    // real-device "two full songs at once" report for the same
+    // startGameplayBgm()-then-playEventMovie('sneaking',...) sequence this
+    // comment still describes). That directly contradicts the canonical
+    // spec this file's own earlier "#303 Revert sneaking.mp4 mute; restore
+    // movie audio+BGM co-play spec" work established, and the current
+    // real-device report's own explicit requirement: "SNEAKING: OWN AUDIO =
+    // ON + Outbreak1.1 = ON" (co-play is the WANTED behavior — sneaking is
+    // a narrative waypoint meant to play with its own dialogue/audio
+    // layered over the already-running gameplay BGM, not muted like a
+    // combat-arrival sting). Fixed by removing 'sneaking' from this list —
+    // every other key here (gabriel_arrival/main_escape/main_bad_ending/
+    // experiment_lab) is unaffected; drone_arrival has no live call site,
+    // gabriel_down likewise, true_ending/ENDING ROLL are untouched (see
+    // above).
+    eventMovieVideoEl.muted = key === 'gabriel_arrival' || key === 'main_escape' || key === 'main_bad_ending' || key === 'experiment_lab';
     // P0 INTEGRATED REGRESSION HOTFIX (Part H): gabriel_defeated alone gets
     // GABRIEL_DEFEATED_GAIN; every other key resets to 1.0 (identical to
     // the old, un-amplified behavior) — see ensureEventMovieGainNode()'s
@@ -10788,6 +10799,58 @@
       }
     }
   }
+  // P0 REAL DEVICE FOLLOW-UP (GameSir TAP失敗 + MAIN MENU入力遅延 +
+  // SNEAKING音声/Outbreak1.1無音, this batch): the real-device report showed
+  // bgmAudio (Outbreak1.1) with paused=false, muted=false, volume=1,
+  // readyState=4, play() resolved, AND currentTime genuinely advancing
+  // (~20s in) — yet silent on the actual hardware. None of the existing
+  // DOM-level fields this codebase already logs (AUDIO_PLAY_CALL/RESOLVED,
+  // BGM_CLAIM, etc.) can distinguish "silent because the browser's own
+  // AVAudioSession/output route never actually got elevated to audible
+  // playback" from "silent because of an ordinary JS-visible reason" — every
+  // ordinary JS-visible reason was already ruled out by that same trace.
+  // This diagnostic exists to snapshot the SAME DOM/media-state fields
+  // repeatedly across time (play-call instant, then +100/+500/+1000/+3000/
+  // +5000ms) so a real-device retrace can show whether/when any of them
+  // change around the moment audio should start (or stays static the whole
+  // time despite genuine silence, pointing at something below the DOM
+  // entirely). Gated behind ?debugAudioStart=1, written to the SAME
+  // audioStartTrace ring buffer as every other ?debugAudioStart=1 event —
+  // never gates, blocks, or changes any real playback decision.
+  const BGM_AUDIBILITY_CHECKPOINT_DELAYS_MS = [100, 500, 1000, 3000, 5000];
+  function captureBgmAudibilityCheckpoints(key, element) {
+    if (!DEBUG_AUDIO_START_OVERLAY) return;
+    const trackLabel = BGM_TRACK_NAMES_BY_ELEMENT.get(element) || key;
+    const snap = (checkpoint) => {
+      let userActivationIsActive = null, userActivationHasBeenActive = null;
+      try {
+        if (navigator.userActivation) { userActivationIsActive = navigator.userActivation.isActive; userActivationHasBeenActive = navigator.userActivation.hasBeenActive; }
+      } catch (e) { /* diagnostic-only */ }
+      let mediaSessionPlaybackState = null;
+      try { mediaSessionPlaybackState = navigator.mediaSession ? navigator.mediaSession.playbackState : null; } catch (e) { /* diagnostic-only */ }
+      recordAudioStartEvent('GAMEPLAY_BGM_AUDIBILITY_STATE', {
+        checkpoint, key, track: trackLabel,
+        src: element.currentSrc || element.src,
+        paused: element.paused, muted: element.muted, volume: element.volume,
+        currentTime: +element.currentTime.toFixed(2), readyState: element.readyState, networkState: element.networkState,
+        playbackRate: element.playbackRate,
+        audibleBgmOwner: audibleBgmKey, musicContext,
+        documentVisibilityState: document.visibilityState,
+        userActivationIsActive, userActivationHasBeenActive,
+        // NOTE: eventMovieAudioContext only ever drives eventMovieVideoEl's
+        // own audio graph — bgmAudio/bossBgmAudio/endingRevealAudio play
+        // through the plain HTMLMediaElement path with no AudioContext of
+        // their own, so this field is null whenever the claimed element
+        // isn't the event movie. Included anyway since a shared iOS audio
+        // SESSION-level issue (not per-element) could still correlate with
+        // this context's state.
+        eventMovieAudioContextState: eventMovieAudioContext ? eventMovieAudioContext.state : null,
+        mediaSessionPlaybackState,
+      });
+    };
+    snap('play-call');
+    for (const delayMs of BGM_AUDIBILITY_CHECKPOINT_DELAYS_MS) setTimeout(() => snap('+' + delayMs + 'ms'), delayMs);
+  }
   // Hard single-owner claim for every REAL (non-priming) BGM play() call in
   // this file (2C/2D/2H): immediately pauses every OTHER tracked BGM/song
   // element, force-unmutes the claimed element (a priming cycle may have
@@ -10818,6 +10881,7 @@
     }
     element.muted = false;
     if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_CALL', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element) });
+    captureBgmAudibilityCheckpoints(key, element);
     try {
       const p = element.play();
       if (p && typeof p.then === 'function') {
@@ -11589,6 +11653,12 @@
         gamepadInputArmed = true;
         gamepadDisarmedAt = 0;
         if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('STARTUP_READY', { generation: myGeneration });
+        // P0 REAL DEVICE FOLLOW-UP (this batch): fresh WAITING_FOR_TAP entry
+        // resets the dedicated TAP TO START early-opening trace, so a fresh
+        // boot/RETRY never blends its own early evidence with a previous
+        // attempt's leftover frames.
+        gamepadOpeningEarlyTrace = [];
+        gamepadOpeningEarlyTracePrevButton0Pressed = false;
         startupState = STARTUP_STATE.WAITING_FOR_TAP; // TAP handler (onOpeningTap) is already always-installed; screen becomes 'opening' in this same synchronous step below
         if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState }); audioStartLastStartupState = startupState; }
         tapReadyGeneration = myGeneration;
@@ -12033,6 +12103,14 @@
     // accept/reject decision.
     lastMainMenuEnterAt = performance.now();
     confirmMenuButtonReleaseObservedSinceMainMenuEnter = false;
+    // P0 REAL DEVICE FOLLOW-UP (this batch): fresh MAIN MENU entry resets
+    // the fixed-schedule early-snapshot buffer and blocked/accepted
+    // counters so this run's 0-10000ms checkpoints and counts never blend
+    // with a previous MAIN MENU visit's leftover state.
+    mainMenuEarlySnapshots = [];
+    mainMenuEarlySnapshotNextIndex = 0;
+    mainMenuInputBlockedCountThisGeneration = 0;
+    mainMenuInputAcceptedCountThisGeneration = 0;
     startupState = STARTUP_STATE.MAIN_MENU;
     if (DEBUG_AUDIO_START_OVERLAY) {
       recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState });
@@ -18575,6 +18653,13 @@
     get lastMainMenuEnterAt() { return lastMainMenuEnterAt; },
     get confirmMenuButtonReleaseObservedSinceMainMenuEnter() { return confirmMenuButtonReleaseObservedSinceMainMenuEnter; },
     recordMainMenuInputGateState,
+    // P0 REAL DEVICE FOLLOW-UP (this batch) — debug/verification only:
+    get mainMenuEarlySnapshots() { return mainMenuEarlySnapshots; },
+    get MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS() { return MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS; },
+    get gamepadOpeningEarlyTrace() { return gamepadOpeningEarlyTrace; },
+    get GAMEPAD_OPENING_EARLY_TRACE_MAX() { return GAMEPAD_OPENING_EARLY_TRACE_MAX; },
+    get mainMenuInputBlockedCountThisGeneration() { return mainMenuInputBlockedCountThisGeneration; },
+    get mainMenuInputAcceptedCountThisGeneration() { return mainMenuInputAcceptedCountThisGeneration; },
     get menuBgmAudio() { return menuBgmAudio; },
     get bgmAudio() { return bgmAudio; },
     get bossBgmAudio() { return bossBgmAudio; },
@@ -21954,6 +22039,40 @@
   let lastMainMenuEnterAt = 0;
   let confirmMenuButtonReleaseObservedSinceMainMenuEnter = false;
   let lastMainMenuInputGateSignature = '';
+  // P0 REAL DEVICE FOLLOW-UP (this batch) — ROOT CAUSE of "early 0-5.8s
+  // MAIN_MENU_INPUT_GATE_STATE window lost from the trace": the dedup
+  // signature above (JSON.stringify(fields)) included
+  // elapsedSinceMainMenuEnterMs, a millisecond-precision field that changes
+  // on virtually every single frame — so the "only log on change" dedup
+  // never actually deduped anything, and this diagnostic itself flooded the
+  // 100-slot gamepadTapTrace ring buffer within ~1-2s of MAIN MENU entry,
+  // evicting the exact 0-5.8s window the real-device report needed. Fixed
+  // by computing the dedup signature from every field EXCEPT elapsed time
+  // (see recordMainMenuInputGateState() below) — elapsed is still recorded
+  // in the emitted event, just never part of what counts as "changed".
+  //
+  // Separately, a FIXED-SCHEDULE snapshot buffer (mainMenuEarlySnapshots)
+  // guarantees the 0/100/250/500/1000/2000/3000/4000/5000/7500/10000ms
+  // checkpoints survive regardless of how noisy the shared gamepadTapTrace
+  // ring buffer gets — its own array, capped at exactly the 11 checkpoints
+  // per MAIN MENU entry, reset at the same instant lastMainMenuEnterAt is.
+  const MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS = [0, 100, 250, 500, 1000, 2000, 3000, 4000, 5000, 7500, 10000];
+  let mainMenuEarlySnapshots = [];
+  let mainMenuEarlySnapshotNextIndex = 0;
+  let mainMenuInputBlockedCountThisGeneration = 0;
+  let mainMenuInputAcceptedCountThisGeneration = 0;
+  // P0 REAL DEVICE FOLLOW-UP (this batch): dedicated, own-buffer trace for
+  // the TAP TO START window itself (WAITING_FOR_TAP), separate from
+  // gamepadTapTrace so a GameSir TAP-FAILURE run's own early evidence can
+  // never be evicted by whatever noisy events happen afterward (a touch
+  // fallback, MAIN MENU nav, etc. all share gamepadTapTrace). Reset fresh at
+  // every WAITING_FOR_TAP entry (see beginStartupSequence()'s own
+  // STARTUP_READY->WAITING_FOR_TAP transition). Sized generously (~15s at
+  // 60fps) so it always covers "at least 3 seconds before/after the first
+  // press", per spec, for any realistic press timing within that window.
+  const GAMEPAD_OPENING_EARLY_TRACE_MAX = 900;
+  let gamepadOpeningEarlyTrace = [];
+  let gamepadOpeningEarlyTracePrevButton0Pressed = false;
   // PAUSE MENU gamepad navigation state — see GAMEPAD_PAUSE_MENU_STICK_THRESHOLD.
   let gamepadPauseMenuStickWasUp = false;
   let gamepadPauseMenuStickWasDown = false;
@@ -22173,11 +22292,128 @@
       padId: gp ? gp.id : null,
       elapsedSinceMainMenuEnterMs: lastMainMenuEnterAt ? Math.round(now - lastMainMenuEnterAt) : null,
     };
-    const sig = JSON.stringify(fields);
+    // P0 REAL DEVICE FOLLOW-UP (this batch) — ROOT CAUSE FIX: the dedup
+    // signature must exclude elapsedSinceMainMenuEnterMs (a field that
+    // changes almost every frame) or "only log on change" never actually
+    // dedups anything, flooding the shared 100-slot gamepadTapTrace ring
+    // buffer and evicting the crucial early post-MAIN-MENU-entry window —
+    // exactly what the real-device report's own "0-5.8秒の重要ログが消えて
+    // いた" finding described. elapsedSinceMainMenuEnterMs is still recorded
+    // in the emitted event fields above; it is only excluded from what
+    // counts as "changed" here.
+    const { elapsedSinceMainMenuEnterMs, ...fieldsForDedupSignature } = fields;
+    const sig = JSON.stringify(fieldsForDedupSignature);
     if (sig !== lastMainMenuInputGateSignature) {
       lastMainMenuInputGateSignature = sig;
       recordGamepadTapEvent('MAIN_MENU_INPUT_GATE_STATE', fields);
     }
+  }
+
+  // P0 REAL DEVICE FOLLOW-UP (this batch): fixed-schedule snapshot buffer —
+  // captures a FULL state snapshot at each of
+  // MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS regardless of whether anything
+  // "changed" (unlike recordMainMenuInputGateState above, which is
+  // change-triggered and therefore can still legitimately produce zero
+  // events across a perfectly quiet stretch). Stored in its OWN array
+  // (mainMenuEarlySnapshots), reset fresh at every MAIN MENU entry, so these
+  // 11 checkpoints can never be evicted by unrelated trace volume. Called
+  // from the exact same two call sites as recordMainMenuInputGateState —
+  // the `if (!gp) return;` early-exit and the normal per-frame FULL MENU
+  // NAVIGATION path — so it captures true "gamepad not visible" checkpoints
+  // too, not just ones where a pad happened to be readable.
+  function captureMainMenuEarlySnapshotIfDue(now, gp, navContainer, pressedNow, prev) {
+    if (!DEBUG_GAMEPAD_TAP_OVERLAY || gameState.screen !== 'mainMenu') return;
+    if (!lastMainMenuEnterAt) return;
+    if (mainMenuEarlySnapshotNextIndex >= MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS.length) return;
+    const elapsed = now - lastMainMenuEnterAt;
+    if (elapsed < MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS[mainMenuEarlySnapshotNextIndex]) return;
+    let navigatorRawSlots = [];
+    try {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      navigatorRawSlots = [0, 1, 2, 3].map((i) => { const p = pads[i]; return p ? { index: p.index, id: p.id, connected: p.connected } : null; });
+    } catch (e) { /* diagnostic-only */ }
+    const inputStructurallyAllowed = !!gp && !!navContainer;
+    const snapshot = {
+      checkpointMs: MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS[mainMenuEarlySnapshotNextIndex],
+      elapsedActualMs: Math.round(elapsed),
+      t: Date.now(),
+      screen: gameState.screen,
+      startupState,
+      navigatorRawSlots,
+      gamepadVisible: !!gp,
+      adoptedPadIndex: gamepadIndex,
+      padIndex: gp ? gp.index : null,
+      padId: gp ? gp.id : null,
+      menuInputEnabled: inputStructurallyAllowed,
+      releaseGateActive: !gamepadInputArmed,
+      releaseGateReason: !gamepadInputArmed ? 'waiting-for-full-controller-release-since-tap-to-start' : null,
+      confirmButtonHeld: pressedNow ? !!pressedNow.a : null,
+      confirmButtonReleasedObserved: confirmMenuButtonReleaseObservedSinceMainMenuEnter,
+      dpadAllowed: inputStructurallyAllowed,
+      leftStickAllowed: inputStructurallyAllowed,
+      anyButtonAllowed: inputStructurallyAllowed,
+      rawButtons: gp ? gp.buttons.map((b) => !!(b && b.pressed)) : null,
+      dpadUpRaw: pressedNow ? !!pressedNow.dpadUp : null,
+      dpadDownRaw: pressedNow ? !!pressedNow.dpadDown : null,
+      dpadLeftRaw: pressedNow ? !!pressedNow.dpadLeft : null,
+      dpadRightRaw: pressedNow ? !!pressedNow.dpadRight : null,
+      stickAxes: gp ? gp.axes.slice() : null,
+      risingEdgeConfirm: !!(pressedNow && prev && pressedNow.a && !prev.a),
+      handlerReached: !!navContainer,
+      inputBlockedCountSoFar: mainMenuInputBlockedCountThisGeneration,
+      inputAcceptedCountSoFar: mainMenuInputAcceptedCountThisGeneration,
+      selectionIndex: gamepadMenuNavFocusIndex,
+    };
+    mainMenuEarlySnapshots.push(snapshot);
+    recordGamepadTapEvent('MAIN_MENU_EARLY_SNAPSHOT', snapshot);
+    mainMenuEarlySnapshotNextIndex++;
+  }
+
+  // P0 REAL DEVICE FOLLOW-UP (this batch): dedicated early-opening trace —
+  // see gamepadOpeningEarlyTrace's own declaration above for why this needs
+  // its own buffer separate from gamepadTapTrace. Called once per frame
+  // during WAITING_FOR_TAP, right after updateGamepadDiscoveryTap() has
+  // refreshed debugDiscoveryTapState for this same frame (so this can reuse
+  // its eligibility/rejection reasoning instead of recomputing it).
+  function recordGamepadOpeningEarlyTrace(now, padsNowRaw, gamepadNewlyVisibleThisFrame, connectedEventThisFrame) {
+    if (!DEBUG_GAMEPAD_TAP_OVERLAY || startupState !== STARTUP_STATE.WAITING_FOR_TAP) return;
+    let slot = null, cand = null;
+    for (let i = 0; i < padsNowRaw.length; i++) {
+      if (padsNowRaw[i] && padsNowRaw[i].connected) { slot = i; cand = padsNowRaw[i]; break; }
+    }
+    const btn0 = cand && cand.buttons ? cand.buttons[0] : null;
+    const btn0Pressed = !!(btn0 && btn0.pressed);
+    const prevBtn0Pressed = gamepadOpeningEarlyTracePrevButton0Pressed;
+    let userActivationIsActive = null, userActivationHasBeenActive = null;
+    try {
+      if (navigator.userActivation) { userActivationIsActive = navigator.userActivation.isActive; userActivationHasBeenActive = navigator.userActivation.hasBeenActive; }
+    } catch (e) { /* diagnostic-only */ }
+    const entry = {
+      t: Date.now(), pt: +now.toFixed(2),
+      startupState, screen: gameState.screen,
+      slot0: padsNowRaw[0] ? { connected: padsNowRaw[0].connected, id: padsNowRaw[0].id, index: padsNowRaw[0].index } : null,
+      slot1: padsNowRaw[1] ? { connected: padsNowRaw[1].connected, id: padsNowRaw[1].id, index: padsNowRaw[1].index } : null,
+      slot2: padsNowRaw[2] ? { connected: padsNowRaw[2].connected, id: padsNowRaw[2].id, index: padsNowRaw[2].index } : null,
+      slot3: padsNowRaw[3] ? { connected: padsNowRaw[3].connected, id: padsNowRaw[3].id, index: padsNowRaw[3].index } : null,
+      connected: !!cand, padId: cand ? cand.id : null, padIndex: cand ? cand.index : (slot !== null ? slot : null),
+      button0Pressed: btn0 ? btn0Pressed : null, button0Value: btn0 ? btn0.value : null,
+      previousButton0Pressed: prevBtn0Pressed,
+      newlyVisibleThisFrame: !!gamepadNewlyVisibleThisFrame, connectedEventThisFrame: !!connectedEventThisFrame,
+      userActivationIsActive, userActivationHasBeenActive,
+      discoveryTapEligible: debugDiscoveryTapState ? debugDiscoveryTapState.discoveryTapEligible : null,
+      discoveryTapConsumed: debugDiscoveryTapState ? debugDiscoveryTapState.discoveryTapConsumed : null,
+      nonGamepadActivationDetected: debugDiscoveryTapState ? debugDiscoveryTapState.nonGamepadActivationDetected : null,
+      lastPointerAgeMs: debugDiscoveryTapState ? debugDiscoveryTapState.lastPointerAgeMs : null,
+      lastTouchAgeMs: debugDiscoveryTapState ? debugDiscoveryTapState.lastTouchAgeMs : null,
+      rawDownObserved: btn0Pressed && !prevBtn0Pressed,
+      rawUpObserved: prevBtn0Pressed && !btn0Pressed,
+      risingEdgeObserved: btn0Pressed && !prevBtn0Pressed,
+      onOpeningTapReached: gameState.screen !== 'opening',
+      rejectionReason: lastTapRejectReason,
+    };
+    gamepadOpeningEarlyTrace.push(entry);
+    if (gamepadOpeningEarlyTrace.length > GAMEPAD_OPENING_EARLY_TRACE_MAX) gamepadOpeningEarlyTrace.shift();
+    gamepadOpeningEarlyTracePrevButton0Pressed = btn0Pressed;
   }
 
   // P0 REAL-DEVICE REGRESSION SESSION (Issue 1 / Part 1C): re-scans ALL
@@ -22284,6 +22520,12 @@
     // having happened this frame. Always-on, WAITING_FOR_TAP-scoped only —
     // see updateGamepadDiscoveryTap()'s own comment for the full spec.
     updateGamepadDiscoveryTap(now, gamepadNewlyVisibleThisFrame);
+    // P0 REAL DEVICE FOLLOW-UP (this batch): dedicated TAP TO START early
+    // trace — called right after updateGamepadDiscoveryTap() so this frame's
+    // debugDiscoveryTapState is already fresh. connectedEventThisFrame
+    // recomputed the same way that function's own local copy is (no shared
+    // variable exists for it outside that function).
+    recordGamepadOpeningEarlyTrace(now, padsNowRaw, gamepadNewlyVisibleThisFrame, lastGamepadConnectedEventAt > 0 && (now - lastGamepadConnectedEventAt) < 50);
     // P0 DIAGNOSTIC PHASE 2 (GAMEPAD NOT YET EXPOSED — DIAGNOSE ONLY): a
     // full change-log of navigator.getGamepads()'s own raw slot shape over
     // time, independent of GAMEPAD_VISIBLE above (which only fires on a
@@ -22393,6 +22635,7 @@
       // (gp is null here by definition) is what lets a real-device retrace
       // prove or disprove this.
       recordMainMenuInputGateState(now, null, false, false);
+      captureMainMenuEarlySnapshotIfDue(now, null, null, null, null);
       updateGamepadDebugOverlay(null);
       return;
     }
@@ -22757,9 +23000,11 @@
         // a screen the action itself already left.
         const screenAtMenuNavStart = gameState.screen;
         recordMainMenuInputGateState(now, gp, !!pressedNow.a, freshlyAdoptedThisFrame);
+        captureMainMenuEarlySnapshotIfDue(now, gp, navContainer, pressedNow, prev);
         if (!navContainer && anyButtonPressedNow) {
           debugLastRejectedBranch = 'menu-nav:no-container-for-screen:' + gameState.screen;
           if (DEBUG_GAMEPAD_TAP_OVERLAY && screenAtMenuNavStart === 'mainMenu') {
+            mainMenuInputBlockedCountThisGeneration++;
             recordGamepadTapEvent('MAIN_MENU_INPUT_BLOCKED', { inputType: 'any', reason: 'no-nav-container-resolved', elapsedSinceMainMenuEnterMs: lastMainMenuEnterAt ? Math.round(now - lastMainMenuEnterAt) : null });
           }
         }
@@ -22769,6 +23014,7 @@
           // below — never itself gates, blocks, or alters that decision.
           const reportMainMenuAccepted = (inputType, buttonIndexOrAxis) => {
             if (DEBUG_GAMEPAD_TAP_OVERLAY && screenAtMenuNavStart === 'mainMenu') {
+              mainMenuInputAcceptedCountThisGeneration++;
               recordGamepadTapEvent('MAIN_MENU_INPUT_ACCEPTED', { inputType, buttonIndexOrAxis, elapsedSinceMainMenuEnterMs: lastMainMenuEnterAt ? Math.round(now - lastMainMenuEnterAt) : null });
             }
           };
