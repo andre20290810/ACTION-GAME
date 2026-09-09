@@ -11780,11 +11780,49 @@
   // isTrustedGesture through (rather than always true) is what lets a LATER
   // genuine touch retry and actually complete the unlock instead of the old
   // one-shot flags permanently (and wrongly) considering it already done.
+  //
+  // P0 START MENU BGM DUPLICATION (real-device runtime cause, this batch):
+  // that same document-level safety net (see its own comment further down)
+  // is NEVER unregistered and has NO screen/state guard of its own — it
+  // fires this ENTIRE function on every genuinely-trusted touchstart/
+  // mousedown ANYWHERE on the page, for the rest of the page's life. That
+  // was believed harmless because unlockEventMovieElementForIOS()/
+  // unlockBackgroundBgmForIOS() each have their own "already unlocked" latch
+  // — but BOTH latches only ever engage when isTrustedGesture===true, and
+  // this session's own real-device trace (?debugGamepadTap=1&debugAudioStart=1,
+  // iPhone + GameSir) showed the FIRST successful TAP TO START now routinely
+  // arrives via the gamepad discovery-tap path (isTrustedGesture===false,
+  // since it is a synthetic call — see updateGamepadDiscoveryTap()), so
+  // neither latch ever engages. The next perfectly ordinary trusted touch
+  // ANYWHERE on the page (in the traced case: tapping the debug panel's own
+  // COPY DEBUG LOG button, well after MAIN MENU was already showing) then
+  // re-ran the full background-media priming pass — real .play() calls on
+  // bgmAudio/bossBgmAudio/endingRevealAudio/eventMovieVideoEl, muted in the
+  // DOM but audibly perceptible on this real device for the ~3s each stayed
+  // playing before its own promise-settled teardown paused it again. Fixed
+  // here, at the one shared call site, rather than inside either latch: the
+  // BACKGROUND MEDIA PRIMING half of this function (never startMenuBgmOnce()
+  // itself, which stays exactly as before) now runs at most once per
+  // startupGeneration, and never at all once STARTUP_STATE has reached
+  // MAIN_MENU — regardless of which of this function's 2 call sites invoked
+  // it, or whether isTrustedGesture is true or false. The very first call of
+  // a fresh generation (touch OR gamepad-driven) still performs the real
+  // priming attempt exactly as before — this only removes the UNBOUNDED
+  // re-entry the old per-latch design allowed once the first call happened
+  // not to be trusted.
   function attemptStartupAudioUnlock(isTrustedGesture) {
     startMenuBgmOnce();
+    if (startupState === STARTUP_STATE.MAIN_MENU) return; // MAIN MENU already reached — background priming is a STARTUP-only pass, never re-entered after this
+    if (startupAudioUnlockConsumedGeneration === startupGeneration) return; // already attempted once this generation — never re-run regardless of trust
+    startupAudioUnlockConsumedGeneration = startupGeneration;
     unlockEventMovieElementForIOS(isTrustedGesture);
     unlockBackgroundBgmForIOS(isTrustedGesture);
   }
+  // Generation token consumed by attemptStartupAudioUnlock()'s background-
+  // priming guard above — reset implicitly every fresh boot/RETRY/bfcache-
+  // restore simply because startupGeneration itself advances then (no
+  // explicit reset needed, same pattern as gamepadDiscoveryTapConsumedGeneration).
+  let startupAudioUnlockConsumedGeneration = -1;
   function onOpeningTap(e) {
     // P0 DIAGNOSTIC PHASE 1: pure observation — records that onOpeningTap()
     // was invoked and from which of its 3 existing call sites (touchstart/
@@ -18358,6 +18396,7 @@
     // or by this batch's own Playwright E2E test.
     get gamepadDebugTrace() { return gamepadDebugTrace; },
     attemptStartupAudioUnlock, // debug/verification only
+    get startupAudioUnlockConsumedGeneration() { return startupAudioUnlockConsumedGeneration; }, // debug/verification only
     get menuBgmAudio() { return menuBgmAudio; },
     get bgmAudio() { return bgmAudio; },
     get bossBgmAudio() { return bossBgmAudio; },
