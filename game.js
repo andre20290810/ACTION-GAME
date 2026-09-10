@@ -24045,15 +24045,15 @@
   // (e.g. to skip 2 consecutive movies back to back) is never blocked
   // waiting on a full double-release that already happened.
   let eventMovieSkipComboConsumed = false;
-  // Excluded per spec ("ENDING movie and RESULT-related movies... not
-  // skippable via this mechanism"): the 3 ENDING-chain movies that lead
-  // directly into the RESULT screen (see playEventMovie()'s own "Only the 3
-  // ENDING movies" comment for why these 3 keys are the complete set) — the
-  // actual ENDING ROLL system (playEndingRoll()/ending_darkout.MOV) is
-  // separate and superseded by the static RESULT screen, and was never
-  // reachable through eventMovieState in the first place, so it needs no
-  // entry here.
-  const EVENT_MOVIE_SKIP_EXCLUDED_KEYS = ['main_escape', 'main_bad_ending', 'true_ending'];
+  // EVENT MOVIE SKIP PHASE 2: per spec, every EVENT_MOVIES entry (including
+  // the 3 ENDING-chain movies — main_bad_ending/main_escape/true_ending) is
+  // now skippable via this mechanism; only the separate Loading/START-screen
+  // video systems (#loading-bg-video, SYSTEM_MOVIES) are exempt, and those
+  // were never reachable through eventMovieState in the first place, so no
+  // entry is needed here for them. Kept as an empty array (rather than
+  // deleted) so its call site below and this exemption's own reasoning stay
+  // in place unchanged if a future batch ever needs to exclude a key again.
+  const EVENT_MOVIE_SKIP_EXCLUDED_KEYS = [];
   let gamepadLastButtons = {}; // previous-frame pressed state, for rising-edge detection
   // TAP TO START GAMEPAD SUPPORT: ANY gamepad button (not just A — see
   // anyButtonPressedNow below) transitioning not-pressed -> pressed while
