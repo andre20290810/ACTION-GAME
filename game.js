@@ -11236,60 +11236,6 @@
       bgmAudio.muted = wasMuted;
     }
   }
-  // P0 WORK ORDER D FOLLOW-UP 8 (root-cause fix, this batch): real-device
-  // trace showed bossBgmAudio (Outbreak2) rejecting with NotAllowedError
-  // every single GABRIEL encounter, while bgmAudio (Outbreak1.1) already
-  // plays fine — the exact same gap unlockGameplayBgmOnlyForIOS() above was
-  // built to close for bgmAudio, just never extended to bossBgmAudio.
-  // unlockBackgroundBgmForIOS()'s own 3-track pass (bgmAudio/bossBgmAudio/
-  // endingRevealAudio together) IS skipped entirely for every gamepad-
-  // sourced accepted opening (see attemptStartupAudioUnlock()'s own
-  // isSyntheticGamepadOpening branch — real-device A/B evidence attributed
-  // audible START MENU duplication to that exact 3-track pass on a gamepad
-  // session, so the whole thing was skipped rather than root-caused per-
-  // track), so on a gamepad-only session bossBgmAudio never gets ANY
-  // WebKit per-element gesture-unlock at all: its first-ever real .play()
-  // is always startBossBgm()'s own non-gesture stage-transition call, which
-  // always rejects. Fixed the same narrow way bgmAudio already was: prime
-  // ONLY bossBgmAudio (never menuBgmAudio/endingRevealAudio — no report
-  // concerns either, and touching menuBgmAudio again is exactly the
-  // duplication risk the 3-track skip exists to avoid) via
-  // confirmGamepadMenuNavFocus(), using the SAME deferred, generation-
-  // token-gated cleanup unlockGameplayBgmOnlyForIOS() already uses (Follow
-  // -up 6) so this can never race a real startBossBgm()/claimAudibleBgm()
-  // claim the way the old synchronous teardown did.
-  let bossBgmOnlyUnlocked = false;
-  let bossBgmAudioPrimeGeneration = 0;
-  function unlockBossBgmOnlyForIOS(isTrustedGesture) {
-    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'unlockBossBgmOnlyForIOS', isTrustedGesture, alreadyUnlocked: bossBgmOnlyUnlocked });
-    if (bossBgmOnlyUnlocked) return;
-    if (isTrustedGesture) bossBgmOnlyUnlocked = true;
-    if (audibleBgmElement === bossBgmAudio) return; // a real claim already owns it — priming has nothing to do here
-    const myPrimeGeneration = ++bossBgmAudioPrimeGeneration;
-    const wasMuted = bossBgmAudio.muted;
-    try {
-      bossBgmAudio.muted = true;
-      const p = bossBgmAudio.play();
-      if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_PLAY_CALL', { track: 'boss', caller: 'unlockBossBgmOnlyForIOS' });
-      const cleanup = () => {
-        if (myPrimeGeneration !== bossBgmAudioPrimeGeneration) return; // superseded by a newer priming attempt — stale, never act
-        if (audibleBgmElement === bossBgmAudio) return; // a real claim has since taken ownership — never pause/mute/reset it out from under real playback
-        try {
-          bossBgmAudio.pause();
-          bossBgmAudio.currentTime = 0;
-          bossBgmAudio.muted = wasMuted;
-          if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_DEFERRED_TEARDOWN', { track: 'boss', caller: 'unlockBossBgmOnlyForIOS' });
-        } catch (e2) {}
-      };
-      if (p && typeof p.then === 'function') {
-        p.then(cleanup, cleanup); // resolve or reject — either way, clean up only if still the current owner
-      } else {
-        cleanup(); // no Promise (older engine) — nothing async could have raced it, safe to clean up right away
-      }
-    } catch (e) {
-      bossBgmAudio.muted = wasMuted;
-    }
-  }
   // P0 REAL DEVICE FOLLOW-UP (GameSir TAP失敗 + MAIN MENU入力遅延 +
   // SNEAKING音声/Outbreak1.1無音, this batch): the real-device report showed
   // bgmAudio (Outbreak1.1) with paused=false, muted=false, volume=1,
@@ -17803,13 +17749,22 @@
     // neither ever got that chance before on a gamepad-only session, and why
     // this is safe (narrow, single-element, never touches menuBgmAudio, never
     // reassigns eventMovieVideoEl.src).
-    // P0 WORK ORDER D FOLLOW-UP 8: bossBgmAudio gets the SAME narrow, single-
-    // element unlock here too — see unlockBossBgmOnlyForIOS()'s own comment
-    // for why it never got one before (the only track this batch's report
-    // concerns; menuBgmAudio/endingRevealAudio are deliberately untouched).
+    // P0 WORK ORDER D FOLLOW-UP 9 (root-cause fix, this batch): a THIRD
+    // simultaneous same-tick priming call (unlockBossBgmOnlyForIOS(), added
+    // in Follow-up 8) was here briefly — real-device evidence showed it
+    // correlating with a genuine regression across BOTH of the other two
+    // elements (Outbreak1.1 stalling at a fixed currentTime for several
+    // seconds after MAIN SCENARIO start; sneaking/drone_arrival own audio
+    // going silent despite muted=false/play() resolving), not just
+    // bossBgmAudio itself staying rejected. Reverted back to exactly this
+    // 2-element structure, the one actually verified working on real
+    // hardware (52ef913) — see that round's own completion report for the
+    // full diff/root-cause writeup. bossBgmAudio's own NotAllowedError is a
+    // separate, still-open issue, deliberately left alone this round rather
+    // than attempting a new authorization approach in the same breath as
+    // this revert.
     const gamepadConfirmActivationIsActive = !!(navigator.userActivation && navigator.userActivation.isActive);
     unlockGameplayBgmOnlyForIOS(gamepadConfirmActivationIsActive);
-    unlockBossBgmOnlyForIOS(gamepadConfirmActivationIsActive);
     unlockEventMoviePlaybackForGamepadConfirm(gamepadConfirmActivationIsActive);
     if (el) el.click();
   }
@@ -19512,7 +19467,6 @@
     get eventMovieElementUnlocked() { return eventMovieElementUnlocked; },
     get backgroundBgmUnlocked() { return backgroundBgmUnlocked; },
     get gameplayBgmOnlyUnlocked() { return gameplayBgmOnlyUnlocked; }, // P0 WORK ORDER D FOLLOW-UP 3 — debug/verification only
-    get bossBgmOnlyUnlocked() { return bossBgmOnlyUnlocked; }, // P0 WORK ORDER D FOLLOW-UP 8 — debug/verification only
     get menuBgmStarted() { return menuBgmStarted; },
     // P0 FULL GAMEPAD E2E HOTFIX (Part A) — debug/verification only: the
     // rolling per-frame gamepad trace (see recordGamepadDebugTrace()) —
