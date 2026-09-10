@@ -1386,6 +1386,21 @@ body.debug-audio-start-only #debug-audio-start-panel { width: 100%; left: 0; bor
   z-index: 0;
 }
 #loading-bg-video[hidden] { display: none; }
+/* OPTION B EXPERIMENT (NO IMPLEMENTATION investigation follow-up, DARK OUT
+   fresh-boot Gamepad-exposure probe, this batch): applied ONLY during the
+   initial LOADING phase's diagnostic playback attempt (see
+   startInitialLoadingVideoExperiment() in game.js) — deliberately NOT
+   display:none (the [hidden] rule above), so the element stays genuinely
+   laid out/composited (a real, if untested, precondition for iOS Safari to
+   treat its playback the same as a visibly shown video) while remaining
+   fully invisible and non-interactive. #loading-screen's own static
+   loading_bg.jpg background (painted beneath this element, per the comment
+   above) is the only thing the user ever sees during LOADING — unchanged
+   from before this batch. */
+#loading-bg-video.initial-loading-video-experiment {
+  opacity: 0;
+  pointer-events: none;
+}
 
 /* P0 GAME COMPLETION HOTFIX (STARTUP PRELOAD UI REBUILD): real numeric %
    plus a visible progress bar — DARK OUT UI tone (plain uppercase

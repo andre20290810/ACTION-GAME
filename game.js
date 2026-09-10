@@ -12501,8 +12501,109 @@
     startupState = STARTUP_STATE.LOADING;
     if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState }); audioStartLastStartupState = startupState; }
     setScreen('loading');
+    // OPTION B EXPERIMENT (NO IMPLEMENTATION investigation follow-up,
+    // this batch): attempts exactly ONE play() of the existing
+    // #loading-bg-video (assets/video/system/loading_bg_loop.mp4) for the
+    // duration of THIS boot's LOADING phase only, WITHOUT changing what the
+    // user sees (see startInitialLoadingVideoExperiment()'s own comment for
+    // the visibility mechanism). Purely a diagnostic A/B probe — never
+    // gates, delays, or otherwise affects LOADING/TAP TO START/Gamepad
+    // logic in any way.
+    startInitialLoadingVideoExperiment();
     runStartupLoadingPhase(myGeneration);
     return myGeneration;
+  }
+  // OPTION B EXPERIMENT state (NO IMPLEMENTATION investigation follow-up,
+  // this batch) — see startInitialLoadingVideoExperiment()/
+  // stopInitialLoadingVideoExperiment() below for the full writeup. Purely
+  // diagnostic: read via ?debugGamepadTap=1 and window.__game, never read
+  // by any startup/TAP/Gamepad decision.
+  let initialLoadingVideoExperimentActive = false;
+  let initialLoadingVideoExperimentStartedAt = null;
+  let initialLoadingVideoPlayAttempted = false;
+  let initialLoadingVideoPlayResolved = false;
+  let initialLoadingVideoPlayRejected = false;
+  let initialLoadingVideoPlayRejectName = null;
+  let initialLoadingVideoPlayRejectMessage = null;
+  let initialLoadingVideoStartCurrentTime = null;
+  let initialLoadingVideoLatestCurrentTime = null;
+  let initialLoadingVideoAdvanced = false;
+  let initialLoadingVideoFirstAdvanceElapsedMs = null;
+  // Reuses the EXISTING #loading-bg-video element/asset (assets/video/
+  // system/loading_bg_loop.mp4) — no new <video> element, no new asset.
+  // Called once per genuine boot (from beginStartupSequence() only — never
+  // from RETRY, which reuses the same generation and never calls this
+  // again), right as STARTUP_STATE becomes LOADING. Attempts exactly ONE
+  // play() call.
+  //
+  // Visibility design: setScreen('loading') (already called just before
+  // this function, unchanged) puts #loading-bg-video into its normal
+  // hidden=true (CSS display:none) resting state via its existing
+  // else-branch. A display:none video's decode/paint pipeline is not
+  // guaranteed equivalent to a genuinely laid-out-but-invisible one on iOS
+  // Safari (this is exactly the concern the investigation flagged), so
+  // this function deliberately clears `hidden` (taking the element out of
+  // display:none) and instead applies the new
+  // .initial-loading-video-experiment CSS class (opacity:0;
+  // pointer-events:none — see style.css) so the element stays genuinely
+  // rendered/composited while remaining fully invisible and non-interactive.
+  // The user-visible result is unchanged: #loading-screen's own static
+  // loading_bg.jpg CSS background is the only thing ever painted where the
+  // eye can see it, exactly as before this batch.
+  function startInitialLoadingVideoExperiment() {
+    initialLoadingVideoPlayAttempted = false;
+    initialLoadingVideoPlayResolved = false;
+    initialLoadingVideoPlayRejected = false;
+    initialLoadingVideoPlayRejectName = null;
+    initialLoadingVideoPlayRejectMessage = null;
+    initialLoadingVideoStartCurrentTime = null;
+    initialLoadingVideoLatestCurrentTime = null;
+    initialLoadingVideoAdvanced = false;
+    initialLoadingVideoFirstAdvanceElapsedMs = null;
+    initialLoadingVideoExperimentStartedAt = performance.now();
+    const el = document.getElementById('loading-bg-video');
+    if (!el) { initialLoadingVideoExperimentActive = false; return; } // defensive only — element is always present in the shipped DOM
+    initialLoadingVideoExperimentActive = true;
+    el.muted = true;
+    el.loop = true;
+    el.playsInline = true;
+    el.hidden = false; // out of display:none — see .initial-loading-video-experiment for the actual invisibility mechanism
+    el.classList.add('initial-loading-video-experiment');
+    initialLoadingVideoStartCurrentTime = el.currentTime;
+    initialLoadingVideoLatestCurrentTime = el.currentTime;
+    initialLoadingVideoPlayAttempted = true;
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('INITIAL_LOADING_VIDEO_PLAY_ATTEMPT', { startCurrentTime: initialLoadingVideoStartCurrentTime });
+    el.play().then(() => {
+      initialLoadingVideoPlayResolved = true;
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('INITIAL_LOADING_VIDEO_PLAY_RESOLVED', {});
+    }).catch((err) => {
+      // Never retried, never surfaced as a startup error — a rejection here
+      // (e.g. NotAllowedError from iOS Safari's autoplay policy applying to
+      // a not-yet-user-gestured play() attempt) is exactly one of the two
+      // real experiment outcomes this batch exists to observe, not a
+      // failure condition. TAP TO START proceeds identically either way.
+      initialLoadingVideoPlayRejected = true;
+      initialLoadingVideoPlayRejectName = (err && err.name) || null;
+      initialLoadingVideoPlayRejectMessage = (err && err.message) || String(err);
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('INITIAL_LOADING_VIDEO_PLAY_REJECTED', { name: initialLoadingVideoPlayRejectName, message: initialLoadingVideoPlayRejectMessage });
+    });
+  }
+  // Stops the OPTION B EXPERIMENT and restores #loading-bg-video to its
+  // original default (hidden=true, no experiment class) resting state —
+  // called at every exit from the experiment window (STARTUP_READY
+  // transition below, and both genuine-error branches inside tick()) so
+  // the element is never left silently playing/invisible indefinitely.
+  // Never touches POST_TAP_LOADING's own separate play()/currentTime=0
+  // call in setScreen() — that logic is unmodified and always starts from
+  // this same clean paused+hidden state, exactly as before this batch.
+  function stopInitialLoadingVideoExperiment() {
+    if (!initialLoadingVideoExperimentActive) return;
+    initialLoadingVideoExperimentActive = false;
+    const el = document.getElementById('loading-bg-video');
+    if (!el) return;
+    if (!el.paused) el.pause();
+    el.classList.remove('initial-loading-video-experiment');
+    el.hidden = true;
   }
   // Root cause of the reported "RETRY -> 93% -> RETRY -> 93%" loop: the
   // OLD retry handler just re-ran the polling loop against the SAME <video>
@@ -12525,10 +12626,28 @@
     startupLoadStartedAt = startedAt; // ?debugStartup=1 overlay ETA computation only
     function tick() {
       if (myGeneration !== startupGeneration) return; // superseded by a newer RETRY/boot/pageshow-restore — this stale tick does nothing
+      // OPTION B EXPERIMENT (NO IMPLEMENTATION investigation follow-up,
+      // this batch): piggybacks on this EXISTING setTimeout(tick, 100) cadence
+      // for currentTime-advancement checking — no new timer/interval/RAF
+      // hook added for this. Read-only; never affects loaded/total/pct or
+      // any other real progress computation below.
+      if (DEBUG_GAMEPAD_TAP_OVERLAY && initialLoadingVideoExperimentActive) {
+        const experimentVideoEl = document.getElementById('loading-bg-video');
+        if (experimentVideoEl) {
+          initialLoadingVideoLatestCurrentTime = experimentVideoEl.currentTime;
+          if (!initialLoadingVideoAdvanced && initialLoadingVideoStartCurrentTime !== null &&
+              (experimentVideoEl.currentTime - initialLoadingVideoStartCurrentTime) >= 0.05) {
+            initialLoadingVideoAdvanced = true;
+            initialLoadingVideoFirstAdvanceElapsedMs = Math.round(performance.now() - initialLoadingVideoExperimentStartedAt);
+            recordGamepadTapEvent('INITIAL_LOADING_VIDEO_FIRST_ADVANCE', { elapsedMs: initialLoadingVideoFirstAdvanceElapsedMs, currentTime: experimentVideoEl.currentTime });
+          }
+        }
+      }
       const { loaded, total, pendingNames, erroredNames } = computeStartupRequiredProgress();
       const pct = total > 0 ? (loaded / total) * 100 : 100;
       updateLoadingProgressUI(pct, loaded, total, pendingNames, erroredNames, performance.now() - startedAt);
       if (erroredNames.length > 0) {
+        stopInitialLoadingVideoExperiment(); // OPTION B EXPERIMENT: never leave the experiment playing into an error/RETRY state
         showLoadingErrorState(erroredNames); // fail fast — a genuine decode/network error never needs the full ceiling to be recognized
         return;
       }
@@ -12536,6 +12655,15 @@
         fullPreloadReady = true;
         startupState = STARTUP_STATE.STARTUP_READY;
         if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState }); audioStartLastStartupState = startupState; }
+        // OPTION B EXPERIMENT (NO IMPLEMENTATION investigation follow-up,
+        // this batch): the initial-LOADING-only video experiment window
+        // ends here, unambiguously, right as LOADING hands off to
+        // WAITING_FOR_TAP — see stopInitialLoadingVideoExperiment()'s own
+        // comment. Pauses playback and restores the element to its default
+        // hidden state; never touches gamepadIndex/gamepadInputArmed/any of
+        // the gamepad reset lines immediately below, which are unrelated
+        // pre-existing logic.
+        stopInitialLoadingVideoExperiment();
         // P0 STARTUP STATE MACHINE REWRITE item 7: TAP display and input-accept
         // must become true atomically, in this exact order, all within the
         // SAME generation-guarded transition — never TAP shown first with
@@ -12604,6 +12732,7 @@
         return;
       }
       if (performance.now() - startedAt > STARTUP_LOAD_HARD_CEILING_MS) {
+        stopInitialLoadingVideoExperiment(); // OPTION B EXPERIMENT: never leave the experiment playing into an error/RETRY state
         showLoadingErrorState(pendingNames); // genuine failure — never a silent fake-100%, never an infinite hang
         return;
       }
@@ -20254,6 +20383,20 @@
     get lastRawSnapshotSignature() { return lastRawSnapshotSignature; },
     computeRawGamepadSnapshotSignature, // debug/verification only
     adoptGamepadIndex, pollForGamepadConnection, // debug/verification only (resetGamepadEdgeBaselineForMenuReturn already exported below)
+    // OPTION B EXPERIMENT (NO IMPLEMENTATION investigation follow-up, this
+    // batch) — debug/verification only: see
+    // startInitialLoadingVideoExperiment()'s own comment for what each
+    // field means.
+    get initialLoadingVideoPlayAttempted() { return initialLoadingVideoPlayAttempted; },
+    get initialLoadingVideoPlayResolved() { return initialLoadingVideoPlayResolved; },
+    get initialLoadingVideoPlayRejected() { return initialLoadingVideoPlayRejected; },
+    get initialLoadingVideoPlayRejectName() { return initialLoadingVideoPlayRejectName; },
+    get initialLoadingVideoPlayRejectMessage() { return initialLoadingVideoPlayRejectMessage; },
+    get initialLoadingVideoStartCurrentTime() { return initialLoadingVideoStartCurrentTime; },
+    get initialLoadingVideoLatestCurrentTime() { return initialLoadingVideoLatestCurrentTime; },
+    get initialLoadingVideoAdvanced() { return initialLoadingVideoAdvanced; },
+    get initialLoadingVideoFirstAdvanceElapsedMs() { return initialLoadingVideoFirstAdvanceElapsedMs; },
+    get initialLoadingVideoExperimentActive() { return initialLoadingVideoExperimentActive; },
     // FOLLOW-UP (B: Outbreak1.1/Outbreak2 real-playback-stall investigation,
     // this batch) — debug/verification only: see
     // scheduleBgmPlaybackAdvancementCheck()'s own comment for what each
@@ -25941,6 +26084,20 @@
       `firstRawButtonDownDuringWaitingElapsedMs: ${firstRawButtonDownDuringWaitingElapsedMs === null ? '(never)' : '+' + firstRawButtonDownDuringWaitingElapsedMs + 'ms'}  index: ${firstRawButtonDownDuringWaitingButtonIndex === null ? '(n/a)' : firstRawButtonDownDuringWaitingButtonIndex}\n` +
       `firstRawAxisMovementDuringWaitingElapsedMs: ${firstRawAxisMovementDuringWaitingElapsedMs === null ? '(never)' : '+' + firstRawAxisMovementDuringWaitingElapsedMs + 'ms'}\n` +
       `lastRawSnapshotSignature: ${lastRawSnapshotSignature === null ? '(none yet)' : lastRawSnapshotSignature}\n` +
+      // OPTION B EXPERIMENT (NO IMPLEMENTATION investigation follow-up,
+      // this batch): initial-LOADING-only diagnostic playback of the
+      // EXISTING #loading-bg-video (assets/video/system/loading_bg_loop.mp4)
+      // — never visible to the user, see startInitialLoadingVideoExperiment()'s
+      // own comment. Lets a real-device run directly compare "did the
+      // experiment video actually advance" against the Gamepad-exposure
+      // fields above/below in the SAME log.
+      `--- OPTION B EXPERIMENT: INITIAL LOADING VIDEO PLAYBACK (fresh-boot Gamepad-exposure probe) ---\n` +
+      `initialLoadingVideoExperimentActive: ${initialLoadingVideoExperimentActive}\n` +
+      `initialLoadingVideoPlayAttempted: ${initialLoadingVideoPlayAttempted}\n` +
+      `initialLoadingVideoPlayResolved: ${initialLoadingVideoPlayResolved}\n` +
+      `initialLoadingVideoPlayRejected: ${initialLoadingVideoPlayRejected}  rejectName: ${initialLoadingVideoPlayRejectName === null ? '(n/a)' : initialLoadingVideoPlayRejectName}  rejectMessage: ${initialLoadingVideoPlayRejectMessage === null ? '(n/a)' : initialLoadingVideoPlayRejectMessage}\n` +
+      `initialLoadingVideoStartCurrentTime: ${initialLoadingVideoStartCurrentTime === null ? '(n/a)' : initialLoadingVideoStartCurrentTime.toFixed(3)}  latestCurrentTime: ${initialLoadingVideoLatestCurrentTime === null ? '(n/a)' : initialLoadingVideoLatestCurrentTime.toFixed(3)}\n` +
+      `initialLoadingVideoAdvanced: ${initialLoadingVideoAdvanced}  firstAdvanceElapsedMs: ${initialLoadingVideoFirstAdvanceElapsedMs === null ? '(never)' : '+' + initialLoadingVideoFirstAdvanceElapsedMs + 'ms'}\n` +
       `--- EVENT TRACE (most recent ${Math.min(gamepadTapTrace.length, GAMEPAD_TAP_TRACE_MAX)} of ${gamepadTapTrace.length}, ring buffer max ${GAMEPAD_TAP_TRACE_MAX}) ---\n` +
       gamepadTapTrace.slice(-GAMEPAD_TAP_TRACE_MAX).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n')
     );
