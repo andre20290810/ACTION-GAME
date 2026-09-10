@@ -4227,24 +4227,73 @@
   // runs afterward, against whatever the (possibly just-reverted) current
   // position is, so the final position is provably never inside minDist
   // regardless of why the overlap happened.
+  //
+  // FOLLOW-UP (C: GABRIEL#2 + BARREL escape/pin investigation, this batch,
+  // root-cause fix — Collision Option A): the sample-loop above blindly
+  // reverted the WHOLE frame's movement the instant ANY sampled point along
+  // the travelled segment fell within minDist of the circle. That is
+  // correct for a genuine DASH tunneling clean through the object, but a
+  // plain straight-line CHORD between two points that are both near a
+  // circle's own boundary geometrically dips slightly INSIDE that circle
+  // even for a perfectly ordinary tangential slide (or a pure retreat) —
+  // the old check could not tell that shallow, harmless dip apart from a
+  // genuine deep DASH-through crossing, so it reverted tangential and
+  // even outward movement too. Squeezed between two circles (GABRIEL +
+  // a restocked BARREL), EVERY direction the player tried produced some
+  // dip against one circle or the other, so every frame reverted back to
+  // lastValidX/Y — and since lastValidX/Y was itself the squeeze point,
+  // the player pinned there permanently.
+  //
+  // Replaced with a closed-form check of WHERE along the segment the
+  // closest approach to the circle's center actually falls:
+  //  - If that closest point is at (or beyond) one of the two endpoints —
+  //    i.e. distance-to-center changes MONOTONICALLY across the whole
+  //    movement — the movement is either a pure retreat (always safe,
+  //    requirement: "movement away from a circle must always be allowed")
+  //    or a pure approach (left alone here; the unconditional resting
+  //    push-back below already clamps the endpoint to the boundary if it
+  //    landed inside minDist). Provably never reverted: for a straight
+  //    line, distance-to-center strictly increasing across [0,1] forces
+  //    the minimum to be AT t=0, so a genuine retreat can never have an
+  //    interior closest-point at all.
+  //  - Only when the closest point falls STRICTLY BETWEEN the two
+  //    endpoints (a genuine "swing past/through" pattern, impossible for a
+  //    monotonic retreat or approach) does this check the actual DEPTH of
+  //    that dip: shallow (an ordinary tangential slide's own chord-sag) is
+  //    still allowed; only a deep dip — well inside minDist, down near the
+  //    object's own solid core — counts as tunneling and reverts, exactly
+  //    the DASH-through-the-object case this function exists to prevent.
+  // Together this guarantees tangential sliding and any away-movement stay
+  // free even while squeezed against multiple circles at once (each circle
+  // only ever blocks movement that dives deep toward ITS OWN center, and no
+  // single direction can dive toward every nearby center simultaneously),
+  // while true DASH tunneling — which necessarily drives the closest
+  // approach down near the center regardless of start/end position — is
+  // still caught. Never touches resolvePlayerSolidOverlapsConverging()
+  // (unchanged, still runs afterward to reconcile multiple independent
+  // clamps into one converged position) or any other collision function.
+  const SWEEP_CIRCLE_TUNNEL_DEPTH_FRACTION = 0.5; // dip must reach within half of minDist of the center to count as tunneling, not just a boundary graze
   function sweepAndClampPlayerAwayFromCircle(cx, cy, minDist) {
     let reverted = false;
     if (player.lastValidX !== undefined && player.lastValidY !== undefined &&
         (player.lastValidX !== player.x || player.lastValidY !== player.y)) {
       const sx = player.lastValidX, sy = player.lastValidY, ex = player.x, ey = player.y;
-      const segLen = Math.hypot(ex - sx, ey - sy);
-      const sampleCount = Math.max(1, Math.ceil(segLen / 4));
-      for (let i = 0; i <= sampleCount; i++) {
-        const t = i / sampleCount;
-        const sampX = sx + (ex - sx) * t;
-        const sampY = sy + (ey - sy) * t;
-        if (Math.hypot(sampX - cx, sampY - cy) < minDist) {
+      const segDx = ex - sx, segDy = ey - sy;
+      const segLenSq = segDx * segDx + segDy * segDy;
+      const fx = sx - cx, fy = sy - cy;
+      const tClosest = segLenSq > 0 ? -(fx * segDx + fy * segDy) / segLenSq : 0;
+      if (tClosest > 0 && tClosest < 1) {
+        const dipX = sx + segDx * tClosest, dipY = sy + segDy * tClosest;
+        const dipDist = Math.hypot(dipX - cx, dipY - cy);
+        if (dipDist < minDist * SWEEP_CIRCLE_TUNNEL_DEPTH_FRACTION) {
           player.x = sx;
           player.y = sy;
-          reverted = true;
-          break; // fall through to the resting push-back below rather than returning early
+          reverted = true; // fall through to the resting push-back below rather than returning early
         }
       }
+      // tClosest <= 0 or >= 1: distance-to-center is monotonic across the
+      // whole movement (pure retreat or pure approach) — never reverted
+      // here, see this function's own comment above.
     }
     let dx = player.x - cx, dy = player.y - cy;
     let dist = Math.hypot(dx, dy);
@@ -11266,6 +11315,63 @@
       bgmAudio.muted = wasMuted;
     }
   }
+  // FOLLOW-UP (B: Outbreak2/bossBgmAudio NotAllowedError, this batch,
+  // root-cause fix): the exact same gap unlockGameplayBgmOnlyForIOS() above
+  // was built to close for bgmAudio, reproducing identically for
+  // bossBgmAudio — real-device trace confirmed startBossBgm()'s
+  // claimAudibleBgm('boss', bossBgmAudio) always rejects with
+  // NotAllowedError on a gamepad-only session (ROID1/GABRIEL#1/GABRIEL#2
+  // all seq-numbered NotAllowedError in the trace), recovering only once an
+  // unrelated real touch happens to occur later. bossBgmAudio never
+  // receives ANY WebKit per-element gesture-unlock on the gamepad-only
+  // path because attemptStartupAudioUnlock()'s gamepad branch calls
+  // unlockGameplayBgmOnlyForIOS() (bgmAudio only) and
+  // unlockEventMoviePlaybackForGamepadConfirm() (eventMovieVideoEl only) —
+  // never unlockBackgroundBgmForIOS() (the only function that ever primed
+  // bossBgmAudio), which stays skipped for gamepad opens for the same
+  // documented duplication-risk reason as before (see
+  // attemptStartupAudioUnlock()'s own comment) — never reintroduced here.
+  // This mirrors unlockGameplayBgmOnlyForIOS() byte-for-byte in structure
+  // (same silent play()-then-deferred-pause()-on-settle technique, own
+  // separate unlock latch + prime-generation token so it can never race or
+  // be confused with bgmAudio's own), narrowed to bossBgmAudio ONLY — never
+  // menuBgmAudio, never bgmAudio, never endingRevealAudio, never plays
+  // anything audibly. Priming success here is NOT itself treated as proof
+  // future playback will succeed — see the real playbackAdvanced monitor
+  // added to claimAudibleBgm() below, which watches the ACTUAL boss-start
+  // claim, not this priming pass.
+  let bossBgmOnlyUnlocked = false;
+  let bossBgmAudioPrimeGeneration = 0;
+  function unlockBossBgmOnlyForIOS(isTrustedGesture) {
+    if (DEBUG_BGM_OVERLAY) recordBgmEvent('FN_ENTER', { fn: 'unlockBossBgmOnlyForIOS', isTrustedGesture, alreadyUnlocked: bossBgmOnlyUnlocked });
+    if (bossBgmOnlyUnlocked) return;
+    if (isTrustedGesture) bossBgmOnlyUnlocked = true;
+    if (audibleBgmElement === bossBgmAudio) return; // a real claim already owns it — priming has nothing to do here
+    const myPrimeGeneration = ++bossBgmAudioPrimeGeneration;
+    const wasMuted = bossBgmAudio.muted;
+    try {
+      bossBgmAudio.muted = true;
+      const p = bossBgmAudio.play();
+      if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_PLAY_CALL', { track: 'boss', caller: 'unlockBossBgmOnlyForIOS' });
+      const cleanup = () => {
+        if (myPrimeGeneration !== bossBgmAudioPrimeGeneration) return; // superseded by a newer priming attempt — stale, never act
+        if (audibleBgmElement === bossBgmAudio) return; // a real claim has since taken ownership — never pause/mute/reset it out from under real playback
+        try {
+          bossBgmAudio.pause();
+          bossBgmAudio.currentTime = 0;
+          bossBgmAudio.muted = wasMuted;
+          if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_PRIME_DEFERRED_TEARDOWN', { track: 'boss', caller: 'unlockBossBgmOnlyForIOS' });
+        } catch (e2) {}
+      };
+      if (p && typeof p.then === 'function') {
+        p.then(cleanup, cleanup); // resolve or reject — either way, clean up only if still the current owner
+      } else {
+        cleanup(); // no Promise (older engine) — nothing async could have raced it, safe to clean up right away
+      }
+    } catch (e) {
+      bossBgmAudio.muted = wasMuted;
+    }
+  }
   // P0 REAL DEVICE FOLLOW-UP (GameSir TAP失敗 + MAIN MENU入力遅延 +
   // SNEAKING音声/Outbreak1.1無音, this batch): the real-device report showed
   // bgmAudio (Outbreak1.1) with paused=false, muted=false, volume=1,
@@ -11340,6 +11446,112 @@
       setTimeout(() => {
         snap('+' + delayMs + 'ms');
         if (i === delays.length - 1) bgmAudibilityScheduledElements.delete(element); // last checkpoint fired — this element can be scheduled again
+      }, delayMs);
+    });
+  }
+  // FOLLOW-UP (B: Outbreak1.1/bgmAudio + Outbreak2/bossBgmAudio real-
+  // playback-stall investigation, this batch): real-device trace showed
+  // bgmAudio's own AUDIO_PLAY_CALL -> AUDIO_PLAY_RESOLVED succeeding at
+  // Outbreak1.1's scenario start, yet currentTime staying pinned at 0
+  // through +500/1000/3000/5000ms — genuinely inaudible — only starting to
+  // advance normally after a LATER re-claim near DRONE arrival. A resolved
+  // play() Promise is proof the browser ACCEPTED the call, never proof
+  // playback is actually advancing — priming (unlockGameplayBgmOnlyForIOS()/
+  // unlockBossBgmOnlyForIOS() above) closes the separate NotAllowedError
+  // gap but must never be treated as proof THIS is also fixed. This adds a
+  // genuine, strictly bounded (3 fixed-delay checks per ownership
+  // transition — +250/+500/+1000ms — never a poll/interval/recurring
+  // timer) playback-advancement monitor, scheduled only from
+  // claimAudibleBgm()'s own resolve callback below. Every check re-
+  // validates this is still the CURRENT generation/element before doing
+  // anything — a superseded claim is never acted on. If currentTime has
+  // genuinely not advanced by +1000ms while the element is otherwise in a
+  // state that SHOULD be audible (not paused, not muted, volume>0,
+  // document visible), attempts AT MOST ONE direct element.play() recovery
+  // call per generation (bgmStallRecoveryAttemptedForGeneration) — calling
+  // element.play() directly, never claimAudibleBgm() again, so this
+  // recovery nudge can never bump audibleBgmGeneration, touch
+  // bgmClaimInFlight/bgmClaimRejection, or pause any other track (there is
+  // no ownership change here, only a retry of the SAME claim's play()
+  // call) — Followup7's retry-storm guard is never touched. If the retry
+  // itself fails (sync throw or its own Promise rejects), that is recorded
+  // as recoveryResult, never silently swallowed or misreported as success.
+  // Diagnostic fields (bgmPlaybackTransitions, below) are populated only
+  // under ?debugAudioStart=1; the check+recovery logic itself is NOT
+  // gated, since it is a real fix, not merely a diagnostic.
+  const BGM_STALL_CHECK_DELAYS_MS = [250, 500, 1000];
+  const BGM_STALL_ADVANCE_EPSILON_SEC = 0.05;
+  const bgmStallRecoveryAttemptedForGeneration = new Set();
+  const bgmPlaybackTransitions = new Map(); // element -> latest-ownership-transition fixed-field record, ?debugAudioStart=1 only
+  function bgmPlaybackTransitionRecordFor(element) {
+    let rec = bgmPlaybackTransitions.get(element);
+    if (!rec) { rec = {}; bgmPlaybackTransitions.set(element, rec); }
+    return rec;
+  }
+  function scheduleBgmPlaybackAdvancementCheck(key, element, myGen) {
+    const startCurrentTime = element.currentTime;
+    if (DEBUG_AUDIO_START_OVERLAY) {
+      const rec = bgmPlaybackTransitionRecordFor(element);
+      rec.startCurrentTime = +startCurrentTime.toFixed(2);
+      rec.currentTimeAt250ms = null;
+      rec.currentTimeAt500ms = null;
+      rec.currentTimeAt1000ms = null;
+      rec.playbackAdvanced = null;
+      rec.stalledDetectedAt = null;
+      rec.recoveryAttemptCount = 0;
+      rec.recoveryResult = null;
+    }
+    const lastDelayMs = BGM_STALL_CHECK_DELAYS_MS[BGM_STALL_CHECK_DELAYS_MS.length - 1];
+    BGM_STALL_CHECK_DELAYS_MS.forEach((delayMs) => {
+      setTimeout(() => {
+        if (audibleBgmGeneration !== myGen || audibleBgmElement !== element) return; // superseded by a newer claim — never act on a stale one
+        const currentTimeNow = element.currentTime;
+        const advanced = (currentTimeNow - startCurrentTime) > BGM_STALL_ADVANCE_EPSILON_SEC;
+        if (DEBUG_AUDIO_START_OVERLAY) {
+          const rec = bgmPlaybackTransitionRecordFor(element);
+          rec['currentTimeAt' + delayMs + 'ms'] = +currentTimeNow.toFixed(2);
+          if (advanced) rec.playbackAdvanced = true;
+          recordAudioStartEvent('BGM_PLAYBACK_ADVANCEMENT_CHECK', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, delayMs, startCurrentTime: +startCurrentTime.toFixed(2), currentTimeNow: +currentTimeNow.toFixed(2), advanced });
+        }
+        if (advanced) return; // genuinely advancing — nothing to recover from
+        if (delayMs !== lastDelayMs) return; // only the LAST checkpoint decides stall/recovery — earlier ones are observation-only, so one bad early sample can never trigger a premature retry
+        // +1000ms reached with zero advancement — confirm the element is
+        // otherwise in a state that SHOULD be audible before ever calling
+        // this a stall (an intentionally paused/muted track advancing 0 is
+        // completely normal, never a bug).
+        let documentVisible = false;
+        try { documentVisible = document.visibilityState === 'visible'; } catch (e) {}
+        if (element.paused || element.muted || element.volume <= 0 || !documentVisible) return;
+        if (DEBUG_AUDIO_START_OVERLAY) {
+          const rec = bgmPlaybackTransitionRecordFor(element);
+          rec.playbackAdvanced = false;
+          rec.stalledDetectedAt = Math.round(performance.now());
+        }
+        recordAudioStartEvent('BGM_PLAYBACK_STALL_DETECTED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, startCurrentTime: +startCurrentTime.toFixed(2), currentTimeNow: +currentTimeNow.toFixed(2) });
+        if (bgmStallRecoveryAttemptedForGeneration.has(myGen)) {
+          if (DEBUG_AUDIO_START_OVERLAY) recordAudioStartEvent('BGM_PLAYBACK_STALL_RECOVERY_SKIPPED', { key, myGen, reason: 'already-attempted-this-generation' });
+          return;
+        }
+        bgmStallRecoveryAttemptedForGeneration.add(myGen);
+        if (DEBUG_AUDIO_START_OVERLAY) bgmPlaybackTransitionRecordFor(element).recoveryAttemptCount = 1;
+        try {
+          const p2 = element.play();
+          if (p2 && typeof p2.then === 'function') {
+            p2.then(() => {
+              if (DEBUG_AUDIO_START_OVERLAY) bgmPlaybackTransitionRecordFor(element).recoveryResult = 'resolved';
+              recordAudioStartEvent('BGM_PLAYBACK_STALL_RECOVERY_RESULT', { key, myGen, result: 'resolved' });
+            }).catch((err) => {
+              if (DEBUG_AUDIO_START_OVERLAY) bgmPlaybackTransitionRecordFor(element).recoveryResult = 'rejected:' + (err && err.name);
+              recordAudioStartEvent('BGM_PLAYBACK_STALL_RECOVERY_RESULT', { key, myGen, result: 'rejected', errName: err && err.name });
+            });
+          } else {
+            if (DEBUG_AUDIO_START_OVERLAY) bgmPlaybackTransitionRecordFor(element).recoveryResult = 'no-promise';
+            recordAudioStartEvent('BGM_PLAYBACK_STALL_RECOVERY_RESULT', { key, myGen, result: 'no-promise' });
+          }
+        } catch (err) {
+          if (DEBUG_AUDIO_START_OVERLAY) bgmPlaybackTransitionRecordFor(element).recoveryResult = 'sync-throw:' + (err && err.name);
+          recordAudioStartEvent('BGM_PLAYBACK_STALL_RECOVERY_RESULT', { key, myGen, result: 'sync-throw', errName: err && err.name });
+        }
       }, delayMs);
     });
   }
@@ -11424,6 +11636,21 @@
     // matching the exact question this batch needs answered.
     if (DEBUG_GAMEPAD_TAP_OVERLAY && key === 'menu') recordGamepadTapEvent('MENU_BGM_PLAY_CALL', { musicContextAtCall: musicContext });
     captureBgmAudibilityCheckpoints(key, element);
+    // FOLLOW-UP (B: Outbreak1.1/Outbreak2 real-playback-stall investigation,
+    // this batch): start this element's bgmPlaybackTransitions fixed-field
+    // record right at the real play() call — see
+    // scheduleBgmPlaybackAdvancementCheck()'s own comment above for the full
+    // writeup. ?debugAudioStart=1 only; never affects the real claim below.
+    if (DEBUG_AUDIO_START_OVERLAY) {
+      const transRec = bgmPlaybackTransitionRecordFor(element);
+      transRec.playCallAt = Math.round(performance.now());
+      transRec.playResolvedAt = null;
+      transRec.rejectedAt = null;
+      transRec.rejectName = null;
+      let userActivationIsActive = null;
+      try { if (navigator.userActivation) userActivationIsActive = navigator.userActivation.isActive; } catch (e) {}
+      transRec.userActivation = userActivationIsActive;
+    }
     try {
       const p = element.play();
       if (p && typeof p.then === 'function') {
@@ -11434,13 +11661,20 @@
           if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_RESOLVED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, stale: audibleBgmGeneration !== myGen });
           if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_RESOLVE', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), stale: audibleBgmGeneration !== myGen });
           if (DEBUG_GAMEPAD_TAP_OVERLAY && key === 'menu') recordGamepadTapEvent('MENU_BGM_PLAY_RESOLVED', { musicContextAtResolve: musicContext, stale: audibleBgmGeneration !== myGen });
+          if (DEBUG_AUDIO_START_OVERLAY) bgmPlaybackTransitionRecordFor(element).playResolvedAt = Math.round(performance.now());
           if (audibleBgmGeneration !== myGen) { try { element.pause(); } catch (e2) {} }
+          else { scheduleBgmPlaybackAdvancementCheck(key, element, myGen); }
         }).catch((err) => {
           bgmClaimInFlight.delete(element);
           bgmClaimRejection.set(element, { at: performance.now() }); // P0 WORK ORDER D: retry-storm suppression — see shouldRetryBgmClaim()'s own comment
           if (DEBUG_BGM_OVERLAY) recordBgmEvent('BGM_CLAIM_PROMISE_REJECTED', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), myGen, currentGen: audibleBgmGeneration, errName: err && err.name });
           if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('AUDIO_PLAY_REJECT', { key, track: BGM_TRACK_NAMES_BY_ELEMENT.get(element), errName: err && err.name });
           if (DEBUG_GAMEPAD_TAP_OVERLAY && key === 'menu') recordGamepadTapEvent('MENU_BGM_PLAY_REJECTED', { musicContextAtReject: musicContext, errName: err && err.name, errMessage: err && err.message });
+          if (DEBUG_AUDIO_START_OVERLAY) {
+            const transRec = bgmPlaybackTransitionRecordFor(element);
+            transRec.rejectedAt = Math.round(performance.now());
+            transRec.rejectName = err && err.name;
+          }
           if (opts && opts.onRejected) opts.onRejected(err);
         });
       }
@@ -12745,6 +12979,13 @@
       // is always a non-gesture call and always rejects with
       // NotAllowedError — see unlockGameplayBgmOnlyForIOS()'s own comment.
       unlockGameplayBgmOnlyForIOS(isTrustedGesture);
+      // FOLLOW-UP (B: Outbreak2/bossBgmAudio NotAllowedError, this batch,
+      // root-cause fix): the same narrow single-track authorization,
+      // scoped to bossBgmAudio only — see unlockBossBgmOnlyForIOS()'s own
+      // comment for the full writeup. Never touches menuBgmAudio/bgmAudio/
+      // endingRevealAudio; never reintroduces the 3-track simultaneous
+      // priming that caused the historical START MENU duplication.
+      unlockBossBgmOnlyForIOS(isTrustedGesture);
       // P0 WORK ORDER D FOLLOW-UP 10 (root-cause fix, this batch): the same
       // narrow single-track authorization for eventMovieVideoEl — MOVED
       // here from confirmGamepadMenuNavFocus() (see that function's own
@@ -13293,6 +13534,26 @@
     mainMenuEarlySnapshotNextIndex = 0;
     mainMenuInputBlockedCountThisGeneration = 0;
     mainMenuInputAcceptedCountThisGeneration = 0;
+    // FOLLOW-UP (MAIN MENU 3-second input latency investigation, this
+    // batch): reset the new fixed-field pipeline-stage timestamps at the
+    // same instant lastMainMenuEnterAt is, so every field's "elapsed ms" is
+    // relative to THIS MAIN MENU entry, never a previous visit's.
+    firstRawButtonDownElapsedMs = null;
+    firstRawButtonIndex = null;
+    firstRawDpadDownElapsedMs = null;
+    firstRawAButtonDownElapsedMs = null;
+    firstRawAxisMovementElapsedMs = null;
+    firstRisingEdgeElapsedMs = null;
+    firstRisingEdgeButtonIndex = null;
+    firstMenuHandlerReachedElapsedMs = null;
+    firstAcceptedMenuNavigationElapsedMs = null;
+    firstMenuConfirmAcceptedElapsedMs = null;
+    firstDomClickElapsedMs = null;
+    firstSelectionChangeElapsedMs = null;
+    mainMenuRafFrameCount = 0;
+    mainMenuGamepadPollCount = 0;
+    mainMenuNavigatorSnapshotChangeCount = 0;
+    firstNavigatorSnapshotChangeElapsedMs = null;
     startupState = STARTUP_STATE.MAIN_MENU;
     if (DEBUG_AUDIO_START_OVERLAY) {
       recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState });
@@ -18133,6 +18394,13 @@
     if (items.length === 0) return;
     gamepadMenuNavFocusIndex = ((gamepadMenuNavFocusIndex + delta) % items.length + items.length) % items.length;
     updateGamepadMenuNavFocusVisual();
+    // FOLLOW-UP (MAIN MENU 3-second input latency investigation, this
+    // batch): first real focus-index change since MAIN MENU entry — answers
+    // A5 (did the accepted nav decision above actually reach a DOM-visible
+    // effect). Read-only; never gates anything.
+    if (lastMainMenuEnterAt && firstSelectionChangeElapsedMs === null) {
+      firstSelectionChangeElapsedMs = Math.round(performance.now() - lastMainMenuEnterAt);
+    }
   }
   // Reuses each button's own real click handler (STORY MODE/TRAINING MODE/
   // SETTING/DEMO PLAY/BACK/life-option/etc.) via a genuine .click() — never
@@ -18163,6 +18431,13 @@
     // full writeup. Menu navigation itself (el.click() below) is completely
     // unaffected — it was never gated on this priming's outcome before, and
     // still is not.
+    // FOLLOW-UP (MAIN MENU 3-second input latency investigation, this
+    // batch): first real DOM el.click() fired since MAIN MENU entry —
+    // answers A5 for the CONFIRM path specifically. Read-only; captured
+    // right before the real click, never gates it.
+    if (el && lastMainMenuEnterAt && firstDomClickElapsedMs === null) {
+      firstDomClickElapsedMs = Math.round(performance.now() - lastMainMenuEnterAt);
+    }
     if (el) el.click();
   }
 
@@ -19880,10 +20155,40 @@
     // P0 REAL DEVICE FOLLOW-UP (this batch) — debug/verification only:
     get mainMenuEarlySnapshots() { return mainMenuEarlySnapshots; },
     get MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS() { return MAIN_MENU_EARLY_SNAPSHOT_CHECKPOINTS_MS; },
+    // FOLLOW-UP (MAIN MENU 3-second input latency investigation, this
+    // batch) — debug/verification only, see each field's own declaration:
+    get firstRawButtonDownElapsedMs() { return firstRawButtonDownElapsedMs; },
+    get firstRawButtonIndex() { return firstRawButtonIndex; },
+    get firstRawDpadDownElapsedMs() { return firstRawDpadDownElapsedMs; },
+    get firstRawAButtonDownElapsedMs() { return firstRawAButtonDownElapsedMs; },
+    get firstRawAxisMovementElapsedMs() { return firstRawAxisMovementElapsedMs; },
+    get firstRisingEdgeElapsedMs() { return firstRisingEdgeElapsedMs; },
+    get firstRisingEdgeButtonIndex() { return firstRisingEdgeButtonIndex; },
+    get firstMenuHandlerReachedElapsedMs() { return firstMenuHandlerReachedElapsedMs; },
+    get firstAcceptedMenuNavigationElapsedMs() { return firstAcceptedMenuNavigationElapsedMs; },
+    get firstMenuConfirmAcceptedElapsedMs() { return firstMenuConfirmAcceptedElapsedMs; },
+    get firstDomClickElapsedMs() { return firstDomClickElapsedMs; },
+    get firstSelectionChangeElapsedMs() { return firstSelectionChangeElapsedMs; },
+    get mainMenuRafFrameCount() { return mainMenuRafFrameCount; },
+    get mainMenuGamepadPollCount() { return mainMenuGamepadPollCount; },
+    get mainMenuNavigatorSnapshotChangeCount() { return mainMenuNavigatorSnapshotChangeCount; },
+    get firstNavigatorSnapshotChangeElapsedMs() { return firstNavigatorSnapshotChangeElapsedMs; },
     get gamepadOpeningEarlyTrace() { return gamepadOpeningEarlyTrace; },
     get GAMEPAD_OPENING_EARLY_TRACE_MAX() { return GAMEPAD_OPENING_EARLY_TRACE_MAX; },
     get mainMenuInputBlockedCountThisGeneration() { return mainMenuInputBlockedCountThisGeneration; },
     get mainMenuInputAcceptedCountThisGeneration() { return mainMenuInputAcceptedCountThisGeneration; },
+    // FOLLOW-UP (B: Outbreak1.1/Outbreak2 real-playback-stall investigation,
+    // this batch) — debug/verification only: see
+    // scheduleBgmPlaybackAdvancementCheck()'s own comment for what each
+    // field means. Keyed by track name ('normal'=bgmAudio,
+    // 'boss'=bossBgmAudio, etc.) rather than exposing the raw element-keyed
+    // Map directly, for easy reading from a real-device console/panel.
+    get bgmPlaybackTransitions() {
+      const out = {};
+      bgmPlaybackTransitions.forEach((rec, el) => { out[BGM_TRACK_NAMES_BY_ELEMENT.get(el) || '?'] = rec; });
+      return out;
+    },
+    scheduleBgmPlaybackAdvancementCheck, unlockBossBgmOnlyForIOS, BGM_STALL_CHECK_DELAYS_MS, claimAudibleBgm, // debug/verification only
     get menuBgmAudio() { return menuBgmAudio; },
     get bgmAudio() { return bgmAudio; },
     get bossBgmAudio() { return bossBgmAudio; },
@@ -23569,6 +23874,33 @@
   let mainMenuEarlySnapshotNextIndex = 0;
   let mainMenuInputBlockedCountThisGeneration = 0;
   let mainMenuInputAcceptedCountThisGeneration = 0;
+  // FOLLOW-UP (this batch, MAIN MENU 3-second input latency investigation):
+  // fixed, non-ring-buffer fields answering "where in the pipeline does the
+  // FIRST real post-MAIN-MENU-entry Gamepad signal get lost/delayed" — see
+  // their own capture sites (updateGamepadInput()'s raw per-button diff loop,
+  // the rising-edge check just below it, the FULL MENU NAVIGATION branch,
+  // moveGamepadMenuNavFocus(), confirmGamepadMenuNavFocus()) for exactly what
+  // each one measures. Every field is elapsed ms since lastMainMenuEnterAt,
+  // captured ONCE (first occurrence only) per MAIN MENU generation, reset
+  // alongside lastMainMenuEnterAt in completeEnterMainMenu(). Purely
+  // observational — never read by any real accept/reject/movement decision.
+  // Read via ?debugGamepadTap=1 (buildGamepadTapDebugText()).
+  let firstRawButtonDownElapsedMs = null;
+  let firstRawButtonIndex = null;
+  let firstRawDpadDownElapsedMs = null;
+  let firstRawAButtonDownElapsedMs = null;
+  let firstRawAxisMovementElapsedMs = null;
+  let firstRisingEdgeElapsedMs = null;
+  let firstRisingEdgeButtonIndex = null; // 'dpadUp'/'dpadDown'/'dpadLeft'/'dpadRight'/'a', matching the real menu-nav rising-edge checks
+  let firstMenuHandlerReachedElapsedMs = null; // first frame the FULL MENU NAVIGATION branch itself ran with screenAtMenuNavStart==='mainMenu'
+  let firstAcceptedMenuNavigationElapsedMs = null; // first D-PAD/stick nav actually accepted (reportMainMenuAccepted('dpad'/'stick', ...))
+  let firstMenuConfirmAcceptedElapsedMs = null; // first A confirm actually accepted (reportMainMenuAccepted('confirm', ...))
+  let firstDomClickElapsedMs = null; // first real el.click() fired by confirmGamepadMenuNavFocus()
+  let firstSelectionChangeElapsedMs = null; // first gamepadMenuNavFocusIndex change via moveGamepadMenuNavFocus()
+  let mainMenuRafFrameCount = 0; // counted at the very top of loop() itself — "is RAF alive at all" independent of updateGamepadInput()
+  let mainMenuGamepadPollCount = 0; // counted at the top of updateGamepadInput() — "did this frame's poll actually run"
+  let mainMenuNavigatorSnapshotChangeCount = 0; // frames where the raw per-button diff loop found >=1 real change since last frame
+  let firstNavigatorSnapshotChangeElapsedMs = null; // first such frame — answers A2 (structural gates open, but raw getGamepads() content itself never changes) directly
   // P0 REAL DEVICE FOLLOW-UP (this batch): dedicated, own-buffer trace for
   // the TAP TO START window itself (WAITING_FOR_TAP), separate from
   // gamepadTapTrace so a GameSir TAP-FAILURE run's own early evidence can
@@ -24024,6 +24356,11 @@
   function updateGamepadInput(now) {
     gamepadSubsystemInitialized = true; // P0 INTEGRATED WORK ORDER: subsystem-alive, independent of whether any pad is actually connected
     gamepadPollFrameCount++; // P0 REAL-DEVICE HOTFIX: real polled-frame count backing isGamepadSubsystemSettled()'s enumeration-latency settle window
+    // FOLLOW-UP (MAIN MENU 3-second input latency investigation, this
+    // batch): counted here, at this function's own top — see
+    // mainMenuRafFrameCount's own comment (loop()) for why these two
+    // counters are kept deliberately separate rather than assumed equal.
+    if (lastMainMenuEnterAt) mainMenuGamepadPollCount++;
     // P0 DIAGNOSTIC PHASE 1: pure observation — STARTUP_STATE_CHANGE trace
     // event, and reset the FIRST PRESS SUMMARY capture the instant a fresh
     // WAITING_FOR_TAP begins (so the summary always reflects THIS TAP
@@ -24309,6 +24646,27 @@
     // (AXIS movement alone, e.g. a stick pushed without clicking it, never
     // counts — only gp.buttons entries do).
     const anyButtonPressedNow = gp.buttons.some((b) => b && b.pressed);
+    // FOLLOW-UP (MAIN MENU 3-second input latency investigation, this
+    // batch): first-occurrence capture of the RAW (not edge-detected, not
+    // game-logic-gated) button/axis state, straight off this frame's
+    // pressedNow/gp.axes reads — answers "did the raw signal itself ever
+    // arrive" independently of whatever the edge/menu-nav pipeline below
+    // does with it. Read-only; never gates anything.
+    if (lastMainMenuEnterAt) {
+      const elapsed = Math.round(now - lastMainMenuEnterAt);
+      if (firstRawDpadDownElapsedMs === null && (pressedNow.dpadUp || pressedNow.dpadDown || pressedNow.dpadLeft || pressedNow.dpadRight)) {
+        firstRawDpadDownElapsedMs = elapsed;
+      }
+      if (firstRawAButtonDownElapsedMs === null && pressedNow.a) {
+        firstRawAButtonDownElapsedMs = elapsed;
+      }
+      if (firstRawAxisMovementElapsedMs === null) {
+        const ax0 = gp.axes[0] || 0, ax1 = gp.axes[1] || 0;
+        if (Math.abs(ax0) >= GAMEPAD_PAUSE_MENU_STICK_THRESHOLD || Math.abs(ax1) >= GAMEPAD_PAUSE_MENU_STICK_THRESHOLD) {
+          firstRawAxisMovementElapsedMs = elapsed;
+        }
+      }
+    }
     if (DEBUG_RUNTIME_OVERLAY && anyButtonPressedNow && !gamepadLastAnyButtonPressed) {
       recordRuntimeEvent('GAMEPAD_RAW_PRESS', { index: gamepadIndex });
       recordRuntimeEvent('GAMEPAD_EDGE', { index: gamepadIndex });
@@ -24353,12 +24711,34 @@
       gamepadDisarmedAt = 0;
     }
     const prev = gamepadLastButtons;
+    // FOLLOW-UP (MAIN MENU 3-second input latency investigation, this
+    // batch): first-occurrence capture of the GAME-LOGIC rising edge — the
+    // exact same pressedNow-vs-prev comparison the FULL MENU NAVIGATION
+    // branch below performs for real — mirrored here, read-only, so its
+    // timing can be compared against firstRawDpadDownElapsedMs/
+    // firstRawAButtonDownElapsedMs above. If raw fires but this never does
+    // (or fires much later), the edge-generation stage (A3) is implicated;
+    // if both fire together but menu handling still lags, the fault is
+    // further downstream (A4/A5).
+    if (lastMainMenuEnterAt && firstRisingEdgeElapsedMs === null) {
+      const edgeButton = (pressedNow.dpadUp && !prev.dpadUp) ? 'dpadUp'
+        : (pressedNow.dpadDown && !prev.dpadDown) ? 'dpadDown'
+        : (pressedNow.dpadLeft && !prev.dpadLeft) ? 'dpadLeft'
+        : (pressedNow.dpadRight && !prev.dpadRight) ? 'dpadRight'
+        : (pressedNow.a && !prev.a) ? 'a'
+        : null;
+      if (edgeButton) {
+        firstRisingEdgeElapsedMs = Math.round(now - lastMainMenuEnterAt);
+        firstRisingEdgeButtonIndex = edgeButton;
+      }
+    }
 
     // P0 REAL-DEVICE STARTUP/MENU/AUDIO ROOT-CAUSE SESSION Part A: track the
     // most recent RAW button-state change (any index, pressed or released) —
     // debug-only, for the ?debugInput=1 overlay (updateDebugInputOverlay()
     // below), so a real device can show "the last button touched" even
     // before any game-logic branch decides what (if anything) to do with it.
+    let mainMenuDiagAnyRawChangeThisFrame = false; // FOLLOW-UP (this batch) — local, never persisted beyond this frame
     gp.buttons.forEach((b, i) => {
       const wasPressed = !!debugPrevButtonsPressedSnapshot[i];
       const isPressed = !!(b && b.pressed);
@@ -24370,8 +24750,25 @@
         if (DEBUG_GAMEPAD_TAP_OVERLAY) {
           recordGamepadTapEvent(isPressed ? 'BUTTON_RAW_DOWN' : 'BUTTON_RAW_UP', { index: i, value: b ? b.value : 0, touched: !!(b && b.touched) });
         }
+        // FOLLOW-UP (MAIN MENU 3-second input latency investigation, this
+        // batch): this diff loop already detects a genuine raw snapshot
+        // change per-button, independent of any named-button mapping —
+        // exactly the "did navigator.getGamepads()'s own content change at
+        // all" signal (A2) this investigation needs. Piggybacks read-only
+        // on the existing comparison above; changes no existing behavior.
+        if (lastMainMenuEnterAt) {
+          mainMenuDiagAnyRawChangeThisFrame = true;
+          if (isPressed && firstRawButtonDownElapsedMs === null) {
+            firstRawButtonDownElapsedMs = Math.round(now - lastMainMenuEnterAt);
+            firstRawButtonIndex = i;
+          }
+        }
       }
     });
+    if (lastMainMenuEnterAt && mainMenuDiagAnyRawChangeThisFrame) {
+      mainMenuNavigatorSnapshotChangeCount++;
+      if (firstNavigatorSnapshotChangeElapsedMs === null) firstNavigatorSnapshotChangeElapsedMs = Math.round(now - lastMainMenuEnterAt);
+    }
     debugPrevButtonsPressedSnapshot = gp.buttons.map((b) => !!(b && b.pressed));
 
     // GAMEPLAY-affecting reads (MOVE/AIM/FIRE/DASH/FLASH/STEALTH/RELOAD)
@@ -24660,6 +25057,19 @@
         // report reflects which screen the input was actually decided on, never
         // a screen the action itself already left.
         const screenAtMenuNavStart = gameState.screen;
+        // FOLLOW-UP (MAIN MENU 3-second input latency investigation, this
+        // batch): first frame the FULL MENU NAVIGATION branch itself ran
+        // with screenAtMenuNavStart==='mainMenu' — answers A4 ("edge
+        // generated, but did execution even reach the menu handler at
+        // all"). Fires every frame this branch runs while on MAIN MENU
+        // (structurally true almost immediately after entry, per the
+        // existing menuInputEnabled=true diagnostic), so a delayed value
+        // here versus an early firstRisingEdgeElapsedMs would point at
+        // something between edge generation and this branch, not at this
+        // branch itself never being reached.
+        if (lastMainMenuEnterAt && screenAtMenuNavStart === 'mainMenu' && firstMenuHandlerReachedElapsedMs === null) {
+          firstMenuHandlerReachedElapsedMs = Math.round(now - lastMainMenuEnterAt);
+        }
         recordMainMenuInputGateState(now, gp, !!pressedNow.a, freshlyAdoptedThisFrame, prev);
         captureMainMenuEarlySnapshotIfDue(now, gp, navContainer, pressedNow, prev);
         // P0 WORK ORDER D FOLLOW-UP 4 (diagnostic visualization only — no
@@ -24751,6 +25161,22 @@
             if (DEBUG_GAMEPAD_TAP_OVERLAY && screenAtMenuNavStart === 'mainMenu') {
               mainMenuInputAcceptedCountThisGeneration++;
               recordGamepadTapEvent('MAIN_MENU_INPUT_ACCEPTED', { inputType, buttonIndexOrAxis, elapsedSinceMainMenuEnterMs: lastMainMenuEnterAt ? Math.round(now - lastMainMenuEnterAt) : null });
+            }
+            // FOLLOW-UP (MAIN MENU 3-second input latency investigation,
+            // this batch): first REAL accepted D-PAD/stick nav vs first
+            // REAL accepted A confirm, captured separately — this callback
+            // only ever runs once an input has already been fully accepted
+            // (answers A4/A5 jointly: the pipeline reached and acted on it).
+            // Never gated behind DEBUG_GAMEPAD_TAP_OVERLAY — always-on, like
+            // lastMainMenuEnterAt itself.
+            if (lastMainMenuEnterAt && screenAtMenuNavStart === 'mainMenu') {
+              const elapsed = Math.round(now - lastMainMenuEnterAt);
+              if ((inputType === 'dpad' || inputType === 'leftStick') && firstAcceptedMenuNavigationElapsedMs === null) {
+                firstAcceptedMenuNavigationElapsedMs = elapsed;
+              }
+              if (inputType === 'confirm' && firstMenuConfirmAcceptedElapsedMs === null) {
+                firstMenuConfirmAcceptedElapsedMs = elapsed;
+              }
             }
           };
           if (pressedNow.dpadUp && !prev.dpadUp) { moveGamepadMenuNavFocus(-1); debugLastDpadNavAt = now; reportMainMenuAccepted('dpad', 'up'); }
@@ -25216,6 +25642,25 @@
           ? mainMenuEarlySnapshots.map((snap) => `  [+${snap.checkpointMs}ms / actual ${snap.elapsedActualMs}ms] ${JSON.stringify(snap)}`).join('\n')
           : '  (none captured yet — MAIN MENU not yet entered this page life)'
       }\n` +
+      // FOLLOW-UP (MAIN MENU 3-second input latency investigation, this
+      // batch): fixed, non-ring-buffer pipeline-stage timestamps — see each
+      // field's own declaration for exactly what it measures and which of
+      // A1-A5 it answers. null = "never happened yet this MAIN MENU visit".
+      `--- MAIN MENU INPUT PIPELINE (fixed fields, elapsed ms since lastMainMenuEnterAt unless noted) ---\n` +
+      `mainMenuRafFrameCount (loop() frames since entry — A1, RAF alive at all): ${mainMenuRafFrameCount}\n` +
+      `mainMenuGamepadPollCount (updateGamepadInput() calls since entry): ${mainMenuGamepadPollCount}\n` +
+      `mainMenuNavigatorSnapshotChangeCount (frames where raw getGamepads() content actually changed — A2): ${mainMenuNavigatorSnapshotChangeCount}\n` +
+      `firstNavigatorSnapshotChangeElapsedMs: ${firstNavigatorSnapshotChangeElapsedMs === null ? '(never)' : '+' + firstNavigatorSnapshotChangeElapsedMs + 'ms'}\n` +
+      `firstRawButtonDownElapsedMs: ${firstRawButtonDownElapsedMs === null ? '(never)' : '+' + firstRawButtonDownElapsedMs + 'ms'}  index: ${firstRawButtonIndex === null ? '(n/a)' : firstRawButtonIndex}\n` +
+      `firstRawDpadDownElapsedMs: ${firstRawDpadDownElapsedMs === null ? '(never)' : '+' + firstRawDpadDownElapsedMs + 'ms'}\n` +
+      `firstRawAButtonDownElapsedMs: ${firstRawAButtonDownElapsedMs === null ? '(never)' : '+' + firstRawAButtonDownElapsedMs + 'ms'}\n` +
+      `firstRawAxisMovementElapsedMs: ${firstRawAxisMovementElapsedMs === null ? '(never)' : '+' + firstRawAxisMovementElapsedMs + 'ms'}\n` +
+      `firstRisingEdgeElapsedMs (game-logic edge — A3): ${firstRisingEdgeElapsedMs === null ? '(never)' : '+' + firstRisingEdgeElapsedMs + 'ms'}  button: ${firstRisingEdgeButtonIndex === null ? '(n/a)' : firstRisingEdgeButtonIndex}\n` +
+      `firstMenuHandlerReachedElapsedMs (A4): ${firstMenuHandlerReachedElapsedMs === null ? '(never)' : '+' + firstMenuHandlerReachedElapsedMs + 'ms'}\n` +
+      `firstAcceptedMenuNavigationElapsedMs (D-PAD/stick, A4/A5): ${firstAcceptedMenuNavigationElapsedMs === null ? '(never)' : '+' + firstAcceptedMenuNavigationElapsedMs + 'ms'}\n` +
+      `firstMenuConfirmAcceptedElapsedMs (A confirm, A4/A5): ${firstMenuConfirmAcceptedElapsedMs === null ? '(never)' : '+' + firstMenuConfirmAcceptedElapsedMs + 'ms'}\n` +
+      `firstSelectionChangeElapsedMs (A5): ${firstSelectionChangeElapsedMs === null ? '(never)' : '+' + firstSelectionChangeElapsedMs + 'ms'}\n` +
+      `firstDomClickElapsedMs (A5): ${firstDomClickElapsedMs === null ? '(never)' : '+' + firstDomClickElapsedMs + 'ms'}\n` +
       `--- EVENT TRACE (most recent ${Math.min(gamepadTapTrace.length, GAMEPAD_TAP_TRACE_MAX)} of ${gamepadTapTrace.length}, ring buffer max ${GAMEPAD_TAP_TRACE_MAX}) ---\n` +
       gamepadTapTrace.slice(-GAMEPAD_TAP_TRACE_MAX).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n')
     );
@@ -25696,11 +26141,30 @@
       `H3 (discovery-TAP path AND normal START both trigger an audio side effect): REQUIRES REAL-DEVICE TRACE — onOpeningTap()'s own screen==='opening' early-return should prevent a second synchronous call in the same generation; check the OPENING_TAP count/willEarlyReturn fields in the EVENT TIMELINE below for this exact run.\n` +
       `H4 (pageshow/focus/visibilitychange recovery overlapping START MENU transition): PARTIALLY ADDRESSED BY EXISTING CODE — hardResetAllBgmForFreshBoot() runs on every pageshow, but only before the user has interacted; check for a PAGESHOW/VISIBILITY event in the EVENT TIMELINE below in the seconds after MAIN_MENU_ENTER.\n` +
       `H5 (unmanaged direct .play() outside claimAudibleBgm remains): PARTIALLY CONFIRMED BY STATIC AUDIT — unlockBackgroundBgmForIOS()'s own priming pass calls .play() directly on bgmAudio/bossBgmAudio/endingRevealAudio outside claimAudibleBgm(), by design (muted, torn down on non-superseding resolve); check AUDIO_PLAY_CALL entries below with muted:false for any of those 3 tracks near MAIN_MENU_ENTER — that would mean the mute did not actually take effect on this device.\n\n`;
+    // FOLLOW-UP (B: Outbreak1.1/bgmAudio + Outbreak2/bossBgmAudio real-
+    // playback-stall investigation, this batch): fixed, per-element latest-
+    // ownership-transition fields — see scheduleBgmPlaybackAdvancementCheck()'s
+    // own comment for what each field measures. null = "never happened yet
+    // this transition". Only bgmAudio ('normal') and bossBgmAudio ('boss')
+    // are the tracks this investigation cares about; shown together with
+    // menuBgmAudio/endingRevealAudio for completeness if either ever has a
+    // transition recorded.
+    const bgmTransitionLines = [menuBgmAudio, bgmAudio, bossBgmAudio, endingRevealAudio].map((el) => {
+      const track = BGM_TRACK_NAMES_BY_ELEMENT.get(el) || '?';
+      const rec = bgmPlaybackTransitions.get(el);
+      if (!rec) return `  [${track}] (no transition recorded yet this page life)`;
+      return `  [${track}] playCallAt=${rec.playCallAt === undefined ? '(n/a)' : rec.playCallAt} playResolvedAt=${rec.playResolvedAt} rejectedAt=${rec.rejectedAt} rejectName=${rec.rejectName} ` +
+        `startCurrentTime=${rec.startCurrentTime} currentTimeAt250ms=${rec.currentTimeAt250ms} currentTimeAt500ms=${rec.currentTimeAt500ms} currentTimeAt1000ms=${rec.currentTimeAt1000ms} ` +
+        `playbackAdvanced=${rec.playbackAdvanced} stalledDetectedAt=${rec.stalledDetectedAt} recoveryAttemptCount=${rec.recoveryAttemptCount} recoveryResult=${rec.recoveryResult} userActivation=${rec.userActivation}`;
+    });
+    const bgmTransitionBlock =
+      `--- BGM PLAYBACK TRANSITIONS (per-element latest, fixed fields — real-playback-stall investigation) ---\n` +
+      bgmTransitionLines.join('\n') + '\n\n';
     const traceLines = audioStartTrace.slice(-150).map((e) => {
       const extra = Object.keys(e).filter((k) => k !== 't' && k !== 'pt' && k !== 'type' && k !== 'inventory').map((k) => `${k}=${JSON.stringify(e[k])}`).join(' ');
       return `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${extra}`;
     });
-    return header + summaryBlock + hypothesesBlock +
+    return header + summaryBlock + hypothesesBlock + bgmTransitionBlock +
       `--- EVENT TIMELINE (most recent ${Math.min(audioStartTrace.length, 150)} of ${audioStartTrace.length}, ring buffer max ${AUDIO_START_TRACE_MAX}) ---\n` +
       traceLines.join('\n') + '\n';
   }
@@ -25739,6 +26203,14 @@
   function loop(now) {
     rafFrameCount++;
     rafLastDeltaMs = now - lastTime;
+    // FOLLOW-UP (MAIN MENU 3-second input latency investigation, this
+    // batch): counted here, at the very top of loop() itself, BEFORE
+    // anything else this frame could possibly throw or skip — answers "is
+    // requestAnimationFrame itself still alive" (A1) completely
+    // independently of whether updateGamepadInput() below ever runs or what
+    // it finds. Gated on lastMainMenuEnterAt so it only ever counts once
+    // MAIN MENU has been entered at least once this page life.
+    if (lastMainMenuEnterAt) mainMenuRafFrameCount++;
     try {
       const dt = Math.min((now - lastTime) / 1000, 0.05);
       lastTime = now;
