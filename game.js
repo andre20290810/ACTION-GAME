@@ -10680,9 +10680,34 @@
     // ever hosted on it, and no FULL/FAST choice overlay exists any more —
     // so #loading-screen stays visible for BOTH values, and only which
     // inner overlay is shown actually distinguishes them.
-    document.getElementById('loading-screen').hidden = next !== 'loading' && next !== 'opening';
+    // P0 WORK ORDER D FOLLOW-UP 10 (root-cause fix, this batch): a THIRD
+    // overlay — 'postTapLoading' — now shares this same plain-black
+    // #loading-screen container alongside 'loading'/'opening'. It shows
+    // #loading-bg-video (assets/video/system/loading_bg_loop.mp4, already
+    // present in the DOM, muted/loop/playsinline, unused since the AUDIT
+    // PHASE 2 + PART B (B4) revert above) as a looping, no-controls visual —
+    // never the progress bar, never TAP TO START — while
+    // updatePostTapLoading() waits on genuine Gamepad/menu readiness (see
+    // its own comment) before handing off to MAIN MENU. Deliberately a
+    // SEPARATE condition from the 'loading' branch just above: INITIAL
+    // LOADING stays static-image-only exactly as B4's revert intended, and
+    // this new screen never reuses or shares any of that phase's own
+    // asset-loading/progress logic — only the already-idle <video> element
+    // and its CSS.
+    document.getElementById('loading-screen').hidden = next !== 'loading' && next !== 'opening' && next !== 'postTapLoading';
     document.getElementById('loading-progress-overlay').hidden = next !== 'loading';
     document.getElementById('opening-overlay').hidden = next !== 'opening';
+    const postTapLoadingBgVideoEl = document.getElementById('loading-bg-video');
+    if (next === 'postTapLoading') {
+      postTapLoadingBgVideoEl.hidden = false;
+      if (postTapLoadingBgVideoEl.paused) {
+        postTapLoadingBgVideoEl.currentTime = 0;
+        postTapLoadingBgVideoEl.play().catch(() => {}); // already muted — a rejection here is harmless, the static #loading-screen background shows through
+      }
+    } else {
+      postTapLoadingBgVideoEl.hidden = true;
+      if (!postTapLoadingBgVideoEl.paused) postTapLoadingBgVideoEl.pause();
+    }
     // P0 FIRST-SESSION STABILITY (this batch): the previous batch's
     // AUDIT PHASE 2 + PART B (B4) auto-played #loading-bg-video as the
     // INITIAL STARTUP LOADING background — real-device testing found this
@@ -12054,7 +12079,13 @@
   // a combination of separate booleans (fullPreloadReady, gamepadInputArmed,
   // menuBgmStarted, etc. all still exist as their own internal detail, but
   // none of them alone decides which screen is showing any more).
-  const STARTUP_STATE = { BOOT: 'BOOT', LOADING: 'LOADING', STARTUP_READY: 'STARTUP_READY', WAITING_FOR_TAP: 'WAITING_FOR_TAP', ENTERING_MENU: 'ENTERING_MENU', MAIN_MENU: 'MAIN_MENU' };
+  // P0 WORK ORDER D FOLLOW-UP 10 (root-cause fix, this batch): new
+  // POST_TAP_LOADING state — TAP TO START acceptance no longer jumps
+  // straight to MAIN_MENU. It now passes through this state (screen
+  // 'postTapLoading', loading_bg_loop.mp4 shown) until genuine Gamepad/menu
+  // readiness is confirmed — see enterPostTapLoading()/updatePostTapLoading()
+  // below for the full state-machine writeup.
+  const STARTUP_STATE = { BOOT: 'BOOT', LOADING: 'LOADING', STARTUP_READY: 'STARTUP_READY', WAITING_FOR_TAP: 'WAITING_FOR_TAP', ENTERING_MENU: 'ENTERING_MENU', POST_TAP_LOADING: 'POST_TAP_LOADING', MAIN_MENU: 'MAIN_MENU' };
   let startupState = STARTUP_STATE.BOOT;
   // P0 WORK ORDER D FOLLOW-UP 2 (warm reload, root-cause redesign): real
   // device evidence disproved the "focus recovery" theory for the Reload
@@ -12685,6 +12716,21 @@
       // is always a non-gesture call and always rejects with
       // NotAllowedError — see unlockGameplayBgmOnlyForIOS()'s own comment.
       unlockGameplayBgmOnlyForIOS(isTrustedGesture);
+      // P0 WORK ORDER D FOLLOW-UP 10 (root-cause fix, this batch): the same
+      // narrow single-track authorization for eventMovieVideoEl — MOVED
+      // here from confirmGamepadMenuNavFocus() (see that function's own
+      // comment for why: real-device evidence showed its per-menu-confirm
+      // priming pattern repeating on every single screen transition rather
+      // than latching after one success, which is also the mechanism this
+      // batch's real-device report ties to Outbreak1.1 becoming audible
+      // during MAIN MENU/scenarioSelect/mainScenarioSub). Attempting it here
+      // — synchronously inside the SAME accepted TAP gesture that already
+      // primes bgmAudio one line above, strictly BEFORE POST-TAP LOADING or
+      // MAIN MENU is ever shown — plus updatePostTapLoading()'s own bounded
+      // retry (see its comment) gives this the same real chance of success
+      // it always had, without ever running again once MAIN MENU is
+      // visible.
+      unlockEventMoviePlaybackForGamepadConfirm(isTrustedGesture);
       return;
     }
     unlockEventMovieElementForIOS(isTrustedGesture);
@@ -12845,14 +12891,128 @@
     openingVideoEl.src = SYSTEM_MOVIES.start_display;
     openingVideoEl.currentTime = 0;
     playOpeningVideoWithRetry(); // P0 RUNTIME STATE/ASYNC RACE STABILIZATION: bounded retry on rejection — see its own comment
+    // P0 WORK ORDER D FOLLOW-UP 10 (root-cause fix, this batch): TAP TO
+    // START acceptance no longer jumps straight to setScreen('mainMenu')
+    // here — real-device reports showed MAIN MENU appearing before the
+    // Gamepad subsystem/edge-baseline had genuinely settled (several
+    // seconds of dead D-pad/A input), and separately showed
+    // confirmGamepadMenuNavFocus()'s own media-priming calls (now removed —
+    // see that function's own comment) repeating on every menu screen while
+    // the player waited inside that dead window. Routes through the new
+    // POST_TAP_LOADING state instead (loading_bg_loop.mp4, no UI, no
+    // MAIN MENU) until updatePostTapLoading() confirms genuine readiness —
+    // see its own and enterPostTapLoading()'s comments for the full
+    // writeup. Everything this function used to do synchronously right here
+    // (gamepad edge-baseline reset, MAIN MENU entry bookkeeping, START MENU
+    // audio snapshot, non-critical movie preload) now runs inside
+    // completeEnterMainMenu(), called once readiness is confirmed — never a
+    // fixed delay, never gated on any audio/video Promise.
+    enterPostTapLoading(openingSourceForThisAccept);
+  }
+  // P0 WORK ORDER D FOLLOW-UP 10 (root-cause fix, this batch): POST-TAP
+  // LOADING — the new gap between "TAP TO START accepted" and "MAIN MENU
+  // genuinely interactive". Real-device evidence (both this batch's own
+  // report and the "MAIN MENU shows but GameSir doesn't respond for several
+  // seconds"/"D-pad/A operate poorly for a few seconds" symptoms this whole
+  // startup-state-machine area already exists to fix) showed the OLD
+  // behavior — jumping straight from onOpeningTap() to setScreen('mainMenu')
+  // in the same synchronous call — displaying MAIN MENU before the Gamepad
+  // subsystem had actually settled. This closes that gap by holding the
+  // player on a plain loading_bg_loop.mp4 loop (screen 'postTapLoading', no
+  // UI, no TAP TO START, no MAIN MENU) until genuine readiness is confirmed,
+  // never a fixed timer:
+  //  - touch/mouse-accepted opening, no gamepad ever connected:
+  //    isGamepadReadyForTap() returns gamepadSubsystemInitialized (already
+  //    true) immediately — this state is passed through in ~1 frame.
+  //  - gamepad-accepted opening (raw/discovery/warm-reload-skip), pad
+  //    already exposed: isGamepadReadyForTap() waits out
+  //    GAMEPAD_POST_CONNECT_SETTLE_MS (250ms) of real elapsed time since the
+  //    pad was first seen connected, with a genuine adopted-snapshot check —
+  //    the SAME predicate already used to gate LOADING->WAITING_FOR_TAP
+  //    (see getStartupRequiredAssetTargets()'s own 'gamepad ready (if
+  //    connected)' target), reused here rather than inventing a second,
+  //    parallel readiness definition. Bounded by the same
+  //    GAMEPAD_READY_MAX_WAIT_MS (3000ms) fail-open ceiling, so a pad that
+  //    never truly stabilizes can never turn this into a permanent stall —
+  //    never "hold every button released first" (explicitly forbidden this
+  //    batch), just real elapsed settle time.
+  // Media Promise completion (bgmAudio/eventMovieVideoEl priming) is NEVER
+  // part of this exit condition — see the throttled, bounded retry inside
+  // updatePostTapLoading() below, which fires alongside the readiness poll
+  // but never gates it.
+  let postTapLoadingGeneration = 0;
+  let postTapLoadingNeedsGamepadMediaPriming = false;
+  let postTapMediaPrimingAttempts = 0;
+  let postTapMediaPrimingLastAttemptAt = 0;
+  const POST_TAP_MEDIA_PRIMING_MAX_ATTEMPTS = 5;
+  const POST_TAP_MEDIA_PRIMING_RETRY_INTERVAL_MS = 150;
+  function enterPostTapLoading(openingSource) {
+    postTapLoadingGeneration++;
+    postTapMediaPrimingAttempts = 0;
+    postTapMediaPrimingLastAttemptAt = 0;
+    // Same classification attemptStartupAudioUnlock() already uses for
+    // "was this opening gamepad-sourced" — only those sessions need the
+    // bgmAudio/eventMovieVideoEl narrow per-element priming retry below;
+    // a touch/mouse-accepted opening already got its (different, 3-track)
+    // priming pass synchronously inside attemptStartupAudioUnlock() itself,
+    // completely unrelated to this loop.
+    postTapLoadingNeedsGamepadMediaPriming = (openingSource === 'gamepad-discovery' || openingSource === 'gamepad-raw' || openingSource === 'warm-reload-skip');
+    startupState = STARTUP_STATE.POST_TAP_LOADING;
+    if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState }); audioStartLastStartupState = startupState; }
+    setScreen('postTapLoading');
+  }
+  // Called every real frame (see loop()'s own call, right after
+  // updateGamepadInput(now) so this frame's gamepad poll/adoption has
+  // already run) — a no-op unless startupState is genuinely
+  // POST_TAP_LOADING. Never awaits a Promise; every check here is a
+  // synchronous read of already-current state.
+  function updatePostTapLoading(now) {
+    if (startupState !== STARTUP_STATE.POST_TAP_LOADING) return;
+    const myGeneration = postTapLoadingGeneration;
+    // P0 WORK ORDER D FOLLOW-UP 10 (root-cause fix, this batch): bounded,
+    // throttled retry of the SAME narrow per-element priming
+    // attemptStartupAudioUnlock() already attempted once, synchronously, at
+    // TAP-accept — giving a gamepad-sourced session a few more real chances
+    // to catch a genuinely-active navigator.userActivation window while
+    // still entirely BEFORE MAIN MENU is ever shown (this whole state is,
+    // by definition, pre-MAIN-MENU). This is what confirmGamepadMenuNavFocus()
+    // used to do on every single menu confirm, forever, for the rest of the
+    // MAIN MENU visit — see that function's own comment for why that was
+    // removed. Both unlock functions early-return instantly once genuinely
+    // latched (see their own comments), so this loop is cheap once either
+    // succeeds; capped at POST_TAP_MEDIA_PRIMING_MAX_ATTEMPTS/throttled to
+    // POST_TAP_MEDIA_PRIMING_RETRY_INTERVAL_MS so it can never turn into an
+    // unbounded per-frame retry storm.
+    if (postTapLoadingNeedsGamepadMediaPriming &&
+        (!gameplayBgmOnlyUnlocked || !eventMovieElementUnlocked) &&
+        postTapMediaPrimingAttempts < POST_TAP_MEDIA_PRIMING_MAX_ATTEMPTS &&
+        (now - postTapMediaPrimingLastAttemptAt) >= POST_TAP_MEDIA_PRIMING_RETRY_INTERVAL_MS) {
+      postTapMediaPrimingAttempts++;
+      postTapMediaPrimingLastAttemptAt = now;
+      const activationActive = !!(navigator.userActivation && navigator.userActivation.isActive);
+      unlockGameplayBgmOnlyForIOS(activationActive);
+      unlockEventMoviePlaybackForGamepadConfirm(activationActive);
+    }
+    if (!isGamepadReadyForTap()) return; // not yet — keep showing POST-TAP LOADING, no fixed delay
+    if (myGeneration !== postTapLoadingGeneration) return; // superseded by a newer TAP/RETRY/boot — this stale check does nothing
+    completeEnterMainMenu();
+  }
+  // Everything onOpeningTap() used to do synchronously the instant it called
+  // setScreen('mainMenu') — moved here, unchanged, run once
+  // updatePostTapLoading() confirms genuine readiness rather than
+  // immediately on TAP accept. See P0 STARTUP STATE MACHINE REWRITE item 10
+  // and P0 WORK ORDER D's own comments below for why each individual line
+  // exists; none of that reasoning changed, only WHEN this runs.
+  function completeEnterMainMenu() {
     setScreen('mainMenu');
     // P0 STARTUP STATE MACHINE REWRITE item 10: a fresh gamepad edge-baseline
     // resync (gamepadIndex=null forces adoptGamepadIndex() to reseed from the
     // pad's REAL current button state on the very next poll, same frame)
     // happens synchronously right here, BEFORE startupState flips to
     // MAIN_MENU -- so a button still physically held from the TAP press just
-    // above can never be misread as a fresh MAIN MENU nav press, while nav
-    // itself is genuinely ready (menuNavContainer is computed live from
+    // above (or, now, from anywhere during the POST_TAP_LOADING window) can
+    // never be misread as a fresh MAIN MENU nav press, while nav itself is
+    // genuinely ready (menuNavContainer is computed live from
     // gameState.screen, already 'mainMenu' as of the line above) the instant
     // MAIN_MENU is reached.
     // P0 WORK ORDER D (root-cause fix, this batch): this reset used to
@@ -17736,36 +17896,25 @@
     const el = items[gamepadMenuNavFocusIndex];
     debugLastAConfirmAt = performance.now();
     debugLastAConfirmTarget = el ? (el.id || el.textContent.trim().slice(0, 24) || '(unlabeled)') : '(no item at focus index)';
-    // P0 WORK ORDER D FOLLOW-UP 3 (root-cause fix, this batch): attempt
-    // bgmAudio/eventMovieVideoEl's real per-element WebKit unlock here, BEFORE
-    // el.click() below — this fires on every menu-family gamepad confirm,
-    // across every screen, so the earliest confirm where the browser still
-    // genuinely reports navigator.userActivation.isActive===true (confirmed
-    // by real-device trace to be true at least for the first post-warm-
-    // reload A-press, since Outbreak0's own claimAudibleBgm() call already
-    // relies on and succeeds from exactly that) permanently unlocks both
-    // elements — see unlockGameplayBgmOnlyForIOS()/
-    // unlockEventMoviePlaybackForGamepadConfirm()'s own comments for why
-    // neither ever got that chance before on a gamepad-only session, and why
-    // this is safe (narrow, single-element, never touches menuBgmAudio, never
-    // reassigns eventMovieVideoEl.src).
-    // P0 WORK ORDER D FOLLOW-UP 9 (root-cause fix, this batch): a THIRD
-    // simultaneous same-tick priming call (unlockBossBgmOnlyForIOS(), added
-    // in Follow-up 8) was here briefly — real-device evidence showed it
-    // correlating with a genuine regression across BOTH of the other two
-    // elements (Outbreak1.1 stalling at a fixed currentTime for several
-    // seconds after MAIN SCENARIO start; sneaking/drone_arrival own audio
-    // going silent despite muted=false/play() resolving), not just
-    // bossBgmAudio itself staying rejected. Reverted back to exactly this
-    // 2-element structure, the one actually verified working on real
-    // hardware (52ef913) — see that round's own completion report for the
-    // full diff/root-cause writeup. bossBgmAudio's own NotAllowedError is a
-    // separate, still-open issue, deliberately left alone this round rather
-    // than attempting a new authorization approach in the same breath as
-    // this revert.
-    const gamepadConfirmActivationIsActive = !!(navigator.userActivation && navigator.userActivation.isActive);
-    unlockGameplayBgmOnlyForIOS(gamepadConfirmActivationIsActive);
-    unlockEventMoviePlaybackForGamepadConfirm(gamepadConfirmActivationIsActive);
+    // P0 WORK ORDER D FOLLOW-UP 3/9 — REMOVED (P0 WORK ORDER D FOLLOW-UP 10,
+    // this batch). This used to attempt bgmAudio/eventMovieVideoEl's per-
+    // element WebKit unlock here, on EVERY menu-family gamepad confirm,
+    // across every screen (MAIN MENU/scenarioSelect/mainScenarioSub/etc, for
+    // as long as the player kept navigating menus). Real-device evidence
+    // this batch showed that pattern repeating far more than the intended
+    // "first successful confirm latches it permanently" — a real muted
+    // play()/pause() cycle recurring on bgmAudio+eventMovieVideoEl at each
+    // of several menu transitions — which this batch's own report ties to
+    // Outbreak1.1 becoming audible alongside Outbreak0 during MAIN MENU.
+    // This exact same priming (same two functions, same activation-read
+    // condition) now runs ONLY during the new POST_TAP_LOADING window —
+    // once synchronously at TAP-accept (attemptStartupAudioUnlock()'s
+    // gamepad branch) plus a few bounded retries (updatePostTapLoading()) —
+    // strictly BEFORE MAIN MENU is ever shown, never again afterward. See
+    // enterPostTapLoading()/updatePostTapLoading()'s own comments for the
+    // full writeup. Menu navigation itself (el.click() below) is completely
+    // unaffected — it was never gated on this priming's outcome before, and
+    // still is not.
     if (el) el.click();
   }
 
@@ -25299,6 +25448,12 @@
       // screen==='gameplay'), so a disconnect/neutral-stick reset is never
       // more than one frame late even while paused or in a menu.
       updateGamepadInput(now);
+      // P0 WORK ORDER D FOLLOW-UP 10 (root-cause fix, this batch): polled
+      // every real frame, right after updateGamepadInput(now) so this
+      // frame's own gamepad poll/adoption has already run — a no-op unless
+      // startupState is genuinely POST_TAP_LOADING. See its own comment for
+      // the full readiness-gate writeup.
+      updatePostTapLoading(now);
       // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: recorded HERE, right after
       // the real call above, never inside updateGamepadInput() itself — this
       // batch does not touch gamepad code, so "is gamepad polling alive" is
