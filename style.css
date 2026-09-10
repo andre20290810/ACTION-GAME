@@ -1607,6 +1607,41 @@ body.debug-audio-start-only #debug-audio-start-panel { width: 100%; left: 0; bor
   50% { opacity: 1; }
 }
 
+/* P0 WORK ORDER D FOLLOW-UP 11: small POST-TAP LOADING hint — same visual
+   language as #opening-tap-prompt just above (plain uppercase sans-serif,
+   no box/panel), anchored near the bottom of #loading-screen so it never
+   competes with the loading_bg_loop.mp4 video filling the rest of the
+   screen. Two short lines rather than one — see index.html's own comment
+   for why both are always shown together. */
+#post-tap-loading-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 8vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 1;
+}
+#post-tap-loading-hint[hidden] { display: none; }
+#post-tap-loading-hint-controller,
+#post-tap-loading-hint-touch {
+  font-family: sans-serif;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+}
+#post-tap-loading-hint-controller {
+  color: rgba(230, 220, 220, 0.85);
+  animation: opening-tap-pulse 1.6s ease-in-out infinite;
+}
+#post-tap-loading-hint-touch {
+  color: rgba(150, 220, 160, 0.85);
+}
+
 /* SECTION D: the OPENING video must stay visible and be the focus behind
    MAIN MENU, so this is deliberately NOT a boxed/paneled screen (unlike the
    removed #main-menu-screen/#main-menu-panel it replaces) — plain vertical

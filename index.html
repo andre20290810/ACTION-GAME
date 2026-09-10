@@ -23,7 +23,7 @@
 <meta name="twitter:image" content="https://andre20290810.github.io/ACTION-GAME/assets/branding/dark_out_site_v2.jpg">
 <link rel="icon" href="assets/branding/dark_out_site_v2.jpg" type="image/jpeg">
 <link rel="apple-touch-icon" href="assets/branding/dark_out_site_v2.jpg">
-<link rel="stylesheet" href="style.css?v=p0-workorder-d-followup-1">
+<link rel="stylesheet" href="style.css?v=p0-workorder-d-followup-2">
 </head>
 <!-- P0 WORK ORDER D FOLLOW-UP: tabindex="-1" makes <body> programmatically
      focusable (document.body.focus()) without ever entering the real
@@ -94,6 +94,17 @@
   <div id="opening-overlay" hidden>
     <div id="opening-title">DARK OUT</div>
     <div id="opening-tap-prompt">TAP TO START</div>
+  </div>
+  <!-- P0 WORK ORDER D FOLLOW-UP 11: shown ONLY during screen='postTapLoading'
+       and ONLY while no genuinely active/adopted gamepad exists yet (see
+       isGamepadActivelyReady()/updatePostTapLoading()'s own toggle in
+       game.js) — a small, non-blocking reassurance so a controller user
+       knows to press a button, worded so a touch-only user is never misled
+       into thinking a controller is required. Never gates readiness itself;
+       purely cosmetic. -->
+  <div id="post-tap-loading-hint" hidden>
+    <div id="post-tap-loading-hint-controller">CONTROLLER: PRESS A</div>
+    <div id="post-tap-loading-hint-touch">TOUCH: READY</div>
   </div>
 </div>
 
@@ -630,6 +641,6 @@
      the real device" reports. The query string is bumped every batch that
      touches game.js so each deploy is a genuinely new URL, never reusing a
      cached response. -->
-<script src="game.js?v=p0-workorder-d-followup-10"></script>
+<script src="game.js?v=p0-workorder-d-followup-11"></script>
 </body>
 </html>

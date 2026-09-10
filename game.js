@@ -10707,6 +10707,11 @@
     } else {
       postTapLoadingBgVideoEl.hidden = true;
       if (!postTapLoadingBgVideoEl.paused) postTapLoadingBgVideoEl.pause();
+      // P0 WORK ORDER D FOLLOW-UP 11: force-hide the "CONTROLLER: PRESS A"
+      // hint the instant we leave 'postTapLoading' for any reason — never
+      // left dangling visible on 'mainMenu' or any other screen.
+      // updatePostTapLoading() is the only place that ever shows it again.
+      document.getElementById('post-tap-loading-hint').hidden = true;
     }
     // P0 FIRST-SESSION STABILITY (this batch): the previous batch's
     // AUDIT PHASE 2 + PART B (B4) auto-played #loading-bg-video as the
@@ -12942,6 +12947,11 @@
   // but never gates it.
   let postTapLoadingGeneration = 0;
   let postTapLoadingNeedsGamepadMediaPriming = false;
+  // P0 WORK ORDER D FOLLOW-UP 11: tracks the #post-tap-loading-hint DOM
+  // element's current shown/hidden state so updatePostTapLoading() only
+  // ever writes to it on an actual change — see that function's own
+  // comment.
+  let postTapLoadingHintVisible = false;
   let postTapMediaPrimingAttempts = 0;
   let postTapMediaPrimingLastAttemptAt = 0;
   const POST_TAP_MEDIA_PRIMING_MAX_ATTEMPTS = 5;
@@ -12957,6 +12967,7 @@
     // priming pass synchronously inside attemptStartupAudioUnlock() itself,
     // completely unrelated to this loop.
     postTapLoadingNeedsGamepadMediaPriming = (openingSource === 'gamepad-discovery' || openingSource === 'gamepad-raw' || openingSource === 'warm-reload-skip');
+    postTapLoadingHintVisible = false; // fresh cycle — setScreen('postTapLoading') below leaves the DOM hidden; updatePostTapLoading()'s first frame decides the real value
     startupState = STARTUP_STATE.POST_TAP_LOADING;
     if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState }); audioStartLastStartupState = startupState; }
     setScreen('postTapLoading');
@@ -12969,6 +12980,19 @@
   function updatePostTapLoading(now) {
     if (startupState !== STARTUP_STATE.POST_TAP_LOADING) return;
     const myGeneration = postTapLoadingGeneration;
+    // P0 WORK ORDER D FOLLOW-UP 11 (root-cause fix, this batch): the
+    // "CONTROLLER: PRESS A / TOUCH: READY" hint — visible for as long as no
+    // genuine active/adopted gamepad exists yet (isGamepadActivelyReady(),
+    // NOT isGamepadReadyForTap() — see both functions' own comments for why
+    // conflating them was exactly this batch's reported bug), hidden the
+    // instant one does. Only writes the DOM when the value actually
+    // changes, never every frame. setScreen() force-hides this on the way
+    // out of 'postTapLoading' regardless of this flag's state.
+    const shouldShowHint = !isGamepadActivelyReady();
+    if (shouldShowHint !== postTapLoadingHintVisible) {
+      postTapLoadingHintVisible = shouldShowHint;
+      document.getElementById('post-tap-loading-hint').hidden = !shouldShowHint;
+    }
     // P0 WORK ORDER D FOLLOW-UP 10 (root-cause fix, this batch): bounded,
     // throttled retry of the SAME narrow per-element priming
     // attemptStartupAudioUnlock() already attempted once, synchronously, at
@@ -19922,6 +19946,7 @@
     computeStartupEtaSeconds, LOADING_STALL_THRESHOLD_MS, // P0 INTEGRATED REGRESSION FIX (LOADING E/F) — debug/verification only
     get gamepadPollFrameCount() { return gamepadPollFrameCount; }, isGamepadSubsystemSettled, // P0 REAL-DEVICE HOTFIX — debug/verification only
     isGamepadReadyForTap, get gamepadFirstSeenConnectedAt() { return gamepadFirstSeenConnectedAt; }, // AUDIT PHASE 2 + PART B (B8) — debug/verification only
+    isGamepadActivelyReady, // P0 WORK ORDER D FOLLOW-UP 11 — debug/verification only
     getDronePlacementRangeX, clampPlayerToScreen,
     get W() { return W; }, get H() { return H; },
     // P0 LANDSCAPE HOTFIX — debug/verification only:
@@ -23189,6 +23214,39 @@
     if (snapshotValid && elapsedSinceConnect >= GAMEPAD_POST_CONNECT_SETTLE_MS) return true;
     return elapsedSinceConnect >= GAMEPAD_READY_MAX_WAIT_MS; // bounded safety net, never an infinite wait
   }
+  // P0 WORK ORDER D FOLLOW-UP 11 (root-cause fix, this batch): isGamepadReadyForTap()
+  // above deliberately returns true with ZERO pads connected (a touch-only
+  // session must never be blocked waiting for a controller that doesn't
+  // exist) — but that same "true" was being read in the debug overlay as
+  // if it meant "there is a genuine, active, adopted gamepad right now",
+  // which is misleading whenever gamepadIndex is still null (exactly the
+  // "gamepad ready result: true / adopted gamepadIndex: null / REJECT: NO
+  // ACTIVE PAD" contradiction this batch's real-device report flagged —
+  // touch-only readiness and gamepad-active readiness were never actually
+  // the same question). This is the separate, narrower answer to that
+  // second question: true ONLY when a real pad is currently connected,
+  // adopted (gamepadIndex !== null), and has genuinely settled since being
+  // seen connected (same elapsed-time + snapshot-valid check
+  // isGamepadReadyForTap() itself uses) — false for a touch-only session,
+  // false while a pad is still settling, false the instant a pad
+  // disconnects. Used to drive the new POST-TAP LOADING "CONTROLLER: PRESS
+  // A" hint (see updatePostTapLoading()) and the corrected debug-overlay
+  // field below — never used to gate the actual POST_TAP_LOADING->
+  // MAIN_MENU transition itself, which still correctly relies on
+  // isGamepadReadyForTap()'s own touch-inclusive definition (the two
+  // predicates answer genuinely different questions and must stay
+  // separate: "is startup blocked on the gamepad subsystem" vs. "is there
+  // a genuine active pad right now").
+  function isGamepadActivelyReady() {
+    if (gamepadIndex === null) return false;
+    const active = getActiveGamepad();
+    if (!active || !active.connected) return false;
+    if (!gamepadFirstSeenConnectedAt) return false;
+    const elapsedSinceConnect = performance.now() - gamepadFirstSeenConnectedAt;
+    const snapshotValid = Array.isArray(active.buttons) && Array.isArray(active.axes) &&
+      debugPrevButtonsPressedSnapshot.length === active.buttons.length;
+    return snapshotValid && elapsedSinceConnect >= GAMEPAD_POST_CONNECT_SETTLE_MS;
+  }
   const gamepadMoveVec = { x: 0, y: 0 }; // post-deadzone LEFT STICK, debug/verification only
   let gamepadAimVec = null; // post-deadzone RIGHT STICK {x,y}, or null while neutral — debug/verification only
   let gamepadFireHeld = false; // RT >= GAMEPAD_FIRE_THRESHOLD
@@ -24846,7 +24904,8 @@
       `adopted gamepadIndex: ${gamepadIndex}\n` +
       `gamepadWasVisibleLastPoll: ${gamepadWasVisibleLastPoll}\n` +
       `gamepadSubsystemSettled: ${isGamepadSubsystemSettled()}\n` +
-      `gamepad ready result: ${isGamepadReadyForTap()}\n` +
+      `gamepad ready result (touch-inclusive, never blocks a touch-only session — see isGamepadReadyForTap()'s own comment): ${isGamepadReadyForTap()}\n` +
+      `gamepad actively ready (genuine active/adopted pad only — see isGamepadActivelyReady()'s own comment): ${isGamepadActivelyReady()}\n` +
       `gamepad ready rejection (last TAP reject reason): ${lastTapRejectReason}\n` +
       `--- BUTTON STATE (adopted pad) ---\n${buttonLines.length ? buttonLines.join('\n') : '  (no adopted pad)'}\n` +
       `--- EDGE ---\n` +
