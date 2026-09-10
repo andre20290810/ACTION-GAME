@@ -12953,6 +12953,18 @@
     // completeEnterMainMenu(), called once readiness is confirmed — never a
     // fixed delay, never gated on any audio/video Promise.
     enterPostTapLoading(openingSourceForThisAccept);
+    // FOLLOW-UP 12 ADDENDUM (root-cause fix): arm the ghost-compat-event
+    // guard for the generation enterPostTapLoading() just created — see
+    // postTapLoadingIgnoreNextCompatMouseEvent's own declaration and
+    // onPostTapLoadingTouchSkip()'s comment for the full writeup. Only a
+    // REAL touchstart can ever produce a compatibility mouse-event echo —
+    // a mousedown-sourced accept (real mouse/trackpad) or a gamepad
+    // synthetic accept (no e.type at all) never does, so this is scoped
+    // strictly to e.type === 'touchstart'.
+    if (e.type === 'touchstart') {
+      postTapLoadingIgnoreNextCompatMouseEvent = true;
+      postTapLoadingIgnoreNextCompatMouseEventGeneration = postTapLoadingGeneration;
+    }
   }
   // P0 WORK ORDER D FOLLOW-UP 12 (root-cause fix, this batch): POST-TAP
   // LOADING — the gap between "TAP TO START accepted" and "MAIN MENU
@@ -12990,6 +13002,18 @@
   // gates either exit.
   let postTapLoadingGeneration = 0;
   let postTapLoadingNeedsGamepadMediaPriming = false;
+  // FOLLOW-UP 12 ADDENDUM (root-cause fix): iOS Safari (and other touch
+  // browsers) may synthesize a compatibility mousedown/click AFTER the
+  // touchstart that just accepted TAP TO START, targeting whatever element
+  // is now under the touch point — which, the instant screen flips to
+  // 'postTapLoading', is the very #loading-screen container
+  // onPostTapLoadingTouchSkip() listens on. These two fields let that
+  // function consume exactly ONE such follow-up mouse-type event for the
+  // generation the accepting touchstart just created — never time-based —
+  // so it can be told apart from a genuine, deliberate second touch/click.
+  // See onOpeningTap()'s and onPostTapLoadingTouchSkip()'s own comments.
+  let postTapLoadingIgnoreNextCompatMouseEvent = false;
+  let postTapLoadingIgnoreNextCompatMouseEventGeneration = -1;
   // P0 WORK ORDER D FOLLOW-UP 11: tracks the #post-tap-loading-hint DOM
   // element's current shown/hidden state so updatePostTapLoading() only
   // ever writes to it on an actual change — see that function's own
@@ -13147,6 +13171,24 @@
   // POST_TAP_LOADING).
   function onPostTapLoadingTouchSkip(e) {
     if (startupState !== STARTUP_STATE.POST_TAP_LOADING) return;
+    // FOLLOW-UP 12 ADDENDUM (root-cause fix): consume exactly one
+    // compatibility mouse-type event (e.type !== 'touchstart' — practically
+    // 'mousedown', the only other event type this handler is ever
+    // registered for) that belongs to the SAME touchstart which just
+    // accepted TAP TO START and entered this exact POST_TAP_LOADING
+    // generation — see postTapLoadingIgnoreNextCompatMouseEvent's own
+    // declaration. A genuine second touch always arrives as its own
+    // 'touchstart' (the branch below, never gated by this check), so this
+    // can never block a real, deliberate touch-skip; it only ever
+    // swallows the single ghost echo of the gesture that got us here.
+    // Never time-based — cleared unconditionally right after, so it can
+    // never linger into a later generation or swallow a second genuine
+    // mouse-type event.
+    if (e.type !== 'touchstart' && postTapLoadingIgnoreNextCompatMouseEvent && postTapLoadingIgnoreNextCompatMouseEventGeneration === postTapLoadingGeneration) {
+      postTapLoadingIgnoreNextCompatMouseEvent = false;
+      return;
+    }
+    postTapLoadingIgnoreNextCompatMouseEvent = false;
     e.preventDefault();
     postTapLoadingTouchSkipAt = performance.now();
     postTapLoadingExitReason = 'touch-skip';
