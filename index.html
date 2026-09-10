@@ -95,16 +95,20 @@
     <div id="opening-title">DARK OUT</div>
     <div id="opening-tap-prompt">TAP TO START</div>
   </div>
-  <!-- P0 WORK ORDER D FOLLOW-UP 11: shown ONLY during screen='postTapLoading'
+  <!-- P0 WORK ORDER D FOLLOW-UP 11/12: shown ONLY during screen='postTapLoading'
        and ONLY while no genuinely active/adopted gamepad exists yet (see
        isGamepadActivelyReady()/updatePostTapLoading()'s own toggle in
        game.js) — a small, non-blocking reassurance so a controller user
-       knows to press a button, worded so a touch-only user is never misled
-       into thinking a controller is required. Never gates readiness itself;
-       purely cosmetic. -->
+       knows to press a button. FOLLOW-UP 12: the touch line is now
+       genuinely actionable (POST_TAP_LOADING no longer exits on its own —
+       see onPostTapLoadingTouchSkip() in game.js) rather than just a
+       reassurance, so the wording reflects that a tap on this screen is a
+       real, explicit "proceed without a controller" action. Never gates
+       readiness itself beyond that explicit action; purely cosmetic
+       otherwise. -->
   <div id="post-tap-loading-hint" hidden>
-    <div id="post-tap-loading-hint-controller">CONTROLLER: PRESS A</div>
-    <div id="post-tap-loading-hint-touch">TOUCH: READY</div>
+    <div id="post-tap-loading-hint-controller">PRESS A ON CONTROLLER</div>
+    <div id="post-tap-loading-hint-touch">TAP SCREEN FOR TOUCH PLAY</div>
   </div>
 </div>
 

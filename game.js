@@ -12425,20 +12425,44 @@
     // BGM track to silent (musicContext='silent', audibleBgmOwner=null) —
     // this IS game.js:12285(-equivalent)'s real identity: the STARTUP-only
     // hard-reset safety net, running unconditionally on every pageshow
-    // including ones that have nothing to do with startup. Guarded with the
-    // SAME startupState check attemptStartupAudioUnlock() already uses for
-    // an identical "MAIN MENU already reached, this is a STARTUP-only pass"
-    // purpose (see its own comment) — once startupState reaches MAIN_MENU
-    // (set inside onOpeningTap(), the moment a real/accepted opening gesture
-    // lands) it never regresses for the rest of this page life, so this
-    // reads correctly through scenarioSelect/gameplay/every later screen
-    // too. A genuine bfcache restore (e.persisted===true)
-    // still always resets — beginStartupSequence() right below unconditionally
-    // reboots startupState back to BOOT/LOADING anyway, so warm reload's own
-    // behavior (this listener never even fires the startup reboot branch for
-    // a warm-reload-skip page life, which is not bfcache-restored) is
-    // completely unaffected by this guard.
-    if (e.persisted || startupState !== STARTUP_STATE.MAIN_MENU) {
+    // including ones that have nothing to do with startup.
+    //
+    // P0 WORK ORDER D FOLLOW-UP 12 (root-cause fix, this batch): the guard
+    // used to be `startupState !== STARTUP_STATE.MAIN_MENU`, on the
+    // assumption that "not yet at MAIN_MENU" meant "no legitimate BGM could
+    // possibly be audible yet". Follow-up 10's POST_TAP_LOADING state broke
+    // that assumption: startMenuBgmOnce() (via attemptStartupAudioUnlock(),
+    // called from onOpeningTap()) already starts menuBgmAudio/Outbreak0
+    // BEFORE POST_TAP_LOADING is even entered, and — this same batch's own
+    // change — POST_TAP_LOADING can now legitimately stay active for a long
+    // time (indefinitely, while waiting on a controller or an explicit
+    // touch-skip, never a fixed timeout). A pageshow landing during that
+    // window (e.g. a brief app-switch while the player waits for their
+    // controller) would have hard-reset menuBgmStarted=false/
+    // musicContext='silent' with nothing downstream (completeEnterMainMenu()
+    // never re-asserts either) ever restarting Outbreak0 for the rest of
+    // that MAIN MENU visit. Replaced with the more precise question this
+    // whole guard is actually trying to ask — "has TAP TO START genuinely
+    // been accepted yet THIS generation" — using the same
+    // openingGestureAcceptedGeneration/startupGeneration pair
+    // attemptStartupAudioUnlock() itself already relies on for an identical
+    // purpose (see that function's own comment). Before onOpeningTap() ever
+    // runs for the current generation (fresh boot, or still sitting on
+    // WAITING_FOR_TAP), openingGestureAcceptedGeneration is either -1 or a
+    // STALE value from an earlier generation, so this remains true and a
+    // genuine fresh-boot/not-yet-accepted pageshow still resets exactly as
+    // before. Once onOpeningTap() has run for this generation (ENTERING_MENU/
+    // POST_TAP_LOADING/MAIN_MENU, and every later screen) it stays true for
+    // the rest of this page life (identical lifetime to the old
+    // startupState-based check for everything AFTER MAIN_MENU — only the
+    // POST_TAP_LOADING window's behavior actually changes here). A genuine
+    // bfcache restore (e.persisted===true) still always resets —
+    // beginStartupSequence() right below unconditionally reboots
+    // startupState/startupGeneration back to BOOT/LOADING anyway, so warm
+    // reload's own behavior (this listener never even fires the startup
+    // reboot branch for a warm-reload-skip page life, which is not
+    // bfcache-restored) is completely unaffected by this guard.
+    if (e.persisted || openingGestureAcceptedGeneration !== startupGeneration) {
       hardResetAllBgmForFreshBoot();
     }
     if (e.persisted) beginStartupSequence();
@@ -12823,6 +12847,22 @@
     }
     e.preventDefault();
     if (gameState.screen !== 'opening') return; // guards against a stray double-fire (touchstart + mousedown) doing this twice
+    // FOLLOW-UP 12: openingOverlayEl (#opening-overlay) is nested INSIDE
+    // #loading-screen, which now also hosts the POST_TAP_LOADING touch-skip
+    // listener (onPostTapLoadingTouchSkip(), registered on #loading-screen
+    // itself). Without this, the exact same touchstart/mousedown that just
+    // accepted TAP TO START bubbles from openingOverlayEl up to
+    // #loading-screen and reaches onPostTapLoadingTouchSkip() too — by then
+    // enterPostTapLoading() below has already flipped startupState to
+    // POST_TAP_LOADING, so its startupState guard no longer blocks it,
+    // causing an immediate spurious touch-skip on the very click meant only
+    // to dismiss TAP TO START. Only stops propagation once genuine
+    // acceptance is confirmed (never on the reject path above), so it can
+    // never mask a real stray-double-fire diagnostic. Guarded: some call
+    // sites pass a synthetic event ({ type: 'warm-reload-skip',
+    // preventDefault(){} } etc., see below and updateGamepadInput()) that
+    // only implements preventDefault(), never stopPropagation().
+    if (typeof e.stopPropagation === 'function') e.stopPropagation();
     // DARK OUT / P0 AUDIO STARTUP OWNERSHIP FIX (real-device runtime cause,
     // this batch): THIS is the one instant TAP TO START becomes genuinely
     // accepted — screen==='opening' just verified above, so this call is
@@ -12914,37 +12954,40 @@
     // fixed delay, never gated on any audio/video Promise.
     enterPostTapLoading(openingSourceForThisAccept);
   }
-  // P0 WORK ORDER D FOLLOW-UP 10 (root-cause fix, this batch): POST-TAP
-  // LOADING — the new gap between "TAP TO START accepted" and "MAIN MENU
-  // genuinely interactive". Real-device evidence (both this batch's own
-  // report and the "MAIN MENU shows but GameSir doesn't respond for several
-  // seconds"/"D-pad/A operate poorly for a few seconds" symptoms this whole
-  // startup-state-machine area already exists to fix) showed the OLD
-  // behavior — jumping straight from onOpeningTap() to setScreen('mainMenu')
-  // in the same synchronous call — displaying MAIN MENU before the Gamepad
-  // subsystem had actually settled. This closes that gap by holding the
-  // player on a plain loading_bg_loop.mp4 loop (screen 'postTapLoading', no
-  // UI, no TAP TO START, no MAIN MENU) until genuine readiness is confirmed,
-  // never a fixed timer:
-  //  - touch/mouse-accepted opening, no gamepad ever connected:
-  //    isGamepadReadyForTap() returns gamepadSubsystemInitialized (already
-  //    true) immediately — this state is passed through in ~1 frame.
-  //  - gamepad-accepted opening (raw/discovery/warm-reload-skip), pad
-  //    already exposed: isGamepadReadyForTap() waits out
-  //    GAMEPAD_POST_CONNECT_SETTLE_MS (250ms) of real elapsed time since the
-  //    pad was first seen connected, with a genuine adopted-snapshot check —
-  //    the SAME predicate already used to gate LOADING->WAITING_FOR_TAP
-  //    (see getStartupRequiredAssetTargets()'s own 'gamepad ready (if
-  //    connected)' target), reused here rather than inventing a second,
-  //    parallel readiness definition. Bounded by the same
-  //    GAMEPAD_READY_MAX_WAIT_MS (3000ms) fail-open ceiling, so a pad that
-  //    never truly stabilizes can never turn this into a permanent stall —
-  //    never "hold every button released first" (explicitly forbidden this
-  //    batch), just real elapsed settle time.
-  // Media Promise completion (bgmAudio/eventMovieVideoEl priming) is NEVER
-  // part of this exit condition — see the throttled, bounded retry inside
-  // updatePostTapLoading() below, which fires alongside the readiness poll
-  // but never gates it.
+  // P0 WORK ORDER D FOLLOW-UP 12 (root-cause fix, this batch): POST-TAP
+  // LOADING — the gap between "TAP TO START accepted" and "MAIN MENU
+  // genuinely interactive". Follow-up 10 introduced this state; Follow-up 11
+  // added the "CONTROLLER: PRESS A" hint; THIS batch replaces the exit
+  // condition itself. Real-device evidence showed Follow-up 10's own exit
+  // gate (isGamepadReadyForTap(), touch-inclusive by design) treating "TAP
+  // TO START was passed via touch because navigator.getGamepads() was still
+  // all-null" as indistinguishable from "this is a genuine touch-only
+  // session" — both read identically as "no gamepad connected", so a real
+  // GameSir user forced to touch past an unresponsive TAP TO START got
+  // shoved into MAIN MENU in ~11ms/1 frame, with zero chance for Safari to
+  // ever expose the controller afterward. There is no way to tell the two
+  // cases apart from all-null slots alone (a controller can be physically
+  // connected and simply not yet exposed to JS), so this batch stops trying
+  // to infer touch-only automatically. There are now exactly two ways out,
+  // both explicit:
+  //  - exitReason 'gamepad-ready': isGamepadActivelyReady() becomes true —
+  //    a real pad is connected, adopted (gamepadIndex !== null), and has
+  //    genuinely settled (GAMEPAD_POST_CONNECT_SETTLE_MS elapsed since first
+  //    seen connected, snapshot valid) — see that function's own comment.
+  //    No longer gated on isGamepadReadyForTap() at all (that predicate
+  //    stays defined and in use elsewhere — see its own comment — but is
+  //    deliberately never read by this function any more).
+  //  - exitReason 'touch-skip': the player touches/clicks the POST-TAP
+  //    LOADING screen itself — see onPostTapLoadingTouchSkip() below — an
+  //    explicit "I am not using a controller, proceed" signal, never
+  //    inferred from the absence of one.
+  // No fixed timeout exists for either path — a genuinely connected-but-
+  // never-settling pad, or a player who never touches, waits here
+  // indefinitely; touch-skip is always available as the explicit way out.
+  // Media Promise completion (bgmAudio/eventMovieVideoEl priming) is STILL
+  // never part of either exit condition — see the throttled, bounded retry
+  // inside updatePostTapLoading() below, which fires alongside but never
+  // gates either exit.
   let postTapLoadingGeneration = 0;
   let postTapLoadingNeedsGamepadMediaPriming = false;
   // P0 WORK ORDER D FOLLOW-UP 11: tracks the #post-tap-loading-hint DOM
@@ -12956,10 +12999,50 @@
   let postTapMediaPrimingLastAttemptAt = 0;
   const POST_TAP_MEDIA_PRIMING_MAX_ATTEMPTS = 5;
   const POST_TAP_MEDIA_PRIMING_RETRY_INTERVAL_MS = 150;
+  // P0 WORK ORDER D FOLLOW-UP 12: diagnostic-only timestamps/state for the
+  // new ?debugGamepadTap=1 POST-TAP LOADING section (see
+  // buildGamepadTapDebugText()) — never read by any real accept/reject
+  // decision, purely observational. All reset fresh on each
+  // enterPostTapLoading() call (one real cycle = one set of values), 0/null
+  // meaning "not yet reached this cycle".
+  let postTapLoadingEnteredAt = 0;
+  let postTapLoadingExitReason = null; // 'gamepad-ready' | 'touch-skip' | null (still in progress)
+  let postTapLoadingFirstNonNullAt = 0;
+  let postTapLoadingAdoptedAt = 0;
+  let postTapLoadingActivelyReadyAt = 0;
+  let postTapLoadingTouchSkipAt = 0;
+  // P0 WORK ORDER D FOLLOW-UP 12 addendum (root-cause fix, keeping warm
+  // reload's own protected contract intact): a warm-reload-skip opening
+  // already proved real Gamepad capability in an EARLIER page life (that is
+  // the entire meaning of isWarmReloadGamepadSessionConfirmed() — see its
+  // own comment) — this batch's new "wait for isGamepadActivelyReady() or
+  // an explicit touch-skip" requirement was written for genuinely fresh
+  // TAP TO START acceptances, never meant to also make a warm-reload-skip
+  // session wait out a brand-new per-page-life Gamepad exposure/adopt/
+  // settle cycle before ever reaching MAIN MENU — doing so would silently
+  // regress the existing, explicitly-protected "warm reload skips TAP TO
+  // START entirely, lands on MAIN MENU immediately, zero button reads
+  // needed" contract (required regression test). See updatePostTapLoading()'s
+  // own use of this flag.
+  let postTapLoadingIsWarmReloadSkip = false;
+  // Snapshot of the real Gamepad-readiness fields AT THE INSTANT MAIN MENU
+  // is entered (captured inside completeEnterMainMenu(), after
+  // setScreen('mainMenu') and resetGamepadEdgeBaselineForMenuReturn() have
+  // both already run, so this reflects the exact state the very next real
+  // input frame will see) — the "MAIN MENU即応保証" fields this batch's own
+  // spec requires be diagnosable. null until MAIN MENU has been entered at
+  // least once this page life.
+  let mainMenuEntryGamepadSnapshot = null;
   function enterPostTapLoading(openingSource) {
     postTapLoadingGeneration++;
     postTapMediaPrimingAttempts = 0;
     postTapMediaPrimingLastAttemptAt = 0;
+    postTapLoadingEnteredAt = performance.now();
+    postTapLoadingExitReason = null;
+    postTapLoadingFirstNonNullAt = 0;
+    postTapLoadingAdoptedAt = 0;
+    postTapLoadingActivelyReadyAt = 0;
+    postTapLoadingTouchSkipAt = 0;
     // Same classification attemptStartupAudioUnlock() already uses for
     // "was this opening gamepad-sourced" — only those sessions need the
     // bgmAudio/eventMovieVideoEl narrow per-element priming retry below;
@@ -12967,6 +13050,7 @@
     // priming pass synchronously inside attemptStartupAudioUnlock() itself,
     // completely unrelated to this loop.
     postTapLoadingNeedsGamepadMediaPriming = (openingSource === 'gamepad-discovery' || openingSource === 'gamepad-raw' || openingSource === 'warm-reload-skip');
+    postTapLoadingIsWarmReloadSkip = (openingSource === 'warm-reload-skip');
     postTapLoadingHintVisible = false; // fresh cycle — setScreen('postTapLoading') below leaves the DOM hidden; updatePostTapLoading()'s first frame decides the real value
     startupState = STARTUP_STATE.POST_TAP_LOADING;
     if (DEBUG_AUDIO_START_OVERLAY) { recordAudioStartEvent('STARTUP_STATE_CHANGE', { from: audioStartLastStartupState, to: startupState }); audioStartLastStartupState = startupState; }
@@ -13017,8 +13101,56 @@
       unlockGameplayBgmOnlyForIOS(activationActive);
       unlockEventMoviePlaybackForGamepadConfirm(activationActive);
     }
-    if (!isGamepadReadyForTap()) return; // not yet — keep showing POST-TAP LOADING, no fixed delay
+    // P0 WORK ORDER D FOLLOW-UP 12 (root-cause fix, this batch): diagnostic-
+    // only first-reached timestamps for the ?debugGamepadTap=1 panel — see
+    // their own declarations above. Never gate anything below; a stale/no-op
+    // read here can never change the real exit decision.
+    if (postTapLoadingFirstNonNullAt === 0) {
+      const padsNow = navigator.getGamepads ? navigator.getGamepads() : [];
+      if (padsNow.some((gp2) => gp2 && gp2.connected)) postTapLoadingFirstNonNullAt = now;
+    }
+    if (postTapLoadingAdoptedAt === 0 && gamepadIndex !== null) postTapLoadingAdoptedAt = now;
+    // P0 WORK ORDER D FOLLOW-UP 12 (root-cause fix, this batch): the ONLY
+    // gamepad-side exit condition for a genuinely fresh opening now — see
+    // the block comment above enterPostTapLoading() for the full writeup on
+    // why isGamepadReadyForTap() (touch-inclusive, "true" even with zero
+    // pads connected) is no longer read here for those. isGamepadActivelyReady()
+    // is false for as long as no real, adopted, settled pad exists —
+    // including the entire duration of a touch-accepted opening with a
+    // controller Safari simply hasn't exposed yet, which is exactly the
+    // case that used to exit in ~11ms. The ONLY other way out for a fresh
+    // opening is the explicit touch-skip handler (onPostTapLoadingTouchSkip()
+    // below) — deliberately no fixed-timeout fallback.
+    // postTapLoadingIsWarmReloadSkip is the one protected exception — see
+    // its own declaration for why a warm-reload-skip opening keeps using
+    // isGamepadReadyForTap() here exactly as Follow-up 10 originally wired
+    // it, never this new isGamepadActivelyReady() gate.
+    const activelyReady = postTapLoadingIsWarmReloadSkip ? isGamepadReadyForTap() : isGamepadActivelyReady();
+    if (activelyReady && postTapLoadingActivelyReadyAt === 0) postTapLoadingActivelyReadyAt = now;
+    if (!activelyReady) return; // no active/adopted/settled pad yet — keep showing POST-TAP LOADING; wait for either this to become true or an explicit touch-skip, never infer touch-only from silence
     if (myGeneration !== postTapLoadingGeneration) return; // superseded by a newer TAP/RETRY/boot — this stale check does nothing
+    postTapLoadingExitReason = 'gamepad-ready';
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('POST_TAP_LOADING_EXIT', { exitReason: postTapLoadingExitReason, elapsedMs: Math.round(now - postTapLoadingEnteredAt) });
+    completeEnterMainMenu();
+  }
+  // P0 WORK ORDER D FOLLOW-UP 12 (root-cause fix, this batch): the explicit
+  // "touch-skip" exit — a real touch/click anywhere on the POST-TAP LOADING
+  // screen while it is showing means "I am not using a controller, proceed
+  // without one". Deliberately bound to the whole #loading-screen container
+  // (shared with 'loading'/'opening', same as every other overlay hosted on
+  // it — see setScreen()'s own comment) rather than a new dedicated element:
+  // the startupState guard below makes this a no-op on every other screen,
+  // so sharing the container adds no risk of misfiring during LOADING/TAP
+  // TO START (openingOverlayEl's own listeners there are completely
+  // unaffected — this never calls stopPropagation/preventDefault on their
+  // behalf, and never runs itself unless startupState is genuinely
+  // POST_TAP_LOADING).
+  function onPostTapLoadingTouchSkip(e) {
+    if (startupState !== STARTUP_STATE.POST_TAP_LOADING) return;
+    e.preventDefault();
+    postTapLoadingTouchSkipAt = performance.now();
+    postTapLoadingExitReason = 'touch-skip';
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('POST_TAP_LOADING_EXIT', { exitReason: postTapLoadingExitReason, elapsedMs: Math.round(postTapLoadingTouchSkipAt - postTapLoadingEnteredAt), source: e.type });
     completeEnterMainMenu();
   }
   // Everything onOpeningTap() used to do synchronously the instant it called
@@ -13061,6 +13193,49 @@
     // at once, with no new behavior beyond what those other call sites
     // already rely on.
     resetGamepadEdgeBaselineForMenuReturn();
+    // FOLLOW-UP 12: resetGamepadEdgeBaselineForMenuReturn() just nulled
+    // gamepadIndex on purpose (see its own comment — reseeds the edge
+    // baseline from the pad's REAL current state, deliberately deferred to
+    // "the very next poll"). Left alone, that means getActiveGamepad()/
+    // isGamepadActivelyReady() would both read as "no pad" for one whole
+    // RAF tick, and the MAIN MENU即応保証 snapshot captured just below would
+    // wrongly record adoptedPadIndex=null/activelyReady=false even on a
+    // fully successful gamepad-path entry — a false "not ready" that no
+    // real user or the required test suite should ever see. Calling the
+    // SAME re-adoption pollForGamepadConnection() already performs on every
+    // RAF tick synchronously here (idempotent: pure re-scan of
+    // navigator.getGamepads(), only re-adopts, never fabricates a press —
+    // identical to what the next real frame does on its own) closes that
+    // one-frame gap, so both this diagnostic snapshot and real menu input
+    // are genuinely ready at the exact instant MAIN MENU appears, not one
+    // frame later.
+    pollForGamepadConnection();
+    // P0 WORK ORDER D FOLLOW-UP 12 (root-cause fix, this batch): the
+    // "MAIN MENU即応保証" diagnostic snapshot — captured HERE, right after
+    // setScreen('mainMenu') (so getGamepadMenuNavContainer() below resolves
+    // against the real, already-visible #main-menu-overlay, not whatever
+    // container 'postTapLoading' had) and right after
+    // resetGamepadEdgeBaselineForMenuReturn()+pollForGamepadConnection()
+    // (so this reflects the exact state the very next real input frame will
+    // see) — never itself part of any accept/reject decision, purely
+    // observational for ?debugGamepadTap=1 (see buildGamepadTapDebugText()).
+    {
+      const gpAtEntry = getActiveGamepad();
+      let navContainerAtEntry = null;
+      try { navContainerAtEntry = getGamepadMenuNavContainer(); } catch (e) { /* diagnostic-only */ }
+      const structurallyAllowedAtEntry = !!gpAtEntry && !!navContainerAtEntry;
+      mainMenuEntryGamepadSnapshot = {
+        exitReason: postTapLoadingExitReason,
+        adoptedPadIndex: gamepadIndex,
+        activelyReady: isGamepadActivelyReady(),
+        menuInputEnabled: structurallyAllowedAtEntry,
+        dpadAllowed: structurallyAllowedAtEntry,
+        leftStickAllowed: structurallyAllowedAtEntry,
+        anyButtonAllowed: structurallyAllowedAtEntry,
+        capturedAt: performance.now(),
+      };
+      if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('MAIN_MENU_ENTRY_GAMEPAD_SNAPSHOT', mainMenuEntryGamepadSnapshot);
+    }
     // P0 TAP TO START INPUT DELAY AUDIT (this batch): marks the exact
     // instant this work order's "MAIN MENU shows but GameSir doesn't
     // respond for several seconds" window begins — read only by the new
@@ -13100,6 +13275,13 @@
   }
   openingOverlayEl.addEventListener('touchstart', onOpeningTap, { passive: false });
   openingOverlayEl.addEventListener('mousedown', onOpeningTap);
+  // P0 WORK ORDER D FOLLOW-UP 12 (root-cause fix, this batch): the explicit
+  // POST-TAP LOADING touch-skip entry point — see onPostTapLoadingTouchSkip()'s
+  // own comment for why this is bound to the shared #loading-screen
+  // container rather than a new dedicated element.
+  const postTapLoadingScreenEl = document.getElementById('loading-screen');
+  postTapLoadingScreenEl.addEventListener('touchstart', onPostTapLoadingTouchSkip, { passive: false });
+  postTapLoadingScreenEl.addEventListener('mousedown', onPostTapLoadingTouchSkip);
   // P0 INTEGRATED REGRESSION HOTFIX (STARTUP GAMEPAD/AUDIO root cause,
   // safety net) — REMOVED (P0 AUDIO STARTUP OWNERSHIP FIX, this batch).
   // This USED TO retry attemptStartupAudioUnlock() (real .play() calls on
@@ -19947,6 +20129,15 @@
     get gamepadPollFrameCount() { return gamepadPollFrameCount; }, isGamepadSubsystemSettled, // P0 REAL-DEVICE HOTFIX — debug/verification only
     isGamepadReadyForTap, get gamepadFirstSeenConnectedAt() { return gamepadFirstSeenConnectedAt; }, // AUDIT PHASE 2 + PART B (B8) — debug/verification only
     isGamepadActivelyReady, // P0 WORK ORDER D FOLLOW-UP 11 — debug/verification only
+    // P0 WORK ORDER D FOLLOW-UP 12 — debug/verification only
+    get postTapLoadingExitReason() { return postTapLoadingExitReason; },
+    get postTapLoadingEnteredAt() { return postTapLoadingEnteredAt; },
+    get postTapLoadingFirstNonNullAt() { return postTapLoadingFirstNonNullAt; },
+    get postTapLoadingAdoptedAt() { return postTapLoadingAdoptedAt; },
+    get postTapLoadingActivelyReadyAt() { return postTapLoadingActivelyReadyAt; },
+    get postTapLoadingTouchSkipAt() { return postTapLoadingTouchSkipAt; },
+    get postTapLoadingIsWarmReloadSkip() { return postTapLoadingIsWarmReloadSkip; },
+    get mainMenuEntryGamepadSnapshot() { return mainMenuEntryGamepadSnapshot; },
     getDronePlacementRangeX, clampPlayerToScreen,
     get W() { return W; }, get H() { return H; },
     // P0 LANDSCAPE HOTFIX — debug/verification only:
@@ -23241,7 +23432,14 @@
     if (gamepadIndex === null) return false;
     const active = getActiveGamepad();
     if (!active || !active.connected) return false;
-    if (!gamepadFirstSeenConnectedAt) return false;
+    // FOLLOW-UP 12: this predicate must be self-sufficient — POST_TAP_LOADING's
+    // new exit gate calls ONLY this function (never isGamepadReadyForTap()) for
+    // a genuine, non-warm-reload-skip opening, so gamepadFirstSeenConnectedAt
+    // (shared with isGamepadReadyForTap(), which seeds it as its own side
+    // effect) can otherwise stay 0 forever, permanently stuck false even
+    // though a real pad is connected and adopted. Seed it here too — a no-op
+    // whenever isGamepadReadyForTap() already set it first.
+    if (!gamepadFirstSeenConnectedAt) gamepadFirstSeenConnectedAt = performance.now();
     const elapsedSinceConnect = performance.now() - gamepadFirstSeenConnectedAt;
     const snapshotValid = Array.isArray(active.buttons) && Array.isArray(active.axes) &&
       debugPrevButtonsPressedSnapshot.length === active.buttons.length;
@@ -24907,6 +25105,30 @@
       `gamepad ready result (touch-inclusive, never blocks a touch-only session — see isGamepadReadyForTap()'s own comment): ${isGamepadReadyForTap()}\n` +
       `gamepad actively ready (genuine active/adopted pad only — see isGamepadActivelyReady()'s own comment): ${isGamepadActivelyReady()}\n` +
       `gamepad ready rejection (last TAP reject reason): ${lastTapRejectReason}\n` +
+      // P0 WORK ORDER D FOLLOW-UP 12 (root-cause fix, this batch): POST-TAP
+      // LOADING's own diagnostic section — enteredAt/elapsedMs/exitReason
+      // plus the first-non-null/adopted/activelyReady/touchSkip timestamps,
+      // read-only, populated by enterPostTapLoading()/updatePostTapLoading()/
+      // onPostTapLoadingTouchSkip() above.
+      `--- POST-TAP LOADING ---\n` +
+      `enteredAt: ${postTapLoadingEnteredAt ? Math.round(now - postTapLoadingEnteredAt) + 'ms ago' : '(never this page life)'}\n` +
+      `elapsedMs (since entry, or until exit if already exited): ${postTapLoadingEnteredAt ? Math.round((postTapLoadingExitReason ? (postTapLoadingExitReason === 'touch-skip' ? postTapLoadingTouchSkipAt : postTapLoadingActivelyReadyAt) : now) - postTapLoadingEnteredAt) : '(n/a)'}\n` +
+      `exitReason: ${postTapLoadingExitReason === null ? '(still in progress, or not yet entered)' : postTapLoadingExitReason}\n` +
+      `first non-null Gamepad seen at: ${postTapLoadingFirstNonNullAt ? '+' + Math.round(postTapLoadingFirstNonNullAt - postTapLoadingEnteredAt) + 'ms' : '(not yet)'}\n` +
+      `adopted at: ${postTapLoadingAdoptedAt ? '+' + Math.round(postTapLoadingAdoptedAt - postTapLoadingEnteredAt) + 'ms' : '(not yet)'}\n` +
+      `actively ready at: ${postTapLoadingActivelyReadyAt ? '+' + Math.round(postTapLoadingActivelyReadyAt - postTapLoadingEnteredAt) + 'ms' : '(not yet)'}\n` +
+      `touch-skip at: ${postTapLoadingTouchSkipAt ? '+' + Math.round(postTapLoadingTouchSkipAt - postTapLoadingEnteredAt) + 'ms' : '(not used)'}\n` +
+      `--- MAIN MENU ENTRY GAMEPAD SNAPSHOT (captured once, at the exact instant MAIN MENU was entered) ---\n${
+        mainMenuEntryGamepadSnapshot
+          ? `  exitReason: ${mainMenuEntryGamepadSnapshot.exitReason}\n` +
+            `  adoptedPadIndex: ${mainMenuEntryGamepadSnapshot.adoptedPadIndex}\n` +
+            `  gamepad actively ready: ${mainMenuEntryGamepadSnapshot.activelyReady}\n` +
+            `  menuInputEnabled: ${mainMenuEntryGamepadSnapshot.menuInputEnabled}\n` +
+            `  dpadAllowed: ${mainMenuEntryGamepadSnapshot.dpadAllowed}\n` +
+            `  leftStickAllowed: ${mainMenuEntryGamepadSnapshot.leftStickAllowed}\n` +
+            `  anyButtonAllowed: ${mainMenuEntryGamepadSnapshot.anyButtonAllowed}\n`
+          : '  (MAIN MENU not yet entered this page life)\n'
+      }` +
       `--- BUTTON STATE (adopted pad) ---\n${buttonLines.length ? buttonLines.join('\n') : '  (no adopted pad)'}\n` +
       `--- EDGE ---\n` +
       `armed: ${gamepadInputArmed}  disarmedFor: ${gamepadDisarmedAt ? Math.round(now - gamepadDisarmedAt) + 'ms' : '0ms'}\n` +
