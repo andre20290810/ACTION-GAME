@@ -11838,7 +11838,7 @@
     // press itself is correctly treated as "already held, wait for a real
     // release" rather than misread as a fresh press, exactly like TAP TO
     // START's own first-press handling).
-    resetGamepadEdgeBaselineForMenuReturn();
+    resetGamepadEdgeBaselineForMenuReturn('menu-return');
     // P0 RUNTIME STATE/ASYNC RACE STABILIZATION: bumps the one cross-screen
     // ownership token every stale-callback guard added this batch checks —
     // see runtimeGeneration's own declaration for the full design writeup.
@@ -12495,7 +12495,7 @@
     // boot/restore must never inherit a stale gamepadLastButtons snapshot
     // from before it. P0 RUNTIME STATE/ASYNC RACE STABILIZATION: now the
     // same shared helper returnToTopMenu() also uses — see its own comment.
-    resetGamepadEdgeBaselineForMenuReturn();
+    resetGamepadEdgeBaselineForMenuReturn('startup-boot');
     runtimeGeneration++;
     lastTapRejectReason = '(none)';
     startupState = STARTUP_STATE.LOADING;
@@ -12545,6 +12545,7 @@
         // unconditionally every RAF tick) — so a button already held at
         // this exact instant is never misread as a fresh press.
         gamepadIndex = null;
+        pendingGamepadResetReason = 'startup-ready-rebaseline'; // FOLLOW-UP (adoption/rising-edge investigation, this batch, PART 1) — diagnostic only, see its own declaration
         gamepadInputArmed = true;
         gamepadDisarmedAt = 0;
         // P0 WORK ORDER D (root-cause fix, this batch): real-device report
@@ -13475,7 +13476,7 @@
     // onOpeningTap() call site (touch/mouse/gamepad raw/gamepad discovery)
     // at once, with no new behavior beyond what those other call sites
     // already rely on.
-    resetGamepadEdgeBaselineForMenuReturn();
+    resetGamepadEdgeBaselineForMenuReturn('main-menu-entry');
     // FOLLOW-UP 12: resetGamepadEdgeBaselineForMenuReturn() just nulled
     // gamepadIndex on purpose (see its own comment — reseeds the edge
     // baseline from the pad's REAL current state, deliberately deferred to
@@ -18494,6 +18495,21 @@
   // existing RESUME button, never automatically.
   document.addEventListener('visibilitychange', () => {
     if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('VISIBILITY_CHANGE', { hidden: document.hidden });
+    // FOLLOW-UP (TAP TO START adoption/rising-edge investigation, this
+    // batch, PART 2): unconditional (never gated on document.hidden the way
+    // the resync call below is) — this must fire every single time the
+    // event itself fires, so a real-device retrace can prove or disprove
+    // whether this listener is firing at all during WAITING_FOR_TAP, before
+    // even asking whether its resync branch ran.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      let hasFocusNow = null;
+      try { hasFocusNow = document.hasFocus(); } catch (e) { /* diagnostic-only */ }
+      recordGamepadTapEvent('VISIBILITYCHANGE_FIRED', {
+        startupState, screen: gameState.screen,
+        visibilityState: document.visibilityState, hidden: document.hidden, hasFocus: hasFocusNow,
+        gamepadIndex, rawSlotSignature: computeRawGamepadSnapshotSignature(),
+      });
+    }
     if (document.hidden) autoPauseOnInterruption();
     // P0 REAL-DEVICE HOTFIX (root-cause fix, this batch): real-device
     // reports of an EVENT MOVIE's own embedded audio (opening infiltration
@@ -18536,7 +18552,7 @@
     // (controller visible) AND (physically neutral) AND (screen
     // interactive) — never a fixed-time wait.
     if (!document.hidden) {
-      resetGamepadEdgeBaselineForMenuReturn();
+      resetGamepadEdgeBaselineForMenuReturn('visibilitychange-resync');
       if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('PLAYER_INPUT_ENABLE', { source: 'visibilitychange-resync' });
     }
   });
@@ -18545,20 +18561,67 @@
   // true only on a back-forward-cache restore, but resuming unconditionally
   // here is harmless even on a normal fresh navigation where the context
   // does not exist yet).
-  window.addEventListener('pageshow', () => {
+  window.addEventListener('pageshow', (e) => {
     if (typeof eventMovieAudioContext !== 'undefined' && eventMovieAudioContext && eventMovieAudioContext.state === 'suspended') {
       eventMovieAudioContext.resume().catch(() => {});
+    }
+    // FOLLOW-UP (TAP TO START adoption/rising-edge investigation, this
+    // batch, PART 2): unconditional, same reasoning as VISIBILITYCHANGE_FIRED
+    // above — this listener had no trace of its own at all before this
+    // batch, so a real-device retrace could not previously tell whether
+    // pageshow was firing mid-WAITING_FOR_TAP.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      let hasFocusNow = null;
+      try { hasFocusNow = document.hasFocus(); } catch (e) { /* diagnostic-only */ }
+      recordGamepadTapEvent('PAGESHOW_FIRED', {
+        persisted: !!(e && e.persisted),
+        startupState, screen: gameState.screen,
+        visibilityState: document.visibilityState, hasFocus: hasFocusNow,
+        gamepadIndex, rawSlotSignature: computeRawGamepadSnapshotSignature(),
+      });
     }
     // Same gamepad edge-baseline resync as the visibilitychange branch
     // above, for the same reason — a pageshow (bfcache-persisted or not)
     // is exactly as capable of leaving a stale gamepad snapshot behind.
     // Harmless/idempotent to call redundantly alongside beginStartupSequence()'s
     // OWN reset on the persisted===true path (that one already does this).
-    resetGamepadEdgeBaselineForMenuReturn();
+    resetGamepadEdgeBaselineForMenuReturn('pageshow-resync');
   });
   window.addEventListener('blur', autoPauseOnInterruption);
-  window.addEventListener('blur', () => { if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('BLUR', {}); });
-  window.addEventListener('focus', () => { if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('FOCUS', {}); });
+  window.addEventListener('blur', () => {
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('BLUR', {});
+    // FOLLOW-UP (TAP TO START adoption/rising-edge investigation, this
+    // batch, PART 2): mirrors WINDOW_FOCUS below — never resets any gamepad
+    // state itself (blur has no existing resync call site to begin with),
+    // purely observational.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      let hasFocusNow = null;
+      try { hasFocusNow = document.hasFocus(); } catch (e) { /* diagnostic-only */ }
+      recordGamepadTapEvent('WINDOW_BLUR', {
+        startupState, screen: gameState.screen,
+        visibilityState: document.visibilityState, hasFocus: hasFocusNow,
+        gamepadIndex, rawSlotSignature: computeRawGamepadSnapshotSignature(),
+      });
+    }
+  });
+  window.addEventListener('focus', () => {
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('FOCUS', {});
+    // FOLLOW-UP (TAP TO START adoption/rising-edge investigation, this
+    // batch, PART 2): observational only — this listener never called
+    // resetGamepadEdgeBaselineForMenuReturn()/adoptGamepadIndex() before
+    // this batch and still does not; a real WINDOW_FOCUS trace here is what
+    // lets a real-device retrace show whether focus recovery (PART 4) is
+    // even being reached, without adding a second/competing resync path.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      let hasFocusNow = null;
+      try { hasFocusNow = document.hasFocus(); } catch (e) { /* diagnostic-only */ }
+      recordGamepadTapEvent('WINDOW_FOCUS', {
+        startupState, screen: gameState.screen,
+        visibilityState: document.visibilityState, hasFocus: hasFocusNow,
+        gamepadIndex, rawSlotSignature: computeRawGamepadSnapshotSignature(),
+      });
+    }
+  });
 
   // Restarts whichever mode is currently selected, from scratch — startMode()
   // already does a full resetModeState() (player/boss/HP/bullets/blade
@@ -20177,6 +20240,20 @@
     get GAMEPAD_OPENING_EARLY_TRACE_MAX() { return GAMEPAD_OPENING_EARLY_TRACE_MAX; },
     get mainMenuInputBlockedCountThisGeneration() { return mainMenuInputBlockedCountThisGeneration; },
     get mainMenuInputAcceptedCountThisGeneration() { return mainMenuInputAcceptedCountThisGeneration; },
+    // FOLLOW-UP (TAP TO START adoption/rising-edge investigation, this
+    // batch) — debug/verification only, see each field's own declaration:
+    get pendingGamepadResetReason() { return pendingGamepadResetReason; },
+    get lastKnownAdoptedIndex() { return lastKnownAdoptedIndex; },
+    get waitingForTapEnteredAt() { return waitingForTapEnteredAt; },
+    get gamepadPollCountDuringWaitingForTap() { return gamepadPollCountDuringWaitingForTap; },
+    get navigatorSnapshotChangeCountDuringWaitingForTap() { return navigatorSnapshotChangeCountDuringWaitingForTap; },
+    get firstSnapshotChangeElapsedMs() { return firstSnapshotChangeElapsedMs; },
+    get firstRawButtonDownDuringWaitingElapsedMs() { return firstRawButtonDownDuringWaitingElapsedMs; },
+    get firstRawButtonDownDuringWaitingButtonIndex() { return firstRawButtonDownDuringWaitingButtonIndex; },
+    get firstRawAxisMovementDuringWaitingElapsedMs() { return firstRawAxisMovementDuringWaitingElapsedMs; },
+    get lastRawSnapshotSignature() { return lastRawSnapshotSignature; },
+    computeRawGamepadSnapshotSignature, // debug/verification only
+    adoptGamepadIndex, pollForGamepadConnection, // debug/verification only (resetGamepadEdgeBaselineForMenuReturn already exported below)
     // FOLLOW-UP (B: Outbreak1.1/Outbreak2 real-playback-stall investigation,
     // this batch) — debug/verification only: see
     // scheduleBgmPlaybackAdvancementCheck()'s own comment for what each
@@ -23669,6 +23746,24 @@
   let debugLastInputBranch = '(none yet)';
   let debugLastRejectedBranch = '(none)';
   let gamepadIndex = null; // navigator.getGamepads() index of the controller in use; null = none
+  // FOLLOW-UP (TAP TO START adoption/rising-edge investigation, this batch):
+  // whichever explicit `gamepadIndex = null` write site fires most recently
+  // stamps its own reason string here; the NEXT adoptGamepadIndex() call
+  // (wherever it happens to run from) consumes and clears it, so the
+  // GAMEPAD_ADOPTED trace can report WHY this adoption happened even though
+  // the actual re-adopt is always driven by pollForGamepadConnection() on a
+  // later frame, never by the reset site itself. Falls back to the
+  // reset-site-agnostic reason pollForGamepadConnection()'s own call site
+  // passes when nothing explicit was stamped (e.g. the very first-ever
+  // adoption at page load, or the "steal to an actively-used slot" case,
+  // neither of which goes through an explicit gamepadIndex=null reset).
+  let pendingGamepadResetReason = null;
+  // Persists across every gamepadIndex=null reset (unlike gamepadIndex
+  // itself) so adoptGamepadIndex() can report sameIndexReadoption: whether
+  // THIS adoption is re-claiming the exact same physical pad a previous
+  // adoption already had, purely diagnostic, never read by any real input
+  // decision.
+  let lastKnownAdoptedIndex = null;
   // P0 FIRST-SESSION STABILITY (this batch): tracks whether ANY gamepad was
   // visible in navigator.getGamepads() as of the LAST poll — independent of
   // gamepadIndex, which our own code deliberately resets to null at several
@@ -23901,6 +23996,30 @@
   let mainMenuGamepadPollCount = 0; // counted at the top of updateGamepadInput() — "did this frame's poll actually run"
   let mainMenuNavigatorSnapshotChangeCount = 0; // frames where the raw per-button diff loop found >=1 real change since last frame
   let firstNavigatorSnapshotChangeElapsedMs = null; // first such frame — answers A2 (structural gates open, but raw getGamepads() content itself never changes) directly
+  // FOLLOW-UP (TAP TO START adoption/rising-edge investigation, this batch,
+  // PART 3): the WAITING_FOR_TAP-scoped mirror of the MAIN MENU pipeline
+  // fields directly above — same "fixed field, first occurrence only,
+  // elapsed ms since entry" pattern, but the reference point is
+  // waitingForTapEnteredAt (this WAITING_FOR_TAP episode's own start, reset
+  // at the same STARTUP_STATE_CHANGE->WAITING_FOR_TAP point that already
+  // resets gamepadTapFirstPressCaptured) instead of lastMainMenuEnterAt.
+  // Deliberately measured from the RAW padsNowRaw scan (same one FIRST
+  // PRESS SUMMARY's own browserDetectedPress front-half already performs,
+  // BEFORE pollForGamepadConnection()/adoption runs each frame) rather than
+  // from the post-adoption `gp`/pressedNow this file uses everywhere else —
+  // the whole point is to separate "is the RAW browser-level HID snapshot
+  // itself ever changing" from "did OUR OWN adoption/baseline bookkeeping
+  // do anything" (see computeRawGamepadSnapshotSignature()'s own comment).
+  // Purely observational; never gates, blocks, or fabricates any real TAP
+  // decision. Read via ?debugGamepadTap=1.
+  let waitingForTapEnteredAt = null;
+  let gamepadPollCountDuringWaitingForTap = 0;
+  let navigatorSnapshotChangeCountDuringWaitingForTap = 0;
+  let firstSnapshotChangeElapsedMs = null;
+  let firstRawButtonDownDuringWaitingElapsedMs = null;
+  let firstRawButtonDownDuringWaitingButtonIndex = null;
+  let firstRawAxisMovementDuringWaitingElapsedMs = null;
+  let lastRawSnapshotSignature = null;
   // P0 REAL DEVICE FOLLOW-UP (this batch): dedicated, own-buffer trace for
   // the TAP TO START window itself (WAITING_FOR_TAP), separate from
   // gamepadTapTrace so a GameSir TAP-FAILURE run's own early evidence can
@@ -23948,15 +24067,52 @@
   // correctly read as "already pressed, no edge yet" (must release first,
   // exactly the existing release-gate contract), while a genuinely fresh
   // press immediately after adoption still fires normally.
-  function adoptGamepadIndex(newIndex) {
+  //
+  // FOLLOW-UP (TAP TO START adoption/rising-edge investigation, this batch,
+  // PART 2/3): a single shared "what does navigator.getGamepads() look
+  // like RIGHT NOW" string, reused by every new diagnostic this batch adds
+  // (GAMEPAD_ADOPTED/RESET_GAMEPAD_BASELINE/VISIBILITYCHANGE_FIRED/
+  // PAGESHOW_FIRED/WINDOW_FOCUS/WINDOW_BLUR traces, and PART 3's raw-
+  // freshness change-detection) instead of each one recomputing its own
+  // slightly different signature. Deliberately includes per-button pressed
+  // state and per-axis value (not just id/mapping/connected the way the
+  // pre-existing gamepadTapLastSlotSignature tracker does) — PART 3 needs
+  // to detect a change in HID content itself, not just in which pad is
+  // connected. Read-only; never gates or decides anything.
+  function computeRawGamepadSnapshotSignature() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    return pads.map((p, i) => {
+      if (!p || !p.connected) return '';
+      const btns = p.buttons ? p.buttons.map((b) => (b && b.pressed) ? '1' : '0').join('') : '';
+      const axes = p.axes ? p.axes.map((a) => a.toFixed(2)).join(',') : '';
+      return i + ':' + p.id + ':' + p.mapping + ':' + btns + ':' + axes;
+    }).join('|');
+  }
+  // FOLLOW-UP (TAP TO START adoption/rising-edge investigation, this batch,
+  // PART 1): real-device evidence (?debugGamepadTap=1) showed the SAME
+  // physical pad (index 0) adopted 3 separate times across one
+  // WAITING_FOR_TAP episode — provably meaning gamepadIndex was reset to
+  // null (or some other value) between each adoption, since this function's
+  // own `newIndex === gamepadIndex` early-return above is the ONLY thing
+  // that could ever suppress a duplicate GAMEPAD_ADOPTED for the same
+  // index. The existing trace gave no way to tell WHICH of this file's 5
+  // `gamepadIndex = null` write sites caused any given re-adopt, nor
+  // whether a button was already (mis)read as held at that exact moment.
+  // pendingGamepadResetReason (stamped by every one of those 5 sites,
+  // consumed+cleared here) answers "why," while the raw/before/after button
+  // captures below answer "was anything swallowed" — all strictly
+  // additive, read-only diagnostics; no existing accept/reject/baseline
+  // decision below this comment block changes.
+  function adoptGamepadIndex(newIndex, callSiteReason) {
     if (newIndex === gamepadIndex) return;
+    const oldGamepadIndex = gamepadIndex;
+    const finalReason = pendingGamepadResetReason || callSiteReason || 'unknown';
+    pendingGamepadResetReason = null; // consumed — never leaks into a later, unrelated adoption
+    const previousButtonsBeforeReset = Object.assign({}, gamepadLastButtons);
     gamepadIndex = newIndex;
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     const gp = pads[newIndex];
-    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
-      recordGamepadTapEvent('GAMEPAD_ADOPTED', { index: newIndex, id: gp ? gp.id : null, mapping: gp ? gp.mapping : null, buttonsLength: gp && gp.buttons ? gp.buttons.length : 0, axesLength: gp && gp.axes ? gp.axes.length : 0 });
-    }
-    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_ADOPTED', { index: newIndex, id: gp ? gp.id : null });
+    const rawButtonsAtAdoption = gp && gp.buttons ? gp.buttons.map((b) => !!(b && b.pressed)) : null;
     if (gp && gp.mapping !== undefined) {
       const idx = (gp.mapping === 'standard') ? STANDARD_GAMEPAD_BUTTONS : FALLBACK_GAMEPAD_BUTTONS;
       const btn = (i) => gp.buttons[i];
@@ -23987,6 +24143,26 @@
     // disarm already goes through, rather than a second mechanism.
     if (gamepadLastAnyButtonPressed) { gamepadInputArmed = false; gamepadDisarmedAt = 0; } else { gamepadInputArmed = true; gamepadDisarmedAt = 0; }
     debugLastInputBranch = 'pad-adopted:index=' + newIndex;
+    if (DEBUG_GAMEPAD_TAP_OVERLAY) {
+      let visibilityStateNow = null, hasFocusNow = null;
+      try { visibilityStateNow = document.visibilityState; } catch (e) { /* diagnostic-only */ }
+      try { hasFocusNow = document.hasFocus(); } catch (e) { /* diagnostic-only */ }
+      recordGamepadTapEvent('GAMEPAD_ADOPTED', {
+        reason: finalReason,
+        oldGamepadIndex, newGamepadIndex: newIndex,
+        sameIndexReadoption: lastKnownAdoptedIndex !== null && lastKnownAdoptedIndex === newIndex,
+        startupState, screen: gameState.screen,
+        visibilityState: visibilityStateNow, hasFocus: hasFocusNow,
+        frameNumber: gamepadPollFrameCount,
+        rawButtonsAtAdoption,
+        previousButtonsBeforeReset,
+        previousButtonsAfterReset: Object.assign({}, gamepadLastButtons),
+        id: gp ? gp.id : null, mapping: gp ? gp.mapping : null,
+        buttonsLength: gp && gp.buttons ? gp.buttons.length : 0, axesLength: gp && gp.axes ? gp.axes.length : 0,
+      });
+    }
+    if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_ADOPTED', { index: newIndex, id: gp ? gp.id : null, reason: finalReason });
+    lastKnownAdoptedIndex = newIndex;
   }
   // P0 RUNTIME STATE/ASYNC RACE STABILIZATION (root-cause fix, this batch):
   // the ONE shared gamepad edge/arm-baseline reset every screen transition
@@ -24004,7 +24180,30 @@
   // tick) — so a button still physically held from the very gesture that
   // triggered this screen change is correctly treated as "already held,
   // wait for a real release," never misread as a fresh press.
-  function resetGamepadEdgeBaselineForMenuReturn() {
+  // FOLLOW-UP (TAP TO START adoption/rising-edge investigation, this batch,
+  // PART 1/2): `reason` is stamped into pendingGamepadResetReason for the
+  // NEXT adoptGamepadIndex() call (wherever/whenever it happens) to report
+  // — purely diagnostic, never read by any of this function's own existing
+  // resets below. When this fires while still on WAITING_FOR_TAP (i.e.
+  // TAP TO START has not yet been accepted this episode), also emits a
+  // dedicated RESET_GAMEPAD_BASELINE trace event directly — this is the
+  // exact signal PART 2 needs to prove or disprove whether
+  // visibilitychange/pageshow (the only two call sites capable of firing
+  // unprompted, mid-episode, from real device conditions rather than this
+  // file's own deliberate screen-transition bookkeeping) are the cause of
+  // an in-window re-adopt.
+  function resetGamepadEdgeBaselineForMenuReturn(reason) {
+    const oldGamepadIndex = gamepadIndex;
+    if (DEBUG_GAMEPAD_TAP_OVERLAY && startupState === STARTUP_STATE.WAITING_FOR_TAP) {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      const gp = oldGamepadIndex !== null ? pads[oldGamepadIndex] : null;
+      recordGamepadTapEvent('RESET_GAMEPAD_BASELINE', {
+        reason: reason || 'unknown',
+        startupState, oldGamepadIndex, newGamepadIndex: null,
+        rawButtonsAtReset: gp && gp.buttons ? gp.buttons.map((b) => !!(b && b.pressed)) : null,
+      });
+    }
+    pendingGamepadResetReason = reason || null;
     gamepadIndex = null;
     gamepadLastButtons = {};
     gamepadLastAnyButtonPressed = false;
@@ -24058,7 +24257,7 @@
       gamepadTapDisconnectedEventCount++;
       recordGamepadTapEvent('GAMEPAD_DISCONNECTED_EVENT', { index: e.gamepad.index, count: gamepadTapDisconnectedEventCount });
     }
-    if (e.gamepad.index === gamepadIndex) gamepadIndex = null;
+    if (e.gamepad.index === gamepadIndex) { gamepadIndex = null; pendingGamepadResetReason = 'gamepaddisconnected-event'; } // FOLLOW-UP (adoption/rising-edge investigation, this batch, PART 1) — diagnostic only
     // Actual state zeroing happens uniformly in updateGamepadInput()'s own
     // "no active gamepad" branch on the very next frame — never duplicated
     // here, so there is exactly one reset code path regardless of whether a
@@ -24342,14 +24541,22 @@
       if (gp.index === gamepadIndex) { currentStillConnected = true; continue; }
       if (gp.buttons.some((b) => b && b.pressed)) otherActivePad = gp;
     }
-    if (!currentStillConnected && firstConnected) { adoptGamepadIndex(firstConnected.index); return; }
-    if (otherActivePad && (!currentStillConnected || gamepadIndex === null)) { adoptGamepadIndex(otherActivePad.index); return; }
+    if (!currentStillConnected && firstConnected) { adoptGamepadIndex(firstConnected.index, 'poll-first-visible'); return; }
+    // FOLLOW-UP (adoption/rising-edge investigation, this batch, PART 1):
+    // per the branch above's own early return, reaching this point already
+    // implies currentStillConnected===true (a connected gamepadIndex always
+    // makes the branch above's own `!currentStillConnected` half false) —
+    // so this branch's `(!currentStillConnected || gamepadIndex === null)`
+    // condition can, as literally written, never actually be true here.
+    // Documented rather than changed: this batch's mandate is diagnostics
+    // only, never a behavior change to pollForGamepadConnection() itself.
+    if (otherActivePad && (!currentStillConnected || gamepadIndex === null)) { adoptGamepadIndex(otherActivePad.index, 'poll-other-active-b'); return; }
     // Current slot IS connected: only steal focus to a differently-active
     // slot if the CURRENT slot itself has nothing pressed right now — never
     // interrupt an in-progress press on the pad already in use.
     if (otherActivePad && currentStillConnected) {
       const cur = pads[gamepadIndex];
-      if (cur && !cur.buttons.some((b) => b && b.pressed)) adoptGamepadIndex(otherActivePad.index);
+      if (cur && !cur.buttons.some((b) => b && b.pressed)) adoptGamepadIndex(otherActivePad.index, 'poll-active-steal');
     }
   }
 
@@ -24372,6 +24579,18 @@
       if (startupState === STARTUP_STATE.WAITING_FOR_TAP) {
         gamepadTapFirstPressCaptured = false;
         gamepadTapFirstPressSummary = null;
+        // FOLLOW-UP (adoption/rising-edge investigation, this batch, PART 3):
+        // fresh WAITING_FOR_TAP episode -> fresh raw-snapshot-freshness
+        // fields, same reset pattern as gamepadTapFirstPressCaptured just
+        // above. See these fields' own declaration for what each measures.
+        waitingForTapEnteredAt = now;
+        gamepadPollCountDuringWaitingForTap = 0;
+        navigatorSnapshotChangeCountDuringWaitingForTap = 0;
+        firstSnapshotChangeElapsedMs = null;
+        firstRawButtonDownDuringWaitingElapsedMs = null;
+        firstRawButtonDownDuringWaitingButtonIndex = null;
+        firstRawAxisMovementDuringWaitingElapsedMs = null;
+        lastRawSnapshotSignature = null;
       }
       gamepadTapPrevStartupStateForDiag = startupState;
     }
@@ -24473,6 +24692,18 @@
           documentFocusEstablishAttempts++;
           document.body.focus({ preventScroll: true });
           if (DEBUG_RUNTIME_OVERLAY) recordRuntimeEvent('GAMEPAD_FOCUS_ESTABLISH_ATTEMPT', { attempts: documentFocusEstablishAttempts, hasFocusAfter: document.hasFocus(), screen: gameState.screen, startupState });
+          // FOLLOW-UP (adoption/rising-edge investigation, this batch, PART 4):
+          // mirrors the RUNTIME event directly above into the
+          // ?debugGamepadTap=1 stream too — this block already runs
+          // unconditionally regardless of screen/startupState (confirmed by
+          // this investigation: no gating change was needed to make it
+          // "reach" WAITING_FOR_TAP, it already did), but its only existing
+          // trace lived exclusively behind ?debugRuntime=1, a DIFFERENT flag
+          // than everything else this investigation's diagnostics use — a
+          // real-device run enabling only ?debugGamepadTap=1 would otherwise
+          // never see this attempt at all. Same data, same condition,
+          // second trace call only — no behavior change.
+          if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('GAMEPAD_FOCUS_ESTABLISH_ATTEMPT', { attempts: documentFocusEstablishAttempts, hasFocusAfter: document.hasFocus(), screen: gameState.screen, startupState });
         } catch (e) { /* never let a focus() failure break real input handling */ }
       }
     }
@@ -24568,6 +24799,38 @@
         recordGamepadTapEvent('FIRST_PRESS_RAW_DETECTED', { slot: pressedSlot, buttonIndex: pressedButtonIndex, adoptedIndexAtPress: gamepadIndex, previousPressed: gamepadLastAnyButtonPressed });
       }
     }
+    // FOLLOW-UP (adoption/rising-edge investigation, this batch, PART 3):
+    // raw HID snapshot freshness during WAITING_FOR_TAP — computed from the
+    // SAME padsNowRaw this frame's FIRST PRESS SUMMARY block above already
+    // read, i.e. BEFORE pollForGamepadConnection()/adoption runs this
+    // frame, so this can never be affected by this file's own adoption/
+    // baseline churn. The whole point (per this investigation's own
+    // conclusion) is a signal that is TRUE regardless of gamepadIndex: does
+    // the raw browser-level array itself ever change at all.
+    if (DEBUG_GAMEPAD_TAP_OVERLAY && startupState === STARTUP_STATE.WAITING_FOR_TAP && waitingForTapEnteredAt !== null) {
+      gamepadPollCountDuringWaitingForTap++;
+      const elapsedSinceWaitingForTap = Math.round(now - waitingForTapEnteredAt);
+      const rawSig = computeRawGamepadSnapshotSignature();
+      if (lastRawSnapshotSignature !== null && rawSig !== lastRawSnapshotSignature) {
+        navigatorSnapshotChangeCountDuringWaitingForTap++;
+        if (firstSnapshotChangeElapsedMs === null) firstSnapshotChangeElapsedMs = elapsedSinceWaitingForTap;
+      }
+      lastRawSnapshotSignature = rawSig;
+      if (firstRawButtonDownDuringWaitingElapsedMs === null || firstRawAxisMovementDuringWaitingElapsedMs === null) {
+        for (let s = 0; s < padsNowRaw.length; s++) {
+          const cand = padsNowRaw[s];
+          if (!cand || !cand.connected) continue;
+          if (firstRawButtonDownDuringWaitingElapsedMs === null && cand.buttons) {
+            const bi = cand.buttons.findIndex((b) => b && b.pressed);
+            if (bi !== -1) { firstRawButtonDownDuringWaitingElapsedMs = elapsedSinceWaitingForTap; firstRawButtonDownDuringWaitingButtonIndex = bi; }
+          }
+          if (firstRawAxisMovementDuringWaitingElapsedMs === null && cand.axes &&
+              cand.axes.some((a) => Math.abs(a) >= GAMEPAD_PAUSE_MENU_STICK_THRESHOLD)) {
+            firstRawAxisMovementDuringWaitingElapsedMs = elapsedSinceWaitingForTap;
+          }
+        }
+      }
+    }
     gamepadWasVisibleLastPoll = anyGamepadVisibleNow;
     const gamepadIndexBeforePoll = gamepadIndex;
     pollForGamepadConnection();
@@ -24586,6 +24849,7 @@
       // permanently stuck watching a dead index for the rest of the
       // session.
       gamepadIndex = null;
+      if (gamepadIndexBeforePoll !== null) pendingGamepadResetReason = 'gamepad-lost-recovery'; // FOLLOW-UP (adoption/rising-edge investigation, this batch, PART 1) — diagnostic only, see its own declaration
       gamepadMappingSource = 'none';
       gamepadMoveVec.x = 0; gamepadMoveVec.y = 0;
       gamepadAimVec = null;
@@ -25661,6 +25925,22 @@
       `firstMenuConfirmAcceptedElapsedMs (A confirm, A4/A5): ${firstMenuConfirmAcceptedElapsedMs === null ? '(never)' : '+' + firstMenuConfirmAcceptedElapsedMs + 'ms'}\n` +
       `firstSelectionChangeElapsedMs (A5): ${firstSelectionChangeElapsedMs === null ? '(never)' : '+' + firstSelectionChangeElapsedMs + 'ms'}\n` +
       `firstDomClickElapsedMs (A5): ${firstDomClickElapsedMs === null ? '(never)' : '+' + firstDomClickElapsedMs + 'ms'}\n` +
+      // FOLLOW-UP (TAP TO START adoption/rising-edge investigation, this
+      // batch, PARTS 1-3): fixed fields answering "why did this pad get
+      // re-adopted, and is the raw browser-level HID snapshot itself ever
+      // changing" — see GAMEPAD_ADOPTED/RESET_GAMEPAD_BASELINE trace
+      // entries in the EVENT TRACE below for the full per-adoption detail
+      // (reason/old-new index/raw buttons before+after); these fields are
+      // the fixed, always-current summary. null/"(never)" = hasn't happened
+      // yet this WAITING_FOR_TAP episode.
+      `--- WAITING_FOR_TAP ADOPTION / RAW SNAPSHOT (fixed fields, elapsed ms since waitingForTapEnteredAt unless noted) ---\n` +
+      `gamepadIndex (currently adopted): ${gamepadIndex === null ? '(none)' : gamepadIndex}  lastKnownAdoptedIndex: ${lastKnownAdoptedIndex === null ? '(none yet)' : lastKnownAdoptedIndex}  pendingGamepadResetReason: ${pendingGamepadResetReason === null ? '(none pending)' : pendingGamepadResetReason}\n` +
+      `gamepadPollCountDuringWaitingForTap: ${gamepadPollCountDuringWaitingForTap}\n` +
+      `navigatorSnapshotChangeCountDuringWaitingForTap (raw getGamepads() content actually changed, pre-adoption): ${navigatorSnapshotChangeCountDuringWaitingForTap}\n` +
+      `firstSnapshotChangeElapsedMs: ${firstSnapshotChangeElapsedMs === null ? '(never)' : '+' + firstSnapshotChangeElapsedMs + 'ms'}\n` +
+      `firstRawButtonDownDuringWaitingElapsedMs: ${firstRawButtonDownDuringWaitingElapsedMs === null ? '(never)' : '+' + firstRawButtonDownDuringWaitingElapsedMs + 'ms'}  index: ${firstRawButtonDownDuringWaitingButtonIndex === null ? '(n/a)' : firstRawButtonDownDuringWaitingButtonIndex}\n` +
+      `firstRawAxisMovementDuringWaitingElapsedMs: ${firstRawAxisMovementDuringWaitingElapsedMs === null ? '(never)' : '+' + firstRawAxisMovementDuringWaitingElapsedMs + 'ms'}\n` +
+      `lastRawSnapshotSignature: ${lastRawSnapshotSignature === null ? '(none yet)' : lastRawSnapshotSignature}\n` +
       `--- EVENT TRACE (most recent ${Math.min(gamepadTapTrace.length, GAMEPAD_TAP_TRACE_MAX)} of ${gamepadTapTrace.length}, ring buffer max ${GAMEPAD_TAP_TRACE_MAX}) ---\n` +
       gamepadTapTrace.slice(-GAMEPAD_TAP_TRACE_MAX).map((e) => `  [${new Date(e.t).toISOString().slice(11, 23)}] ${e.type} ${JSON.stringify(Object.assign({}, e, { t: undefined }))}`).join('\n')
     );
