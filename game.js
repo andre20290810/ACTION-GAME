@@ -13528,6 +13528,28 @@
     if (DEBUG_GAMEPAD_TAP_OVERLAY) recordGamepadTapEvent('POST_TAP_LOADING_EXIT', { exitReason: postTapLoadingExitReason, elapsedMs: Math.round(now - postTapLoadingEnteredAt) });
     completeEnterMainMenu();
   }
+  // STARTUP CONTROLLER FALLBACK GUIDE (UI ONLY, this batch): a single
+  // shared, non-interactive hint ("controller not responding -- tap the
+  // screen") shown across the startup/menu screens where Safari may not
+  // have exposed a real GameSir/Pro Controller to navigator.getGamepads()
+  // yet, so a controller user isn't left stuck with no indication that a
+  // touch still works. Read-only against isGamepadActivelyReady() (the
+  // exact same predicate updatePostTapLoading()'s own hint above already
+  // calls every frame during POST_TAP_LOADING -- never a new Gamepad
+  // concept, never a new adoption/discovery/rising-edge path). Purely
+  // cosmetic: never gates or changes any startup/Gamepad/menu decision,
+  // only toggles [hidden] on one DOM element, and only writes the DOM when
+  // the shown/hidden value actually changes.
+  const CONTROLLER_FALLBACK_GUIDE_SCREENS = ['opening', 'postTapLoading', 'mainMenu', 'scenarioSelect'];
+  let controllerFallbackGuideVisible = false;
+  function updateControllerFallbackGuide() {
+    const shouldShow = CONTROLLER_FALLBACK_GUIDE_SCREENS.indexOf(gameState.screen) !== -1 && !isGamepadActivelyReady();
+    if (shouldShow !== controllerFallbackGuideVisible) {
+      controllerFallbackGuideVisible = shouldShow;
+      const el = document.getElementById('controller-fallback-guide');
+      if (el) el.hidden = !shouldShow;
+    }
+  }
   // P0 WORK ORDER D FOLLOW-UP 12 (root-cause fix, this batch): the explicit
   // "touch-skip" exit — a real touch/click anywhere on the POST-TAP LOADING
   // screen while it is showing means "I am not using a controller, proceed
@@ -26686,6 +26708,10 @@
       // startupState is genuinely POST_TAP_LOADING. See its own comment for
       // the full readiness-gate writeup.
       updatePostTapLoading(now);
+      // STARTUP CONTROLLER FALLBACK GUIDE (UI ONLY, this batch): same
+      // per-frame cadence as updatePostTapLoading() just above -- see its
+      // own comment for the full read-only-Gamepad-state writeup.
+      updateControllerFallbackGuide();
       // P0 GAMEPLAY STARTUP/TRANSITION STABILITY: recorded HERE, right after
       // the real call above, never inside updateGamepadInput() itself — this
       // batch does not touch gamepad code, so "is gamepad polling alive" is

@@ -112,6 +112,21 @@
   </div>
 </div>
 
+<!-- STARTUP CONTROLLER FALLBACK GUIDE (UI ONLY, this batch): a single
+     shared, non-interactive hint -- shown while no gamepad is yet genuinely
+     active/adopted/settled (see updateControllerFallbackGuide() in game.js)
+     across the startup/menu screens where a not-yet-recognized real
+     controller could otherwise leave a GameSir/Pro Controller user stuck.
+     Deliberately position:fixed and OUTSIDE #loading-screen/#opening-screen
+     (see its own CSS) since it must show across both of those separate
+     screen-host containers -- one element, toggled by [hidden] only, never
+     duplicated per screen. pointer-events:none so it can never itself
+     intercept the very touch this hint is telling the user to use. -->
+<div id="controller-fallback-guide" hidden>
+  <div>コントローラーが反応しない場合は</div>
+  <div>画面をタッチしてください</div>
+</div>
+
 <!-- SECTION H/D: MAIN MENU and every submenu below it share a single
      persistent muted/loop/autoplay/playsinline video, sized via object-fit
      only, whose .src is swapped by game.js: DARK OUT PART 11 SECTION 4 —

@@ -1657,6 +1657,42 @@ body.debug-audio-start-only #debug-audio-start-panel { width: 100%; left: 0; bor
   color: rgba(150, 220, 160, 0.85);
 }
 
+/* STARTUP CONTROLLER FALLBACK GUIDE (UI ONLY, this batch): fixed to the
+   viewport rather than any one screen's own container, since it must show
+   across #loading-screen (opening/postTapLoading) AND #opening-screen
+   (mainMenu/scenarioSelect) -- one shared element, JS only toggles
+   [hidden] (see updateControllerFallbackGuide() in game.js). Deliberately
+   quiet relative to TAP TO START/MENU text: small, low-opacity, no
+   background box, positioned above the safe-area bottom inset so it never
+   sits under an iOS home-indicator or overlaps #control-area's own
+   touch-zone padding. pointer-events:none -- must never intercept the very
+   touch this hint is telling the user to use. */
+#controller-fallback-guide {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 26px);
+  width: 90%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 40;
+}
+#controller-fallback-guide[hidden] { display: none; }
+#controller-fallback-guide div {
+  font-family: sans-serif;
+  font-weight: normal;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
 /* SECTION D: the OPENING video must stay visible and be the focus behind
    MAIN MENU, so this is deliberately NOT a boxed/paneled screen (unlike the
    removed #main-menu-screen/#main-menu-panel it replaces) — plain vertical
