@@ -95,21 +95,21 @@
     <div id="opening-title">DARK OUT</div>
     <div id="opening-tap-prompt">TAP TO START</div>
   </div>
-  <!-- P0 WORK ORDER D FOLLOW-UP 11/12: shown ONLY during screen='postTapLoading'
-       and ONLY while no genuinely active/adopted gamepad exists yet (see
-       isGamepadActivelyReady()/updatePostTapLoading()'s own toggle in
-       game.js) — a small, non-blocking reassurance so a controller user
-       knows to press a button. FOLLOW-UP 12: the touch line is now
-       genuinely actionable (POST_TAP_LOADING no longer exits on its own —
-       see onPostTapLoadingTouchSkip() in game.js) rather than just a
-       reassurance, so the wording reflects that a tap on this screen is a
-       real, explicit "proceed without a controller" action. Never gates
-       readiness itself beyond that explicit action; purely cosmetic
-       otherwise. -->
-  <div id="post-tap-loading-hint" hidden>
-    <div id="post-tap-loading-hint-controller">PRESS A ON CONTROLLER</div>
-    <div id="post-tap-loading-hint-touch">TAP SCREEN FOR TOUCH PLAY</div>
-  </div>
+  <!-- P0 WORK ORDER D FOLLOW-UP 11/12: this container's own show/hide
+       toggle (updatePostTapLoading() in game.js, keyed off
+       isGamepadActivelyReady()) is intentionally left untouched — it still
+       runs every frame exactly as before, so onPostTapLoadingTouchSkip()'s
+       tap-to-proceed handling (bound to #loading-screen, not to this
+       element) and all gamepad/tap readiness logic are unaffected. Only the
+       English-language text content that used to live here (previously
+       "PRESS A ON CONTROLLER" / "TAP SCREEN FOR TOUCH PLAY") has been
+       removed: it duplicated/overlapped the Japanese
+       #controller-fallback-guide hint (コントローラーが反応しない場合は /
+       画面をタッチしてください), which already covers the same screen at
+       the same time via the same isGamepadActivelyReady() condition (see
+       CONTROLLER_FALLBACK_GUIDE_SCREENS in game.js) and is the one that
+       stays. This container is now empty and effectively invisible. -->
+  <div id="post-tap-loading-hint" hidden></div>
 </div>
 
 <!-- STARTUP CONTROLLER FALLBACK GUIDE (UI ONLY, this batch): a single
